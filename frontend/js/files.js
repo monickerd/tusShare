@@ -18,79 +18,37 @@ const Files = (() => {
         _isSharedView = !!opts.shared;
         _clearContainer(container);
 
-        const myFilesLink = Utils.el('a', {
-            href: '#/files',
-            className: 'sidebar-link' + (_isSharedView ? '' : ' active'),
-            textContent: 'My Files',
-        });
-        const sharedLink = Utils.el('a', {
-            href: '#/shared',
-            className: 'sidebar-link' + (_isSharedView ? ' active' : ''),
-            textContent: 'Shared Folder',
-        });
-
-        const layout = Utils.el('div', { className: 'files-layout' }, [
-            Utils.el('aside', { className: 'sidebar', id: 'folder-sidebar' }, [
-                Utils.el('nav', { className: 'sidebar-nav' }, [
-                    myFilesLink,
-                    sharedLink,
-                    Utils.el('a', {
-                        href: '#/shares', className: 'sidebar-link',
-                        textContent: 'My Shares',
+        const main = Utils.el('main', { className: 'files-main' }, [
+            Utils.el('div', { className: 'files-toolbar', id: 'files-toolbar' }, [
+                Utils.el('div', { id: 'breadcrumbs', className: 'breadcrumbs' }),
+                Utils.el('div', { className: 'toolbar-actions' }, [
+                    Utils.el('button', {
+                        className: 'btn btn-secondary btn-sm',
+                        textContent: 'New Folder',
+                        onClick: () => _promptNewFolder(),
                     }),
-                    Utils.el('a', {
-                        href: '#/shares/received', className: 'sidebar-link',
-                        textContent: 'Received Shares',
-                    }),
-                    Utils.el('a', {
-                        href: '#/teams', className: 'sidebar-link',
-                        textContent: 'Teams',
+                    Utils.el('button', {
+                        className: 'btn btn-primary btn-sm',
+                        textContent: 'Upload',
+                        onClick: () => _triggerUpload(),
                     }),
                 ]),
-                Utils.el('div', { id: 'folder-tree', className: 'folder-tree' }),
             ]),
-            Utils.el('main', { className: 'files-main' }, [
-                Utils.el('div', { className: 'files-toolbar', id: 'files-toolbar' }, [
-                    Utils.el('div', { id: 'breadcrumbs', className: 'breadcrumbs' }),
-                    Utils.el('div', { className: 'toolbar-actions' }, [
-                        Utils.el('button', {
-                            className: 'btn btn-secondary btn-sm',
-                            textContent: 'New Folder',
-                            onClick: () => _promptNewFolder(),
-                        }),
-                        Utils.el('button', {
-                            className: 'btn btn-primary btn-sm',
-                            textContent: 'Upload',
-                            onClick: () => _triggerUpload(),
-                        }),
-                    ]),
-                ]),
-                Utils.el('div', {
-                    id: 'file-list',
-                    className: 'file-list drop-zone',
-                    textContent: 'Loading...',
-                }),
-            ]),
+            Utils.el('div', {
+                id: 'file-list',
+                className: 'file-list drop-zone',
+                textContent: 'Loading...',
+            }),
         ]);
 
-        // Admin link if admin
-        const user = Auth.getCurrentUser();
-        if (user && user.is_admin) {
-            const nav = layout.querySelector('.sidebar-nav');
-            nav.appendChild(Utils.el('a', {
-                href: '#/admin', className: 'sidebar-link sidebar-admin',
-                textContent: 'Admin',
-            }));
-        }
-
-        container.appendChild(layout);
+        container.appendChild(main);
         if (!_isSharedView) {
             _loadRootFolders();
             _loadFolderTree();
         }
 
         // Wire up drag-and-drop on the file list area
-        const dropZone = layout.querySelector('.drop-zone');
+        const dropZone = main.querySelector('.drop-zone');
         if (dropZone) _initDropZone(dropZone);
     }
 

@@ -707,6 +707,27 @@
     padding: var(--space-1) 0;
 }
 
+/* --- Teams --- */
+.team-folder-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: var(--space-2) 0;
+}
+
+.team-folder-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) 0;
+}
+
+.team-folder-link {
+    font-weight: 500;
+}
+
 /* --- Admin users table responsive --- */
 @media (max-width: 768px) {
     .admin-users-table {

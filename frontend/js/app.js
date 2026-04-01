@@ -105,6 +105,8 @@ const App = (() => {
             return;
         }
 
+        _updateSidebarActive(hash);
+
         for (const route of _routes) {
             const match = hash.match(route.pattern);
             if (match) {
@@ -199,19 +201,32 @@ const App = (() => {
 
         const sidebarToggle = Utils.el('button', {
             className: 'sidebar-toggle',
-            textContent: '\u2630',
             title: 'Toggle sidebar',
+            textContent: '\u2630',
             onClick: () => {
                 const sb = document.querySelector('.sidebar');
-                if (sb) sb.classList.toggle('collapsed');
+                if (sb) sb.classList.toggle('open');
             },
         });
+
+        const nav = Utils.el('nav', { className: 'sidebar-nav' }, [
+            Utils.el('a', { href: '#/files',           className: 'sidebar-link', id: 'nav-files',    textContent: 'My Files' }),
+            Utils.el('a', { href: '#/shared',          className: 'sidebar-link', id: 'nav-shared',   textContent: 'Shared Folder' }),
+            Utils.el('a', { href: '#/shares',          className: 'sidebar-link', id: 'nav-shares',   textContent: 'My Shares' }),
+            Utils.el('a', { href: '#/shares/received', className: 'sidebar-link', id: 'nav-received', textContent: 'Received Shares' }),
+            Utils.el('a', { href: '#/teams',           className: 'sidebar-link', id: 'nav-teams',    textContent: 'Teams' }),
+        ]);
+        if (user && user.is_admin) {
+            nav.appendChild(Utils.el('a', {
+                href: '#/admin', className: 'sidebar-link sidebar-admin', id: 'nav-admin', textContent: 'Admin',
+            }));
+        }
 
         const shell = Utils.el('div', { className: 'app-shell' }, [
             Utils.el('header', { className: 'app-header' }, [
                 Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
                     sidebarToggle,
-                    Utils.el('div', { className: 'header-brand', textContent: Config.app.name }),
+                    Utils.el('a', { href: '#/files', className: 'header-brand', textContent: Config.app.name }),
                 ]),
                 Utils.el('div', { className: 'header-actions' }, [
                     Utils.el('span', { className: 'header-user', textContent: user ? user.username : '' }),
@@ -222,10 +237,31 @@ const App = (() => {
                     }),
                 ]),
             ]),
-            Utils.el('div', { id: 'main-content', className: 'app-main' }),
+            Utils.el('div', { className: 'app-body' }, [
+                Utils.el('aside', { className: 'sidebar', id: 'folder-sidebar' }, [
+                    nav,
+                    Utils.el('div', { id: 'folder-tree', className: 'folder-tree' }),
+                ]),
+                Utils.el('div', { id: 'main-content', className: 'app-main' }),
+            ]),
         ]);
 
         container.appendChild(shell);
+    }
+
+    function _updateSidebarActive(hash) {
+        const rules = [
+            { id: 'nav-files',    test: h => /^#\/files(\/.*)?$/.test(h) },
+            { id: 'nav-shared',   test: h => h === '#/shared' },
+            { id: 'nav-shares',   test: h => h === '#/shares' },
+            { id: 'nav-received', test: h => h === '#/shares/received' },
+            { id: 'nav-teams',    test: h => /^#\/teams(\/.*)?$/.test(h) },
+            { id: 'nav-admin',    test: h => h === '#/admin' },
+        ];
+        rules.forEach(({ id, test }) => {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('active', test(hash));
+        });
     }
 
     // Auto-init when DOM is ready

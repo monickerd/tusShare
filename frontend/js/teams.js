@@ -424,7 +424,11 @@ const Teams = (() => {
             const ul = Utils.el('ul', { className: 'team-folder-list' });
             for (const f of folders) {
                 const li = Utils.el('li', {}, [
-                    Utils.el('span', { textContent: f.folder_name }),
+                    Utils.el('a', {
+                        href: `#/files/${f.folder_id}`,
+                        className: 'team-folder-link',
+                        textContent: f.folder_name,
+                    }),
                 ]);
                 if (isSupervisor) {
                     li.appendChild(Utils.el('button', {

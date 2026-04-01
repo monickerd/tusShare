@@ -56,6 +56,17 @@ a:hover {
     font-size: var(--font-size-xl);
     font-weight: 700;
     letter-spacing: -0.5px;
+    color: var(--color-text);
+}
+.header-brand:hover {
+    color: var(--color-primary);
+}
+
+/* === App body: sidebar + main content === */
+.app-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
 }
 
 .header-actions {
@@ -72,14 +83,11 @@ a:hover {
 .app-main {
     flex: 1;
     overflow: auto;
-}
-
-/* === Files layout === */
-.files-layout {
     display: flex;
-    height: 100%;
+    flex-direction: column;
 }
 
+/* === Sidebar (persistent, always in app-body) === */
 .sidebar {
     width: var(--sidebar-width);
     background: var(--color-surface);
@@ -87,6 +95,8 @@ a:hover {
     padding: var(--space-4) 0;
     flex-shrink: 0;
     overflow-y: auto;
+    display: flex;
+    flex-direction: column;
 }
 
 .sidebar-nav {
@@ -126,7 +136,8 @@ a:hover {
     flex: 1;
     display: flex;
     flex-direction: column;
-    overflow: auto;
+    overflow: hidden;
+    min-height: 0;
 }
 
 .files-toolbar {
@@ -403,7 +414,7 @@ a:hover {
 .form-group select,
 .form-group textarea {
     width: 100%;
-    padding: 9px var(--space-3);
+    padding: var(--space-3) var(--space-4);
     font-size: var(--font-size-base);
     font-family: var(--font-family);
     color: var(--color-text);
@@ -517,7 +528,7 @@ input[type="checkbox"] {
     background: var(--color-scrollbar-hover);
 }
 
-/* === Mobile: sidebar toggle === */
+/* === Sidebar toggle (hamburger) — desktop: hidden === */
 .sidebar-toggle {
     display: none;
     align-items: center;
@@ -530,6 +541,7 @@ input[type="checkbox"] {
     color: var(--color-text);
     font-size: var(--font-size-lg);
     cursor: pointer;
+    flex-shrink: 0;
 }
 
 /* === Responsive: Tablet === */
@@ -551,32 +563,24 @@ input[type="checkbox"] {
 
 /* === Responsive: Mobile === */
 @media (max-width: 480px) {
-    .files-layout {
-        flex-direction: column;
-    }
-    .sidebar {
-        width: 100%;
-        border-right: none;
-        border-bottom: 1px solid var(--color-border);
-        padding: var(--space-2) 0;
-        max-height: none;
-        overflow: visible;
-    }
-    /* Collapsible sidebar on mobile */
-    .sidebar.collapsed {
-        display: none;
-    }
-    .sidebar-nav {
-        flex-direction: row;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-    }
-    .sidebar-nav::-webkit-scrollbar {
-        display: none;
-    }
+    /* Show hamburger, hide sidebar by default (overlay on open) */
     .sidebar-toggle {
         display: flex;
+    }
+    .sidebar {
+        position: fixed;
+        top: var(--header-height);
+        left: 0;
+        bottom: 0;
+        z-index: var(--z-dropdown);
+        width: var(--sidebar-width-mobile);
+        transform: translateX(-100%);
+        transition: transform var(--transition-normal);
+        border-right: 1px solid var(--color-border);
+        box-shadow: 4px 0 16px rgba(0,0,0,0.4);
+    }
+    .sidebar.open {
+        transform: translateX(0);
     }
     .app-header {
         padding: 0 var(--space-3);

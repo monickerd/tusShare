@@ -174,11 +174,9 @@ const Auth = (() => {
             });
 
             status.textContent = '';
-            if (window.location.hash === '#/files') {
-                window.dispatchEvent(new HashChangeEvent('hashchange'));
-            } else {
-                window.location.hash = '#/files';
-            }
+            // Re-dispatch hashchange so the router navigates to whatever hash is
+            // currently set — preserves deep links like #/files/<id> after a refresh.
+            window.dispatchEvent(new HashChangeEvent('hashchange'));
         } catch (err) {
             status.textContent = 'Failed to unlock. Check your password.';
             btn.disabled = false;
@@ -252,11 +250,9 @@ const Auth = (() => {
             });
 
             status.textContent = '';
-            if (window.location.hash === '#/files') {
-                window.dispatchEvent(new HashChangeEvent('hashchange'));
-            } else {
-                window.location.hash = '#/files';
-            }
+            // Re-dispatch hashchange so the router navigates to whatever hash is
+            // currently set — preserves deep links like #/files/<id> after a refresh.
+            window.dispatchEvent(new HashChangeEvent('hashchange'));
         } catch (err) {
             status.textContent = 'Invalid recovery key. Please try again.';
             btn.disabled = false;
