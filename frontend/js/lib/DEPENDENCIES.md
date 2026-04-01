@@ -70,9 +70,9 @@ alerts on new releases and security patches.
 |--------------|-------|
 | Package      | `@noble/curves@1.8.1` |
 | Source file  | `node_modules/@noble/curves/bls12-381.js` |
-| Bundle date  | *(fill in after bundling)* |
-| SHA-256      | *(fill in after bundling)* |
-| npm integrity (sha512) | *(fill in from package-lock.json)* |
+| Bundle date  | 2026-04-01 |
+| SHA-256      | `9198b49400a9e4c2fb220281a14c4ddb8a839a6d407b2d74cada093a128f3c2e` |
+| npm integrity (sha512) | `sha512-warwspo+UYUPep0Q+vtdVB4Ugn8GGQj8iyB3gnRWsztmUHTI3S1nhdiWNsPUGL0vud7JlRRk1XEu7Lq1KGTnMQ==` |
 | Exports      | `bls12_381` |
 
 ### What it is
@@ -88,9 +88,12 @@ Run from the project root (requires Node.js):
 
 ```
 npm install @noble/curves@1.8.1
-npx esbuild --bundle --format=esm --minify \
-  node_modules/@noble/curves/bls12-381.js \
+# The source is CJS, so we need a wrapper to produce a named ESM export.
+printf 'import bls from "./node_modules/@noble/curves/bls12-381.js";\nexport const bls12_381 = bls.bls12_381 ?? bls;\n' > bls-entry.tmp.js
+npx esbuild --bundle --format=esm --minify --platform=browser \
+  bls-entry.tmp.js \
   --outfile=frontend/js/lib/noble-curves-bls12381.js
+rm bls-entry.tmp.js
 ```
 
 Then verify and record the bundle hash:
@@ -117,7 +120,7 @@ comment to the bundle file (see `noble-post-quantum.js` for the format).
    ```
    npm install @noble/curves@<new-version>
    ```
-3. Regenerate the bundle using the same esbuild command above.
+3. Regenerate the bundle using the same esbuild wrapper command in **First-time setup** above.
 4. Verify the export is still named `bls12_381` (check `mod.bls12_381` in `teams.js`
    → `_getBLS()`). If renamed, update `_getBLS()` in `frontend/js/teams.js`.
 5. Verify `bls12_381.fields.Fp12.toBytes(gt)` still exists — this serializes the
