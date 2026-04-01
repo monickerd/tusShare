@@ -71,7 +71,7 @@ alerts on new releases and security patches.
 | Package      | `@noble/curves@1.8.1` |
 | Source file  | `node_modules/@noble/curves/bls12-381.js` |
 | Bundle date  | 2026-04-01 |
-| SHA-256      | `9198b49400a9e4c2fb220281a14c4ddb8a839a6d407b2d74cada093a128f3c2e` |
+| SHA-256      | `18076e6ce8ebb8f5bb7513a9eb5496e6a6c5e6e82437536ef2bbaf43e8394f4a` |
 | npm integrity (sha512) | `sha512-warwspo+UYUPep0Q+vtdVB4Ugn8GGQj8iyB3gnRWsztmUHTI3S1nhdiWNsPUGL0vud7JlRRk1XEu7Lq1KGTnMQ==` |
 | Exports      | `bls12_381` |
 
@@ -89,7 +89,7 @@ Run from the project root (requires Node.js):
 ```
 npm install @noble/curves@1.8.1
 # The source is CJS, so we need a wrapper to produce a named ESM export.
-printf 'import bls from "./node_modules/@noble/curves/bls12-381.js";\nexport const bls12_381 = bls.bls12_381 ?? bls;\n' > bls-entry.tmp.js
+printf 'export { bls12_381 } from "./node_modules/@noble/curves/bls12-381.js";\n' > bls-entry.tmp.js
 npx esbuild --bundle --format=esm --minify --platform=browser \
   bls-entry.tmp.js \
   --outfile=frontend/js/lib/noble-curves-bls12381.js
