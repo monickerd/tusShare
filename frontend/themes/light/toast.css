@@ -1,0 +1,21 @@
+/*
+ * tusShare Theme: Light — Toast component colors
+ */
+
+:root {
+    --toast-success-bg:     #ecfdf0;
+    --toast-success-border: #b7ebc4;
+    --toast-success-text:   #1e7b37;
+
+    --toast-error-bg:       #fef2f2;
+    --toast-error-border:   #f5c6c6;
+    --toast-error-text:     #c53030;
+
+    --toast-info-bg:        #eff3ff;
+    --toast-info-border:    #c6d4f9;
+    --toast-info-text:      #3b5de8;
+
+    --toast-warning-bg:     #fefce8;
+    --toast-warning-border: #f5e6a3;
+    --toast-warning-text:   #a37c00;
+}

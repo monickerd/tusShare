@@ -1,0 +1,58 @@
+/*
+ * tusShare Theme: Light
+ *
+ * Light mode color overrides. Layout tokens are inherited from default/layout.css.
+ * To activate: change the theme link in index.html to load this folder's files.
+ */
+
+:root {
+    /* --- Core backgrounds --- */
+    --color-bg:             #f5f6f8;
+    --color-surface:        #ffffff;
+    --color-surface-hover:  #f0f1f3;
+    --color-surface-active: #e6e8ec;
+
+    /* --- Borders --- */
+    --color-border:         #d8dbe3;
+    --color-border-light:   #e6e8ec;
+
+    /* --- Text --- */
+    --color-text:           #1a1d27;
+    --color-text-muted:     #6b7085;
+    --color-text-inverse:   #ffffff;
+
+    /* --- Primary accent --- */
+    --color-primary:        #4a6cf7;
+    --color-primary-hover:  #3b5de8;
+    --color-primary-muted:  rgba(74, 108, 247, 0.1);
+
+    /* --- Semantic colors --- */
+    --color-danger:         #e84040;
+    --color-danger-hover:   #d63030;
+    --color-danger-muted:   rgba(232, 64, 64, 0.1);
+
+    --color-success:        #2b9348;
+    --color-success-hover:  #1e7b37;
+    --color-success-muted:  rgba(43, 147, 72, 0.1);
+
+    --color-warning:        #e6a817;
+    --color-warning-hover:  #cc9400;
+    --color-warning-muted:  rgba(230, 168, 23, 0.1);
+
+    --color-info:           #4a6cf7;
+    --color-info-muted:     rgba(74, 108, 247, 0.1);
+
+    /* --- Overlays --- */
+    --color-overlay:        rgba(0, 0, 0, 0.35);
+    --color-overlay-blur:   4px;
+
+    /* --- Scrollbar --- */
+    --color-scrollbar-track: #f5f6f8;
+    --color-scrollbar-thumb: #d8dbe3;
+    --color-scrollbar-hover: #b0b5c3;
+
+    /* --- Shadows --- */
+    --shadow-toast:         0 4px 12px rgba(0, 0, 0, 0.12);
+    --shadow-modal:         0 8px 32px rgba(0, 0, 0, 0.15);
+    --shadow-dropdown:      0 4px 16px rgba(0, 0, 0, 0.1);
+}

@@ -1,0 +1,77 @@
+/*
+ * tusShare Theme: Default — Layout tokens
+ *
+ * Spacing, sizing, typography, border-radius, breakpoints, and animation durations.
+ * These are separate from colors so layout can be consistent across themes.
+ */
+
+:root {
+    /* --- Typography --- */
+    --font-family:          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+    --font-family-mono:     'SF Mono', 'Fira Code', 'Consolas', monospace;
+    --font-size-base:       14px;
+    --font-size-xs:         11px;
+    --font-size-sm:         12px;
+    --font-size-md:         13px;
+    --font-size-lg:         16px;
+    --font-size-xl:         18px;
+    --font-size-2xl:        20px;
+    --font-size-3xl:        22px;
+    --line-height-base:     1.5;
+
+    /* --- Spacing scale --- */
+    --space-1:              4px;
+    --space-2:              8px;
+    --space-3:              12px;
+    --space-4:              16px;
+    --space-5:              20px;
+    --space-6:              24px;
+    --space-8:              32px;
+    --space-10:             40px;
+    --space-12:             48px;
+    --space-16:             64px;
+
+    /* --- Border radius --- */
+    --radius:               6px;
+    --radius-lg:            10px;
+    --radius-full:          9999px;
+
+    /* --- Layout sizes --- */
+    --header-height:        52px;
+    --sidebar-width:        220px;
+    --sidebar-width-mobile: 180px;
+    --auth-form-max-width:  360px;
+    --auth-form-margin-top: 120px;
+    --modal-min-width:      320px;
+    --modal-max-width:      600px;
+    --modal-max-height:     80vh;
+    --toast-max-width:      380px;
+
+    /* --- Animation / transitions --- */
+    --transition-fast:      0.15s;
+    --transition-normal:    0.2s;
+    --transition-slow:      0.3s;
+    --spinner-speed:        0.7s;
+
+    /* --- Z-index layers --- */
+    --z-dropdown:           1000;
+    --z-modal:              9000;
+    --z-toast:              10000;
+
+    /* --- Responsive breakpoints (used in media queries) ---
+     * These can't be CSS vars in media queries, so they're documented here
+     * and used as literal values in the CSS. Update both if changing.
+     *   Tablet:  768px
+     *   Mobile:  480px
+     */
+
+    /* --- Component sizes --- */
+    --scrollbar-width:      8px;
+    --checkbox-size:        16px;
+    --spinner-size:         32px;
+    --progress-bar-height:  6px;
+    --badge-radius:         10px;
+
+    /* --- Touch targets (mobile) --- */
+    --touch-target-min:     44px;
+}

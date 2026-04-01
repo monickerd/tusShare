@@ -1,0 +1,37 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Data & uploads (never commit live data)
+data/
+
+# Node
+node_modules/
+
+# Server-specific config (nginx, systemd)
+nginx/
+systemd/
+
+# Claude Code local config
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+*.swp
+*.swo
