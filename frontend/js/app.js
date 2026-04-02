@@ -14,7 +14,7 @@ const App = (() => {
         { pattern: /^#\/shared$/,                          handler: _routeShared },
         { pattern: /^#\/shares\/received$/,                handler: _routeReceivedShares },
         { pattern: /^#\/shares$/,                          handler: _routeShares },
-        { pattern: /^#\/teams\/([0-9a-f]{32})$/,           handler: _routeTeamDetail },
+        { pattern: /^#\/teams\/([0-9a-f-]+)$/,              handler: _routeTeamDetail },
         { pattern: /^#\/teams$/,                           handler: _routeTeams },
         { pattern: /^#\/admin$/,                           handler: _routeAdmin },
         { pattern: /^#\/s\/(.+)$/,                         handler: _routePublicShare },
