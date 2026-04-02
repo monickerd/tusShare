@@ -56,7 +56,11 @@ const App = (() => {
         const hasSession = await Auth.checkSession();
 
         if (!hasSession) {
+            // Setting hash to #/login won't fire hashchange if the hash is already
+            // #/login (browser no-ops same-value assignments). Render directly so
+            // a refresh on the login page doesn't hang on "Loading tusShare...".
             window.location.hash = '#/login';
+            Auth.renderLogin(_appEl());
             return;
         }
 
