@@ -142,75 +142,64 @@ async def get_folder_contents(
     """
     folder_id = validate_uuid(folder_id)
 
-    await db.execute("BEGIN")
-    try:
-        cursor = await db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
-        folder_row = await cursor.fetchone()
-        if folder_row is None:
-            await db.execute("ROLLBACK")
-            raise HTTPException(status_code=404, detail="Folder not found")
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if folder_row is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
 
-        folder = Folder.from_row(folder_row)
+    folder = Folder.from_row(folder_row)
 
-        # Access check: owner, admin, shared tree, or team member
-        if folder.owner_id != user.id and not user.is_admin:
-            if not await is_in_shared_tree(db, folder_id) and \
-               not await is_team_folder_member(db, folder_id, user.id):
-                await db.execute("ROLLBACK")
-                raise HTTPException(status_code=403, detail="Access denied")
+    # Access check: owner, admin, shared tree, or team member
+    if folder.owner_id != user.id and not user.is_admin:
+        if not await is_in_shared_tree(db, folder_id) and \
+           not await is_team_folder_member(db, folder_id, user.id):
+            raise HTTPException(status_code=403, detail="Access denied")
 
-        # Child folders
+    # Child folders
+    cursor = await db.execute(
+        "SELECT * FROM folders WHERE parent_id = ? ORDER BY name",
+        (folder_id,),
+    )
+    child_folders = [Folder.from_row(r).to_dict() for r in await cursor.fetchall()]
+
+    # Files in this folder
+    cursor = await db.execute(
+        "SELECT * FROM files WHERE folder_id = ? AND upload_complete = 1 ORDER BY original_name",
+        (folder_id,),
+    )
+    files = [File.from_row(r).to_dict() for r in await cursor.fetchall()]
+
+    # Incomplete uploads in this folder for the current user
+    cursor = await db.execute(
+        """
+        SELECT tu.id AS upload_id, f.id AS file_id, f.original_name, f.size_bytes,
+               f.encrypted_file_key, f.key_iv,
+               tu.current_offset, tu.total_size, tu.expires_at
+          FROM tus_uploads tu
+          JOIN files f ON tu.file_id = f.id
+         WHERE tu.user_id = ? AND f.folder_id = ?
+         ORDER BY f.original_name
+        """,
+        (user.id, folder_id),
+    )
+    pending_uploads = [dict(r) for r in await cursor.fetchall()]
+
+    # Build breadcrumb ancestry (walk up parent_id chain)
+    # visited_bc guards against any existing parent_id cycles in the DB
+    breadcrumbs = []
+    current = folder
+    visited_bc: set[str] = {folder.id}
+    while current.parent_id and current.parent_id not in visited_bc:
+        visited_bc.add(current.parent_id)
         cursor = await db.execute(
-            "SELECT * FROM folders WHERE parent_id = ? ORDER BY name",
-            (folder_id,),
+            "SELECT * FROM folders WHERE id = ?", (current.parent_id,)
         )
-        child_folders = [Folder.from_row(r).to_dict() for r in await cursor.fetchall()]
-
-        # Files in this folder
-        cursor = await db.execute(
-            "SELECT * FROM files WHERE folder_id = ? AND upload_complete = 1 ORDER BY original_name",
-            (folder_id,),
-        )
-        files = [File.from_row(r).to_dict() for r in await cursor.fetchall()]
-
-        # Incomplete uploads in this folder for the current user
-        cursor = await db.execute(
-            """
-            SELECT tu.id AS upload_id, f.id AS file_id, f.original_name, f.size_bytes,
-                   f.encrypted_file_key, f.key_iv,
-                   tu.current_offset, tu.total_size, tu.expires_at
-              FROM tus_uploads tu
-              JOIN files f ON tu.file_id = f.id
-             WHERE tu.user_id = ? AND f.folder_id = ?
-             ORDER BY f.original_name
-            """,
-            (user.id, folder_id),
-        )
-        pending_uploads = [dict(r) for r in await cursor.fetchall()]
-
-        # Build breadcrumb ancestry (walk up parent_id chain)
-        # visited_bc guards against any existing parent_id cycles in the DB
-        breadcrumbs = []
-        current = folder
-        visited_bc: set[str] = {folder.id}
-        while current.parent_id and current.parent_id not in visited_bc:
-            visited_bc.add(current.parent_id)
-            cursor = await db.execute(
-                "SELECT * FROM folders WHERE id = ?", (current.parent_id,)
-            )
-            parent_row = await cursor.fetchone()
-            if not parent_row:
-                break
-            parent = Folder.from_row(parent_row)
-            breadcrumbs.insert(0, {"id": parent.id, "name": parent.name})
-            current = parent
-
-        await db.execute("ROLLBACK")  # Read-only — no changes to commit
-    except HTTPException:
-        raise
-    except Exception:
-        await db.execute("ROLLBACK")
-        raise
+        parent_row = await cursor.fetchone()
+        if not parent_row:
+            break
+        parent = Folder.from_row(parent_row)
+        breadcrumbs.insert(0, {"id": parent.id, "name": parent.name})
+        current = parent
 
     return {
         "folder": folder.to_dict(),
