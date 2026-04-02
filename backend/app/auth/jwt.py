@@ -11,6 +11,7 @@ import jwt
 
 from app.conf.auth import CSRF_TOKEN_BYTES, REFRESH_TOKEN_BYTES
 from app.config import settings
+from app.database import db_session
 
 logger = logging.getLogger(__name__)
 
@@ -126,21 +127,24 @@ async def revoke_user_refresh_tokens(db, user_id: str) -> None:
     await db.commit()
 
 
-async def touch_session(db, token_id: str) -> None:
+async def touch_session(token_id: str) -> None:
     """Record activity for a session to keep the idle timeout from expiring it.
 
     The WHERE guard (last_active_at < now - 1 minute) makes this a no-op when
     called within a minute of the last update, limiting DB writes to at most
     once per session per minute regardless of request frequency.
+
+    Acquires its own DB connection so it is safe to run as a background task
+    after the request-scoped connection has been released back to the pool.
     """
-    await db.execute(
-        "UPDATE refresh_tokens "
-        "SET last_active_at = NOW() "
-        "WHERE id = ? AND revoked = 0 "
-        "AND last_active_at < NOW() - INTERVAL '1 minute'",
-        (token_id,),
-    )
-    await db.commit()
+    async with db_session() as db:
+        await db.execute(
+            "UPDATE refresh_tokens "
+            "SET last_active_at = NOW() "
+            "WHERE id = ? AND revoked = 0 "
+            "AND last_active_at < NOW() - INTERVAL '1 minute'",
+            (token_id,),
+        )
 
 
 def create_share_session_token(share_id: str, client_ip: str, user_agent: str) -> str:

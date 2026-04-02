@@ -25,7 +25,6 @@ async def _get_auth_provider(db=Depends(get_db)) -> LocalAuthProvider:
 
 async def get_current_user(
     request: Request,
-    db=Depends(get_db),
     auth_provider=Depends(_get_auth_provider),
 ) -> AuthenticatedUser:
     """Extract and validate the authenticated user from the request.
@@ -64,11 +63,11 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="User not found or inactive")
 
     # Fire-and-forget: update last_active_at for idle-timeout tracking.
-    # Sessions issued before the 011_session_idle migration won't have sid and
-    # are simply not tracked until their next token refresh.
+    # Sessions without a sid claim (issued before last_active_at existed) are
+    # not tracked and will remain active until they expire normally.
     sid = payload.get("sid")
     if sid:
-        asyncio.ensure_future(touch_session(db, sid))
+        asyncio.ensure_future(touch_session(sid))
 
     return user
 

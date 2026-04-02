@@ -15,6 +15,7 @@ from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.database import get_db
 from app.validation.sanitizers import validate_uuid
+from app.wordlist import insert_invite_short_link_with_unique_slug
 
 router = APIRouter()
 
@@ -113,7 +114,7 @@ async def get_disk_usage(
         "SELECT value FROM admin_settings WHERE key = 'disk_warning_threshold'"
     )
     threshold_row = await cursor.fetchone()
-    threshold_pct = int(threshold_row["value"]) if threshold_row else 65
+    threshold_pct = int(threshold_row["value"]) if threshold_row else settings.DISK_WARNING_THRESHOLD
 
     usage_pct = ((fs_total - fs_free) / fs_total * 100) if fs_total > 0 else 0
     warning   = usage_pct >= threshold_pct
@@ -211,3 +212,49 @@ async def revoke_invite(
         raise HTTPException(status_code=404, detail="Invite not found or already used")
 
     return {"message": "Invite revoked"}
+
+
+class CreateInviteShortLinkRequest(BaseModel):
+    token: str
+    expires_at: str
+
+
+@router.post("/invites/{invite_id}/short-link")
+async def create_invite_short_link(
+    invite_id: str,
+    body: CreateInviteShortLinkRequest,
+    admin: AuthenticatedUser = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """Generate a memorable 3-word short link for an existing pending invite.
+
+    The raw token is stored temporarily in invite_short_links so that the slug
+    can redirect to /register/<token>.  The row is deleted automatically when
+    the invite is used or revoked (ON DELETE CASCADE).
+    """
+    invite_id = validate_uuid(invite_id)
+
+    # Verify the invite exists, is pending, and the supplied token matches
+    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
+    cursor = await db.execute(
+        "SELECT id, expires_at FROM invites "
+        "WHERE id = ? AND token_hash = ? AND used_at IS NULL",
+        (invite_id, token_hash),
+    )
+    invite = await cursor.fetchone()
+    if invite is None:
+        raise HTTPException(status_code=404, detail="Invite not found or already used")
+
+    link_id = str(uuid.uuid4())
+    try:
+        slug = await insert_invite_short_link_with_unique_slug(
+            db,
+            link_id=link_id,
+            invite_id=invite_id,
+            token=body.token,
+            expires_at=body.expires_at,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+    return {"slug": slug, "link_id": link_id, "expires_at": body.expires_at}

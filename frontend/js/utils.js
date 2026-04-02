@@ -53,6 +53,11 @@ const Utils = (() => {
                 for (const [dk, dv] of Object.entries(val)) {
                     elem.dataset[dk] = dv;
                 }
+            } else if (key === 'checked' || key === 'disabled' || key === 'readOnly' || key === 'selected') {
+                // Boolean DOM properties: must be set as properties, not attributes.
+                // setAttribute('checked', false) sets checked="false" which is still
+                // truthy in HTML — any attribute presence means checked/disabled/etc.
+                elem[key] = val;
             } else {
                 elem.setAttribute(key, val);
             }

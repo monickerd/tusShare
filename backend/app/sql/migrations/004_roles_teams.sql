@@ -1,10 +1,54 @@
--- 008_teams.sql — Teams, per-member key distribution, PRE file keys, team folders.
---
--- PostgreSQL changes from SQLite version:
---   - DEFAULT (lower(hex(randomblob(16)))) → DEFAULT gen_random_uuid()::text
---   - DEFAULT (unixepoch())                → DEFAULT (EXTRACT(EPOCH FROM NOW()))::BIGINT
---   - INSERT OR IGNORE                     → INSERT ... ON CONFLICT DO NOTHING
---   - SQLite trigger syntax                → PostgreSQL PL/pgSQL triggers
+-- 004_roles_teams.sql — Role-based access control and team collaboration
+
+-------------------------------------------------
+-- ROLES
+-- System roles (admin, user) are immutable.
+-- Team-scoped roles (team_owner, team_supervisor, team_member) are created
+-- here alongside the team tables they relate to.
+-------------------------------------------------
+CREATE TABLE roles (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE CHECK(length(name) BETWEEN 1 AND 64),
+    description TEXT NOT NULL DEFAULT '',
+    is_system   INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO roles (id, name, description, is_system) VALUES
+    ('role_admin',       'admin',           'System administrator — management only, no file operations', 1),
+    ('role_user',        'user',            'Regular user — file storage and sharing', 1),
+    ('team_owner',       'Team Owner',      'Full control: manage members, folders, and delete team', 0),
+    ('team_supervisor',  'Team Supervisor', 'Invite and remove members, manage team folders', 0),
+    ('team_member',      'Team Member',     'Read/write access to team folders', 0);
+
+-------------------------------------------------
+-- USER ↔ ROLE MAPPING
+-- NULL values are distinct in PostgreSQL UNIQUE constraints so partial indexes
+-- are used to correctly enforce uniqueness for global and scoped roles.
+-------------------------------------------------
+CREATE TABLE user_roles (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role_id     TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    scope_type  TEXT DEFAULT NULL CHECK(scope_type IS NULL OR scope_type IN ('folder', 'team')),
+    scope_id    TEXT DEFAULT NULL,
+    granted_by  TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_user_roles_user  ON user_roles(user_id);
+CREATE INDEX idx_user_roles_role  ON user_roles(role_id);
+CREATE INDEX idx_user_roles_scope ON user_roles(scope_type, scope_id);
+
+-- Unique: one global role per user
+CREATE UNIQUE INDEX idx_user_roles_global_unique
+    ON user_roles(user_id, role_id)
+    WHERE scope_type IS NULL;
+
+-- Unique: one scoped role per (user, role, resource)
+CREATE UNIQUE INDEX idx_user_roles_scoped_unique
+    ON user_roles(user_id, role_id, scope_type, scope_id)
+    WHERE scope_type IS NOT NULL;
 
 -------------------------------------------------
 -- TEAMS
@@ -42,7 +86,7 @@ CREATE INDEX idx_user_team_keys_team ON user_team_keys(team_id);
 CREATE INDEX idx_user_team_keys_user ON user_team_keys(user_id);
 
 -------------------------------------------------
--- PER-FILE PRE CIPHERTEXT
+-- PER-FILE PRE CIPHERTEXT (proxy re-encryption for team file sharing)
 -------------------------------------------------
 CREATE TABLE file_team_keys (
     id                 TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
@@ -72,44 +116,3 @@ CREATE TABLE team_folders (
 
 CREATE INDEX idx_team_folders_team   ON team_folders(team_id);
 CREATE INDEX idx_team_folders_folder ON team_folders(folder_id);
-
--------------------------------------------------
--- TEAM ROLES
--------------------------------------------------
-INSERT INTO roles (id, name, description, is_system) VALUES
-    ('team_owner',
-     'Team Owner',
-     'Full control: manage members, folders, and delete team', 0)
-    ON CONFLICT DO NOTHING;
-
-INSERT INTO roles (id, name, description, is_system) VALUES
-    ('team_supervisor',
-     'Team Supervisor',
-     'Invite and remove members, manage team folders', 0)
-    ON CONFLICT DO NOTHING;
-
-INSERT INTO roles (id, name, description, is_system) VALUES
-    ('team_member',
-     'Team Member',
-     'Read/write access to team folders', 0)
-    ON CONFLICT DO NOTHING;
-
--------------------------------------------------
--- IMMUTABLE ACCESS LOGS (DB-layer enforcement)
---
--- PostgreSQL requires a trigger function + trigger (unlike SQLite's inline syntax).
--------------------------------------------------
-CREATE OR REPLACE FUNCTION _prevent_access_log_mutation()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION 'access_logs is append-only';
-END;
-$$;
-
-CREATE TRIGGER prevent_access_log_update
-    BEFORE UPDATE ON access_logs
-    FOR EACH ROW EXECUTE FUNCTION _prevent_access_log_mutation();
-
-CREATE TRIGGER prevent_access_log_delete
-    BEFORE DELETE ON access_logs
-    FOR EACH ROW EXECUTE FUNCTION _prevent_access_log_mutation();

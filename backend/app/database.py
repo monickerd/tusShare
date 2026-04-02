@@ -149,11 +149,30 @@ async def db_session():
         yield Database(conn)
 
 
-async def init_db() -> Database:
-    """Create the connection pool and run pending migrations.
+async def seed_admin_settings(db: Database) -> None:
+    """Insert admin_settings defaults from config on first run.
 
-    Returns a temporary Database for the bootstrap admin creation in main.py.
+    Uses INSERT ... ON CONFLICT DO NOTHING so existing values set via the
+    admin UI are never overwritten.  config.py (+ env vars) is the single
+    source of truth for what the defaults are; the database stores overrides.
     """
+    defaults = {
+        'open_registration':      'true' if settings.OPEN_REGISTRATION else 'false',
+        'global_max_file_size':   str(settings.GLOBAL_MAX_FILE_SIZE),
+        'global_bandwidth_limit': str(settings.GLOBAL_BANDWIDTH_LIMIT),
+        'disk_warning_threshold': str(settings.DISK_WARNING_THRESHOLD),
+        'default_chunk_size':     str(settings.DEFAULT_CHUNK_SIZE),
+    }
+    for key, value in defaults.items():
+        await db.execute(
+            "INSERT INTO admin_settings (key, value) VALUES (?, ?) ON CONFLICT DO NOTHING",
+            (key, value),
+        )
+    await db.commit()
+
+
+async def init_db() -> None:
+    """Create the connection pool, run pending migrations, and seed defaults."""
     global _pool
 
     _pool = await asyncpg.create_pool(
@@ -165,8 +184,9 @@ async def init_db() -> Database:
     async with _pool.acquire() as conn:
         db = Database(conn)
         await _run_migrations(db, conn)
-        logger.info('Database pool initialised: %s', settings.DATABASE_URL)
-        return db
+        await seed_admin_settings(db)
+
+    logger.info('Database pool initialised: %s', settings.DATABASE_URL)
 
 
 async def close_db() -> None:

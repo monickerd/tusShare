@@ -166,14 +166,11 @@ async def create_upload(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Global max file size (admin setting; 0 = no limit)
-    try:
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'global_max_file_size'"
-        )
-        setting_row = await cursor.fetchone()
-        global_max = int(setting_row["value"]) if setting_row else 0
-    except Exception:
-        global_max = 0
+    cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'global_max_file_size'"
+    )
+    setting_row = await cursor.fetchone()
+    global_max = int(setting_row["value"]) if setting_row else settings.GLOBAL_MAX_FILE_SIZE
 
     if global_max > 0 and total_encrypted_size > global_max:
         raise HTTPException(status_code=413, detail="File exceeds the server's maximum allowed size")
@@ -393,7 +390,7 @@ async def patch_upload(
     try:
         await db.execute(
             """
-            INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, offset)
+            INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset")
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (chunk_id, row["file_id"], chunk_index, chunk_iv_b64, chunk_size, client_offset),

@@ -959,6 +959,12 @@ const Shares = (() => {
             return;
         }
 
+        // Invite short links redirect straight to the registration page
+        if (shareData.type === 'invite') {
+            window.location.replace(`/register/${shareData.token}`);
+            return;
+        }
+
         // Delegate to public share rendering using the resolved token
         // Replace the URL so future refreshes use the canonical /s/ path
         if (history.replaceState) {

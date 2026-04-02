@@ -1003,6 +1003,16 @@ async def resolve_short_link(
         raise HTTPException(status_code=404, detail="Short link not found or expired")
 
     now = datetime.now(timezone.utc).isoformat()
+
+    # Check invite short links first (they have no share_key complexity)
+    invite_cursor = await db.execute(
+        "SELECT token FROM invite_short_links WHERE slug = ? AND expires_at > ?",
+        (slug, now),
+    )
+    invite_row = await invite_cursor.fetchone()
+    if invite_row is not None:
+        return {"type": "invite", "token": invite_row["token"]}
+
     cursor = await db.execute(
         "SELECT share_id FROM short_links WHERE slug = ? AND expires_at > ?",
         (slug, now),
@@ -1137,7 +1147,7 @@ async def upload_to_share(
             ),
         )
         await db.execute(
-            "INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, offset) "
+            "INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, \"offset\") "
             "VALUES (?, ?, 0, ?, ?, 0)",
             (chunk_id, file_id, chunk_iv, encrypted_size),
         )

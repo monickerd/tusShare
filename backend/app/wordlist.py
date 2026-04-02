@@ -17,6 +17,8 @@ collisions become more likely. For larger deployments, use 4-word slugs.
 import secrets
 from pathlib import Path
 
+from app.database import DuplicateError
+
 _WORDLIST_PATH = Path(__file__).parent / "wordlist.txt"
 
 
@@ -64,8 +66,6 @@ async def insert_short_link_with_unique_slug(
 
     Returns the slug on success. Raises ValueError if all attempts collide.
     """
-    import sqlite3
-
     for _ in range(max_attempts):
         slug = generate_slug()
         try:
@@ -77,11 +77,46 @@ async def insert_short_link_with_unique_slug(
             )
             await db.commit()
             return slug
-        except sqlite3.IntegrityError:
+        except DuplicateError:
             # Slug collision — retry with a new slug
             continue
 
     raise ValueError(
         "Failed to generate unique short link slug after "
         f"{max_attempts} attempts. Active short link count may be too high."
+    )
+
+
+async def insert_invite_short_link_with_unique_slug(
+    db,
+    link_id: str,
+    invite_id: str,
+    token: str,
+    expires_at: str,
+    max_attempts: int = 10,
+) -> str:
+    """Atomically generate a unique slug and INSERT an invite_short_links row.
+
+    token — the raw invite token (stored temporarily so the slug can redirect
+    to /register/<token>).  Deleted automatically when the invite is consumed
+    or revoked (ON DELETE CASCADE).
+
+    Returns the slug on success. Raises ValueError if all attempts collide.
+    """
+    for _ in range(max_attempts):
+        slug = generate_slug()
+        try:
+            await db.execute(
+                "INSERT INTO invite_short_links (id, slug, invite_id, token, expires_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (link_id, slug, invite_id, token, expires_at),
+            )
+            await db.commit()
+            return slug
+        except DuplicateError:
+            continue
+
+    raise ValueError(
+        "Failed to generate unique invite short link slug after "
+        f"{max_attempts} attempts."
     )

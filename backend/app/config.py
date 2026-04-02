@@ -41,6 +41,13 @@ class Settings(BaseSettings):
     DEFAULT_CHUNK_SIZE: int = 5_242_880  # 5 MB
     TUS_UPLOAD_EXPIRY_HOURS: int = 24
 
+    # Admin panel defaults — these seed admin_settings on first run.
+    # Once written to the database they can be overridden via the admin UI.
+    OPEN_REGISTRATION: bool = False
+    GLOBAL_MAX_FILE_SIZE: int = 0      # bytes; 0 = no global limit
+    GLOBAL_BANDWIDTH_LIMIT: int = 0    # bytes/s; 0 = no global limit
+    DISK_WARNING_THRESHOLD: int = 65   # filesystem usage % that triggers admin alert
+
     # Rate limiting (requests per window)
     RATE_LIMIT_LOGIN: int = 5          # per 15 min per IP
     RATE_LIMIT_API: int = 60           # per min per user

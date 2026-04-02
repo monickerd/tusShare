@@ -463,6 +463,49 @@ const Admin = (() => {
 
         const inviteUrl = `${window.location.origin}/register/${data.token}`;
 
+        // Short-link row — hidden until the "Short Link" button is clicked
+        const shortLinkInput = Utils.el('input', {
+            type: 'text', readOnly: true,
+            className: 'invite-url-input',
+            onClick: (e) => e.target.select(),
+        });
+        const shortLinkCopyBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Copy',
+            onClick: () => {
+                navigator.clipboard.writeText(shortLinkInput.value).then(
+                    () => Utils.showToast('Short link copied', 'success'),
+                    () => Utils.showToast('Copy failed — select and copy manually', 'error'),
+                );
+            },
+        });
+        const shortLinkRow = Utils.el('div', {
+            className: 'invite-url-row',
+            style: 'display:none',
+        }, [shortLinkInput, shortLinkCopyBtn]);
+
+        const shortLinkBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Short Link',
+            onClick: async () => {
+                shortLinkBtn.disabled = true;
+                shortLinkBtn.textContent = 'Generating…';
+                try {
+                    const sl = await Api.post(
+                        `${_api()}/admin/invites/${data.id}/short-link`,
+                        { token: data.token, expires_at: data.expires_at },
+                    );
+                    shortLinkInput.value = `${window.location.origin}/${sl.slug}`;
+                    shortLinkRow.style.display = '';
+                    shortLinkBtn.style.display = 'none';
+                } catch (err) {
+                    Utils.showToast('Short link failed: ' + err.message, 'error');
+                    shortLinkBtn.disabled = false;
+                    shortLinkBtn.textContent = 'Short Link';
+                }
+            },
+        });
+
         // Show a dismissable one-time display banner at the top of the invites section
         const banner = Utils.el('div', { className: 'invite-banner' }, [
             Utils.el('p', { className: 'invite-banner-warn', textContent: '⚠ Copy this link now — it will not be shown again.' }),
@@ -483,7 +526,9 @@ const Admin = (() => {
                         );
                     },
                 }),
+                shortLinkBtn,
             ]),
+            shortLinkRow,
             Utils.el('p', { className: 'text-muted', textContent: `Expires: ${data.expires_at.replace('T', ' ')} UTC · Valid for ${Config.admin.inviteExpireHours} hours` }),
             Utils.el('button', {
                 className: 'btn btn-secondary btn-sm',

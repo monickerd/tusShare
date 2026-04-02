@@ -42,10 +42,11 @@ async def lifespan(app: FastAPI):
     settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Initialize database and run migrations
-    db = await init_db()
+    await init_db()
 
     # Bootstrap admin user on first run
-    await _bootstrap_admin(db)
+    async with db_session() as db:
+        await _bootstrap_admin(db)
 
     # Start background tasks
     rate_limit_task     = asyncio.create_task(run_rate_limit_cleanup())
@@ -167,6 +168,19 @@ def create_app() -> FastAPI:
                 return FileResponse(index)
 
             now = datetime.now(timezone.utc).isoformat()
+
+            # Check invite short links first — redirect to registration page
+            invite_cursor = await db.execute(
+                "SELECT token FROM invite_short_links WHERE slug = ? AND expires_at > ?",
+                (slug, now),
+            )
+            invite_row = await invite_cursor.fetchone()
+            if invite_row is not None:
+                return RedirectResponse(
+                    url=f"/register/{invite_row['token']}",
+                    status_code=302,
+                )
+
             cursor = await db.execute(
                 """
                 SELECT sl.share_key, s.token

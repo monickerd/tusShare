@@ -132,6 +132,13 @@ const Auth = (() => {
             const data = await Api.post(`${Config.app.apiPrefix}/auth/login`, { username, password });
             _currentUser = data.user;
 
+            // Admin accounts have no encryption keys — go straight to the admin panel
+            if (data.user.is_admin) {
+                status.textContent = '';
+                window.location.hash = '#/admin';
+                return;
+            }
+
             status.textContent = 'Deriving encryption key...';
 
             // Derive KEK from password + salt, then unwrap the master key
@@ -608,7 +615,7 @@ const Auth = (() => {
             // so users aren't prompted for their password on every page reload.
             if (!_masterKeyObj) {
                 const restored = await _restoreCachedMasterKey();
-                if (restored) {
+                if (restored && !_currentUser.is_admin) {
                     _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
                         console.error('Asymmetric key setup failed after cache restore:', err);
                     });

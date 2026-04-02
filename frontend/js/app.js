@@ -65,15 +65,17 @@ const App = (() => {
         }
 
         // Session exists but may need key derivation (page refresh)
-        if (!Auth.getMasterKeyObj()) {
+        // Admin accounts have no encryption keys — skip the key prompt entirely
+        if (!Auth.getMasterKeyObj() && !Auth.getCurrentUser()?.is_admin) {
             const container = _appEl();
             Auth.renderKeyPrompt(container);
             return;
         }
 
         // Navigate to current hash or default
+        const defaultHash = Auth.getCurrentUser()?.is_admin ? '#/admin' : '#/files';
         if (!window.location.hash || window.location.hash === '#/') {
-            window.location.hash = '#/files';
+            window.location.hash = defaultHash;
         } else {
             _onHashChange();
         }
@@ -110,10 +112,19 @@ const App = (() => {
             return;
         }
 
-        // Need master key for file operations
-        if (!Auth.getMasterKeyObj() && hash !== '#/admin') {
-            Auth.renderKeyPrompt(container);
-            return;
+        // Need master key for file operations; admin accounts have no keys
+        if (!Auth.getMasterKeyObj()) {
+            if (Auth.getCurrentUser()?.is_admin) {
+                // Admin only has access to the admin route — redirect away from file routes,
+                // but if already at #/admin fall through and let the route render normally.
+                if (hash !== '#/admin') {
+                    window.location.hash = '#/admin';
+                    return;
+                }
+            } else {
+                Auth.renderKeyPrompt(container);
+                return;
+            }
         }
 
         _updateSidebarActive(hash);
