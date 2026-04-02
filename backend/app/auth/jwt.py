@@ -135,9 +135,9 @@ async def touch_session(db, token_id: str) -> None:
     """
     await db.execute(
         "UPDATE refresh_tokens "
-        "SET last_active_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+        "SET last_active_at = NOW() "
         "WHERE id = ? AND revoked = 0 "
-        "AND last_active_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 minute')",
+        "AND last_active_at < NOW() - INTERVAL '1 minute'",
         (token_id,),
     )
     await db.commit()
@@ -217,29 +217,27 @@ async def cleanup_expired_tokens(db) -> int:
     )
 
     # Phase 2: delete everything that is expired or revoked
-    await db.execute(
+    result = await db.execute(
         "DELETE FROM refresh_tokens WHERE expires_at < ? OR revoked = 1",
         (now_iso,),
     )
-    cursor = await db.execute("SELECT changes()")
-    row = await cursor.fetchone()
-    count = row[0]
     await db.commit()
+    count = result.rowcount if result.rowcount >= 0 else 0
     if count > 0:
         logger.debug("Cleaned up %d expired/revoked refresh tokens", count)
     return count
 
 
-async def run_token_cleanup(db_getter, interval: float = 60.0) -> None:
+async def run_token_cleanup(db_factory, interval: float = 60.0) -> None:
     """Periodic background task — runs cleanup every `interval` seconds.
 
-    Defaults to 60 s so idle sessions are reaped promptly. db_getter is a
-    callable that returns the database connection (e.g. get_db).
+    Defaults to 60 s so idle sessions are reaped promptly. db_factory is an
+    async context manager factory (e.g. db_session from app.database).
     """
     while True:
         await asyncio.sleep(interval)
         try:
-            db = await db_getter()
-            await cleanup_expired_tokens(db)
+            async with db_factory() as db:
+                await cleanup_expired_tokens(db)
         except Exception:
             logger.exception("Token cleanup task failed")

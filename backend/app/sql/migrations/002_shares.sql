@@ -9,12 +9,12 @@ CREATE TABLE shares (
     created_by      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     share_type      TEXT NOT NULL CHECK(share_type IN ('link', 'user', 'short')),
     target_user_id  TEXT REFERENCES users(id) ON DELETE CASCADE,
-    expires_at      TEXT,
+    expires_at      TIMESTAMPTZ,
     is_active       INTEGER NOT NULL DEFAULT 1,
     password_hash   TEXT,
     max_downloads   INTEGER,
     download_count  INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_shares_token   ON shares(token);
 CREATE INDEX idx_shares_creator ON shares(created_by);
@@ -42,8 +42,8 @@ CREATE TABLE short_links (
     id          TEXT PRIMARY KEY,
     slug        TEXT NOT NULL UNIQUE,
     share_id    TEXT NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
-    expires_at  TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_shortlinks_slug    ON short_links(slug);
 CREATE INDEX idx_shortlinks_expires ON short_links(expires_at);

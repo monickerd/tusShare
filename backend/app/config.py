@@ -16,9 +16,11 @@ class Settings(BaseSettings):
 
     # Data paths
     DATA_DIR: Path = Path("/data")
-    DB_PATH: Path = Path("/data/tusshare.db")
     FILES_DIR: Path = Path("/data/files")
     UPLOADS_DIR: Path = Path("/data/uploads")
+
+    # Database
+    DATABASE_URL: str = "postgresql://tusshare:tusshare@postgres:5432/tusshare"
 
     # Auth
     AUTH_PROVIDER: str = "local"  # "local" | future: "oidc"

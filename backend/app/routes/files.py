@@ -127,7 +127,7 @@ async def update_file(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    updates.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+    updates.append("updated_at = NOW()")
     params.append(file_id)
 
     await db.execute(
@@ -181,7 +181,7 @@ async def delete_file(
     owner_id = row["owner_id"]
 
     # Atomic: update quota + delete record in one transaction
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         await db.execute(
             "UPDATE users SET disk_used = MAX(0, disk_used - ?) WHERE id = ?",
@@ -190,7 +190,7 @@ async def delete_file(
         await db.execute("DELETE FROM files WHERE id = ?", (file_id,))
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     # Notify any SSE subscribers watching this folder

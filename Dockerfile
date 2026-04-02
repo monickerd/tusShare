@@ -6,8 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# bcrypt → cffi → libffi (runtime dep; not bundled in the musllinux wheel)
-RUN apk add --no-cache libffi
+# bcrypt → cffi → libffi; asyncpg → libpq (PostgreSQL client library)
+RUN apk add --no-cache libffi libpq
 
 # Install dependencies first (layer caching)
 COPY backend/requirements.txt .

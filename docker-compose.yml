@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tusshare_postgres
+    environment:
+      POSTGRES_DB: tusshare
+      POSTGRES_USER: tusshare
+      POSTGRES_PASSWORD: ${TUSSHARE_PG_PASSWORD:-tusshare}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tusshare -d tusshare"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   tusshare:
     build: .
     container_name: tusshare
@@ -8,14 +25,19 @@ services:
       - tusshare_data:/data
     env_file:
       - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9050/api/v1/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
 
 volumes:
   tusshare_data:
+    driver: local
+  postgres_data:
     driver: local

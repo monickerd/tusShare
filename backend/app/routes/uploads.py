@@ -195,7 +195,7 @@ async def create_upload(
         datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         await db.execute(
             """
@@ -221,7 +221,7 @@ async def create_upload(
         )
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     return Response(
@@ -389,7 +389,7 @@ async def patch_upload(
     # --- Phase 1 DB update: record this chunk and advance the tus offset ---
     # Committed regardless of whether this is the final chunk.
     chunk_id = str(uuid.uuid4())
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         await db.execute(
             """
@@ -410,7 +410,7 @@ async def patch_upload(
         )
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     # --- If complete, verify blob integrity then finalize in a second DB transaction ---
@@ -460,7 +460,7 @@ async def patch_upload(
 
         # Phase 2 DB update: mark file complete, update quota, remove tus record.
         # Runs only after the blob is confirmed on disk.
-        await db.execute("BEGIN IMMEDIATE")
+        await db.execute("BEGIN")
         try:
             # Belt-and-suspenders: verify chunk count matches what we expect.
             # Under normal operation this is always true (SQLite atomicity); this
@@ -472,7 +472,7 @@ async def patch_upload(
             count_row = await count_cursor.fetchone()
             expected_chunks = chunk_index + 1  # chunk_index is 0-based
             if count_row[0] != expected_chunks:
-                await db.execute("ROLLBACK")
+                await db.rollback()
                 logger.error(
                     "Chunk count mismatch for file %s: expected %d, got %d",
                     row["file_id"], expected_chunks, count_row[0],
@@ -487,7 +487,7 @@ async def patch_upload(
                 UPDATE files
                 SET upload_complete = 1,
                     encrypted_size   = ?,
-                    updated_at       = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                    updated_at       = NOW()
                 WHERE id = ?
                 """,
                 (new_offset, row["file_id"]),
@@ -501,7 +501,7 @@ async def patch_upload(
         except HTTPException:
             raise
         except Exception:
-            await db.execute("ROLLBACK")
+            await db.rollback()
             raise
 
         # Notify any SSE subscribers watching this folder
@@ -546,14 +546,14 @@ async def abort_upload(
 
     file_id = row["file_id"]
 
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         # Deleting the file cascades to file_chunks via FK; tus_uploads also FKs to files.
         await db.execute("DELETE FROM tus_uploads WHERE id = ?", (upload_id,))
         await db.execute("DELETE FROM files WHERE id = ?", (file_id,))
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     upload_blob = settings.UPLOADS_DIR / upload_id
@@ -594,12 +594,12 @@ async def _cleanup_expired_uploads(db) -> int:
         upload_id = row["upload_id"]
         file_id   = row["file_id"]
         try:
-            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("BEGIN")
             await db.execute("DELETE FROM tus_uploads WHERE id = ?", (upload_id,))
             await db.execute("DELETE FROM files WHERE id = ?", (file_id,))
             await db.commit()
         except Exception:
-            await db.execute("ROLLBACK")
+            await db.rollback()
             logger.exception("Failed to clean up expired upload %s", upload_id)
             continue
 
@@ -616,16 +616,16 @@ async def _cleanup_expired_uploads(db) -> int:
     return count
 
 
-async def run_upload_cleanup(db_getter, interval: float = 3600.0) -> None:
+async def run_upload_cleanup(db_factory, interval: float = 3600.0) -> None:
     """Periodic background task — removes expired incomplete uploads.
 
-    Runs every `interval` seconds (default 1 hour).  db_getter is a callable
-    that returns the database connection (e.g. get_db).
+    Runs every `interval` seconds (default 1 hour).  db_factory is an async
+    context manager factory (e.g. db_session from app.database).
     """
     while True:
         await asyncio.sleep(interval)
         try:
-            db = await db_getter()
-            await _cleanup_expired_uploads(db)
+            async with db_factory() as db:
+                await _cleanup_expired_uploads(db)
         except Exception:
             logger.exception("Upload cleanup task failed")

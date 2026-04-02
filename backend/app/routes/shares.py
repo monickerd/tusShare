@@ -365,7 +365,7 @@ async def list_received_shares(
     cursor = await db.execute(
         "SELECT * FROM shares "
         "WHERE target_user_id = ? AND share_type = 'user' AND is_active = 1 "
-        "AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now')) "
+        "AND (expires_at IS NULL OR expires_at > NOW()) "
         "ORDER BY created_at DESC LIMIT ? OFFSET ?",
         (user.id, limit, offset),
     )
@@ -374,7 +374,7 @@ async def list_received_shares(
     count_cursor = await db.execute(
         "SELECT COUNT(*) FROM shares "
         "WHERE target_user_id = ? AND share_type = 'user' AND is_active = 1 "
-        "AND (expires_at IS NULL OR expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+        "AND (expires_at IS NULL OR expires_at > NOW())",
         (user.id,),
     )
     total = (await count_cursor.fetchone())[0]
@@ -543,7 +543,7 @@ async def create_share(
         target_folder_id = body.target_folder_id
         allow_upload = True
 
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         await db.execute(
             """
@@ -593,7 +593,7 @@ async def create_share(
         )
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     cursor = await db.execute("SELECT created_at FROM shares WHERE id = ?", (share_id,))
@@ -1119,7 +1119,7 @@ async def upload_to_share(
     await asyncio.to_thread(file_path.write_bytes, content)
 
     chunk_id = str(uuid.uuid4())
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         await db.execute(
             """
@@ -1160,7 +1160,7 @@ async def upload_to_share(
         )
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         await asyncio.to_thread(lambda: file_path.unlink(missing_ok=True))
         raise
 

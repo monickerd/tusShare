@@ -11,7 +11,7 @@ CREATE TABLE access_logs (
     ip_address  TEXT NOT NULL,
     user_agent  TEXT,
     action      TEXT NOT NULL CHECK(action IN ('view', 'download', 'upload', 'delete', 'share')),
-    timestamp   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_alog_file      ON access_logs(file_id);
 CREATE INDEX idx_alog_user      ON access_logs(user_id);
@@ -24,7 +24,7 @@ CREATE INDEX idx_alog_timestamp ON access_logs(timestamp);
 CREATE TABLE admin_settings (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL,
-    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 INSERT INTO admin_settings (key, value) VALUES
@@ -40,9 +40,9 @@ INSERT INTO admin_settings (key, value) VALUES
 CREATE TABLE bandwidth_log (
     id          TEXT PRIMARY KEY,
     user_id     TEXT REFERENCES users(id) ON DELETE SET NULL,
-    bytes       INTEGER NOT NULL,
+    bytes       BIGINT NOT NULL,
     direction   TEXT NOT NULL CHECK(direction IN ('upload', 'download')),
-    timestamp   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX idx_bwlog_user      ON bandwidth_log(user_id);
 CREATE INDEX idx_bwlog_timestamp ON bandwidth_log(timestamp);

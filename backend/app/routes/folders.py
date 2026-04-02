@@ -329,7 +329,7 @@ async def update_folder(
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    updates.append("updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')")
+    updates.append("updated_at = NOW()")
     params.append(folder_id)
 
     await db.execute(

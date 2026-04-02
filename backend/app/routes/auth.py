@@ -234,7 +234,7 @@ async def refresh(
     now = datetime.now(timezone.utc).isoformat()
 
     # Atomic: validate + revoke + issue in a single write transaction
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         # Validate: find a non-revoked, non-expired token
         cursor = await db.execute(
@@ -244,7 +244,7 @@ async def refresh(
         )
         row = await cursor.fetchone()
         if row is None:
-            await db.execute("ROLLBACK")
+            await db.rollback()
             _clear_auth_cookies(response)
             raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
@@ -252,22 +252,20 @@ async def refresh(
         user_id = row["user_id"]
 
         # Revoke atomically — use WHERE revoked = 0 so a concurrent request
-        # that already revoked this token causes 0 rows changed
-        await db.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE id = ? AND revoked = 0",
+        # that already revoked this token causes 0 rows changed (RETURNING returns nothing)
+        revoke_result = await db.execute(
+            "UPDATE refresh_tokens SET revoked = 1 WHERE id = ? AND revoked = 0 RETURNING id",
             (token_id,),
         )
-        changes_cursor = await db.execute("SELECT changes()")
-        changes_row = await changes_cursor.fetchone()
-        if changes_row[0] == 0:
-            await db.execute("ROLLBACK")
+        if await revoke_result.fetchone() is None:
+            await db.rollback()
             _clear_auth_cookies(response)
             raise HTTPException(status_code=401, detail="Token already used")
 
         # Look up user (still inside transaction)
         user = await auth_provider.get_user_by_id(user_id)
         if user is None:
-            await db.execute("ROLLBACK")
+            await db.rollback()
             _clear_auth_cookies(response)
             raise HTTPException(status_code=401, detail="User not found or inactive")
 
@@ -288,7 +286,7 @@ async def refresh(
     except HTTPException:
         raise
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     access_token = create_access_token(user.id, user.is_admin, session_id=new_token_id)
@@ -330,12 +328,12 @@ async def change_password(
     # Update password hash and key wrapping blobs atomically.
     # All three wrapped-key fields are required (validated in ChangePasswordRequest)
     # so the master key is always re-wrapped under the new KEK in the same transaction.
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         await db.execute(
             "UPDATE users SET password_hash = ?, encryption_salt = ?, "
             "wrapped_master_key = ?, wrapped_master_key_iv = ?, "
-            "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+            "updated_at = NOW() "
             "WHERE id = ?",
             (new_hash, body.new_encryption_salt,
              body.new_wrapped_master_key, body.new_wrapped_master_key_iv, user.id),
@@ -348,7 +346,7 @@ async def change_password(
         )
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     return {"message": "Password changed. Please log in again on other devices."}
@@ -421,7 +419,7 @@ async def register_asymmetric_keys(
         "x25519_public_key = ?, mlkem768_public_key = ?, "
         "x25519_private_wrapped = ?, mlkem768_private_wrapped = ?, "
         "asymmetric_key_iv = ?, "
-        "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+        "updated_at = NOW() "
         "WHERE id = ?",
         (
             body.x25519_public_key, body.mlkem768_public_key,
@@ -569,7 +567,7 @@ async def register(
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # Step 1: Atomically validate and consume the invite
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         cursor = await db.execute(
             "SELECT id FROM invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
@@ -577,7 +575,7 @@ async def register(
         )
         row = await cursor.fetchone()
         if row is None:
-            await db.execute("ROLLBACK")
+            await db.rollback()
             raise HTTPException(
                 status_code=400,
                 detail="Invalid, expired, or already-used invite",
@@ -591,7 +589,7 @@ async def register(
     except HTTPException:
         raise
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     # Step 2: Create the user (LocalAuthProvider handles its own transaction)

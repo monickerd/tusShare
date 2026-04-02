@@ -60,17 +60,16 @@ async def update_settings(
         if not _SETTINGS_VALIDATORS[key](value):
             raise HTTPException(status_code=400, detail=f"Invalid value for {key}: {value}")
 
-    await db.execute("BEGIN IMMEDIATE")
+    await db.execute("BEGIN")
     try:
         for key, value in body.settings.items():
             await db.execute(
-                "UPDATE admin_settings SET value = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
-                "WHERE key = ?",
+                "UPDATE admin_settings SET value = ?, updated_at = NOW() WHERE key = ?",
                 (value, key),
             )
         await db.commit()
     except Exception:
-        await db.execute("ROLLBACK")
+        await db.rollback()
         raise
 
     return {"message": "Settings updated"}

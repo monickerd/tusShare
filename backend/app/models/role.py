@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from app.database import DuplicateError
+
 # System role IDs — always present, never deleted
 ROLE_ADMIN = "role_admin"
 ROLE_USER = "role_user"
@@ -83,10 +85,8 @@ async def grant_role(db, user_id: str, role_id: str, granted_by: str | None = No
             "VALUES (?, ?, ?, ?, ?, ?)",
             (ur_id, user_id, role_id, scope_type, scope_id, granted_by),
         )
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            return ""
-        raise
+    except DuplicateError:
+        return ""
     return ur_id
 
 
@@ -94,20 +94,18 @@ async def revoke_role(db, user_id: str, role_id: str,
                       scope_type: str | None = None, scope_id: str | None = None) -> bool:
     """Revoke a role from a user. Returns True if a row was deleted."""
     if scope_type is None:
-        await db.execute(
+        result = await db.execute(
             "DELETE FROM user_roles "
-            "WHERE user_id = ? AND role_id = ? AND scope_type IS NULL",
+            "WHERE user_id = ? AND role_id = ? AND scope_type IS NULL RETURNING id",
             (user_id, role_id),
         )
     else:
-        await db.execute(
+        result = await db.execute(
             "DELETE FROM user_roles "
-            "WHERE user_id = ? AND role_id = ? AND scope_type = ? AND scope_id = ?",
+            "WHERE user_id = ? AND role_id = ? AND scope_type = ? AND scope_id = ? RETURNING id",
             (user_id, role_id, scope_type, scope_id),
         )
-    cursor = await db.execute("SELECT changes()")
-    row = await cursor.fetchone()
-    return row[0] > 0
+    return await result.fetchone() is not None
 
 
 async def get_scoped_roles(db, scope_type: str, scope_id: str) -> list[UserRole]:

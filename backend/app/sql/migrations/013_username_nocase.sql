@@ -1,7 +1,8 @@
--- Make username lookups and uniqueness constraints case-insensitive.
--- The old case-sensitive index is replaced with a COLLATE NOCASE unique index.
--- The inline UNIQUE constraint on the column remains but is superseded by the
--- stricter NOCASE index (inserting 'Alice' when 'alice' exists will now fail).
-
-DROP INDEX IF EXISTS idx_users_username;
-CREATE UNIQUE INDEX idx_users_username_nocase ON users (username COLLATE NOCASE);
+-- 013_username_nocase.sql — Username case-insensitivity.
+--
+-- In PostgreSQL this is a no-op: the username column is already CITEXT (set in
+-- 001_initial.sql), which provides case-insensitive storage and comparison at
+-- the column level without any additional index or collation.
+-- The migration is recorded so the migration runner does not error on existing
+-- SQLite-originated migration history.
+SELECT 1;

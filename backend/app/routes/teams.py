@@ -486,13 +486,13 @@ async def update_team(
         if await cursor.fetchone():
             raise HTTPException(status_code=409, detail="You already have a team with that name")
         await db.execute(
-            "UPDATE teams SET name = ?, updated_at = unixepoch() WHERE id = ?",
+            "UPDATE teams SET name = ?, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
             (body.name, team_id),
         )
 
     if body.description is not None:
         await db.execute(
-            "UPDATE teams SET description = ?, updated_at = unixepoch() WHERE id = ?",
+            "UPDATE teams SET description = ?, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
             (body.description, team_id),
         )
 
@@ -574,7 +574,7 @@ async def invite_member(
 
     # Resolve invitee
     cursor = await db.execute(
-        "SELECT id, x25519_public_key FROM users WHERE username = ? COLLATE NOCASE AND is_active = 1",
+        "SELECT id, x25519_public_key FROM users WHERE username = ? AND is_active = 1",
         (body.username,),
     )
     invitee = await cursor.fetchone()
@@ -611,7 +611,7 @@ async def invite_member(
          body.kem_ciphertext, body.encrypted_sk, body.sk_iv),
     )
     await db.execute(
-        "UPDATE teams SET updated_at = unixepoch() WHERE id = ?", (team_id,)
+        "UPDATE teams SET updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?", (team_id,)
     )
     await db.commit()
     logger.info("User %s invited %s to team %s with role %s", user.id, invitee_id, team_id, body.role)
@@ -691,7 +691,7 @@ async def remove_member(
     # the old sk_team, but the removed member's user_team_key has been deleted so
     # they cannot obtain the key. The owner should rotate to be safe.
     await db.execute(
-        "UPDATE teams SET rotation_pending = 1, updated_at = unixepoch() WHERE id = ?",
+        "UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
         (team_id,),
     )
     await db.commit()
@@ -797,13 +797,11 @@ async def remove_team_folder(
     await _get_team_or_404(db, team_id)
     await _require_team_role(db, team_id, user, TEAM_ROLE_SUPERVISOR)
 
-    await db.execute(
-        "DELETE FROM team_folders WHERE team_id = ? AND folder_id = ?",
+    result = await db.execute(
+        "DELETE FROM team_folders WHERE team_id = ? AND folder_id = ? RETURNING id",
         (team_id, folder_id),
     )
-    changes = await db.execute("SELECT changes()")
-    row = await changes.fetchone()
-    if row[0] == 0:
+    if await result.fetchone() is None:
         raise HTTPException(status_code=404, detail="Folder is not in this team")
     await db.commit()
 
@@ -999,7 +997,7 @@ async def rotate_team_keys(
 
     # 3. Update team public key and clear rotation_pending
     await db.execute(
-        "UPDATE teams SET pre_public_key = ?, rotation_pending = 0, updated_at = unixepoch() "
+        "UPDATE teams SET pre_public_key = ?, rotation_pending = 0, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
         "WHERE id = ?",
         (body.pre_public_key_new, team_id),
     )

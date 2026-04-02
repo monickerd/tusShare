@@ -12,6 +12,7 @@ from app.auth.interface import (
     LocalCredentials,
 )
 from app.conf.auth import BCRYPT_ROUNDS, ENCRYPTION_SALT_BYTES, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
+from app.database import DuplicateError
 from app.models.role import ROLE_ADMIN, ROLE_USER, get_user_global_role_ids, grant_role
 from app.validation.sanitizers import sanitize_username
 
@@ -70,7 +71,7 @@ class LocalAuthProvider(AuthProvider):
             return None
 
         cursor = await self._db.execute(
-            f"SELECT {_USER_COLUMNS} FROM users WHERE username = ? COLLATE NOCASE",
+            f"SELECT {_USER_COLUMNS} FROM users WHERE username = ?",
             (username,),
         )
         row = await cursor.fetchone()
@@ -156,10 +157,11 @@ class LocalAuthProvider(AuthProvider):
             await grant_role(self._db, user_id, role)
 
             await self._db.commit()
-        except Exception as e:
+        except DuplicateError:
             await self._db.rollback()
-            if "UNIQUE constraint failed" in str(e):
-                raise ValueError("Username already exists")
+            raise ValueError("Username already exists")
+        except Exception:
+            await self._db.rollback()
             raise
 
         roles = {role}
@@ -197,7 +199,7 @@ class LocalAuthProvider(AuthProvider):
             return None
 
         cursor = await self._db.execute(
-            f"SELECT {_USER_COLUMNS_NO_PW} FROM users WHERE username = ? COLLATE NOCASE",
+            f"SELECT {_USER_COLUMNS_NO_PW} FROM users WHERE username = ?",
             (username,),
         )
         row = await cursor.fetchone()
