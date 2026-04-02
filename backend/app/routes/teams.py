@@ -574,7 +574,7 @@ async def invite_member(
 
     # Resolve invitee
     cursor = await db.execute(
-        "SELECT id, x25519_public_key FROM users WHERE username = ? AND is_active = 1",
+        "SELECT id, x25519_public_key FROM users WHERE username = ? COLLATE NOCASE AND is_active = 1",
         (body.username,),
     )
     invitee = await cursor.fetchone()

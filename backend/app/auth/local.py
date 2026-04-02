@@ -70,7 +70,7 @@ class LocalAuthProvider(AuthProvider):
             return None
 
         cursor = await self._db.execute(
-            f"SELECT {_USER_COLUMNS} FROM users WHERE username = ?",
+            f"SELECT {_USER_COLUMNS} FROM users WHERE username = ? COLLATE NOCASE",
             (username,),
         )
         row = await cursor.fetchone()
@@ -197,7 +197,7 @@ class LocalAuthProvider(AuthProvider):
             return None
 
         cursor = await self._db.execute(
-            f"SELECT {_USER_COLUMNS_NO_PW} FROM users WHERE username = ?",
+            f"SELECT {_USER_COLUMNS_NO_PW} FROM users WHERE username = ? COLLATE NOCASE",
             (username,),
         )
         row = await cursor.fetchone()
