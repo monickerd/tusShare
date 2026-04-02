@@ -1,10 +1,13 @@
-FROM python:3.12-slim
+FROM python:3.12-alpine
 
 # Prevent Python from writing .pyc files and enable unbuffered output
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
+
+# bcrypt → cffi → libffi (runtime dep; not bundled in the musllinux wheel)
+RUN apk add --no-cache libffi
 
 # Install dependencies first (layer caching)
 COPY backend/requirements.txt .
@@ -17,8 +20,8 @@ COPY frontend ./frontend
 # Create data directories
 RUN mkdir -p /data/files /data/uploads
 
-# Non-root user for security
-RUN groupadd -r tusshare && useradd -r -g tusshare -d /app tusshare \
+# Non-root user for security (Alpine uses BusyBox addgroup/adduser)
+RUN addgroup -S tusshare && adduser -S -G tusshare -h /app tusshare \
     && chown -R tusshare:tusshare /app /data
 USER tusshare
 
