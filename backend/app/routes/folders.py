@@ -11,6 +11,7 @@ from app.database import get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
 from app.routes._access import is_in_shared_tree, is_team_folder_member
+from app.services import sse_broker
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
 
 router = APIRouter(dependencies=[Depends(check_management_rate_limit)])
@@ -126,6 +127,9 @@ async def create_folder(
         if "UNIQUE constraint failed" in str(e):
             raise HTTPException(status_code=409, detail="Folder with this name already exists here")
         raise
+
+    # Notify the parent folder (or root) that a new subfolder appeared
+    sse_broker.publish(body.parent_id or f"root:{user.id}", {"type": "change"})
 
     return {"folder": {"id": folder_id, "name": body.name, "parent_id": body.parent_id}}
 
@@ -334,6 +338,12 @@ async def update_folder(
     )
     await db.commit()
 
+    # Notify old parent (rename) and new parent (move) if different
+    old_parent = folder_row["parent_id"]
+    sse_broker.publish(old_parent or f"root:{folder_row['owner_id']}", {"type": "change"})
+    if body.parent_id and body.parent_id != old_parent:
+        sse_broker.publish(body.parent_id, {"type": "change"})
+
     return {"message": "Folder updated"}
 
 
@@ -362,5 +372,11 @@ async def delete_folder(
     await db.commit()
 
     # TODO: Clean up orphaned file blobs from disk in Phase 3+
+
+    # Notify the parent folder (or root) that a subfolder was removed
+    sse_broker.publish(
+        folder_row["parent_id"] or f"root:{folder_row['owner_id']}",
+        {"type": "change"},
+    )
 
     return {"message": "Folder deleted"}

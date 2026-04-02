@@ -20,6 +20,7 @@ from app.database import get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.models.file import File, FileChunk
 from app.routes._access import is_in_shared_tree, is_team_folder_member
+from app.services import sse_broker
 from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,12 @@ async def update_file(
     )
     await db.commit()
 
+    # Notify the folder the file was in (and the destination if it was moved)
+    old_topic = row["folder_id"] or f"root:{row['owner_id']}"
+    sse_broker.publish(old_topic, {"type": "change"})
+    if body.folder_id and body.folder_id != row["folder_id"]:
+        sse_broker.publish(body.folder_id, {"type": "change"})
+
     result = {"message": "File updated"}
     if removed_chars:
         result["removed_chars"] = removed_chars
@@ -157,7 +164,7 @@ async def delete_file(
     file_id = validate_uuid(file_id)
 
     cursor = await db.execute(
-        "SELECT id, storage_key, owner_id, encrypted_size FROM files WHERE id = ?",
+        "SELECT id, storage_key, owner_id, folder_id, encrypted_size FROM files WHERE id = ?",
         (file_id,),
     )
     row = await cursor.fetchone()
@@ -185,6 +192,9 @@ async def delete_file(
     except Exception:
         await db.execute("ROLLBACK")
         raise
+
+    # Notify any SSE subscribers watching this folder
+    sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
 
     # Disk cleanup after commit — non-blocking, best-effort
     blob_path = settings.FILES_DIR / storage_key

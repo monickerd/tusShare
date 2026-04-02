@@ -23,6 +23,7 @@ from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.database import get_db
 from app.middleware.bandwidth import check_bandwidth
+from app.services import sse_broker
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -365,7 +366,7 @@ async def patch_upload(
 
     # --- Fetch storage_key from file record ---
     cursor = await db.execute(
-        "SELECT id, storage_key FROM files WHERE id = ?",
+        "SELECT id, storage_key, folder_id, owner_id FROM files WHERE id = ?",
         (row["file_id"],),
     )
     file_row = await cursor.fetchone()
@@ -502,6 +503,10 @@ async def patch_upload(
         except Exception:
             await db.execute("ROLLBACK")
             raise
+
+        # Notify any SSE subscribers watching this folder
+        _topic = file_row["folder_id"] or f"root:{file_row['owner_id']}"
+        sse_broker.publish(_topic, {"type": "change"})
 
     extra_headers: dict = {"Upload-Offset": str(new_offset)}
     if is_complete:

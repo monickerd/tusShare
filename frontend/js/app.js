@@ -83,6 +83,10 @@ const App = (() => {
         const hash = window.location.hash || '#/login';
         const container = _appEl();
 
+        // Tear down any active live-update stream. File routes re-open it
+        // once their folder finishes loading; all other routes leave it closed.
+        Files.stopLive();
+
         // Public routes — no auth required
         if (hash.startsWith('#/s/') || hash.startsWith('#/l/')) {
             for (const route of _routes) {

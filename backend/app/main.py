@@ -115,6 +115,7 @@ def create_app() -> FastAPI:
     from app.routes.teams import router as teams_router
     from app.routes.admin import router as admin_router
     from app.routes.access_logs import router as access_logs_router
+    from app.routes.events import router as events_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(users_router, prefix="/api/v1/admin/users", tags=["admin-users"])
@@ -125,6 +126,7 @@ def create_app() -> FastAPI:
     app.include_router(shares_router, tags=["shares"])
     app.include_router(teams_router, tags=["teams"])
     app.include_router(access_logs_router, prefix="/api/v1/access-logs", tags=["logs"])
+    app.include_router(events_router, prefix="/api/v1", tags=["events"])
 
     # --- Health check ---
     @app.get("/api/v1/health")

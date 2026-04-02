@@ -11,11 +11,39 @@ const Files = (() => {
     let _isTeamView = false;
     const _pageSize = Config.ui.paginationDefaultLimit;
 
+    // Live update state — one EventSource per viewed folder/root
+    let _liveSource = null;
+    let _liveReloadTimer = null;
+
+    function _startLive(folderId) {
+        _stopLive();
+        const url = folderId
+            ? `${Config.app.apiPrefix}/events?folder_id=${encodeURIComponent(folderId)}`
+            : `${Config.app.apiPrefix}/events`;
+        const source = new EventSource(url, { withCredentials: true });
+        source.onmessage = () => {
+            // Debounce rapid bursts (e.g. multiple files uploaded at once)
+            clearTimeout(_liveReloadTimer);
+            _liveReloadTimer = setTimeout(() => _reloadCurrentView(), 500);
+        };
+        _liveSource = source;
+    }
+
+    function _stopLive() {
+        if (_liveSource) {
+            _liveSource.close();
+            _liveSource = null;
+        }
+        clearTimeout(_liveReloadTimer);
+        _liveReloadTimer = null;
+    }
+
     /**
      * @param {HTMLElement} container
      * @param {{ shared?: boolean }} opts
      */
     function renderFileBrowser(container, opts = {}) {
+        _stopLive();
         _isSharedView = !!opts.shared;
         _isTeamView   = !!opts.teamView;
         _clearContainer(container);
@@ -58,11 +86,13 @@ const Files = (() => {
         _currentFolderId = null;
         _currentFolder = null;
         const listEl = document.getElementById('file-list');
+        if (!listEl) return;
         // Show root breadcrumb
         _renderBreadcrumbs([], null);
         try {
             const data = await Api.get(`${Config.app.apiPrefix}/folders`);
             _renderFolderContents(listEl, data.folders, data.files || [], data.pending_uploads || []);
+            _startLive(null);
         } catch (err) {
             listEl.textContent = 'Failed to load files: ' + err.message;
         }
@@ -155,6 +185,7 @@ const Files = (() => {
             _currentFolder = data.folder || null;
             _renderBreadcrumbs(data.breadcrumbs || [], data.folder);
             _renderFolderContents(listEl, data.child_folders, data.files, data.pending_uploads || []);
+            _startLive(folderId);
         } catch (err) {
             listEl.textContent = 'Failed to load folder: ' + err.message;
         }
@@ -834,5 +865,6 @@ const Files = (() => {
         renderFileBrowser,
         loadFolder,
         getSelectedItems,
+        stopLive: _stopLive,
     };
 })();
