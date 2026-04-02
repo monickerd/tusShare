@@ -100,6 +100,23 @@
     line-height: 1.6;
 }
 
+/* === Prompt dialog === */
+.prompt-dialog-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-size: var(--font-size-base);
+}
+
+.prompt-dialog-input:focus {
+    outline: none;
+    border-color: var(--color-accent);
+}
+
 /* === Drop zone === */
 .drop-zone {
     position: relative;

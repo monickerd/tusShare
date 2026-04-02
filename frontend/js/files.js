@@ -595,15 +595,16 @@ const Files = (() => {
     }
 
     function _promptNewFolder() {
-        const name = prompt('Folder name:');
-        if (!name) return;
-        Api.post(`${Config.app.apiPrefix}/folders`, { name, parent_id: _currentFolderId })
-            .then(() => {
-                Utils.showToast('Folder created', 'success');
-                if (_currentFolderId) loadFolder(_currentFolderId);
-                else _loadRootFolders();
-            })
-            .catch(err => Utils.showToast(err.message, 'error'));
+        Utils.showPrompt('New Folder', 'Folder name').then((name) => {
+            if (!name) return;
+            Api.post(`${Config.app.apiPrefix}/folders`, { name, parent_id: _currentFolderId })
+                .then(() => {
+                    Utils.showToast('Folder created', 'success');
+                    if (_currentFolderId) loadFolder(_currentFolderId);
+                    else _loadRootFolders();
+                })
+                .catch(err => Utils.showToast(err.message, 'error'));
+        });
     }
 
     function _triggerUpload() {

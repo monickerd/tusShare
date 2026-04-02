@@ -125,6 +125,52 @@ const Utils = (() => {
     }
 
     /**
+     * Prompt dialog with a text input — returns Promise<string|null>.
+     */
+    function showPrompt(title, placeholder = '') {
+        return new Promise((resolve) => {
+            let overlay = el('div', { className: 'modal-overlay' });
+            const dismiss = (result) => {
+                if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                overlay = null;
+                resolve(result);
+            };
+            const input = el('input', {
+                className: 'prompt-dialog-input',
+                type: 'text',
+                placeholder,
+            });
+            const submit = () => {
+                const val = input.value.trim();
+                dismiss(val || null);
+            };
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') submit();
+                if (e.key === 'Escape') dismiss(null);
+            });
+            const dialog = el('div', { className: 'modal prompt-dialog' }, [
+                el('h3', { textContent: title }),
+                input,
+                el('div', { className: 'modal-actions' }, [
+                    el('button', {
+                        className: 'btn btn-secondary',
+                        textContent: 'Cancel',
+                        onClick: () => dismiss(null),
+                    }),
+                    el('button', {
+                        className: 'btn btn-primary',
+                        textContent: 'Create',
+                        onClick: submit,
+                    }),
+                ]),
+            ]);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+            input.focus();
+        });
+    }
+
+    /**
      * Read a cookie by name.
      */
     function parseCookie(name) {
@@ -150,6 +196,7 @@ const Utils = (() => {
         el,
         showToast,
         showConfirm,
+        showPrompt,
         parseCookie,
         debounce,
     };
