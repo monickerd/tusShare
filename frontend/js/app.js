@@ -9,11 +9,14 @@ const App = (() => {
 
     const _routes = [
         { pattern: /^#\/login$/,                          handler: _routeLogin },
+        { pattern: /^#\/pinned$/,                         handler: _routePinned },
         { pattern: /^#\/files\/([a-f0-9-]+)$/,            handler: _routeFolder },
         { pattern: /^#\/files$/,                           handler: _routeFiles },
         { pattern: /^#\/shared$/,                          handler: _routeShared },
         { pattern: /^#\/shares\/received$/,                handler: _routeReceivedShares },
         { pattern: /^#\/shares$/,                          handler: _routeShares },
+        { pattern: /^#\/team-folders\/([a-f0-9-]+)$/,      handler: _routeTeamFolder },
+        { pattern: /^#\/team-folders$/,                    handler: _routeTeamFolders },
         { pattern: /^#\/teams\/([0-9a-f-]+)$/,              handler: _routeTeamDetail },
         { pattern: /^#\/teams$/,                           handler: _routeTeams },
         { pattern: /^#\/admin$/,                           handler: _routeAdmin },
@@ -123,6 +126,15 @@ const App = (() => {
         Auth.renderLogin(container);
     }
 
+    function _routePinned(container) {
+        _renderShell(container);
+        const main = document.getElementById('main-content');
+        main.appendChild(Utils.el('div', { className: 'page-content' }, [
+            Utils.el('h2', { textContent: 'Pinned' }),
+            Utils.el('p', { className: 'text-muted', textContent: 'No pinned items yet. Pinning files and folders for quick access is coming soon.' }),
+        ]));
+    }
+
     function _routeFiles(container) {
         _renderShell(container);
         Files.renderFileBrowser(document.getElementById('main-content'));
@@ -158,6 +170,17 @@ const App = (() => {
     function _routeReceivedShares(container) {
         _renderShell(container);
         Shares.renderReceivedSharesPage(document.getElementById('main-content'));
+    }
+
+    function _routeTeamFolder(container, folderId) {
+        _renderShell(container);
+        Files.renderFileBrowser(document.getElementById('main-content'), { teamView: true });
+        Files.loadFolder(folderId);
+    }
+
+    function _routeTeamFolders(container) {
+        _renderShell(container);
+        Teams.renderTeamFoldersPage(document.getElementById('main-content'));
     }
 
     function _routeTeams(container) {
@@ -210,11 +233,20 @@ const App = (() => {
         });
 
         const nav = Utils.el('nav', { className: 'sidebar-nav' }, [
-            Utils.el('a', { href: '#/files',           className: 'sidebar-link', id: 'nav-files',    textContent: 'My Files' }),
-            Utils.el('a', { href: '#/shared',          className: 'sidebar-link', id: 'nav-shared',   textContent: 'Shared Folder' }),
-            Utils.el('a', { href: '#/shares',          className: 'sidebar-link', id: 'nav-shares',   textContent: 'My Shares' }),
-            Utils.el('a', { href: '#/shares/received', className: 'sidebar-link', id: 'nav-received', textContent: 'Received Shares' }),
-            Utils.el('a', { href: '#/teams',           className: 'sidebar-link', id: 'nav-teams',    textContent: 'Teams' }),
+            Utils.el('a', { href: '#/pinned', className: 'sidebar-link', id: 'nav-pinned', textContent: 'Pinned' }),
+
+            Utils.el('a', { href: '#/files', className: 'sidebar-link', id: 'nav-files', textContent: 'My Files' }),
+            Utils.el('div', { className: 'sidebar-submenu' }, [
+                Utils.el('a', { href: '#/shares', className: 'sidebar-link sidebar-sublink', id: 'nav-shares', textContent: 'Shared From Me' }),
+            ]),
+
+            Utils.el('div', { className: 'sidebar-section-label', textContent: 'Shared' }),
+            Utils.el('div', { className: 'sidebar-submenu' }, [
+                Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', textContent: 'Shared With Me' }),
+                Utils.el('a', { href: '#/team-folders',    className: 'sidebar-link sidebar-sublink', id: 'nav-team-folders', textContent: 'Team Folders' }),
+            ]),
+
+            Utils.el('a', { href: '#/teams', className: 'sidebar-link', id: 'nav-teams', textContent: 'Manage Teams' }),
         ]);
         if (user && user.is_admin) {
             nav.appendChild(Utils.el('a', {
@@ -251,12 +283,13 @@ const App = (() => {
 
     function _updateSidebarActive(hash) {
         const rules = [
-            { id: 'nav-files',    test: h => /^#\/files(\/.*)?$/.test(h) },
-            { id: 'nav-shared',   test: h => h === '#/shared' },
-            { id: 'nav-shares',   test: h => h === '#/shares' },
-            { id: 'nav-received', test: h => h === '#/shares/received' },
-            { id: 'nav-teams',    test: h => /^#\/teams(\/.*)?$/.test(h) },
-            { id: 'nav-admin',    test: h => h === '#/admin' },
+            { id: 'nav-pinned',       test: h => h === '#/pinned' },
+            { id: 'nav-files',        test: h => /^#\/files(\/.*)?$/.test(h) },
+            { id: 'nav-shares',       test: h => h === '#/shares' },
+            { id: 'nav-received',     test: h => h === '#/shares/received' },
+            { id: 'nav-team-folders', test: h => /^#\/team-folders(\/.*)?$/.test(h) },
+            { id: 'nav-teams',        test: h => /^#\/teams(\/.*)?$/.test(h) },
+            { id: 'nav-admin',        test: h => h === '#/admin' },
         ];
         rules.forEach(({ id, test }) => {
             const el = document.getElementById(id);

@@ -8,6 +8,7 @@ const Files = (() => {
     let _currentFolderId = null;
     let _currentFolder = null;
     let _isSharedView = false;
+    let _isTeamView = false;
     const _pageSize = Config.ui.paginationDefaultLimit;
 
     /**
@@ -16,6 +17,7 @@ const Files = (() => {
      */
     function renderFileBrowser(container, opts = {}) {
         _isSharedView = !!opts.shared;
+        _isTeamView   = !!opts.teamView;
         _clearContainer(container);
 
         const main = Utils.el('main', { className: 'files-main' }, [
@@ -164,8 +166,17 @@ const Files = (() => {
         _clearContainer(el);
 
         // Root link
-        const rootLabel = _isSharedView ? 'Shared Folder' : 'My Files';
-        const rootHash = _isSharedView ? '#/shared' : '#/files';
+        let rootLabel, rootHash;
+        if (_isTeamView) {
+            rootLabel = 'Team Folders';
+            rootHash  = '#/team-folders';
+        } else if (_isSharedView) {
+            rootLabel = 'Shared Folder';
+            rootHash  = '#/shared';
+        } else {
+            rootLabel = 'My Files';
+            rootHash  = '#/files';
+        }
         el.appendChild(Utils.el('a', {
             href: rootHash,
             className: 'breadcrumb-link',
@@ -270,11 +281,12 @@ const Files = (() => {
     }
 
     function _createFolderRow(folder) {
+        const folderHash = _isTeamView ? `#/team-folders/${folder.id}` : `#/files/${folder.id}`;
         return Utils.el('tr', { className: 'row-folder' }, [
             Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'folder', id: folder.id } })]),
             Utils.el('td', {}, [
                 Utils.el('a', {
-                    href: `#/files/${folder.id}`,
+                    href: folderHash,
                     className: 'folder-link',
                     textContent: folder.name,
                 }),
@@ -317,15 +329,19 @@ const Files = (() => {
             return;
         }
 
-        const overlay = _showUploadOverlay(file.original_name);
+        const overlay  = _showUploadOverlay(file.original_name);
+        const transfer = TransferManager.start(file.original_name, 'download');
         try {
             await Download.downloadFile(file.id, masterKey, (done, total) => {
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 overlay.update(pct, file.original_name);
+                transfer.update(pct);
             });
             overlay.remove();
+            transfer.complete();
         } catch (err) {
             overlay.remove();
+            transfer.fail();
             Utils.showToast(`Download failed: ${err.message}`, 'error');
         }
     }
@@ -617,17 +633,21 @@ const Files = (() => {
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
-            const overlay = _showUploadOverlay(label);
+            const overlay  = _showUploadOverlay(label);
+            const transfer = TransferManager.start(label, 'upload');
 
             try {
                 await Upload.uploadFile(file, _currentFolderId, masterKey, (done, total) => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, label);
+                    transfer.update(pct);
                 });
                 overlay.remove();
+                transfer.complete();
                 Utils.showToast(`"${file.name}" uploaded`, 'success');
             } catch (err) {
                 overlay.remove();
+                transfer.fail();
                 Utils.showToast(`Upload failed: ${err.message}`, 'error');
                 // Stop the queue on first error
                 break;

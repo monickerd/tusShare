@@ -287,6 +287,7 @@ const Auth = (() => {
                 masterKey,
                 user.x25519_public_key
             );
+            await _verifyAsymmetricKeyConsistency(user);
             return;
         }
 
@@ -319,6 +320,29 @@ const Auth = (() => {
             x25519PrivateKey: x25519KeyPair.privateKey,
             mlkem768SecretKey: mlkem768KeyPair.secretKey,
         };
+    }
+
+    /**
+     * Verify that the in-memory private keys correspond to the stored public keys
+     * by doing a KEM roundtrip. Logs a console.error if there is a mismatch.
+     */
+    async function _verifyAsymmetricKeyConsistency(user) {
+        if (!_asymmetricKeys || !user.x25519_public_key || !user.mlkem768_public_key) return;
+        try {
+            const testKey = await Crypto.generateFileKey();
+            const enc = await Crypto.encapsulateFileKeyForUser(
+                testKey, user.x25519_public_key, user.mlkem768_public_key
+            );
+            await Crypto.decapsulateFileKeyFromUser(
+                enc.wrappedFileKeyB64, enc.keyIvB64,
+                enc.ephemeralX25519PubB64, enc.kemCiphertextB64,
+                _asymmetricKeys.x25519PrivateKey, _asymmetricKeys.mlkem768SecretKey
+            );
+        } catch (e) {
+            const msg = `Key consistency check failed (${e.message}) — team operations may fail this session.`;
+            console.error('[tusShare] ASYMMETRIC KEY MISMATCH:', e.message);
+            Utils.showToast(msg, 'error');
+        }
     }
 
     // ------------------------------------------------------------------

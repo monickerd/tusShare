@@ -2,11 +2,13 @@
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.auth.jwt import run_token_cleanup
@@ -134,6 +136,9 @@ def create_app() -> FastAPI:
 
         # Path-based SPA routes: serve index.html so the client-side router
         # can handle them. These must be declared before the StaticFiles mount.
+        # Regex: three concatenated PascalCase words, e.g. "LimaCharlieTango"
+        _SLUG_RE = re.compile(r"^[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}$")
+
         @app.get("/register/{token}")
         async def _spa_register(token: str):
             return FileResponse(index)
@@ -145,6 +150,41 @@ def create_app() -> FastAPI:
         @app.get("/l/{slug}")
         async def _spa_shortlink(slug: str):
             return FileResponse(index)
+
+        @app.get("/{slug}")
+        async def _shortlink_redirect(slug: str, db=Depends(get_db)):
+            """Redirect root-level short link slugs to /s/<token>#<shareKey>.
+
+            Only intercepts paths that look like a 3-word PascalCase slug.
+            All other single-segment paths (e.g. index.html) fall through to
+            the SPA HTML so client-side routing can handle them.
+            """
+            if not _SLUG_RE.match(slug):
+                return FileResponse(index)
+
+            now = datetime.now(timezone.utc).isoformat()
+            cursor = await db.execute(
+                """
+                SELECT sl.share_key, s.token
+                FROM   short_links sl
+                JOIN   shares s ON sl.share_id = s.id
+                WHERE  sl.slug = ?
+                  AND  sl.expires_at > ?
+                  AND  sl.share_key IS NOT NULL
+                  AND  s.is_active = 1
+                  AND (s.expires_at IS NULL OR s.expires_at > ?)
+                """,
+                (slug, now, now),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                # Slug not found or has no server-side key — serve SPA (will show 404)
+                return FileResponse(index)
+
+            return RedirectResponse(
+                url=f"/s/{row['token']}#{row['share_key']}",
+                status_code=302,
+            )
 
         app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="static")
 

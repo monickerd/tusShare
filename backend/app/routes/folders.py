@@ -10,7 +10,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
-from app.routes._access import is_in_shared_tree
+from app.routes._access import is_in_shared_tree, is_team_folder_member
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
 
 router = APIRouter(dependencies=[Depends(check_management_rate_limit)])
@@ -51,10 +51,12 @@ async def list_root_folders(
     db=Depends(get_db),
 ):
     """List user's root-level folders, root-level files, and the shared folder."""
-    # User's own root folders (no parent)
+    # User's own root folders (no parent), excluding team-owned folders
     cursor = await db.execute(
-        "SELECT * FROM folders WHERE owner_id = ? AND parent_id IS NULL AND is_shared = 0 "
-        "ORDER BY name",
+        "SELECT f.* FROM folders f "
+        "LEFT JOIN team_folders tf ON tf.folder_id = f.id "
+        "WHERE f.owner_id = ? AND f.parent_id IS NULL AND f.is_shared = 0 AND tf.folder_id IS NULL "
+        "ORDER BY f.name",
         (user.id,),
     )
     own_folders = [Folder.from_row(r).to_dict() for r in await cursor.fetchall()]
@@ -135,9 +137,10 @@ async def get_folder_contents(
 
         folder = Folder.from_row(folder_row)
 
-        # Access check: owner, in shared tree, or has permission
+        # Access check: owner, admin, shared tree, or team member
         if folder.owner_id != user.id and not user.is_admin:
-            if not await is_in_shared_tree(db, folder_id):
+            if not await is_in_shared_tree(db, folder_id) and \
+               not await is_team_folder_member(db, folder_id, user.id):
                 await db.execute("ROLLBACK")
                 raise HTTPException(status_code=403, detail="Access denied")
 

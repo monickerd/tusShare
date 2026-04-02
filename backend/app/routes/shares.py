@@ -15,7 +15,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
@@ -27,6 +27,7 @@ from app.database import get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import FileChunk
 from app.validation.sanitizers import (
+    sanitize_filename,
     sanitize_username,
     validate_base64,
     validate_share_token,
@@ -94,6 +95,8 @@ class CreateShareRequest(BaseModel):
     recipient_username: str | None = None
     expires_at: str | None = None
     max_downloads: int | None = None
+    allow_upload: bool = False
+    target_folder_id: str | None = None
 
     @field_validator("share_type")
     @classmethod
@@ -112,8 +115,6 @@ class CreateShareRequest(BaseModel):
     @field_validator("items")
     @classmethod
     def validate_items(cls, v: list) -> list:
-        if not v:
-            raise ValueError("Share must contain at least one file")
         if len(v) > _SHARE_MAX_ITEMS:
             raise ValueError(f"Share cannot contain more than {_SHARE_MAX_ITEMS} files")
         return v
@@ -135,6 +136,13 @@ class CreateShareRequest(BaseModel):
     def validate_max_downloads(cls, v: int | None) -> int | None:
         if v is not None and (v < 1 or v > 10_000):
             raise ValueError("max_downloads must be 1–10000")
+        return v
+
+    @field_validator("target_folder_id")
+    @classmethod
+    def validate_target_folder(cls, v: str | None) -> str | None:
+        if v is not None:
+            return validate_uuid(v)
         return v
 
 
@@ -163,6 +171,7 @@ class UpdateShareRequest(BaseModel):
 
 class CreateShortLinkRequest(BaseModel):
     expires_at: str
+    share_key: str  # AES share key (base64url) — stored server-side for root-level redirect
 
     @field_validator("expires_at")
     @classmethod
@@ -174,6 +183,11 @@ class CreateShortLinkRequest(BaseModel):
         except ValueError as exc:
             raise ValueError(str(exc))
         return v
+
+    @field_validator("share_key")
+    @classmethod
+    def validate_share_key(cls, v: str) -> str:
+        return validate_base64(v, max_length=64)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +439,8 @@ async def list_shares(
             "has_password": s["password_hash"] is not None,
             "max_downloads": s["max_downloads"],
             "download_count": s["download_count"],
+            "allow_upload": bool(s["allow_upload"]),
+            "target_folder_id": s["target_folder_id"],
             "created_at": s["created_at"],
             "items": items,
             "short_links": short_links,
@@ -452,6 +468,14 @@ async def create_share(
     and ML-KEM-768 ciphertext are stored so the recipient can re-derive the
     wrapping key to decrypt the file key.
     """
+    # Empty item list is only valid for upload-only folder shares
+    if not body.items:
+        if not (body.allow_upload and body.target_folder_id):
+            raise HTTPException(
+                status_code=400,
+                detail="Share must contain at least one file, or be an upload-only folder share",
+            )
+
     # Validate user shares have a recipient
     if body.share_type == "user":
         if not body.recipient_username:
@@ -500,16 +524,37 @@ async def create_share(
     # token = 43-char base64url of 32 random bytes (128-bit entropy in path component)
     token = secrets.token_urlsafe(32)
 
+    # allow_upload only valid for link shares (not user shares) and requires a folder
+    target_folder_id = None
+    allow_upload = False
+    if body.share_type == "link" and body.allow_upload:
+        if not body.target_folder_id:
+            raise HTTPException(
+                status_code=400,
+                detail="target_folder_id is required when allow_upload is true",
+            )
+        # Verify the folder exists and belongs to the requesting user
+        cursor = await db.execute(
+            "SELECT id FROM folders WHERE id = ? AND owner_id = ?",
+            (body.target_folder_id, user.id),
+        )
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Target folder not found")
+        target_folder_id = body.target_folder_id
+        allow_upload = True
+
     await db.execute("BEGIN IMMEDIATE")
     try:
         await db.execute(
             """
             INSERT INTO shares
-                (id, token, created_by, share_type, target_user_id, expires_at, max_downloads)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, token, created_by, share_type, target_user_id, expires_at,
+                 max_downloads, allow_upload, target_folder_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (share_id, token, user.id, body.share_type, recipient_user_id,
-             body.expires_at, body.max_downloads),
+             body.expires_at, body.max_downloads,
+             1 if allow_upload else 0, target_folder_id),
         )
 
         for item in body.items:
@@ -590,6 +635,8 @@ async def get_share(
             "has_password": share["password_hash"] is not None,
             "max_downloads": share["max_downloads"],
             "download_count": share["download_count"],
+            "allow_upload": bool(share["allow_upload"]),
+            "target_folder_id": share["target_folder_id"],
             "created_at": share["created_at"],
             "items": items,
             "short_links": short_links,
@@ -676,6 +723,7 @@ async def create_short_link(
             share_id=share_id,
             created_by=user.id,
             expires_at=body.expires_at,
+            share_key=body.share_key,
         )
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
@@ -722,6 +770,8 @@ async def resolve_share(
         "has_password": share["password_hash"] is not None,
         "max_downloads": share["max_downloads"],
         "download_count": share["download_count"],
+        "allow_upload": bool(share["allow_upload"]),
+        "target_folder_id": share["target_folder_id"],
         "files": items,
         "share_session_token": session_token,
     }
@@ -987,3 +1037,131 @@ async def resolve_short_link(
         "files": items,
         "share_session_token": session_token,
     }
+
+
+# ---------------------------------------------------------------------------
+# Upload to share (anonymous — requires share_session_token + allow_upload)
+# ---------------------------------------------------------------------------
+
+# Maximum encrypted size accepted for share uploads (100 MB)
+_SHARE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+
+
+@router.post("/s/{share_id}/upload")
+async def upload_to_share(
+    share_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    file_name: str = Form(...),
+    encrypted_file_key: str = Form(...),
+    key_iv: str = Form(...),
+    chunk_iv: str = Form(...),
+    size_bytes: int = Form(...),
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+    db=Depends(get_db),
+):
+    """Accept an encrypted file uploaded by a share-link visitor.
+
+    The client must:
+    1. Generate a fresh AES file key.
+    2. Encrypt the file into a single chunk using that key.
+    3. Wrap the file key with the share key (AES-GCM key wrap).
+    4. POST the encrypted blob + wrapped-key metadata here.
+
+    The file is stored under the share's target folder, owned by the share
+    creator. The owner can decrypt it using the share key.
+    Requires the share to have allow_upload=1 and a target_folder_id.
+    """
+    share_id = validate_uuid(share_id)
+    await _require_share_access(request, share_id, user)
+
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = await db.execute(
+        "SELECT * FROM shares WHERE id = ? AND is_active = 1 "
+        "AND (expires_at IS NULL OR expires_at > ?)",
+        (share_id, now),
+    )
+    share = await cursor.fetchone()
+    if share is None:
+        raise HTTPException(status_code=404, detail="Share not found or expired")
+
+    if not share["allow_upload"]:
+        raise HTTPException(status_code=403, detail="This share does not allow uploads")
+
+    if not share["target_folder_id"]:
+        raise HTTPException(status_code=400, detail="Share has no target folder")
+
+    # Validate form fields
+    try:
+        safe_name = sanitize_filename(file_name).name
+        encrypted_file_key = validate_base64(encrypted_file_key)
+        key_iv = validate_base64(key_iv)
+        chunk_iv = validate_base64(chunk_iv)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    if size_bytes < 0:
+        raise HTTPException(status_code=422, detail="Invalid size_bytes")
+
+    # Read upload — enforce size limit before touching disk
+    content = await file.read(_SHARE_UPLOAD_MAX_BYTES + 1)
+    if len(content) > _SHARE_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload exceeds the {_SHARE_UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit",
+        )
+    encrypted_size = len(content)
+
+    file_id = str(uuid.uuid4())
+    storage_key = secrets.token_urlsafe(32)
+    file_path = settings.FILES_DIR / storage_key
+
+    await asyncio.to_thread(file_path.write_bytes, content)
+
+    chunk_id = str(uuid.uuid4())
+    await db.execute("BEGIN IMMEDIATE")
+    try:
+        await db.execute(
+            """
+            INSERT INTO files
+                (id, original_name, sanitized_name, storage_key, folder_id, owner_id,
+                 mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
+                 encrypted_file_key, key_iv, upload_complete)
+            VALUES (?, ?, ?, ?, ?, ?, 'application/octet-stream', ?, ?, ?, 1, ?, ?, 1)
+            """,
+            (
+                file_id, safe_name, safe_name, storage_key,
+                share["target_folder_id"], share["created_by"],
+                size_bytes, encrypted_size, encrypted_size,
+                encrypted_file_key, key_iv,
+            ),
+        )
+        await db.execute(
+            "INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, offset) "
+            "VALUES (?, ?, 0, ?, ?, 0)",
+            (chunk_id, file_id, chunk_iv, encrypted_size),
+        )
+        await db.execute(
+            "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
+            (encrypted_size, share["created_by"]),
+        )
+        log_id = str(uuid.uuid4())
+        ip = (
+            request.headers.get("CF-Connecting-IP")
+            or request.headers.get("X-Real-IP")
+            or (request.client.host if request.client else "unknown")
+        )[:64]
+        ua = (request.headers.get("User-Agent") or "")[:512]
+        await db.execute(
+            "INSERT INTO access_logs "
+            "    (id, file_id, user_id, share_id, ip_address, user_agent, action) "
+            "VALUES (?, ?, NULL, ?, ?, ?, 'share_upload')",
+            (log_id, file_id, share_id, ip, ua),
+        )
+        await db.commit()
+    except Exception:
+        await db.execute("ROLLBACK")
+        await asyncio.to_thread(lambda: file_path.unlink(missing_ok=True))
+        raise
+
+    return {"file_id": file_id, "file_name": safe_name, "size_bytes": size_bytes}

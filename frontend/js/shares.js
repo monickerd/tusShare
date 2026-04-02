@@ -55,20 +55,48 @@ const Shares = (() => {
         return `${window.location.origin}/s/${token}#${shareKeyB64url}`;
     }
 
-    function _buildShortLinkUrl(slug, shareKeyB64url) {
-        return `${window.location.origin}/l/${slug}#${shareKeyB64url}`;
+    // Short links now redirect at root level: /LimaCharlieTango
+    // The key is stored server-side — no fragment needed.
+    function _buildShortLinkUrl(slug) {
+        return `${window.location.origin}/${slug}`;
     }
 
     // -----------------------------------------------------------------------
-    // Default expiry helper
+    // Expiry helpers
     // -----------------------------------------------------------------------
 
     function _defaultExpiryIso() {
         const d = new Date();
         d.setDate(d.getDate() + Config.share.defaultExpiryDays);
-        // Round to midnight to give a clean date for the date-picker default
         d.setHours(23, 59, 59, 0);
         return d.toISOString().slice(0, 16);  // "YYYY-MM-DDTHH:MM"
+    }
+
+    /** Resolve expiry from dialog state. Returns ISO string or null. */
+    function _resolveExpiry(preset, dateVal, timeVal) {
+        if (preset === '24h') {
+            const d = new Date();
+            d.setHours(d.getHours() + 24);
+            return d.toISOString();
+        }
+        if (preset === '1w') {
+            const d = new Date();
+            d.setDate(d.getDate() + 7);
+            d.setHours(23, 59, 59, 0);
+            return d.toISOString();
+        }
+        // Custom
+        if (!dateVal) return null;
+        const time = timeVal || '00:00';
+        const d = new Date(`${dateVal}T${time}:00`);
+        return isNaN(d.getTime()) ? null : d.toISOString();
+    }
+
+    /** Default custom date value: 7 days from today (YYYY-MM-DD). */
+    function _defaultCustomDate() {
+        const d = new Date();
+        d.setDate(d.getDate() + 7);
+        return d.toISOString().slice(0, 10);
     }
 
     // -----------------------------------------------------------------------
@@ -215,12 +243,68 @@ const Shares = (() => {
     // -----------------------------------------------------------------------
 
     /**
+     * Build the expiry section of the share dialog.
+     * Returns { el, getExpiresAt } where getExpiresAt() → ISO string or null.
+     */
+    function _buildExpirySection() {
+        let activePreset = '1w';
+
+        const quickRow = Utils.el('div', { className: 'expiry-quick-pick' });
+        const customRow = Utils.el('div', { className: 'expiry-custom-row' });
+        customRow.hidden = true;
+
+        const dateInput = Utils.el('input', {
+            type: 'date',
+            className: 'input input-date',
+            value: _defaultCustomDate(),
+        });
+        const timeInput = Utils.el('input', {
+            type: 'time',
+            className: 'input input-time',
+            value: '00:00',
+        });
+        customRow.appendChild(dateInput);
+        customRow.appendChild(timeInput);
+
+        const presets = [
+            { id: '24h', label: '24 h' },
+            { id: '1w',  label: '1 week' },
+            { id: 'custom', label: 'Custom' },
+        ];
+
+        for (const p of presets) {
+            const btn = Utils.el('button', {
+                type: 'button',
+                className: 'expiry-quick-btn' + (p.id === activePreset ? ' active' : ''),
+                textContent: p.label,
+            });
+            btn.addEventListener('click', () => {
+                activePreset = p.id;
+                quickRow.querySelectorAll('.expiry-quick-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                customRow.hidden = (p.id !== 'custom');
+            });
+            quickRow.appendChild(btn);
+        }
+
+        const wrapper = Utils.el('div', { className: 'share-dialog-section' });
+        wrapper.appendChild(Utils.el('span', { className: 'share-dialog-label', textContent: 'Expires' }));
+        wrapper.appendChild(quickRow);
+        wrapper.appendChild(customRow);
+
+        return {
+            el: wrapper,
+            getExpiresAt: () => _resolveExpiry(activePreset, dateInput.value, timeInput.value),
+        };
+    }
+
+    /**
      * Open a modal dialog to create a link share for the given files.
      *
-     * @param {Array} selectedFiles - File objects from the file browser, each with:
-     *   { id, original_name, size_bytes, encrypted_file_key, key_iv }
+     * @param {Array}       selectedFiles - File objects: { id, original_name, size_bytes, encrypted_file_key, key_iv }
+     * @param {object|null} folderCtx     - { id, name } when sharing a whole folder; null for file shares.
      */
-    async function openShareDialog(selectedFiles) {
+    async function openShareDialog(selectedFiles, folderCtx = null) {
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey) {
             Utils.showToast('Master key not available — please re-enter your password.', 'error');
@@ -228,7 +312,7 @@ const Shares = (() => {
         }
 
         const files = selectedFiles.filter(f => f.encrypted_file_key && f.key_iv);
-        if (files.length === 0) {
+        if (files.length === 0 && !folderCtx) {
             Utils.showToast('No shareable files selected.', 'info');
             return;
         }
@@ -244,29 +328,64 @@ const Shares = (() => {
             if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
         }
 
-        // --- File list ---
+        // --- File / folder list ---
         const fileList = Utils.el('ul', { className: 'share-file-list' });
-        for (const f of files) {
+        if (folderCtx) {
             fileList.appendChild(Utils.el('li', {
-                textContent: `${f.original_name} (${Utils.formatBytes(f.size_bytes)})`,
+                textContent: `📁 ${folderCtx.name} (${files.length} file${files.length !== 1 ? 's' : ''})`,
             }));
+        } else {
+            for (const f of files) {
+                fileList.appendChild(Utils.el('li', {
+                    textContent: `${f.original_name} (${Utils.formatBytes(f.size_bytes)})`,
+                }));
+            }
         }
 
-        // --- Expiry field ---
-        const expiryInput = Utils.el('input', {
-            type: 'datetime-local',
-            className: 'input',
-            value: _defaultExpiryIso(),
-        });
+        // --- Expiry section ---
+        const expiry = _buildExpirySection();
 
-        // --- Max downloads field ---
+        // --- Options row (checkboxes left, max downloads right) ---
+        const shortLinkChk = Utils.el('input', { type: 'checkbox' });
+        const shortLinkRow = Utils.el('label', { className: 'share-dialog-check-row' }, [
+            shortLinkChk,
+            Utils.el('span', { textContent: 'Generate short link' }),
+        ]);
+
+        const checkboxCol = Utils.el('div', { className: 'share-dialog-checkboxes' }, [shortLinkRow]);
+
+        // Allow Upload only for folder shares
+        let allowUploadChk = null;
+        if (folderCtx) {
+            allowUploadChk = Utils.el('input', { type: 'checkbox' });
+            const allowUploadRow = Utils.el('label', { className: 'share-dialog-check-row' }, [
+                allowUploadChk,
+                Utils.el('span', { textContent: 'Allow upload (Download + Upload)' }),
+            ]);
+            checkboxCol.appendChild(allowUploadRow);
+        }
+
+        // Max downloads — small input on the right
         const maxDlInput = Utils.el('input', {
             type: 'number',
-            className: 'input',
-            placeholder: 'Unlimited',
-            min: '1',
+            className: 'input input-maxdl',
+            placeholder: '∞',
             max: '10000',
+            title: 'Max downloads (leave blank for unlimited)',
         });
+        // When the spinner reaches 0 (down-arrow from 1), snap back to ∞ (empty)
+        maxDlInput.addEventListener('change', () => {
+            const v = parseInt(maxDlInput.value, 10);
+            if (maxDlInput.value !== '' && (isNaN(v) || v < 1)) {
+                maxDlInput.value = '';
+            }
+        });
+        const maxDlCol = Utils.el('div', { className: 'share-dialog-maxdl' }, [
+            Utils.el('span', { textContent: 'Max downloads' }),
+            maxDlInput,
+        ]);
+
+        const optionsRow = Utils.el('div', { className: 'share-dialog-options' }, [checkboxCol, maxDlCol]);
 
         // --- Status area (shows URL after creation) ---
         const statusArea = Utils.el('div', { className: 'share-status' });
@@ -283,16 +402,25 @@ const Shares = (() => {
         });
 
         createBtn.addEventListener('click', async () => {
+            const expiresAt = expiry.getExpiresAt();
+            if (!expiresAt) {
+                Utils.showToast('Please set an expiry date.', 'error');
+                return;
+            }
+
             createBtn.disabled = true;
             createBtn.textContent = 'Creating…';
             _clearEl(statusArea);
 
             try {
-                const shareKeyB64url = await _doCreateShare(
-                    files, masterKey, expiryInput.value, maxDlInput.value, statusArea
-                );
+                const shareKeyB64url = await _doCreateShare(files, masterKey, {
+                    expiresAt,
+                    maxDownloads: maxDlInput.value ? parseInt(maxDlInput.value, 10) : null,
+                    generateShortLink: shortLinkChk.checked,
+                    allowUpload: allowUploadChk ? allowUploadChk.checked : false,
+                    folderId: folderCtx ? folderCtx.id : null,
+                }, statusArea);
                 if (shareKeyB64url) {
-                    // Hide create controls, show close button
                     createBtn.style.display = 'none';
                     cancelBtn.textContent = 'Close';
                 }
@@ -306,16 +434,10 @@ const Shares = (() => {
             }
         });
 
-        dialog.appendChild(Utils.el('h3', { textContent: 'Share files' }));
+        dialog.appendChild(Utils.el('h3', { textContent: folderCtx ? `Share folder` : 'Share files' }));
         dialog.appendChild(fileList);
-        dialog.appendChild(Utils.el('label', {}, [
-            Utils.el('span', { textContent: 'Expires at' }),
-            expiryInput,
-        ]));
-        dialog.appendChild(Utils.el('label', {}, [
-            Utils.el('span', { textContent: 'Max downloads (optional)' }),
-            maxDlInput,
-        ]));
+        dialog.appendChild(expiry.el);
+        dialog.appendChild(optionsRow);
         dialog.appendChild(statusArea);
         dialog.appendChild(Utils.el('div', { className: 'modal-actions' }, [cancelBtn, createBtn]));
 
@@ -325,20 +447,19 @@ const Shares = (() => {
 
     /**
      * Perform the actual share creation: generate shareKey, re-wrap each file
-     * key, POST to API, store shareKey in sessionStorage.
+     * key, POST to API, store shareKey in sessionStorage, optionally create short link.
+     *
+     * @param {Array}  files     - Shareable file objects.
+     * @param {object} masterKey - Owner's AES master key.
+     * @param {object} opts      - { expiresAt, maxDownloads, generateShortLink, allowUpload, folderId }
+     * @param {HTMLElement} statusArea - Element to render result URLs into.
      * Returns the shareKeyB64url on success.
      */
-    async function _doCreateShare(files, masterKey, expiresAtLocal, maxDlStr, statusArea) {
-        // Convert local datetime-local value to ISO 8601 UTC
-        let expiresAt = null;
-        if (expiresAtLocal) {
-            const d = new Date(expiresAtLocal);
-            if (isNaN(d.getTime())) throw new Error('Invalid expiry date');
-            expiresAt = d.toISOString();
-        }
+    async function _doCreateShare(files, masterKey, opts, statusArea) {
+        const { expiresAt, maxDownloads, generateShortLink, allowUpload, folderId } = opts;
 
-        const maxDownloads = maxDlStr ? parseInt(maxDlStr, 10) : null;
-        if (maxDownloads !== null && (isNaN(maxDownloads) || maxDownloads < 1)) {
+        if (maxDownloads !== null && maxDownloads !== undefined &&
+            (isNaN(maxDownloads) || maxDownloads < 1)) {
             throw new Error('Max downloads must be a positive number');
         }
 
@@ -365,15 +486,34 @@ const Shares = (() => {
         const resp = await Api.post(`${_prefix()}/shares`, {
             items,
             expires_at: expiresAt,
-            max_downloads: maxDownloads,
+            max_downloads: maxDownloads || null,
+            allow_upload: allowUpload || false,
+            target_folder_id: folderId || null,
         });
 
         // Persist shareKey for the session so the owner can copy the URL later
         _storeShareKey(resp.share_id, shareKeyB64url);
 
-        // Build and display the share URL
+        // Build and display the full share URL
         const shareUrl = _buildShareUrl(resp.token, shareKeyB64url);
         _renderShareUrlBox(statusArea, shareUrl);
+
+        // Optionally create a short link (key stored server-side for root-level redirect)
+        if (generateShortLink && expiresAt) {
+            try {
+                const slResp = await Api.post(`${_prefix()}/shares/${resp.share_id}/short-link`, {
+                    expires_at: expiresAt,
+                    share_key: shareKeyB64url,
+                });
+                const slUrl = _buildShortLinkUrl(slResp.slug);
+                _renderShareUrlBox(statusArea, slUrl, 'Short link');
+            } catch (slErr) {
+                statusArea.appendChild(Utils.el('p', {
+                    className: 'share-error',
+                    textContent: `Short link failed: ${slErr.message}`,
+                }));
+            }
+        }
 
         Utils.showToast('Share link created', 'success');
         return shareKeyB64url;
@@ -445,6 +585,12 @@ const Shares = (() => {
                 textContent: `${share.download_count}/${share.max_downloads} downloads`,
             }));
         }
+        if (share.allow_upload) {
+            header.appendChild(Utils.el('span', {
+                className: 'badge badge-upload',
+                textContent: 'Upload enabled',
+            }));
+        }
         card.appendChild(header);
 
         // File list
@@ -471,13 +617,11 @@ const Shares = (() => {
             }));
         }
 
-        // Short links
+        // Short links (key stored server-side — URL has no fragment)
         for (const sl of (share.short_links || [])) {
-            if (shareKeyB64url) {
-                const slBox = Utils.el('div', { className: 'share-url-box' });
-                _renderShareUrlBox(slBox, _buildShortLinkUrl(sl.slug, shareKeyB64url), sl.slug);
-                card.appendChild(slBox);
-            }
+            const slBox = Utils.el('div', { className: 'share-url-box' });
+            _renderShareUrlBox(slBox, _buildShortLinkUrl(sl.slug), sl.slug);
+            card.appendChild(slBox);
         }
 
         // Action buttons
@@ -528,14 +672,14 @@ const Shares = (() => {
         try {
             const resp = await Api.post(`${_prefix()}/shares/${share.id}/short-link`, {
                 expires_at: d.toISOString(),
+                share_key: shareKeyB64url,
             });
-            const slUrl = _buildShortLinkUrl(resp.slug, shareKeyB64url);
+            // Key stored server-side — URL has no fragment
+            const slUrl = _buildShortLinkUrl(resp.slug);
             Utils.showToast(`Short link created: ${resp.slug}`, 'success');
 
-            // Append the new short link URL box to the card
             const urlBox = Utils.el('div', { className: 'share-url-box' });
             _renderShareUrlBox(urlBox, slUrl, resp.slug);
-            // Insert before the action buttons
             const actionsEl = card.querySelector('.share-card-actions');
             if (actionsEl) card.insertBefore(urlBox, actionsEl);
             else card.appendChild(urlBox);
@@ -653,6 +797,103 @@ const Shares = (() => {
 
         table.appendChild(tbody);
         page.appendChild(table);
+
+        // Upload section — shown when the share owner enabled Download + Upload
+        if (shareData.allow_upload && shareData.share_id) {
+            page.appendChild(_buildPublicUploadSection(
+                shareData.share_id, shareKey, shareSessionToken
+            ));
+        }
+    }
+
+    /**
+     * Build the upload drop-area shown on upload-enabled public share pages.
+     *
+     * Files are encrypted client-side with the share key before sending, so
+     * the server only ever sees ciphertext. The share key comes from the URL
+     * fragment (passed in as a CryptoKey object).
+     */
+    function _buildPublicUploadSection(shareId, shareKey, sessionToken) {
+        const section = Utils.el('div', { className: 'share-upload-section' });
+        section.appendChild(Utils.el('h3', { textContent: 'Upload files' }));
+        section.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            textContent: 'Files are encrypted in your browser before upload.',
+        }));
+
+        const fileInput = Utils.el('input', {
+            type: 'file',
+            className: 'share-upload-input',
+            multiple: '',
+        });
+
+        const uploadBtn = Utils.el('button', {
+            className: 'btn btn-secondary',
+            textContent: 'Choose files & upload',
+        });
+        uploadBtn.addEventListener('click', () => fileInput.click());
+
+        const resultEl = Utils.el('div', { className: 'share-upload-results' });
+
+        fileInput.addEventListener('change', async () => {
+            const chosen = Array.from(fileInput.files || []);
+            if (chosen.length === 0) return;
+
+            uploadBtn.disabled = true;
+            _clearEl(resultEl);
+
+            for (const file of chosen) {
+                const row = Utils.el('p', { textContent: `Uploading ${file.name}…` });
+                resultEl.appendChild(row);
+                try {
+                    await _encryptAndUploadToShare(shareId, shareKey, sessionToken, file);
+                    row.textContent = `✓ ${file.name} uploaded`;
+                    row.className = 'share-upload-ok';
+                } catch (err) {
+                    row.textContent = `✗ ${file.name}: ${err.message}`;
+                    row.className = 'share-error';
+                }
+            }
+
+            uploadBtn.disabled = false;
+            fileInput.value = '';
+        });
+
+        section.appendChild(uploadBtn);
+        section.appendChild(fileInput);
+        section.appendChild(resultEl);
+        return section;
+    }
+
+    async function _encryptAndUploadToShare(shareId, shareKey, sessionToken, file) {
+        const plaintext = new Uint8Array(await file.arrayBuffer());
+
+        // Generate a fresh per-file key, encrypt, then wrap the key with shareKey
+        const fileKey = await Crypto.generateFileKey();
+        const { ciphertext, ivB64: chunkIv } = await Crypto.encryptChunk(plaintext, fileKey);
+        const { wrappedKeyB64, ivB64: keyIv } = await Crypto.wrapFileKeyForShare(fileKey, shareKey);
+
+        const form = new FormData();
+        form.append('file_name', file.name);
+        form.append('encrypted_file_key', wrappedKeyB64);
+        form.append('key_iv', keyIv);
+        form.append('chunk_iv', chunkIv);
+        form.append('size_bytes', String(plaintext.byteLength));
+        form.append('file', new Blob([ciphertext]), file.name);
+
+        const headers = {};
+        if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
+
+        const resp = await fetch(`/s/${shareId}/upload`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers,
+            body: form,
+        });
+        if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            throw new Error(body.detail || `HTTP ${resp.status}`);
+        }
     }
 
     async function _handlePublicDownload(btn, token, fileInfo, shareKey, sessionToken = null) {
@@ -776,8 +1017,8 @@ const Shares = (() => {
     // -----------------------------------------------------------------------
 
     /**
-     * Share all files within a folder (recursively enumerated server-side).
-     * Creates a link share with all discovered files, same as openShareDialog.
+     * Share a folder: enumerate its files then open the share dialog with
+     * folder context (exposes the Allow Upload toggle).
      *
      * @param {{ id: string, name: string }} folder - Folder to share.
      */
@@ -799,10 +1040,6 @@ const Shares = (() => {
             return;
         }
 
-        if (files.length === 0) {
-            Utils.showToast('This folder contains no files to share.', 'info');
-            return;
-        }
         if (files.length >= Config.share.maxItems) {
             Utils.showToast(
                 `Folder contains ${Config.share.maxItems}+ files. Only the first ${Config.share.maxItems} will be shared.`,
@@ -810,7 +1047,7 @@ const Shares = (() => {
             );
         }
 
-        openShareDialog(files);
+        openShareDialog(files, { id: folder.id, name: folder.name });
     }
 
     // -----------------------------------------------------------------------

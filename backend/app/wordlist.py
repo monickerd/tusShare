@@ -49,6 +49,7 @@ async def insert_short_link_with_unique_slug(
     share_id: str,
     created_by: str,
     expires_at: str,
+    share_key: str | None = None,
     max_attempts: int = 10,
 ) -> str:
     """Atomically generate a unique slug and INSERT the short_links row.
@@ -56,6 +57,10 @@ async def insert_short_link_with_unique_slug(
     Eliminates the TOCTOU race in generate-then-check: the UNIQUE constraint
     on short_links.slug is the source of truth. On collision (IntegrityError),
     a new slug is generated and retried up to max_attempts times.
+
+    share_key — when provided, the AES share key is stored server-side so
+    root-level slug URLs (/LimaCharlieTango) can redirect to /s/<token>#<key>
+    without the key appearing in the short link itself.
 
     Returns the slug on success. Raises ValueError if all attempts collide.
     """
@@ -65,9 +70,10 @@ async def insert_short_link_with_unique_slug(
         slug = generate_slug()
         try:
             await db.execute(
-                "INSERT INTO short_links (id, share_id, slug, created_by, expires_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (link_id, share_id, slug, created_by, expires_at),
+                "INSERT INTO short_links "
+                "    (id, share_id, slug, created_by, expires_at, share_key) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (link_id, share_id, slug, created_by, expires_at, share_key),
             )
             await db.commit()
             return slug

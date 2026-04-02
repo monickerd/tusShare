@@ -64,6 +64,8 @@ const Api = (() => {
             throw err;
         }
 
+        if (resp.status === 204 || resp.status === 205) return null;
+
         const ct = resp.headers.get('content-type') || '';
         if (ct.includes('application/json')) {
             return resp.json();

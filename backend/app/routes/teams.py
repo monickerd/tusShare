@@ -415,9 +415,20 @@ async def create_team(
         (utk_id, team_id, user.id, body.ephemeral_x25519_pub,
          body.kem_ciphertext, body.encrypted_sk, body.sk_iv),
     )
+    # Auto-create the team's shared folder and register it
+    folder_id = str(uuid.uuid4())
+    tf_id     = str(uuid.uuid4())
+    await db.execute(
+        "INSERT INTO folders (id, name, parent_id, owner_id) VALUES (?, ?, NULL, ?)",
+        (folder_id, body.name, user.id),
+    )
+    await db.execute(
+        "INSERT INTO team_folders (id, team_id, folder_id, added_by) VALUES (?, ?, ?, ?)",
+        (tf_id, team_id, folder_id, user.id),
+    )
     await db.commit()
     logger.info("Team %s (%s) created by user %s", body.name, team_id, user.id)
-    return {"team_id": team_id}
+    return {"team_id": team_id, "folder_id": folder_id}
 
 
 @router.get("")
@@ -500,12 +511,23 @@ async def delete_team(
     team = await _get_team_or_404(db, team_id)
     await _require_team_role(db, team_id, user, TEAM_ROLE_OWNER)
 
+    # Collect team folder IDs before cascade wipes team_folders
+    cursor = await db.execute(
+        "SELECT folder_id FROM team_folders WHERE team_id = ?", (team_id,)
+    )
+    team_folder_ids = [r["folder_id"] for r in await cursor.fetchall()]
+
     # Cascade deletes handle user_team_keys, file_team_keys, team_folders.
     # user_roles scoped to this team must be deleted explicitly.
     await db.execute(
         "DELETE FROM user_roles WHERE scope_type = 'team' AND scope_id = ?", (team_id,)
     )
     await db.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+
+    # Delete the team's owned folders (cascades to files and file_team_keys)
+    for fid in team_folder_ids:
+        await db.execute("DELETE FROM folders WHERE id = ?", (fid,))
+
     await db.commit()
     logger.info("Team %s (%s) deleted by user %s", team.name, team_id, user.id)
 

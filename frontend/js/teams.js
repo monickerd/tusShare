@@ -415,46 +415,28 @@ const Teams = (() => {
         }
         container.appendChild(membersSection);
 
-        // ---- Folders section ----
+        // ---- Team Folder section ----
         const foldersSection = Utils.el('section', { className: 'team-section' });
-        foldersSection.appendChild(Utils.el('h3', { textContent: 'Folders' }));
+        foldersSection.appendChild(Utils.el('h3', { textContent: 'Team Folder' }));
         if (folders.length === 0) {
-            foldersSection.appendChild(Utils.el('p', { textContent: 'No folders assigned to this team.' }));
+            foldersSection.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folder associated with this team.' }));
         } else {
-            const ul = Utils.el('ul', { className: 'team-folder-list' });
-            for (const f of folders) {
-                const li = Utils.el('li', {}, [
-                    Utils.el('a', {
-                        href: `#/files/${f.folder_id}`,
-                        className: 'team-folder-link',
-                        textContent: f.folder_name,
-                    }),
-                ]);
-                if (isSupervisor) {
-                    li.appendChild(Utils.el('button', {
-                        className: 'btn btn-danger btn-xs',
-                        textContent: 'Remove',
-                        onClick: async () => {
-                            if (!confirm(`Remove folder "${f.folder_name}" from this team?`)) return;
-                            try {
-                                await Api.del(`${_api}/teams/${teamId}/folders/${f.folder_id}`);
-                                renderTeamDetailPage(container, teamId);
-                            } catch (e) {
-                                Utils.showToast('Failed to remove folder: ' + e.message, 'error');
-                            }
-                        },
-                    }));
-                }
-                ul.appendChild(li);
+            const f = folders[0];
+            const folderRow = Utils.el('div', { className: 'team-folder-row' }, [
+                Utils.el('a', {
+                    href: `#/team-folders/${f.folder_id}`,
+                    className: 'folder-link',
+                    textContent: f.folder_name,
+                }),
+            ]);
+            if (isOwner) {
+                folderRow.appendChild(Utils.el('button', {
+                    className: 'btn btn-secondary btn-xs',
+                    textContent: 'Rename',
+                    onClick: () => _openRenameFolderDialog(f.folder_id, f.folder_name, container, teamId),
+                }));
             }
-            foldersSection.appendChild(ul);
-        }
-        if (isSupervisor) {
-            foldersSection.appendChild(Utils.el('button', {
-                className: 'btn btn-secondary btn-sm',
-                textContent: 'Add Folder',
-                onClick: () => _openAddFolderDialog(teamId, container),
-            }));
+            foldersSection.appendChild(folderRow);
         }
         container.appendChild(foldersSection);
 
@@ -638,28 +620,51 @@ const Teams = (() => {
                 if (!username) { errEl.textContent = 'Username is required'; return; }
 
                 inviteBtn.disabled = true;
-                inviteBtn.textContent = 'Inviting…';
                 errEl.textContent = '';
 
+                const _setStatus = (msg) => {
+                    inviteBtn.textContent = msg;
+                    console.log('[tusShare invite]', msg);
+                };
+
                 try {
-                    // Fetch my team key to get sk_team
+                    // Step 1: get private keys from memory
+                    _setStatus('Step 1/5: getting private keys…');
                     const privKeys = _getMyPrivateKeys();
+                    console.log('[tusShare invite] private keys present:', !!privKeys.x25519PrivateKey, !!privKeys.mlkem768SecretKey,
+                        'sk length:', privKeys.mlkem768SecretKey?.length);
+
+                    // Step 2: fetch my wrapped team key from server
+                    _setStatus('Step 2/5: fetching my team key…');
                     const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
+                    console.log('[tusShare invite] my key entry fields:', Object.keys(myKeyEntry),
+                        'ct len:', myKeyEntry.kem_ciphertext?.length,
+                        'ephem len:', myKeyEntry.ephemeral_x25519_pub?.length,
+                        'enc_sk len:', myKeyEntry.encrypted_sk?.length,
+                        'sk_iv len:', myKeyEntry.sk_iv?.length);
+
+                    // Step 3: unwrap sk_team using my private keys
+                    _setStatus('Step 3/5: unwrapping team key…');
                     const { sk_bytes } = await unwrapTeamKey(
                         myKeyEntry,
                         privKeys.x25519PrivateKey,
                         privKeys.mlkem768SecretKey
                     );
+                    console.log('[tusShare invite] team key unwrapped, sk_bytes length:', sk_bytes?.length);
 
-                    // Fetch recipient public keys
+                    // Step 4: fetch recipient public keys
+                    _setStatus('Step 4/5: fetching recipient keys…');
                     const recipientPub = await Api.get(
                         `${Config.app.apiPrefix}/auth/users/${encodeURIComponent(username)}/public-keys`
                     );
                     if (!recipientPub.x25519_public_key || !recipientPub.mlkem768_public_key) {
                         throw new Error('User has not set up sharing keys yet');
                     }
+                    console.log('[tusShare invite] recipient pub key lengths — x25519:', recipientPub.x25519_public_key?.length,
+                        'mlkem768:', recipientPub.mlkem768_public_key?.length);
 
-                    // Wrap sk_team for recipient
+                    // Step 5: wrap sk_team for recipient and POST
+                    _setStatus('Step 5/5: wrapping and sending…');
                     const wrappedKey = await wrapTeamKeyForMember(
                         sk_bytes,
                         recipientPub.x25519_public_key,
@@ -676,6 +681,7 @@ const Teams = (() => {
                     Utils.showToast(`${username} invited`, 'success');
                     renderTeamDetailPage(refreshContainer, teamId);
                 } catch (err) {
+                    console.error('[tusShare invite] FAILED:', err.message);
                     errEl.textContent = err.message;
                     inviteBtn.disabled = false;
                     inviteBtn.textContent = 'Invite';
@@ -689,30 +695,13 @@ const Teams = (() => {
         usernameInput.focus();
     }
 
-    async function _openAddFolderDialog(teamId, refreshContainer) {
-        let folders;
-        try {
-            const data = await Api.get(`${Config.app.apiPrefix}/folders`);
-            folders = data.folders || [];
-        } catch (err) {
-            Utils.showToast('Failed to load folders: ' + err.message, 'error');
-            return;
-        }
-
-        if (folders.length === 0) {
-            Utils.showToast('You have no folders to add', 'info');
-            return;
-        }
-
+    function _openRenameFolderDialog(folderId, currentName, refreshContainer, teamId) {
         const overlay = _createModalOverlay();
         const modal   = Utils.el('div', { className: 'modal' });
-        modal.appendChild(Utils.el('h3', { textContent: 'Add Folder to Team' }));
+        modal.appendChild(Utils.el('h3', { textContent: 'Rename Team Folder' }));
 
-        const select = Utils.el('select', { className: 'input' });
-        for (const f of folders) {
-            select.appendChild(Utils.el('option', { value: f.id, textContent: f.name }));
-        }
-        modal.appendChild(select);
+        const input = Utils.el('input', { type: 'text', className: 'input', value: currentName });
+        modal.appendChild(input);
 
         const errEl = Utils.el('p', { className: 'form-error', textContent: '' });
         modal.appendChild(errEl);
@@ -722,26 +711,29 @@ const Teams = (() => {
             textContent: 'Cancel',
             onClick: () => overlay.remove(),
         });
-        const addBtn = Utils.el('button', {
+        const saveBtn = Utils.el('button', {
             className: 'btn btn-primary',
-            textContent: 'Add',
+            textContent: 'Save',
             onClick: async () => {
-                addBtn.disabled = true;
+                const name = input.value.trim();
+                if (!name) { errEl.textContent = 'Name is required'; return; }
+                saveBtn.disabled = true;
                 try {
-                    await Api.post(`${_api}/teams/${teamId}/folders`, { folder_id: select.value });
+                    await Api.put(`${Config.app.apiPrefix}/folders/${folderId}`, { name });
                     overlay.remove();
-                    Utils.showToast('Folder added to team', 'success');
+                    Utils.showToast('Folder renamed', 'success');
                     renderTeamDetailPage(refreshContainer, teamId);
                 } catch (err) {
                     errEl.textContent = err.message;
-                    addBtn.disabled = false;
+                    saveBtn.disabled = false;
                 }
             },
         });
 
-        modal.appendChild(Utils.el('div', { className: 'modal-actions' }, [cancelBtn, addBtn]));
+        modal.appendChild(Utils.el('div', { className: 'modal-actions' }, [cancelBtn, saveBtn]));
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
+        input.select();
     }
 
     /**
@@ -961,12 +953,82 @@ const Teams = (() => {
     }
 
     // =========================================================================
+    // Team Folders page
+    // =========================================================================
+
+    async function renderTeamFoldersPage(container) {
+        _clearEl(container);
+
+        const loadingEl = Utils.el('div', { className: 'empty-state' }, [
+            Utils.el('span', { textContent: 'Loading team folders…' }),
+        ]);
+        container.appendChild(loadingEl);
+
+        try {
+            const data = await Api.get(`${_api}/teams`);
+            const teams = data.teams || [];
+
+            if (teams.length === 0) {
+                _clearEl(container);
+                container.appendChild(Utils.el('div', { className: 'empty-state' }, [
+                    Utils.el('span', { textContent: 'You are not a member of any teams.' }),
+                ]));
+                return;
+            }
+
+            const details = await Promise.all(teams.map(t => Api.get(`${_api}/teams/${t.id}`)));
+
+            _clearEl(container);
+            const page = Utils.el('div', { className: 'page-content' });
+            page.appendChild(Utils.el('h2', { textContent: 'Team Folders' }));
+
+            let anyFolders = false;
+            for (const detail of details) {
+                const folders = detail.folders || [];
+                if (folders.length === 0) continue;
+                anyFolders = true;
+
+                const section = Utils.el('div', { className: 'team-folders-group' });
+                section.appendChild(Utils.el('h3', { className: 'team-folders-group-name', textContent: detail.team.name }));
+
+                const list = Utils.el('ul', { className: 'team-folder-list' });
+                for (const f of folders) {
+                    list.appendChild(Utils.el('li', { className: 'team-folder-item' }, [
+                        Utils.el('a', {
+                            href: `#/team-folders/${f.folder_id}`,
+                            className: 'folder-link',
+                            textContent: f.folder_name,
+                        }),
+                    ]));
+                }
+                section.appendChild(list);
+                page.appendChild(section);
+            }
+
+            if (!anyFolders) {
+                page.appendChild(Utils.el('p', {
+                    className: 'text-muted',
+                    textContent: 'No folders have been added to your teams yet.',
+                }));
+            }
+
+            container.appendChild(page);
+        } catch (err) {
+            _clearEl(container);
+            container.appendChild(Utils.el('div', { className: 'page-content' }, [
+                Utils.el('p', { className: 'text-muted', textContent: 'Failed to load team folders: ' + err.message }),
+            ]));
+        }
+    }
+
+    // =========================================================================
     // Public API
     // =========================================================================
 
     return {
         renderTeamsPage,
         renderTeamDetailPage,
+        renderTeamFoldersPage,
         openAddToTeamDialog,
         decryptTeamFileKey,
         // Exposed for tests / other modules

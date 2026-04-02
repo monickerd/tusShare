@@ -19,7 +19,7 @@ from app.config import settings
 from app.database import get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.models.file import File, FileChunk
-from app.routes._access import is_in_shared_tree
+from app.routes._access import is_in_shared_tree, is_team_folder_member
 from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,8 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
     if file_row["owner_id"] == user.id or user.is_admin:
         return
     if file_row["folder_id"] and await is_in_shared_tree(db, file_row["folder_id"]):
+        return
+    if file_row["folder_id"] and await is_team_folder_member(db, file_row["folder_id"], user.id):
         return
     raise HTTPException(status_code=403, detail="Access denied")
 

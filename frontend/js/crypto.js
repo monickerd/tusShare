@@ -638,7 +638,7 @@ const Crypto = (() => {
         const { cipherText: kemCiphertext, sharedSecret: ss2 } = mlkem.encapsulate(recipientMLKEM768Pub);
 
         // Derive AES-GCM wrapping key via HKDF
-        const wrappingKey = await _deriveWrappingKeyFromSecrets(ss1, ss2.buffer);
+        const wrappingKey = await _deriveWrappingKeyFromSecrets(ss1, ss2);
 
         // Wrap the file key
         const iv = crypto.getRandomValues(new Uint8Array(_cfg().ivLength));
@@ -679,35 +679,69 @@ const Crypto = (() => {
         const mlkem = await _getMLKEM768();
         await _ensureX25519Algo();
 
-        // Import sender's ephemeral X25519 public key
-        const ephemeralX25519Pub = await crypto.subtle.importKey(
-            'raw', _base64ToArrayBuf(ephemeralX25519PubB64),
-            _x25519KeyParams(),
-            false,
-            []
-        );
+        // Step 1: Import sender's ephemeral X25519 public key
+        let ephemeralX25519Pub;
+        try {
+            ephemeralX25519Pub = await crypto.subtle.importKey(
+                'raw', _base64ToArrayBuf(ephemeralX25519PubB64),
+                _x25519KeyParams(),
+                false,
+                []
+            );
+        } catch (e) {
+            throw new Error(`KEM step 1 (import ephemeral X25519): ${e.message}`);
+        }
 
-        // X25519 DH: my_priv × ephemeral_pub → ss1
-        const ss1 = await crypto.subtle.deriveBits(
-            _x25519DeriveParams(ephemeralX25519Pub),
-            myX25519PrivateKey,
-            256
-        );
+        // Step 2: X25519 DH: my_priv × ephemeral_pub → ss1
+        let ss1;
+        try {
+            ss1 = await crypto.subtle.deriveBits(
+                _x25519DeriveParams(ephemeralX25519Pub),
+                myX25519PrivateKey,
+                256
+            );
+        } catch (e) {
+            throw new Error(`KEM step 2 (X25519 DH): ${e.message}`);
+        }
 
-        // ML-KEM-768 decapsulate: my_secret_key + kem_ciphertext → ss2
+        // Step 3: ML-KEM-768 decapsulate: my_secret_key + kem_ciphertext → ss2
         const kemCiphertext = new Uint8Array(_base64ToArrayBuf(kemCiphertextB64));
-        const ss2 = mlkem.decapsulate(kemCiphertext, myMLKEM768SecretKey);
+        let ss2;
+        try {
+            ss2 = mlkem.decapsulate(kemCiphertext, myMLKEM768SecretKey);
+        } catch (e) {
+            throw new Error(
+                `KEM step 3 (ML-KEM decapsulate): ${e.message} ` +
+                `[ct=${kemCiphertext.length}B sk=${myMLKEM768SecretKey?.length}B]`
+            );
+        }
 
-        // Derive AES-GCM wrapping key via HKDF
-        const wrappingKey = await _deriveWrappingKeyFromSecrets(ss1, ss2.buffer);
+        // Step 4: Derive AES-GCM wrapping key via HKDF
+        let wrappingKey;
+        try {
+            wrappingKey = await _deriveWrappingKeyFromSecrets(ss1, ss2);
+        } catch (e) {
+            throw new Error(`KEM step 4 (HKDF): ${e.message}`);
+        }
 
-        // Unwrap the file key
+        // Step 5: AES-GCM decrypt the wrapped key
         const iv = _base64ToArrayBuf(keyIvB64);
-        const rawFileKey = await crypto.subtle.decrypt(
-            { name: _cfg().algorithm, iv: new Uint8Array(iv) },
-            wrappingKey,
-            _base64ToArrayBuf(wrappedFileKeyB64)
-        );
+        let rawFileKey;
+        try {
+            rawFileKey = await crypto.subtle.decrypt(
+                { name: _cfg().algorithm, iv: new Uint8Array(iv) },
+                wrappingKey,
+                _base64ToArrayBuf(wrappedFileKeyB64)
+            );
+        } catch (e) {
+            throw new Error(
+                `KEM step 5 (AES-GCM decrypt — key mismatch?): ${e.message} ` +
+                `[ss1=${new Uint8Array(ss1).length}B ss2=${ss2.length}B` +
+                ` ss2buf=${ss2.buffer.byteLength}B ct=${kemCiphertext.length}B` +
+                ` sk=${myMLKEM768SecretKey?.length}B]`
+            );
+        }
+
         return crypto.subtle.importKey(
             'raw', rawFileKey,
             { name: _cfg().algorithm, length: _cfg().aesKeyLength },
