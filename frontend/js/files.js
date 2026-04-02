@@ -62,7 +62,7 @@ const Files = (() => {
         _renderBreadcrumbs([], null);
         try {
             const data = await Api.get(`${Config.app.apiPrefix}/folders`);
-            _renderFolderContents(listEl, data.folders, data.files || []);
+            _renderFolderContents(listEl, data.folders, data.files || [], data.pending_uploads || []);
         } catch (err) {
             listEl.textContent = 'Failed to load files: ' + err.message;
         }
@@ -154,7 +154,7 @@ const Files = (() => {
             const data = await Api.get(`${Config.app.apiPrefix}/folders/${folderId}`);
             _currentFolder = data.folder || null;
             _renderBreadcrumbs(data.breadcrumbs || [], data.folder);
-            _renderFolderContents(listEl, data.child_folders, data.files);
+            _renderFolderContents(listEl, data.child_folders, data.files, data.pending_uploads || []);
         } catch (err) {
             listEl.textContent = 'Failed to load folder: ' + err.message;
         }
@@ -203,10 +203,10 @@ const Files = (() => {
         }
     }
 
-    function _renderFolderContents(container, folders, files) {
+    function _renderFolderContents(container, folders, files, pendingUploads = []) {
         _clearContainer(container);
 
-        if (folders.length === 0 && files.length === 0) {
+        if (folders.length === 0 && files.length === 0 && pendingUploads.length === 0) {
             container.appendChild(Utils.el('div', {
                 className: 'empty-state',
                 textContent: 'This folder is empty. Upload files or create a subfolder.',
@@ -238,6 +238,10 @@ const Files = (() => {
         const visibleFiles = files.slice(0, _pageSize);
         for (const file of visibleFiles) {
             tbody.appendChild(_createFileRow(file));
+        }
+
+        for (const upload of pendingUploads) {
+            tbody.appendChild(_createPendingUploadRow(upload));
         }
 
         table.appendChild(tbody);
@@ -344,6 +348,94 @@ const Files = (() => {
             transfer.fail();
             Utils.showToast(`Download failed: ${err.message}`, 'error');
         }
+    }
+
+    function _createPendingUploadRow(upload) {
+        const pct = upload.total_size > 0
+            ? Math.round((upload.current_offset / upload.total_size) * 100)
+            : 0;
+        const progress = `${pct}% — ${Utils.formatBytes(upload.current_offset)} of ${Utils.formatBytes(upload.total_size)}`;
+        const expiresLabel = `Expires ${Utils.timeAgo(upload.expires_at)}`;
+
+        return Utils.el('tr', { className: 'row-pending' }, [
+            Utils.el('td'),   // no checkbox — pending rows aren't selectable
+            Utils.el('td', { className: 'pending-name' }, [
+                Utils.el('span', { className: 'pending-icon', textContent: '↺' }),
+                Utils.el('span', { textContent: upload.original_name }),
+            ]),
+            Utils.el('td', { textContent: progress }),
+            Utils.el('td', { textContent: expiresLabel }),
+            Utils.el('td', { className: 'row-actions' }, [
+                _createContextButton([
+                    { label: 'Resume', action: () => _resumePendingUpload(upload) },
+                    { label: 'Cancel', action: () => _cancelPendingUpload(upload), danger: true },
+                ]),
+            ]),
+        ]);
+    }
+
+    async function _resumePendingUpload(upload) {
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey) {
+            Utils.showToast('Master key not available — please re-enter your password.', 'error');
+            return;
+        }
+
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.addEventListener('change', async () => {
+            const selectedFile = input.files[0];
+            input.remove();
+            if (!selectedFile) return;
+
+            if (selectedFile.name !== upload.original_name || selectedFile.size !== upload.size_bytes) {
+                Utils.showToast(
+                    `File does not match: expected "${upload.original_name}" (${Utils.formatBytes(upload.size_bytes)}).`,
+                    'error'
+                );
+                return;
+            }
+
+            let fileKey;
+            try {
+                fileKey = await Crypto.decryptFileKey(upload.encrypted_file_key, upload.key_iv, masterKey);
+            } catch {
+                Utils.showToast('Failed to decrypt file key — cannot resume upload.', 'error');
+                return;
+            }
+
+            const location = `${Config.app.apiPrefix}/uploads/${upload.upload_id}`;
+            const overlay  = _showUploadOverlay(upload.original_name);
+            const transfer = TransferManager.start(upload.original_name, 'upload');
+
+            try {
+                await Upload.resumeUpload(location, selectedFile, fileKey, (done, total) => {
+                    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                    overlay.update(pct, upload.original_name);
+                    transfer.update(pct);
+                });
+                overlay.remove();
+                transfer.complete();
+                Utils.showToast(`"${upload.original_name}" uploaded`, 'success');
+            } catch (err) {
+                overlay.remove();
+                transfer.fail();
+                Utils.showToast(`Resume failed: ${err.message}`, 'error');
+            }
+
+            _reloadCurrentView();
+        });
+        input.click();
+    }
+
+    async function _cancelPendingUpload(upload) {
+        try {
+            await Api.del(`${Config.app.apiPrefix}/uploads/${upload.upload_id}`);
+            Utils.showToast('Upload cancelled', 'success');
+        } catch (err) {
+            Utils.showToast(`Could not cancel upload: ${err.message}`, 'error');
+        }
+        _reloadCurrentView();
     }
 
     function _createContextButton(items) {

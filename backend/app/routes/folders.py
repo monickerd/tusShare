@@ -76,7 +76,22 @@ async def list_root_folders(
     shared_row = await cursor.fetchone()
     shared_folder = Folder.from_row(shared_row).to_dict() if shared_row else None
 
-    return {"folders": own_folders, "files": own_files, "shared_folder": shared_folder}
+    # Incomplete uploads at the root level for this user
+    cursor = await db.execute(
+        """
+        SELECT tu.id AS upload_id, f.id AS file_id, f.original_name, f.size_bytes,
+               f.encrypted_file_key, f.key_iv,
+               tu.current_offset, tu.total_size, tu.expires_at
+          FROM tus_uploads tu
+          JOIN files f ON tu.file_id = f.id
+         WHERE tu.user_id = ? AND f.folder_id IS NULL
+         ORDER BY f.original_name
+        """,
+        (user.id,),
+    )
+    pending_uploads = [dict(r) for r in await cursor.fetchall()]
+
+    return {"folders": own_folders, "files": own_files, "shared_folder": shared_folder, "pending_uploads": pending_uploads}
 
 
 @router.post("")
@@ -158,6 +173,21 @@ async def get_folder_contents(
         )
         files = [File.from_row(r).to_dict() for r in await cursor.fetchall()]
 
+        # Incomplete uploads in this folder for the current user
+        cursor = await db.execute(
+            """
+            SELECT tu.id AS upload_id, f.id AS file_id, f.original_name, f.size_bytes,
+                   f.encrypted_file_key, f.key_iv,
+                   tu.current_offset, tu.total_size, tu.expires_at
+              FROM tus_uploads tu
+              JOIN files f ON tu.file_id = f.id
+             WHERE tu.user_id = ? AND f.folder_id = ?
+             ORDER BY f.original_name
+            """,
+            (user.id, folder_id),
+        )
+        pending_uploads = [dict(r) for r in await cursor.fetchall()]
+
         # Build breadcrumb ancestry (walk up parent_id chain)
         # visited_bc guards against any existing parent_id cycles in the DB
         breadcrumbs = []
@@ -186,6 +216,7 @@ async def get_folder_contents(
         "folder": folder.to_dict(),
         "child_folders": child_folders,
         "files": files,
+        "pending_uploads": pending_uploads,
         "breadcrumbs": breadcrumbs,
     }
 

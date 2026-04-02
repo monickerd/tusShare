@@ -27,6 +27,66 @@ const Auth = (() => {
     }
 
     // ------------------------------------------------------------------
+    // Session key caching (grace period)
+    //
+    // The master key is exported to raw bytes and stored alongside the salt in
+    // sessionStorage with a timestamp. On page reload, if the timestamp is within
+    // the grace period (Config.auth.keyGracePeriodMs), the key is re-imported
+    // without prompting the user for their password again. The timestamp rolls
+    // forward on every successful restore so the window stays open during an
+    // active session (e.g. long-running uploads). sessionStorage is cleared when
+    // the tab closes, and we clear it explicitly on logout.
+    // ------------------------------------------------------------------
+
+    async function _saveSessionKeyData(key, salt) {
+        try {
+            const keyB64url = await Crypto.exportKeyToBase64url(key);
+            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({
+                salt,
+                keyB64url,
+                cachedAt: Date.now(),
+            }));
+        } catch (err) {
+            console.warn('[tusShare] Failed to cache master key:', err);
+            // Fall back to storing salt only so the key prompt still works
+            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({ salt }));
+        }
+    }
+
+    async function _restoreCachedMasterKey() {
+        try {
+            const stored = JSON.parse(sessionStorage.getItem(Config.auth.sessionStorageKey) || '{}');
+            if (!stored.keyB64url || !stored.cachedAt) return false;
+            if (Date.now() - stored.cachedAt > Config.auth.keyGracePeriodMs) return false;
+            _masterKeyObj = await Crypto.importKeyFromBase64url(stored.keyB64url);
+            // Roll the window forward on restore
+            stored.cachedAt = Date.now();
+            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify(stored));
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Update the cached-at timestamp so the grace period rolls forward on activity.
+     * Called by Api._handleResponse and the upload loop on each successful request.
+     * No-ops gracefully if there's no cached key.
+     */
+    function touchKeyCache() {
+        try {
+            const raw = sessionStorage.getItem(Config.auth.sessionStorageKey);
+            if (!raw) return;
+            const stored = JSON.parse(raw);
+            if (!stored.keyB64url) return;
+            stored.cachedAt = Date.now();
+            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify(stored));
+        } catch {
+            // Non-critical — silently ignore
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Login
     // ------------------------------------------------------------------
 
@@ -89,10 +149,8 @@ const Auth = (() => {
                 _masterKeyObj = kek;
             }
 
-            // Store salt in session so key-prompt can re-derive on refresh
-            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({
-                salt: data.user.encryption_salt,
-            }));
+            // Cache key + salt so page reloads within the grace period skip the prompt
+            await _saveSessionKeyData(_masterKeyObj, data.user.encryption_salt);
 
             // Set up asymmetric PQ keys (generate + register if first login)
             _setupAsymmetricKeys(data.user, _masterKeyObj).catch((err) => {
@@ -164,9 +222,7 @@ const Auth = (() => {
                 _masterKeyObj = kek;
             }
 
-            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({
-                salt: _currentUser.encryption_salt,
-            }));
+            await _saveSessionKeyData(_masterKeyObj, _currentUser.encryption_salt);
 
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
                 console.error('Asymmetric key setup failed:', err);
@@ -239,9 +295,7 @@ const Auth = (() => {
                 recoveryKey
             );
 
-            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({
-                salt: _currentUser.encryption_salt,
-            }));
+            await _saveSessionKeyData(_masterKeyObj, _currentUser.encryption_salt);
 
             // Set up asymmetric keys so share operations work this session
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
@@ -481,9 +535,7 @@ const Auth = (() => {
                 x25519PrivateKey:  x25519KeyPair.privateKey,
                 mlkem768SecretKey: mlkem768KeyPair.secretKey,
             };
-            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({
-                salt: saltHex,
-            }));
+            await _saveSessionKeyData(_masterKeyObj, saltHex);
 
             // Show recovery key (one-time display before going to files)
             renderRecoveryKeyDisplay(container, bundle.recoveryKeyString);
@@ -552,6 +604,16 @@ const Auth = (() => {
         try {
             const data = await Api.get(`${Config.app.apiPrefix}/auth/me`);
             _currentUser = data.user;
+            // Silently restore master key from cache if within the grace period,
+            // so users aren't prompted for their password on every page reload.
+            if (!_masterKeyObj) {
+                const restored = await _restoreCachedMasterKey();
+                if (restored) {
+                    _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
+                        console.error('Asymmetric key setup failed after cache restore:', err);
+                    });
+                }
+            }
             return true;
         } catch {
             _currentUser = null;
@@ -571,5 +633,6 @@ const Auth = (() => {
         renderRegisterPage,
         logout,
         checkSession,
+        touchKeyCache,
     };
 })();

@@ -307,13 +307,17 @@ async def patch_upload(
 
     # --- Fetch and validate upload record ---
     cursor = await db.execute(
-        "SELECT id, file_id, user_id, total_size, current_offset, next_chunk "
+        "SELECT id, file_id, user_id, total_size, current_offset, next_chunk, expires_at "
         "FROM tus_uploads WHERE id = ? AND user_id = ?",
         (upload_id, user.id),
     )
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Upload not found")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    if row["expires_at"] < now_iso:
+        raise HTTPException(status_code=410, detail="Upload has expired")
 
     if client_offset != row["current_offset"]:
         raise HTTPException(
@@ -393,9 +397,15 @@ async def patch_upload(
             """,
             (chunk_id, row["file_id"], chunk_index, chunk_iv_b64, chunk_size, client_offset),
         )
+        new_expires_at = (
+            datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        chunk_now = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "UPDATE tus_uploads SET current_offset = ?, next_chunk = ? WHERE id = ?",
-            (new_offset, chunk_index + 1, upload_id),
+            "UPDATE tus_uploads "
+            "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ? "
+            "WHERE id = ?",
+            (new_offset, chunk_index + 1, new_expires_at, chunk_now, upload_id),
         )
         await db.commit()
     except Exception:
@@ -552,3 +562,65 @@ async def abort_upload(
     await asyncio.to_thread(_cleanup)
 
     return Response(status_code=204, headers=_tus_headers())
+
+
+# ---------------------------------------------------------------------------
+# Background cleanup task
+# ---------------------------------------------------------------------------
+
+async def _cleanup_expired_uploads(db) -> int:
+    """Delete tus_uploads whose expires_at has passed, plus their file records
+    and staging blobs.  expires_at is now a sliding window (reset on every
+    successful PATCH), so only truly abandoned uploads are removed.
+
+    Returns the number of uploads deleted.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = await db.execute(
+        "SELECT id AS upload_id, file_id FROM tus_uploads WHERE expires_at < ?",
+        (now,),
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        return 0
+
+    count = 0
+    for row in rows:
+        upload_id = row["upload_id"]
+        file_id   = row["file_id"]
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            await db.execute("DELETE FROM tus_uploads WHERE id = ?", (upload_id,))
+            await db.execute("DELETE FROM files WHERE id = ?", (file_id,))
+            await db.commit()
+        except Exception:
+            await db.execute("ROLLBACK")
+            logger.exception("Failed to clean up expired upload %s", upload_id)
+            continue
+
+        blob = settings.UPLOADS_DIR / upload_id
+        try:
+            blob.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not delete staging blob for upload %s: %s", upload_id, exc)
+
+        count += 1
+
+    if count > 0:
+        logger.info("Cleaned up %d expired upload(s)", count)
+    return count
+
+
+async def run_upload_cleanup(db_getter, interval: float = 3600.0) -> None:
+    """Periodic background task — removes expired incomplete uploads.
+
+    Runs every `interval` seconds (default 1 hour).  db_getter is a callable
+    that returns the database connection (e.g. get_db).
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            db = await db_getter()
+            await _cleanup_expired_uploads(db)
+        except Exception:
+            logger.exception("Upload cleanup task failed")

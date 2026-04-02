@@ -105,6 +105,7 @@ const Upload = (() => {
                 if (patchResp.ok) {
                     const serverOffset = parseInt(patchResp.headers.get('Upload-Offset') || '0', 10);
                     encryptedOffset = serverOffset;
+                    Auth.touchKeyCache();
                     if (onProgress) onProgress(encryptedOffset, totalEncryptedSize);
 
                     // Final chunk — server includes X-File-ID
@@ -113,6 +114,16 @@ const Upload = (() => {
                         return { fileId, location };
                     }
                     break;
+                }
+
+                // 401 — access token expired mid-upload; refresh once and retry the chunk
+                // (does not count against maxRetries since it's not a data error)
+                if (patchResp.status === 401) {
+                    const refreshed = await Api.refreshTokens();
+                    if (!refreshed) {
+                        throw new Error('Session expired during upload. Please log in and try again.');
+                    }
+                    continue;
                 }
 
                 // Read body once — Response body can only be consumed once
@@ -229,6 +240,7 @@ const Upload = (() => {
 
                 if (patchResp.ok) {
                     encryptedOffset = parseInt(patchResp.headers.get('Upload-Offset') || '0', 10);
+                    Auth.touchKeyCache();
                     if (onProgress) onProgress(encryptedOffset, totalEncryptedSize);
 
                     if (i === totalChunks - 1) {
@@ -236,6 +248,15 @@ const Upload = (() => {
                         return { fileId, location };
                     }
                     break;
+                }
+
+                // 401 — access token expired mid-upload; refresh once and retry the chunk
+                if (patchResp.status === 401) {
+                    const refreshed = await Api.refreshTokens();
+                    if (!refreshed) {
+                        throw new Error('Session expired during upload. Please log in and try again.');
+                    }
+                    continue;
                 }
 
                 // Read body once — Response body can only be consumed once

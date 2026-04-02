@@ -53,6 +53,7 @@ const Api = (() => {
     }
 
     async function _handleResponse(resp) {
+        if (resp.ok) Auth.touchKeyCache();
         if (!resp.ok) {
             let detail = `HTTP ${resp.status}`;
             try {
@@ -77,11 +78,11 @@ const Api = (() => {
         if (_refreshing) return _refreshing;
         _refreshing = (async () => {
             try {
-                await fetch(`${Config.app.apiPrefix}/auth/refresh`, {
+                const resp = await fetch(`${Config.app.apiPrefix}/auth/refresh`, {
                     method: 'POST',
                     credentials: 'same-origin',
                 });
-                return true;
+                return resp.ok;
             } catch {
                 return false;
             } finally {
@@ -97,6 +98,7 @@ const Api = (() => {
         put:    (path, body) => _fetch('PUT', path, body),
         del:    (path) => _fetch('DELETE', path),
         patch:  (path, body, headers) => _fetch('PATCH', path, body, headers),
+        refreshTokens: _tryRefresh,
 
         streamGet: (path, headers = {}) =>
             fetch(path, { method: 'GET', headers, credentials: 'same-origin' }),

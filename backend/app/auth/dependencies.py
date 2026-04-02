@@ -4,13 +4,14 @@ get_current_user reads JWT from httpOnly cookie OR Authorization Bearer header.
 This dual-auth approach supports both browser sessions and API/deeplink access.
 """
 
+import asyncio
 import logging
 
 import jwt
 from fastapi import Depends, HTTPException, Request
 
 from app.auth.interface import AuthenticatedUser
-from app.auth.jwt import verify_access_token
+from app.auth.jwt import touch_session, verify_access_token
 from app.auth.local import LocalAuthProvider
 from app.database import get_db
 
@@ -24,6 +25,7 @@ async def _get_auth_provider(db=Depends(get_db)) -> LocalAuthProvider:
 
 async def get_current_user(
     request: Request,
+    db=Depends(get_db),
     auth_provider=Depends(_get_auth_provider),
 ) -> AuthenticatedUser:
     """Extract and validate the authenticated user from the request.
@@ -31,6 +33,10 @@ async def get_current_user(
     Checks (in order):
     1. access_token httpOnly cookie (browser sessions)
     2. Authorization: Bearer <token> header (API/deeplink access)
+
+    When the JWT contains a sid (session ID) claim, last_active_at is updated
+    for that refresh token row. The write is throttled inside touch_session so
+    it fires at most once per minute per session regardless of request rate.
     """
     token = None
 
@@ -56,6 +62,13 @@ async def get_current_user(
     user = await auth_provider.get_user_by_id(payload["sub"])
     if user is None:
         raise HTTPException(status_code=401, detail="User not found or inactive")
+
+    # Fire-and-forget: update last_active_at for idle-timeout tracking.
+    # Sessions issued before the 011_session_idle migration won't have sid and
+    # are simply not tracked until their next token refresh.
+    sid = payload.get("sid")
+    if sid:
+        asyncio.ensure_future(touch_session(db, sid))
 
     return user
 

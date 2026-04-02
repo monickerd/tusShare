@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.auth.jwt import run_token_cleanup
+from app.routes.uploads import run_upload_cleanup
 from app.config import settings
 from app.database import get_db, init_db, close_db
 from app.middleware.csrf import CSRFMiddleware
@@ -47,14 +48,15 @@ async def lifespan(app: FastAPI):
     await _bootstrap_admin(db)
 
     # Start background tasks
-    rate_limit_task = asyncio.create_task(run_rate_limit_cleanup())
+    rate_limit_task    = asyncio.create_task(run_rate_limit_cleanup())
     token_cleanup_task = asyncio.create_task(run_token_cleanup(get_db))
+    upload_cleanup_task = asyncio.create_task(run_upload_cleanup(get_db))
 
     logger.info("%s v%s started", settings.APP_NAME, settings.APP_VERSION)
     yield
 
     # Shutdown — cancel background tasks
-    for task in (rate_limit_task, token_cleanup_task):
+    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task):
         task.cancel()
         try:
             await task

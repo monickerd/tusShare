@@ -80,17 +80,26 @@ const Utils = (() => {
         return _toastContainer;
     }
 
-    function showToast(message, type = 'info', duration = Config.ui.toastDurationMs) {
+    function showToast(message, type = 'info') {
         const container = _ensureToastContainer();
-        const toast = el('div', { className: `toast toast-${type}`, textContent: message });
-        container.appendChild(toast);
-        requestAnimationFrame(() => toast.classList.add('toast-visible'));
-        setTimeout(() => {
+        const dismiss = el('button', {
+            className: 'toast-dismiss',
+            type: 'button',
+            'aria-label': 'Dismiss',
+            textContent: '×',
+        });
+        const toast = el('div', { className: `toast toast-${type}` }, [
+            el('span', { className: 'toast-message', textContent: message }),
+            dismiss,
+        ]);
+        dismiss.addEventListener('click', () => {
             toast.classList.remove('toast-visible');
             setTimeout(() => {
                 if (toast.parentNode) toast.parentNode.removeChild(toast);
             }, Config.ui.toastFadeOutMs);
-        }, duration);
+        });
+        container.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add('toast-visible'));
     }
 
     /**

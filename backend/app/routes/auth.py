@@ -182,9 +182,9 @@ async def login(
         # Deliberately vague — same message for wrong password and nonexistent user
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    access_token = create_access_token(user.id, user.is_admin)
     raw_refresh, token_hash = create_refresh_token()
-    await store_refresh_token(db, user.id, token_hash)
+    token_id = await store_refresh_token(db, user.id, token_hash)
+    access_token = create_access_token(user.id, user.is_admin, session_id=token_id)
     csrf_token = generate_csrf_token()
 
     _set_auth_cookies(response, access_token, raw_refresh, csrf_token)
@@ -274,12 +274,14 @@ async def refresh(
         # Issue new tokens inside same transaction
         new_raw_refresh, new_token_hash = create_refresh_token()
         new_token_id = str(uuid.uuid4())
+        new_now = datetime.now(timezone.utc).isoformat()
         new_expires_at = (
             datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
         ).isoformat()
         await db.execute(
-            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)",
-            (new_token_id, user_id, new_token_hash, new_expires_at),
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (new_token_id, user_id, new_token_hash, new_expires_at, new_now),
         )
 
         await db.commit()
@@ -289,7 +291,7 @@ async def refresh(
         await db.execute("ROLLBACK")
         raise
 
-    access_token = create_access_token(user.id, user.is_admin)
+    access_token = create_access_token(user.id, user.is_admin, session_id=new_token_id)
     csrf_token = generate_csrf_token()
     _set_auth_cookies(response, access_token, new_raw_refresh, csrf_token)
 

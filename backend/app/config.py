@@ -24,8 +24,12 @@ class Settings(BaseSettings):
     AUTH_PROVIDER: str = "local"  # "local" | future: "oidc"
     JWT_SECRET: str = ""
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    # Sessions inactive for longer than this are revoked by the cleanup task.
+    # Checked every minute. A truly idle session will be unusable within
+    # SESSION_IDLE_TIMEOUT_MINUTES + ACCESS_TOKEN_EXPIRE_MINUTES at most.
+    SESSION_IDLE_TIMEOUT_MINUTES: int = 10
 
     # Admin bootstrap (first run only)
     ADMIN_USERNAME: str = ""

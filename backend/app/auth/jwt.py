@@ -15,16 +15,25 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def create_access_token(user_id: str, is_admin: bool) -> str:
-    """Create a short-lived JWT access token."""
+def create_access_token(
+    user_id: str, is_admin: bool, session_id: str | None = None
+) -> str:
+    """Create a short-lived JWT access token.
+
+    session_id (sid claim) is the refresh_tokens.id for this session.  When
+    present, get_current_user uses it to touch last_active_at on each request
+    so the idle-timeout cleanup task can accurately track inactivity.
+    """
     now = datetime.now(timezone.utc)
-    payload = {
+    payload: dict = {
         "sub": user_id,
         "admin": is_admin,
         "iat": now,
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
         "type": "access",
     }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -71,9 +80,9 @@ async def store_refresh_token(db, user_id: str, token_hash: str) -> str:
         (user_id, now_iso),
     )
     await db.execute(
-        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at) "
-        "VALUES (?, ?, ?, ?)",
-        (token_id, user_id, token_hash, expires_at),
+        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (token_id, user_id, token_hash, expires_at, now_iso),
     )
     await db.commit()
     return token_id
@@ -113,6 +122,23 @@ async def revoke_user_refresh_tokens(db, user_id: str) -> None:
     await db.execute(
         "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
         (user_id,),
+    )
+    await db.commit()
+
+
+async def touch_session(db, token_id: str) -> None:
+    """Record activity for a session to keep the idle timeout from expiring it.
+
+    The WHERE guard (last_active_at < now - 1 minute) makes this a no-op when
+    called within a minute of the last update, limiting DB writes to at most
+    once per session per minute regardless of request frequency.
+    """
+    await db.execute(
+        "UPDATE refresh_tokens "
+        "SET last_active_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') "
+        "WHERE id = ? AND revoked = 0 "
+        "AND last_active_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 minute')",
+        (token_id,),
     )
     await db.commit()
 
@@ -169,11 +195,31 @@ def generate_csrf_token() -> str:
 
 
 async def cleanup_expired_tokens(db) -> int:
-    """Delete expired or revoked refresh tokens. Returns count deleted."""
-    now = datetime.now(timezone.utc).isoformat()
+    """Revoke idle sessions then delete expired/revoked tokens.
+
+    Two-phase:
+      1. Mark sessions revoked when last_active_at has not advanced within
+         SESSION_IDLE_TIMEOUT_MINUTES. This is checked every minute so the
+         effective idle window is tight.
+      2. Hard-delete all revoked or calendar-expired rows.
+
+    Returns the number of rows deleted in phase 2.
+    """
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    idle_cutoff = (now - timedelta(minutes=settings.SESSION_IDLE_TIMEOUT_MINUTES)).isoformat()
+
+    # Phase 1: revoke idle-but-otherwise-valid sessions
+    await db.execute(
+        "UPDATE refresh_tokens SET revoked = 1 "
+        "WHERE revoked = 0 AND expires_at > ? AND last_active_at IS NOT NULL AND last_active_at < ?",
+        (now_iso, idle_cutoff),
+    )
+
+    # Phase 2: delete everything that is expired or revoked
     await db.execute(
         "DELETE FROM refresh_tokens WHERE expires_at < ? OR revoked = 1",
-        (now,),
+        (now_iso,),
     )
     cursor = await db.execute("SELECT changes()")
     row = await cursor.fetchone()
@@ -184,10 +230,11 @@ async def cleanup_expired_tokens(db) -> int:
     return count
 
 
-async def run_token_cleanup(db_getter, interval: float = 3600.0) -> None:
-    """Periodic background task — cleans expired tokens every `interval` seconds.
+async def run_token_cleanup(db_getter, interval: float = 60.0) -> None:
+    """Periodic background task — runs cleanup every `interval` seconds.
 
-    db_getter is a callable that returns the database connection (e.g. get_db).
+    Defaults to 60 s so idle sessions are reaped promptly. db_getter is a
+    callable that returns the database connection (e.g. get_db).
     """
     while True:
         await asyncio.sleep(interval)

@@ -20,6 +20,11 @@ const Config = Object.freeze({
         sessionStorageKey: 'masterKey',
         cookieCsrfName: 'csrf_token',
         cookieAccessName: 'access_token',
+        // How long (ms) the cached master key is trusted without re-entering the password.
+        // Rolling window: resets on each page load that successfully restores the key.
+        // NOTE: the raw key bytes are stored in sessionStorage (same-origin only, cleared
+        // on tab close) for this duration. Acceptable trade-off for long upload sessions.
+        keyGracePeriodMs: 30 * 60 * 1000,  // 30 minutes
     }),
 
     /* --- Cryptography --- */
@@ -59,7 +64,6 @@ const Config = Object.freeze({
 
     /* --- UI --- */
     ui: Object.freeze({
-        toastDurationMs: 4000,
         toastFadeOutMs: 300,
         paginationDefaultLimit: 20,
         paginationMaxLimit: 100,
