@@ -23,6 +23,25 @@ services:
       - "127.0.0.1:9050:8080"
     volumes:
       - tusshare_data:/data
+    environment:
+      # First-run bootstrap: set TUSSHARE_SUPERUSER_URL in .env to create the
+      # sensitive_config schema automatically on startup. Requires a PostgreSQL
+      # superuser connection string. In this Docker setup, POSTGRES_USER is the
+      # superuser, so the URL mirrors DATABASE_URL with the same credentials.
+      #
+      # Add to .env before first startup, then remove — ignored once the schema
+      # exists and safe to leave in if preferred (no effect after bootstrap).
+      #
+      # Example .env entry:
+      #   TUSSHARE_SUPERUSER_URL=postgresql://tusshare:PASSWORD@postgres:5432/tusshare
+      #
+      # To bootstrap without restarting a running stack:
+      #   TUSSHARE_SUPERUSER_URL=postgresql://tusshare:PASSWORD@postgres:5432/tusshare \
+      #   docker compose run --rm tusshare \
+      #   python -c "import asyncio,os; from pathlib import Path; \
+      #   from app.sensitive_config import _bootstrap; \
+      #   asyncio.run(_bootstrap(os.environ['TUSSHARE_SUPERUSER_URL'],'tusshare',Path('/data')))"
+      TUSSHARE_SUPERUSER_URL: ${TUSSHARE_SUPERUSER_URL:-}
     env_file:
       - .env
     depends_on:
