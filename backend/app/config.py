@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # Upload defaults
     DEFAULT_CHUNK_SIZE: int = 5_242_880  # 5 MB
     TUS_UPLOAD_EXPIRY_HOURS: int = 24
+    # Page-cache eviction stride for upload staging blobs (MiB).
+    # After every UPLOAD_EVICT_STRIDE_MB written, the staging blob is
+    # fdatasync'd and the OS is advised to evict its pages from RAM.
+    # Peak cache ≈ stride × concurrent uploads.
+    # Tune for your storage:
+    #   0          — disabled (let the OS manage cache; fine for NVMe/high-RAM hosts)
+    #   8–32 MiB   — local SSD or RAM-constrained hosts
+    #   64–256 MiB — network volumes (NFS/SMB) where fdatasync is a round-trip
+    UPLOAD_EVICT_STRIDE_MB: int = 32
 
     # Admin panel defaults — these seed admin_settings on first run.
     # Once written to the database they can be overridden via the admin UI.

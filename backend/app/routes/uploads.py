@@ -36,6 +36,27 @@ _CONTENT_TYPE_PATCH = "application/offset+octet-stream"
 # Maximum single-chunk body: chunkSize (default 5 MB) + AES-GCM tag (16 B) + headroom
 _MAX_CHUNK_BYTES = 21 * 1024 * 1024  # 21 MB
 
+# ---------------------------------------------------------------------------
+# Page-cache eviction — stride-based
+# ---------------------------------------------------------------------------
+# On every completed chunk the PATCH handler checks whether the upload has
+# crossed another _EVICT_STRIDE boundary.  When it has, the staging blob is
+# fdatasync'd (flushing dirty pages to storage so they become evictable) and
+# posix_fadvise(DONTNEED) is called for all bytes written so far.  This caps
+# page-cache consumption to roughly _EVICT_STRIDE per concurrent upload
+# regardless of file size — important on network volumes where fdatasync per
+# chunk would add one storage round-trip per 5 MB instead of one per 32 MB.
+#
+# _evict_offsets tracks {upload_id → bytes evicted so far} in process memory.
+# The dict is intentionally process-local: if the server restarts mid-upload
+# the worst case is one stride's worth of stale pages that the kernel reclaims
+# naturally under memory pressure.  Redis is the right home for this state once
+# the server goes multi-worker (Phase F).
+#
+# The stride itself is read from settings at first use so that the configured
+# value is always current (including test overrides).  0 = disabled.
+_evict_offsets: dict[str, int] = {}
+
 
 def _tus_headers(extra: dict | None = None) -> dict:
     h = {"Tus-Resumable": _TUS_VERSION, "Tus-Version": _TUS_VERSION}
@@ -74,22 +95,30 @@ def _write_chunk_at(path, offset: int, data: bytes) -> None:
     Idempotent: re-sending the same chunk at the same offset overwrites
     identically, so a DB-rollback-then-retry scenario is safe.
 
-    After writing, advise the OS to evict these pages from the page cache.
-    The server never reads the staging blob back (only writes forward), so
-    caching the written pages wastes RAM — on cgroup v1 hosts this shows up
-    in container memory metrics as a steady climb proportional to file size.
-    POSIX_FADV_DONTNEED is a hint only; the OS ignores it on unsupported
-    platforms (Windows, some BSDs) without error.
+    Page-cache eviction is handled separately by _stride_evict, called by
+    the PATCH handler after every _EVICT_STRIDE bytes written.
     """
     mode = "r+b" if path.exists() else "wb"
     with open(path, mode) as f:
         f.seek(offset)
         f.write(data)
         f.truncate()
-        try:
-            os.posix_fadvise(f.fileno(), offset, len(data), os.POSIX_FADV_DONTNEED)
-        except (AttributeError, OSError):
-            pass  # not available (Windows/macOS) or unsupported filesystem
+
+
+def _stride_evict(path, up_to: int) -> None:
+    """fdatasync the staging blob then advise the OS to evict pages [0, up_to).
+
+    fdatasync first: POSIX_FADV_DONTNEED only evicts *clean* pages.  Calling
+    it on dirty pages is a no-op on Linux, so without the sync step the hint
+    would be silently ignored and cache would keep growing.  Opening r+b is
+    required because fdatasync needs a writable file descriptor.
+    """
+    try:
+        with open(path, "r+b") as f:
+            os.fdatasync(f.fileno())
+            os.posix_fadvise(f.fileno(), 0, up_to, os.POSIX_FADV_DONTNEED)
+    except (AttributeError, OSError):
+        pass  # not available (Windows/macOS/some BSDs) or unsupported filesystem
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +424,20 @@ async def patch_upload(
         logger.error("Failed to write chunk for upload %s: %s", upload_id, exc)
         raise HTTPException(status_code=500, detail="Chunk write failed")
 
+    # --- Stride-based page-cache eviction ---
+    # Every UPLOAD_EVICT_STRIDE_MB bytes, fdatasync the staging blob and advise
+    # the OS to evict all pages written so far.  This caps page-cache consumption
+    # to ~stride per concurrent upload, avoiding a climb proportional to file size
+    # that would otherwise appear in container memory metrics.  0 = disabled.
+    evict_stride = settings.UPLOAD_EVICT_STRIDE_MB * 1024 * 1024
+    last_evicted = _evict_offsets.get(upload_id, 0)
+    if evict_stride > 0 and new_offset - last_evicted >= evict_stride:
+        try:
+            await asyncio.to_thread(_stride_evict, upload_blob, new_offset)
+            _evict_offsets[upload_id] = new_offset
+        except Exception:
+            pass  # eviction is best-effort; never fail a chunk write over it
+
     # --- Phase 1 DB update: record this chunk and advance the tus offset ---
     # Committed regardless of whether this is the final chunk.
     chunk_id = str(uuid.uuid4())
@@ -437,8 +480,12 @@ async def patch_upload(
             except OSError:
                 # Cross-device link (UPLOADS_DIR and FILES_DIR on different mounts)
                 shutil.move(str(upload_blob), str(final_path))
+            # Evict any remaining dirty pages from the tail of the last stride.
+            # Page cache entries follow the inode on rename, so we open the
+            # final path.  After this the file is fully on disk and out of cache.
             try:
-                with open(final_path, "rb") as f:
+                with open(final_path, "r+b") as f:
+                    os.fdatasync(f.fileno())
                     os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
             except (AttributeError, OSError):
                 pass  # not available (Windows/macOS) or unsupported filesystem
@@ -450,6 +497,8 @@ async def patch_upload(
                 "Failed to move upload blob %s -> %s: %s", upload_id, storage_key, exc
             )
             raise HTTPException(status_code=500, detail="Upload finalization failed: move error")
+        finally:
+            _evict_offsets.pop(upload_id, None)
 
         # Verify the blob landed at the expected size.
         # A cross-device copy that got interrupted would produce a truncated file.
@@ -583,6 +632,7 @@ async def abort_upload(
             logger.warning("Failed to delete upload blob %s: %s", upload_id, exc)
 
     await asyncio.to_thread(_cleanup)
+    _evict_offsets.pop(upload_id, None)
 
     return Response(status_code=204, headers=_tus_headers())
 
@@ -626,6 +676,7 @@ async def _cleanup_expired_uploads(db) -> int:
             blob.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("Could not delete staging blob for upload %s: %s", upload_id, exc)
+        _evict_offsets.pop(upload_id, None)
 
         count += 1
 
