@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import logging
+import os
 import re
 import shutil
 import uuid
@@ -72,12 +73,23 @@ def _write_chunk_at(path, offset: int, data: bytes) -> None:
 
     Idempotent: re-sending the same chunk at the same offset overwrites
     identically, so a DB-rollback-then-retry scenario is safe.
+
+    After writing, advise the OS to evict these pages from the page cache.
+    The server never reads the staging blob back (only writes forward), so
+    caching the written pages wastes RAM — on cgroup v1 hosts this shows up
+    in container memory metrics as a steady climb proportional to file size.
+    POSIX_FADV_DONTNEED is a hint only; the OS ignores it on unsupported
+    platforms (Windows, some BSDs) without error.
     """
     mode = "r+b" if path.exists() else "wb"
     with open(path, mode) as f:
         f.seek(offset)
         f.write(data)
         f.truncate()
+        try:
+            os.posix_fadvise(f.fileno(), offset, len(data), os.POSIX_FADV_DONTNEED)
+        except (AttributeError, OSError):
+            pass  # not available (Windows/macOS) or unsupported filesystem
 
 
 # ---------------------------------------------------------------------------
@@ -414,13 +426,22 @@ async def patch_upload(
     if is_complete:
         final_path = settings.FILES_DIR / storage_key
 
-        # Move staging blob to permanent storage
+        # Move staging blob to permanent storage, then evict its pages from the
+        # page cache.  Page cache entries follow the inode on rename, so the
+        # pages accumulated during the chunked write are still resident under
+        # the new path.  DONTNEED after the move signals the OS to drop them;
+        # they will be faulted back in on demand when users download the file.
         def _finalize():
             try:
                 upload_blob.rename(final_path)
             except OSError:
                 # Cross-device link (UPLOADS_DIR and FILES_DIR on different mounts)
                 shutil.move(str(upload_blob), str(final_path))
+            try:
+                with open(final_path, "rb") as f:
+                    os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            except (AttributeError, OSError):
+                pass  # not available (Windows/macOS) or unsupported filesystem
 
         try:
             await asyncio.to_thread(_finalize)
