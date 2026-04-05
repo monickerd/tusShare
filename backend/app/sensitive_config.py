@@ -23,7 +23,6 @@ import asyncpg
 import hashlib
 import json
 import logging
-import secrets
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -89,8 +88,15 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
     """Create the immutable sensitive_config schema using superuser credentials.
 
     Called automatically by load() on first startup when the schema is absent.
-    Uses a dedicated asyncpg connection (not the app pool) because it requires
-    CREATEROLE privileges that the app role deliberately does not have.
+    Uses a dedicated asyncpg connection (not the app pool) because the app role
+    has SELECT-only on this schema and cannot create it.
+
+    The schema is owned by the connecting superuser. Integrity is enforced by:
+      - BEFORE UPDATE/DELETE triggers that block all mutations via the app role
+      - A SHA-256 hash of the rows written to DATA_DIR at bootstrap time,
+        verified on every subsequent startup
+    A separate locked owner role is not used — superusers can bypass triggers
+    regardless, so the extra role added complexity without real security benefit.
     """
     logger.info("sensitive_config schema absent — running first-run bootstrap")
 
@@ -102,10 +108,8 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
             f"TUSSHARE_SUPERUSER_URL: {exc}"
         ) from exc
 
-    owner_role = "sensitive_config_owner"
-
     try:
-        # Guard: abort if schema already exists (race condition on concurrent startup)
+        # Guard: abort if schema appeared between the check in load() and now
         exists = await conn.fetchval(
             "SELECT schema_name FROM information_schema.schemata "
             "WHERE schema_name = 'sensitive_config'"
@@ -114,22 +118,10 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
             logger.info("sensitive_config schema appeared during bootstrap — skipping creation")
             return
 
-        owner_password = secrets.token_urlsafe(64)
-
-        logger.info("Bootstrap: creating role %s", owner_role)
-        # CREATE ROLE does not support bind parameters for the PASSWORD clause —
-        # PostgreSQL DDL rejects $1 syntax here. owner_password is always
-        # secrets.token_urlsafe(64) which produces only [A-Za-z0-9_-] so
-        # direct interpolation is safe.
-        await conn.execute(
-            f"CREATE ROLE {owner_role} WITH LOGIN PASSWORD '{owner_password}'"
-        )
-
         logger.info("Bootstrap: creating schema sensitive_config")
-        await conn.execute(f"CREATE SCHEMA sensitive_config AUTHORIZATION {owner_role}")
+        await conn.execute("CREATE SCHEMA sensitive_config")
 
         logger.info("Bootstrap: creating sensitive_functions table")
-        await conn.execute(f"SET ROLE {owner_role}")
         await conn.execute("""
             CREATE TABLE sensitive_config.sensitive_functions (
                 function_key   TEXT        PRIMARY KEY,
@@ -182,16 +174,14 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
             )
             all_rows.append({"function_key": key, "is_sensitive": False, "challenge_type": challenge})
 
-        await conn.execute("RESET ROLE")
-
         logger.info("Bootstrap: granting SELECT on sensitive_config to %s", app_role)
         await conn.execute(f"GRANT USAGE ON SCHEMA sensitive_config TO {app_role}")
         await conn.execute(
             f"GRANT SELECT ON ALL TABLES IN SCHEMA sensitive_config TO {app_role}"
         )
 
-        logger.info("Bootstrap: locking %s (NOLOGIN)", owner_role)
-        await conn.execute(f"ALTER ROLE {owner_role} NOLOGIN")
+        # Revoke public access so only the app role and superusers can read the schema
+        await conn.execute("REVOKE ALL ON SCHEMA sensitive_config FROM PUBLIC")
 
         config_hash = _hash_rows(all_rows)
         hash_path = data_dir / _HASH_FILENAME
@@ -205,9 +195,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
     except Exception as exc:
         # Best-effort rollback on failure
         try:
-            await conn.execute("RESET ROLE")
             await conn.execute("DROP SCHEMA IF EXISTS sensitive_config CASCADE")
-            await conn.execute("DROP ROLE IF EXISTS sensitive_config_owner")
         except Exception:
             pass
         raise RuntimeError(f"sensitive_config bootstrap failed: {exc}") from exc
