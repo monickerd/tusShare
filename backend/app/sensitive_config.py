@@ -19,6 +19,7 @@ All runtime callers use is_sensitive() and get_challenge_type() — they never
 touch the database.
 """
 
+import asyncpg
 import hashlib
 import json
 import logging
@@ -91,8 +92,6 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
     Uses a dedicated asyncpg connection (not the app pool) because it requires
     CREATEROLE privileges that the app role deliberately does not have.
     """
-    import asyncpg
-
     logger.info("sensitive_config schema absent — running first-run bootstrap")
 
     try:
@@ -118,9 +117,12 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
         owner_password = secrets.token_urlsafe(64)
 
         logger.info("Bootstrap: creating role %s", owner_role)
+        # CREATE ROLE does not support bind parameters for the PASSWORD clause —
+        # PostgreSQL DDL rejects $1 syntax here. owner_password is always
+        # secrets.token_urlsafe(64) which produces only [A-Za-z0-9_-] so
+        # direct interpolation is safe.
         await conn.execute(
-            f"CREATE ROLE {owner_role} WITH LOGIN PASSWORD $1",
-            owner_password,
+            f"CREATE ROLE {owner_role} WITH LOGIN PASSWORD '{owner_password}'"
         )
 
         logger.info("Bootstrap: creating schema sensitive_config")

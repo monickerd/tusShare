@@ -130,9 +130,10 @@ async def main() -> None:
         owner_role = "sensitive_config_owner"
 
         print(f"[setup] Creating role {owner_role} ...")
+        # CREATE ROLE does not support bind parameters for the PASSWORD clause.
+        # owner_password is always secrets.token_urlsafe(64) → [A-Za-z0-9_-] only.
         await conn.execute(
-            f"CREATE ROLE {owner_role} WITH LOGIN PASSWORD $1",
-            owner_password,
+            f"CREATE ROLE {owner_role} WITH LOGIN PASSWORD '{owner_password}'"
         )
 
         # Create schema owned by the new role
