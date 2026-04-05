@@ -15,7 +15,9 @@ from app.auth.jwt import run_token_cleanup
 from app.routes.uploads import run_upload_cleanup
 from app.config import settings
 from app.database import db_session, get_db, init_db, close_db
+import app.sensitive_config as sensitive_config
 from app.middleware.csrf import CSRFMiddleware
+from app.middleware.https_redirect import HttpsRedirectMiddleware
 from app.middleware.rate_limit import run_rate_limit_cleanup
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.sanitize import InputSanitizationMiddleware
@@ -44,6 +46,10 @@ async def lifespan(app: FastAPI):
     # Initialize database and run migrations
     await init_db()
 
+    # Load and verify the sensitive function config (must run before routes handle requests)
+    async with db_session() as db:
+        await sensitive_config.load(db, settings.DATA_DIR)
+
     # Bootstrap admin user on first run
     async with db_session() as db:
         await _bootstrap_admin(db)
@@ -52,6 +58,14 @@ async def lifespan(app: FastAPI):
     rate_limit_task     = asyncio.create_task(run_rate_limit_cleanup())
     token_cleanup_task  = asyncio.create_task(run_token_cleanup(db_session))
     upload_cleanup_task = asyncio.create_task(run_upload_cleanup(db_session))
+
+    if settings.FORCE_HTTPS:
+        logger.info("HTTPS enforcement active — HTTP requests will be redirected (X-Forwarded-Proto)")
+    elif not settings.DEBUG:
+        logger.warning(
+            "TUSSHARE_FORCE_HTTPS is not set. Ensure your reverse proxy enforces HTTPS "
+            "and that the application port is not directly internet-accessible."
+        )
 
     logger.info("%s v%s started", settings.APP_NAME, settings.APP_VERSION)
     yield
@@ -102,6 +116,10 @@ def create_app() -> FastAPI:
     )
 
     # --- Middleware (outermost first) ---
+    # HttpsRedirectMiddleware must be outermost so it intercepts requests before
+    # any other middleware can process or respond to them.
+    if settings.FORCE_HTTPS:
+        app.add_middleware(HttpsRedirectMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(InputSanitizationMiddleware)
     app.add_middleware(CSRFMiddleware)

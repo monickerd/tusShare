@@ -7,17 +7,20 @@ Every function either returns a cleaned value or raises ValueError.
 
 import base64
 import unicodedata
+import urllib.parse
 
 from app.conf.validation import (
     BASE64_MAX_LENGTH,
     BASE64_PATTERN,
     CONTROL_CHAR_PATTERN,
+    ENCODED_CONTROL_PATTERN,
     FILENAME_BLACKLIST_CHARS,
     FILENAME_MAX_LENGTH,
     FILENAME_RESERVED_NAMES,
     FOLDER_NAME_PATTERN,
     IP_MAX_LENGTH,
     IP_PATTERN,
+    MAX_URL_DECODE_ROUNDS,
     SHARE_TOKEN_PATTERN,
     SHORT_SLUG_PATTERN,
     TEAM_NAME_PATTERN,
@@ -213,6 +216,41 @@ def sanitize_team_name(value: str) -> str:
     if value.replace(".", "") == "":
         raise ValueError("Team name cannot be only dots")
     return value
+
+
+def check_encode_depth(value: str, max_rounds: int = MAX_URL_DECODE_ROUNDS) -> None:
+    """Detect nested/recursive URL encoding in a string.
+
+    Repeatedly URL-decodes the value up to max_rounds times.  If the string
+    still contains percent-encoded sequences after max_rounds it suggests a
+    deliberate evasion attempt; raises ValueError in that case.
+
+    Also raises ValueError immediately if any decode round produces a string
+    containing encoded control characters (%0a, %0d, %00) — these are a sign
+    of CRLF- or null-injection via multi-level encoding.
+
+    Intended for inputs that pass through multiple decode layers (e.g. values
+    that are URL-decoded by FastAPI and then again by a downstream subsystem).
+    Not needed for inputs validated against strict whitelists — use it for
+    free-form text that flows into log sinks, filenames derived from URLs, or
+    response headers.
+    """
+    current = value
+    for _ in range(max_rounds):
+        if "%" not in current:
+            return  # nothing left to decode — clean
+        if ENCODED_CONTROL_PATTERN.search(current):
+            raise ValueError("Input contains encoded control characters (possible injection attempt)")
+        decoded = urllib.parse.unquote(current)
+        if decoded == current:
+            return  # no change — percent sign is a literal, not encoding
+        current = decoded
+
+    # After max_rounds the string still has percent-encoding — suspicious
+    if "%" in current:
+        raise ValueError(
+            f"Input still contains percent-encoded sequences after {max_rounds} decode rounds"
+        )
 
 
 def validate_g1_point(value: str) -> str:

@@ -21,11 +21,20 @@ from app.auth.jwt import (
     store_refresh_token,
 )
 from app.auth.local import LocalAuthProvider
-from app.conf.auth import BCRYPT_ROUNDS, PASSWORD_LOGIN_MIN_LENGTH, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, REFRESH_TOKEN_COOKIE_PATH
+from app.auth.stepup import (
+    StepUpContext,
+    create_step_up_token,
+    failure_tracker,
+    get_verifier,
+    log_security_event,
+)
+from app.conf.auth import BCRYPT_ROUNDS, COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, PASSWORD_LOGIN_MIN_LENGTH, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import get_db
+from app.middleware.rate_limit import _get_client_ip
 from app.models.role import ROLE_USER
 from app.validation.sanitizers import sanitize_username, validate_base64
+import app.sensitive_config as sensitive_config
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +141,7 @@ def _user_response_dict(user) -> dict:
 def _set_auth_cookies(response: Response, access_token: str, refresh_token: str, csrf_token: str) -> None:
     """Set authentication cookies on a response."""
     response.set_cookie(
-        key="access_token",
+        key=COOKIE_ACCESS,
         value=access_token,
         httponly=True,
         secure=True,
@@ -141,7 +150,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
     response.set_cookie(
-        key="refresh_token",
+        key=COOKIE_REFRESH,
         value=refresh_token,
         httponly=True,
         secure=True,
@@ -150,7 +159,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
         max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
     )
     response.set_cookie(
-        key="csrf_token",
+        key=COOKIE_CSRF,
         value=csrf_token,
         httponly=False,
         secure=True,
@@ -162,9 +171,9 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
 
 def _clear_auth_cookies(response: Response) -> None:
     """Clear all authentication cookies."""
-    response.delete_cookie(key="access_token", path="/")
-    response.delete_cookie(key="refresh_token", path=REFRESH_TOKEN_COOKIE_PATH)
-    response.delete_cookie(key="csrf_token", path="/")
+    response.delete_cookie(key=COOKIE_ACCESS, path="/")
+    response.delete_cookie(key=COOKIE_REFRESH, path=REFRESH_TOKEN_COOKIE_PATH)
+    response.delete_cookie(key=COOKIE_CSRF, path="/")
 
 
 @router.post("/login")
@@ -200,7 +209,7 @@ async def logout(
     db=Depends(get_db),
 ):
     """Revoke refresh token and clear cookies."""
-    refresh_token = request.cookies.get("refresh_token")
+    refresh_token = request.cookies.get(COOKIE_REFRESH)
     if refresh_token:
         token_hash = hash_refresh_token(refresh_token)
         await db.execute(
@@ -226,7 +235,7 @@ async def refresh(
     single BEGIN IMMEDIATE block so concurrent requests with the same token
     cannot both succeed (the second sees revoked=1 and fails).
     """
-    raw_refresh = request.cookies.get("refresh_token")
+    raw_refresh = request.cookies.get(COOKIE_REFRESH)
     if not raw_refresh:
         raise HTTPException(status_code=401, detail="Refresh token missing")
 
@@ -660,3 +669,154 @@ async def get_user_public_keys(
         "x25519_public_key": row["x25519_public_key"],
         "mlkem768_public_key": row["mlkem768_public_key"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Step-up authentication (sensitive action re-auth)
+# ---------------------------------------------------------------------------
+
+class StepUpRequest(BaseModel):
+    action_key: str
+    payload_hash: str   # SHA-256 hex of the request body the client will send
+    timestamp: int      # unix seconds (client clock)
+    password: str       # plaintext — used for bcrypt verify + PBKDF2 KEK derivation
+    hmac: str           # hex HMAC-SHA256 proving KEK derivation
+
+    @field_validator("action_key")
+    @classmethod
+    def validate_action_key(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 128:
+            raise ValueError("action_key must be 1–128 characters")
+        # Dot-separated alphanumeric segments + optional trailing .*
+        allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._*")
+        if not all(c in allowed for c in v):
+            raise ValueError("action_key contains invalid characters")
+        return v
+
+    @field_validator("payload_hash")
+    @classmethod
+    def validate_payload_hash(cls, v: str) -> str:
+        v = v.strip().lower()
+        if len(v) != 64 or not all(c in "0123456789abcdef" for c in v):
+            raise ValueError("payload_hash must be a 64-char hex string (SHA-256)")
+        return v
+
+    @field_validator("timestamp")
+    @classmethod
+    def validate_timestamp(cls, v: int) -> int:
+        import time
+        now = int(time.time())
+        # Rough sanity check: timestamp must be within ±10 minutes of server time.
+        # Tight enforcement happens inside the verifier using STEP_UP_TIMESTAMP_TOLERANCE.
+        if abs(now - v) > 600:
+            raise ValueError("timestamp is too far from server time")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if len(v) < 1 or len(v) > PASSWORD_MAX_LENGTH:
+            raise ValueError(f"password must be 1–{PASSWORD_MAX_LENGTH} characters")
+        return v
+
+    @field_validator("hmac")
+    @classmethod
+    def validate_hmac(cls, v: str) -> str:
+        v = v.strip().lower()
+        if len(v) != 64 or not all(c in "0123456789abcdef" for c in v):
+            raise ValueError("hmac must be a 64-char hex string")
+        return v
+
+
+@router.post("/step-up")
+async def step_up(
+    body: StepUpRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Issue a step-up token after verifying re-authentication credentials.
+
+    The client re-enters their password (or another challenge), computes an
+    HMAC over the pending action payload, and POSTs here.  On success a
+    short-lived JWT is returned.  The client attaches it as
+    X-Step-Up-Token: <token> when retrying the sensitive request.
+
+    Failed attempts are counted per user.  Exceeding STEP_UP_MAX_FAILURES
+    locks the session and logs a step_up_lockout security event.
+    """
+    client_ip = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")
+
+    # Validate that this action_key is actually sensitive (prevent fishing
+    # for valid action keys by trying to step-up on arbitrary strings)
+    if not sensitive_config.is_sensitive(body.action_key):
+        raise HTTPException(status_code=400, detail="action_key is not a sensitive function")
+
+    challenge_type = sensitive_config.get_challenge_type(body.action_key)
+    verifier = get_verifier(challenge_type)
+
+    context = StepUpContext(
+        action_key=body.action_key,
+        payload_hash=body.payload_hash,
+        timestamp=body.timestamp,
+        hmac_hex=body.hmac,
+    )
+
+    verified = await verifier.verify(body.password, context, user, db)
+
+    if not verified:
+        count = await failure_tracker.record_failure(user.id)
+        logger.warning(
+            "Step-up failed: user=%s action=%s ip=%s (failure %d/%d)",
+            user.id, body.action_key, client_ip, count, settings.STEP_UP_MAX_FAILURES,
+        )
+        await log_security_event(
+            db, "step_up_failed", user.id, client_ip, user_agent,
+            action_key=body.action_key,
+            detail={"failure_count": count, "max_failures": settings.STEP_UP_MAX_FAILURES},
+        )
+
+        if count >= settings.STEP_UP_MAX_FAILURES:
+            # Lockout: revoke all sessions for this user
+            await db.execute(
+                "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
+                (user.id,),
+            )
+            await db.commit()
+            await log_security_event(
+                db, "step_up_lockout", user.id, client_ip, user_agent,
+                action_key=body.action_key,
+                detail={"failure_count": count},
+            )
+            logger.warning(
+                "Step-up lockout: user=%s — all sessions revoked after %d failures",
+                user.id, count,
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Too many failed attempts. Your session has been invalidated for security.",
+            )
+
+        raise HTTPException(status_code=403, detail="Step-up verification failed")
+
+    # Success — reset failure counter and issue token
+    await failure_tracker.reset(user.id)
+    token = create_step_up_token(user.id, body.action_key, body.payload_hash)
+
+    await log_security_event(
+        db, "step_up_granted", user.id, client_ip, user_agent,
+        action_key=body.action_key,
+        detail={
+            "payload_hash": body.payload_hash,
+            "challenge_type": challenge_type,
+            "window_seconds": settings.STEP_UP_WINDOW_SECONDS,
+        },
+    )
+    logger.info(
+        "Step-up granted: user=%s action=%s ip=%s window=%ds",
+        user.id, body.action_key, client_ip, settings.STEP_UP_WINDOW_SECONDS,
+    )
+
+    return {"step_up_token": token}

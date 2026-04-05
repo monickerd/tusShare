@@ -75,5 +75,17 @@ PAGINATION_MAX_LIMIT = 100
 # --- Range header ---
 RANGE_HEADER_PATTERN = re.compile(r"^bytes=(\d+)-(\d*)$")
 
-# --- Control characters (C0/C1 blocks excluding tab, newline, carriage return) ---
-CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
+# --- Control characters ---
+# Covers C0 (0x00-0x1f) except TAB (0x09) which may appear in some legitimate
+# body contexts, plus DEL (0x7f) and C1 (0x80-0x9f).
+# CR (0x0d) and LF (0x0a) are intentionally included — they are header delimiters
+# and must be rejected in any header value, filename, or user-supplied string.
+CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
+
+# Detects percent-encoded CR, LF, or null bytes in raw (not yet decoded) strings.
+# Used to catch log-injection and CRLF injection attempts before URL decoding.
+# Matches: %0a %0A (LF), %0d %0D (CR), %00 (null)
+ENCODED_CONTROL_PATTERN = re.compile(r"%0[adAD0]", re.IGNORECASE)
+
+# Maximum number of URL-decode rounds to attempt when checking for nested encoding.
+MAX_URL_DECODE_ROUNDS = 3

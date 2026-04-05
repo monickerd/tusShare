@@ -15,6 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from app.conf.auth import COOKIE_CSRF
 from app.conf.middleware import CSRF_EXEMPT_PREFIXES, CSRF_STATE_CHANGING_METHODS
 
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(prefix) for prefix in CSRF_EXEMPT_PREFIXES):
             return await call_next(request)
 
-        cookie_token = request.cookies.get("csrf_token", "")
+        cookie_token = request.cookies.get(COOKIE_CSRF, "")
         header_token = request.headers.get("X-CSRF-Token", "")
 
         if not cookie_token or not header_token:

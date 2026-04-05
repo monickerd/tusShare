@@ -69,12 +69,74 @@ class _SlidingWindowCounter:
 _counter = _SlidingWindowCounter()
 
 
+class _ErrorRateTracker:
+    """Tracks per-IP error counts for brute-force and scanning detection.
+
+    When an IP accumulates >= threshold non-429 4xx/5xx responses within
+    the error window, it enters 'escalated' mode and is throttled to
+    ESCALATED_MAX requests per ESCALATED_WINDOW seconds for
+    ESCALATED_DURATION seconds.
+    """
+
+    def __init__(self):
+        self._errors: dict[str, list[float]] = defaultdict(list)
+        self._escalated_until: dict[str, float] = {}
+        self._lock = asyncio.Lock()
+
+    async def record_error(self, ip: str) -> bool:
+        """Record an error for the given IP.
+
+        Returns True if this error pushed the IP into escalated mode for
+        the first time (so the caller can log the escalation event).
+        """
+        threshold = settings.RATE_LIMIT_ERROR_THRESHOLD
+        if threshold <= 0:
+            return False  # escalation disabled
+
+        now = time.monotonic()
+        cutoff = now - settings.RATE_LIMIT_ERROR_WINDOW
+
+        async with self._lock:
+            self._errors[ip] = [t for t in self._errors[ip] if t > cutoff]
+            self._errors[ip].append(now)
+
+            already_escalated = (
+                ip in self._escalated_until and self._escalated_until[ip] > now
+            )
+            if not already_escalated and len(self._errors[ip]) >= threshold:
+                self._escalated_until[ip] = now + settings.RATE_LIMIT_ESCALATED_DURATION
+                return True
+        return False
+
+    async def is_escalated(self, ip: str) -> bool:
+        """Return True if the IP is currently in escalated throttle mode."""
+        if settings.RATE_LIMIT_ERROR_THRESHOLD <= 0:
+            return False
+        now = time.monotonic()
+        async with self._lock:
+            return ip in self._escalated_until and self._escalated_until[ip] > now
+
+    async def cleanup(self, max_age: float) -> None:
+        now = time.monotonic()
+        async with self._lock:
+            stale_errors = [k for k, v in self._errors.items() if not v or v[-1] < now - max_age]
+            for k in stale_errors:
+                del self._errors[k]
+            expired_esc = [k for k, v in self._escalated_until.items() if v < now]
+            for k in expired_esc:
+                del self._escalated_until[k]
+
+
+_error_tracker = _ErrorRateTracker()
+
+
 async def run_rate_limit_cleanup(interval: float = RATE_LIMIT_CLEANUP_MAX_AGE) -> None:
     """Periodic cleanup task — call from app lifespan. Runs until cancelled."""
     from app.middleware.bandwidth import cleanup as _bandwidth_cleanup
     while True:
         await asyncio.sleep(interval)
         await _counter.cleanup()
+        await _error_tracker.cleanup(RATE_LIMIT_CLEANUP_MAX_AGE)
         await _bandwidth_cleanup()
 
 
@@ -108,6 +170,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         client_ip = _get_client_ip(request)
         path = request.url.path
 
+        # Escalated throttle check: IPs that recently exceeded the error threshold
+        # are throttled to ESCALATED_MAX requests per ESCALATED_WINDOW seconds.
+        if await _error_tracker.is_escalated(client_ip):
+            if not await _counter.is_allowed(
+                f"esc:{client_ip}",
+                settings.RATE_LIMIT_ESCALATED_MAX,
+                settings.RATE_LIMIT_ESCALATED_WINDOW,
+            ):
+                logger.warning(
+                    "Escalated rate limit enforced: ip=%s on %s %s",
+                    client_ip, request.method, path,
+                )
+                return JSONResponse(
+                    status_code=429,
+                    content={
+                        "error": {
+                            "code": "RATE_LIMITED",
+                            "message": "Too many requests. Please try again later.",
+                        }
+                    },
+                    headers={"Retry-After": str(settings.RATE_LIMIT_ESCALATED_WINDOW)},
+                )
+
+        # Route-specific limits
         for prefix, methods, max_req, window in _ROUTE_LIMITS:
             if path.startswith(prefix) and request.method in methods:
                 key = f"rate:{prefix}:{client_ip}"
@@ -126,7 +212,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         headers={"Retry-After": str(window)},
                     )
 
-        return await call_next(request)
+        response = await call_next(request)
+
+        # Track error responses to detect brute-force / scanning.
+        # Exclude 429s (our own rate-limit responses) to avoid positive feedback loops.
+        if response.status_code >= 400 and response.status_code != 429:
+            escalated = await _error_tracker.record_error(client_ip)
+            if escalated:
+                logger.warning(
+                    "IP escalated to aggressive rate limiting: ip=%s "
+                    "(>= %d errors in %ds window)",
+                    client_ip,
+                    settings.RATE_LIMIT_ERROR_THRESHOLD,
+                    settings.RATE_LIMIT_ERROR_WINDOW,
+                )
+
+        return response
 
 
 async def check_management_rate_limit(

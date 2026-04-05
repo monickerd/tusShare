@@ -18,18 +18,21 @@ const Api = (() => {
             headers['X-CSRF-Token'] = _csrfToken();
         }
 
+        // Stringify body early so we can hash it for step-up if needed
+        let bodyString = body;
         if (body && !(body instanceof ArrayBuffer) && !(body instanceof Blob)) {
             headers['Content-Type'] = 'application/json';
-            body = JSON.stringify(body);
+            bodyString = JSON.stringify(body);
         }
 
         const resp = await fetch(path, {
             method,
             headers,
-            body,
+            body: bodyString,
             credentials: 'same-origin',
         });
 
+        // 401 → attempt token refresh then retry
         if (resp.status === 401 && !path.includes('/auth/refresh') && !path.includes('/auth/login')) {
             const refreshed = await _tryRefresh();
             if (refreshed) {
@@ -39,7 +42,7 @@ const Api = (() => {
                 const retry = await fetch(path, {
                     method,
                     headers,
-                    body,
+                    body: bodyString,
                     credentials: 'same-origin',
                 });
                 return _handleResponse(retry);
@@ -47,6 +50,39 @@ const Api = (() => {
             sessionStorage.removeItem(Config.auth.sessionStorageKey);
             window.location.hash = '#/login';
             throw new Error('Session expired');
+        }
+
+        // 403 → check for step-up requirement before generic error handling
+        if (resp.status === 403 && !path.includes('/auth/step-up')) {
+            let data;
+            try { data = await resp.json(); } catch { data = null; }
+
+            if (data?.detail?.error === 'step_up_required') {
+                const actionKey    = data.detail.action;
+                const challengeType = data.detail.challenge_type || 'password';
+                const rawBody      = typeof bodyString === 'string' ? bodyString : '';
+                const payloadHash  = await hashPayload(rawBody);
+
+                // Show challenge modal — throws if user cancels
+                const stepUpToken = await StepUp.challenge(actionKey, payloadHash, challengeType);
+
+                // Retry original request with the step-up token
+                const retryHeaders = { ...headers, 'X-Step-Up-Token': stepUpToken };
+                if (retryHeaders['X-CSRF-Token']) retryHeaders['X-CSRF-Token'] = _csrfToken();
+                const retryResp = await fetch(path, {
+                    method,
+                    headers: retryHeaders,
+                    body: bodyString,
+                    credentials: 'same-origin',
+                });
+                return _handleResponse(retryResp);
+            }
+
+            // Regular 403 — body already consumed, throw directly
+            const errMsg = data?.error?.message || data?.detail || 'HTTP 403';
+            const err = new Error(errMsg);
+            err.status = 403;
+            throw err;
         }
 
         return _handleResponse(resp);
@@ -98,6 +134,7 @@ const Api = (() => {
         put:    (path, body) => _fetch('PUT', path, body),
         del:    (path) => _fetch('DELETE', path),
         patch:  (path, body, headers) => _fetch('PATCH', path, body, headers),
+        getCsrfToken: _csrfToken,
         refreshTokens: _tryRefresh,
 
         streamGet: (path, headers = {}) =>

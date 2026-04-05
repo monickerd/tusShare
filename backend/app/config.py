@@ -55,11 +55,36 @@ class Settings(BaseSettings):
     RATE_LIMIT_UPLOAD: int = 10        # per min per user
     RATE_LIMIT_MANAGEMENT: int = 120   # per min per user (folder/share CRUD, non-file actions)
 
+    # Error-rate escalation (brute-force / scanning detection)
+    # When a single IP accumulates >= ERROR_THRESHOLD non-429 4xx/5xx responses
+    # within ERROR_WINDOW seconds, it is escalated to aggressive throttling:
+    # ESCALATED_MAX requests per ESCALATED_WINDOW seconds for ESCALATED_DURATION seconds.
+    # Set ERROR_THRESHOLD=0 to disable escalation entirely.
+    RATE_LIMIT_ERROR_THRESHOLD: int = 5    # errors before escalation
+    RATE_LIMIT_ERROR_WINDOW: int = 60      # seconds over which errors are counted
+    RATE_LIMIT_ESCALATED_MAX: int = 1      # max requests allowed per escalated window
+    RATE_LIMIT_ESCALATED_WINDOW: int = 1   # seconds per escalated request slot (1 req/s)
+    RATE_LIMIT_ESCALATED_DURATION: int = 300  # seconds the IP stays in escalated mode (5 min)
+
     # Share session tokens
     SHARE_SESSION_EXPIRE_HOURS: int = 2  # short-lived IP-bound JWT for public share access
 
+    # Step-up authentication (sensitive action re-auth)
+    # STEP_UP_WINDOW_SECONDS: how long a granted elevation lasts (sudo window).
+    #   0 = single-use (token is bound to the exact payload_hash it was issued for).
+    #   >0 = any sensitive action within the window is accepted without re-auth.
+    STEP_UP_WINDOW_SECONDS: int = 300     # default: 5 minute sudo window
+    STEP_UP_MAX_FAILURES: int = 3         # failed attempts before session lockout
+
     # Trusted proxy header (set to X-Real-IP or X-Forwarded-For if behind nginx)
     TRUSTED_IP_HEADER: str = "X-Real-IP"
+
+    # HTTPS enforcement
+    # When True, requests with X-Forwarded-Proto: http are redirected to https.
+    # Only enable this when the app port is NOT directly internet-accessible —
+    # traffic must route exclusively through a TLS-terminating proxy (nginx, etc.)
+    # so that X-Forwarded-Proto cannot be spoofed by external clients.
+    FORCE_HTTPS: bool = False
 
     model_config = {"env_prefix": "TUSSHARE_", "env_file": ".env", "extra": "ignore"}
 

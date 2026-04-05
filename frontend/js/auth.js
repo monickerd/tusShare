@@ -643,3 +643,198 @@ const Auth = (() => {
         touchKeyCache,
     };
 })();
+
+
+/**
+ * StepUp — step-up authentication for sensitive actions.
+ *
+ * Usage (called automatically by Api when a 403 step_up_required is received):
+ *   const token = await StepUp.challenge(actionKey, payloadHash);
+ *   // token is the X-Step-Up-Token value to attach to the retry
+ *
+ * The challenge modal re-derives the KEK from the entered password, computes
+ * an HMAC over the pending action payload, and POSTs to /auth/step-up.
+ * On success the returned JWT is cached in memory for the sudo window duration.
+ */
+const StepUp = (() => {
+    // In-memory token cache: actionKey → {token, expiresAt}
+    // Allows the sudo window to work without re-prompting on every sensitive action.
+    const _tokenCache = new Map();
+
+    function _getCached(actionKey) {
+        const entry = _tokenCache.get(actionKey);
+        if (!entry) return null;
+        if (Date.now() >= entry.expiresAt) {
+            _tokenCache.delete(actionKey);
+            return null;
+        }
+        return entry.token;
+    }
+
+    function _cache(actionKey, token, windowSeconds) {
+        if (windowSeconds > 0) {
+            // Cache for 90% of the window to avoid racing the server expiry
+            _tokenCache.set(actionKey, {
+                token,
+                expiresAt: Date.now() + windowSeconds * 900,
+            });
+        }
+        // windowSeconds=0 (single-use): don't cache — token is payload-bound
+    }
+
+    /**
+     * Show the password challenge modal and return a step-up token.
+     *
+     * @param {string} actionKey   - The sensitive function key
+     * @param {string} payloadHash - SHA-256 hex of the request body
+     * @param {string} [challengeType='password'] - Challenge type from server
+     * @returns {Promise<string>}  Resolved with the step-up token JWT
+     * @throws If the user cancels or verification fails
+     */
+    async function challenge(actionKey, payloadHash, challengeType = 'password') {
+        // Check cache first (sudo window mode)
+        const cached = _getCached(actionKey);
+        if (cached) return cached;
+
+        return new Promise((resolve, reject) => {
+            _showPasswordModal(actionKey, payloadHash, resolve, reject);
+        });
+    }
+
+    function _showPasswordModal(actionKey, payloadHash, resolve, reject) {
+        const existing = document.getElementById('stepup-modal');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'stepup-modal';
+        overlay.className = 'modal-overlay';
+        overlay.innerHTML = `
+            <div class="modal stepup-modal">
+                <div class="modal-header">
+                    <h3>Confirm your identity</h3>
+                </div>
+                <div class="modal-body">
+                    <p class="stepup-description">
+                        This action requires re-authentication.
+                        Please enter your password to continue.
+                    </p>
+                    <div class="stepup-action-label">
+                        Action: <code class="stepup-action-key">${actionKey}</code>
+                    </div>
+                    <label for="stepup-password">Password</label>
+                    <input type="password" id="stepup-password" class="stepup-password-input"
+                           autocomplete="current-password" placeholder="Enter your password">
+                    <div id="stepup-error" class="stepup-error" style="display:none"></div>
+                </div>
+                <div class="modal-footer">
+                    <button id="stepup-cancel" class="btn btn-secondary">Cancel</button>
+                    <button id="stepup-confirm" class="btn btn-primary">Confirm</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const passwordInput = overlay.querySelector('#stepup-password');
+        const errorDiv = overlay.querySelector('#stepup-error');
+        const confirmBtn = overlay.querySelector('#stepup-confirm');
+        const cancelBtn = overlay.querySelector('#stepup-cancel');
+
+        passwordInput.focus();
+
+        function _showError(msg) {
+            errorDiv.textContent = msg;
+            errorDiv.style.display = '';
+            passwordInput.value = '';
+            passwordInput.focus();
+        }
+
+        function _dismiss() {
+            overlay.remove();
+        }
+
+        cancelBtn.addEventListener('click', () => {
+            _dismiss();
+            reject(new Error('Step-up cancelled by user'));
+        });
+
+        async function _submit() {
+            const password = passwordInput.value;
+            if (!password) {
+                _showError('Please enter your password.');
+                return;
+            }
+
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = 'Verifying…';
+            errorDiv.style.display = 'none';
+
+            try {
+                const user = Auth.getCurrentUser();
+                if (!user || !user.encryption_salt) {
+                    throw new Error('Session data unavailable — please log in again.');
+                }
+
+                // Re-derive KEK from the entered password + stored salt
+                const kek = await Crypto.deriveKEK(password, user.encryption_salt);
+
+                // Build HMAC
+                const nowSeconds = Math.floor(Date.now() / 1000);
+                const timestampBucket = Math.floor(nowSeconds / 30);
+                const hmac = await computeStepUpHmac(kek, actionKey, payloadHash, timestampBucket);
+
+                // POST to /auth/step-up
+                const res = await fetch(`${Config.app.apiPrefix}/auth/step-up`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': Api.getCsrfToken(),
+                    },
+                    body: JSON.stringify({
+                        action_key: actionKey,
+                        payload_hash: payloadHash,
+                        timestamp: nowSeconds,
+                        password,
+                        hmac,
+                    }),
+                    credentials: 'include',
+                });
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    if (res.status === 403 && err.detail?.includes('locked')) {
+                        _dismiss();
+                        reject(new Error(err.detail || 'Session locked due to too many failures.'));
+                        return;
+                    }
+                    _showError('Incorrect password or verification failed. Please try again.');
+                    confirmBtn.disabled = false;
+                    confirmBtn.textContent = 'Confirm';
+                    return;
+                }
+
+                const data = await res.json();
+                const token = data.step_up_token;
+
+                // Cache for sudo window (server window; we use 90% to avoid racing expiry)
+                _cache(actionKey, token, Config.auth.stepUpWindowSeconds ?? 300);
+
+                _dismiss();
+                resolve(token);
+
+            } catch (err) {
+                if (err.message !== 'Step-up cancelled by user') {
+                    _showError(err.message || 'An error occurred. Please try again.');
+                }
+                confirmBtn.disabled = false;
+                confirmBtn.textContent = 'Confirm';
+            }
+        }
+
+        confirmBtn.addEventListener('click', _submit);
+        passwordInput.addEventListener('keydown', e => {
+            if (e.key === 'Enter') _submit();
+        });
+    }
+
+    return { challenge };
+})();

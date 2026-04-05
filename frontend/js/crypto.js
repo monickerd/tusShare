@@ -829,5 +829,72 @@ const Crypto = (() => {
         unwrapAsymmetricPrivateKeys,
         encapsulateFileKeyForUser,
         decapsulateFileKeyFromUser,
+        // Step-up authentication
+        computeStepUpHmac,
+        hashPayload,
     };
 })();
+
+
+/**
+ * computeStepUpHmac — HMAC for sensitive action step-up challenge.
+ *
+ * Derives: HKDF-SHA256(KEK, salt=actionKey, info="tusShare-stepup-v1") → signing key
+ * Computes: HMAC-SHA256(signing_key, actionKey + "|" + payloadHash + "|" + timestampBucket)
+ * where timestampBucket = Math.floor(unixSeconds / 30)
+ *
+ * Must produce the same result as the server-side PasswordStepUpVerifier.
+ *
+ * @param {CryptoKey} kek             - KEK derived from password+salt via PBKDF2
+ * @param {string}    actionKey       - Sensitive function key (e.g. "policy.escrow.enable")
+ * @param {string}    payloadHash     - SHA-256 hex of the pending request body
+ * @param {number}    timestampBucket - Math.floor(Date.now() / 1000 / 30)
+ * @returns {Promise<string>} lowercase hex HMAC-SHA256
+ */
+async function computeStepUpHmac(kek, actionKey, payloadHash, timestampBucket) {
+    const enc = new TextEncoder();
+
+    // Export KEK raw bytes for HKDF
+    const kekRaw = await crypto.subtle.exportKey('raw', kek);
+
+    // Import as HKDF source key material
+    const hkdfKey = await crypto.subtle.importKey(
+        'raw', kekRaw, 'HKDF', false, ['deriveKey']
+    );
+
+    // Derive step-up signing key via HKDF-SHA256
+    const signingKey = await crypto.subtle.deriveKey(
+        {
+            name: 'HKDF',
+            hash: 'SHA-256',
+            salt: enc.encode(actionKey),
+            info: enc.encode('tusShare-stepup-v1'),
+        },
+        hkdfKey,
+        { name: 'HMAC', hash: { name: 'SHA-256' }, length: 256 },
+        false,
+        ['sign'],
+    );
+
+    // Message: actionKey|payloadHash|timestampBucket
+    const message = enc.encode(`${actionKey}|${payloadHash}|${timestampBucket}`);
+    const sigBuf = await crypto.subtle.sign('HMAC', signingKey, message);
+
+    return Array.from(new Uint8Array(sigBuf))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
+
+/**
+ * hashPayload — SHA-256 hex of an arbitrary string (used for payload_hash).
+ *
+ * @param {string} body - The request body string to hash
+ * @returns {Promise<string>} lowercase hex SHA-256
+ */
+async function hashPayload(body) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(body));
+    return Array.from(new Uint8Array(buf))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+}

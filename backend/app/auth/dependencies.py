@@ -13,6 +13,7 @@ from fastapi import Depends, HTTPException, Request
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import touch_session, verify_access_token
 from app.auth.local import LocalAuthProvider
+from app.conf.auth import COOKIE_ACCESS
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ async def get_current_user(
     token = None
 
     # Method 1: httpOnly cookie
-    cookie_token = request.cookies.get("access_token")
+    cookie_token = request.cookies.get(COOKIE_ACCESS)
     if cookie_token:
         token = cookie_token
 

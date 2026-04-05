@@ -1,3 +1,11 @@
+// Framejacking protection: break out of any frame immediately.
+// Runs before any app code. Server-side X-Frame-Options: DENY and
+// CSP frame-ancestors 'none' are the primary controls; this is a
+// defence-in-depth fallback for legacy browsers or cached responses.
+if (window !== window.top) {
+    try { window.top.location.href = window.location.href; } catch (_) { document.documentElement.innerHTML = ''; }
+}
+
 /**
  * tusShare — Frontend configuration.
  *
@@ -18,13 +26,17 @@ const Config = Object.freeze({
         passwordMinLength: 1,      // login (server validates strength)
         passwordMaxLength: 128,
         sessionStorageKey: 'masterKey',
-        cookieCsrfName: 'csrf_token',
-        cookieAccessName: 'access_token',
+        cookieCsrfName: '__Host-csrf_token',
+        cookieAccessName: '__Host-access_token',
         // How long (ms) the cached master key is trusted without re-entering the password.
         // Rolling window: resets on each page load that successfully restores the key.
         // NOTE: the raw key bytes are stored in sessionStorage (same-origin only, cleared
         // on tab close) for this duration. Acceptable trade-off for long upload sessions.
         keyGracePeriodMs: 30 * 60 * 1000,  // 30 minutes
+        // Step-up sudo window (seconds). Must match TUSSHARE_STEP_UP_WINDOW_SECONDS on the server.
+        // The step-up token cache uses 90% of this value to avoid racing server expiry.
+        // Set to 0 to disable caching (single-use mode).
+        stepUpWindowSeconds: 300,
     }),
 
     /* --- Cryptography --- */

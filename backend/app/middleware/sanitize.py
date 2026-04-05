@@ -16,7 +16,7 @@ from app.conf.middleware import (
     HEADER_MAX_LENGTHS,
     QUERY_PARAM_MAX_LENGTH,
 )
-from app.conf.validation import CONTROL_CHAR_PATTERN
+from app.conf.validation import CONTROL_CHAR_PATTERN, ENCODED_CONTROL_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,24 @@ class InputSanitizationMiddleware(BaseHTTPMiddleware):
                     },
                 )
 
-        # Check query parameter lengths
+        # Check for percent-encoded control characters in the raw URL path
+        # before Starlette decodes it. Catches CRLF/null injection via the URL.
+        raw_path = request.url.path
+        if ENCODED_CONTROL_PATTERN.search(raw_path):
+            logger.warning("Encoded control chars in URL path: %s", raw_path)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "code": "VALIDATION_ERROR",
+                        "message": "URL path contains invalid encoded characters",
+                    }
+                },
+            )
+
+        # Check query parameter lengths and control characters.
+        # Starlette URL-decodes query params before we see them, so control
+        # chars that survive the raw-path check above are caught here.
         for param, value in request.query_params.items():
             if len(value) > QUERY_PARAM_MAX_LENGTH:
                 logger.warning(
@@ -67,6 +84,17 @@ class InputSanitizationMiddleware(BaseHTTPMiddleware):
                         "error": {
                             "code": "VALIDATION_ERROR",
                             "message": f"Query parameter '{param}' exceeds maximum length",
+                        }
+                    },
+                )
+            if CONTROL_CHAR_PATTERN.search(value):
+                logger.warning("Control chars in query param: %s", param)
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": {
+                            "code": "VALIDATION_ERROR",
+                            "message": f"Query parameter '{param}' contains invalid characters",
                         }
                     },
                 )
