@@ -48,7 +48,7 @@ async def lifespan(app: FastAPI):
 
     # Load and verify the sensitive function config (must run before routes handle requests)
     async with db_session() as db:
-        await sensitive_config.load(db, settings.DATA_DIR)
+        await sensitive_config.load(db, settings.DATA_DIR, settings.SUPERUSER_URL)
 
     # Bootstrap admin user on first run
     async with db_session() as db:

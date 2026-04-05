@@ -21,6 +21,10 @@ class Settings(BaseSettings):
 
     # Database
     DATABASE_URL: str = "postgresql://tusshare:tusshare@postgres:5432/tusshare"
+    # Superuser URL used only for first-run sensitive_config schema bootstrap.
+    # Needs CREATEROLE + schema creation privileges on the app database.
+    # Safe to remove from the environment after initial startup.
+    SUPERUSER_URL: str = ""
 
     # Auth
     AUTH_PROVIDER: str = "local"  # "local" | future: "oidc"
