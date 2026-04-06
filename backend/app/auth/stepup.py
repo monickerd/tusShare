@@ -201,7 +201,8 @@ class OPAQUEStepUpVerifier(StepUpVerifier):
         # 2. Finish OPAQUE login — returns session_key bytes or None
         try:
             import base64
-            login_finish_bytes = base64.b64decode(client_login_finish_b64)
+            padded = client_login_finish_b64 + "=" * (-len(client_login_finish_b64) % 4)
+            login_finish_bytes = base64.urlsafe_b64decode(padded)
         except Exception:
             return False
 

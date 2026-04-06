@@ -60,7 +60,7 @@ const App = (() => {
             // #/login (browser no-ops same-value assignments). Render directly so
             // a refresh on the login page doesn't hang on "Loading tusShare...".
             window.location.hash = '#/login';
-            Auth.renderLogin(_appEl());
+            await _routeLogin(_appEl());
             return;
         }
 
@@ -102,7 +102,7 @@ const App = (() => {
 
         // Login route
         if (hash === '#/login') {
-            Auth.renderLogin(container);
+            _routeLogin(container);
             return;
         }
 
