@@ -41,11 +41,9 @@ const Config = Object.freeze({
 
     /* --- Cryptography --- */
     crypto: Object.freeze({
-        pbkdf2Iterations: 600000,
         aesKeyLength: 256,          // bits
         ivLength: 12,               // bytes
         algorithm: 'AES-GCM',
-        hashAlgorithm: 'SHA-256',
     }),
 
     /* --- Upload --- */

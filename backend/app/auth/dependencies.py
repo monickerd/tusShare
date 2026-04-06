@@ -12,16 +12,16 @@ from fastapi import Depends, HTTPException, Request
 
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import touch_session, verify_access_token
-from app.auth.local import LocalAuthProvider
+from app.auth.opaque_provider import OPAQUEAuthProvider
 from app.conf.auth import COOKIE_ACCESS
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
 
-async def _get_auth_provider(db=Depends(get_db)) -> LocalAuthProvider:
+async def _get_auth_provider(db=Depends(get_db)) -> OPAQUEAuthProvider:
     """Return the active auth provider. Swap this for SSO support."""
-    return LocalAuthProvider(db)
+    return OPAQUEAuthProvider(db)
 
 
 async def get_current_user(

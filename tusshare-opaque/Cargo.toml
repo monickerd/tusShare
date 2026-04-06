@@ -1,0 +1,17 @@
+[package]
+name = "tusshare-opaque"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tusshare_opaque"
+crate-type = ["cdylib"]
+
+[dependencies]
+opaque-ke = { version = "4", features = ["ristretto255", "argon2", "std"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+sha2 = "0.10"
+pyo3 = { version = "0.22", features = ["extension-module"] }
+rand = { version = "0.8", features = ["getrandom"] }
+bincode = "1"
+serde = { version = "1", features = ["derive"] }

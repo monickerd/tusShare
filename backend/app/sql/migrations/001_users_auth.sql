@@ -5,6 +5,7 @@ CREATE EXTENSION IF NOT EXISTS citext;
 -------------------------------------------------
 -- USERS
 -- CITEXT provides case-insensitive storage and comparison for usernames.
+-- All users authenticate via OPAQUE aPAKE — password never reaches the server.
 -- E2E encryption key material is stored per-user and never leaves the server
 -- in plaintext.
 -------------------------------------------------
@@ -12,8 +13,9 @@ CREATE TABLE users (
     id                      TEXT PRIMARY KEY,
     username                CITEXT NOT NULL UNIQUE
                                 CHECK(length(username) BETWEEN 1 AND 64),
-    password_hash           TEXT NOT NULL,
-    encryption_salt         TEXT NOT NULL,
+    auth_method             TEXT NOT NULL DEFAULT 'opaque'
+                                CHECK(auth_method IN ('opaque')),
+    opaque_registration_record  BYTEA,
     is_admin                INTEGER NOT NULL DEFAULT 0,
     is_active               INTEGER NOT NULL DEFAULT 1,
 
@@ -23,7 +25,7 @@ CREATE TABLE users (
     bandwidth_limit         BIGINT DEFAULT NULL,
     disk_used               BIGINT NOT NULL DEFAULT 0,
 
-    -- Symmetric key wrapping (password-derived KEK wraps the master key so
+    -- Symmetric key wrapping (OPAQUE exportKey-derived KEK wraps the master key so
     -- password changes don't re-encrypt all file keys)
     wrapped_master_key      TEXT,
     wrapped_master_key_iv   TEXT,
@@ -65,3 +67,20 @@ CREATE INDEX idx_reftok_user   ON refresh_tokens(user_id);
 CREATE INDEX idx_reftok_hash   ON refresh_tokens(token_hash);
 CREATE INDEX idx_reftok_expiry ON refresh_tokens(expires_at);
 CREATE INDEX idx_reftok_idle   ON refresh_tokens(revoked, last_active_at);
+
+-------------------------------------------------
+-- OPAQUE IN-FLIGHT LOGIN SESSIONS
+-- server_state  — bincode-serialized ServerLogin<TusShareCipherSuite>
+--                 (~128 bytes; session_key + expected_mac, both SHA-512 outputs)
+-- expires_at    — NOW() + INTERVAL '60 seconds' set by the application
+-- Rows consumed atomically at login finish; background task sweeps expired rows.
+-------------------------------------------------
+CREATE TABLE opaque_login_sessions (
+    id           TEXT        PRIMARY KEY,
+    username     CITEXT      NOT NULL,
+    server_state BYTEA       NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at   TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX idx_opaque_sessions_expiry ON opaque_login_sessions(expires_at);

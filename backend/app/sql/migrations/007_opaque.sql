@@ -1,0 +1,5 @@
+-- 007_opaque.sql — OPAQUE aPAKE authentication support
+--
+-- As of the DB wipe (2026-04-06), all OPAQUE schema changes are baked directly
+-- into 001_users_auth.sql.  This file is kept as a tombstone so migration
+-- runner numbering stays consistent.  It is intentionally a no-op.

@@ -2,24 +2,27 @@
 
 The sensitive_config PostgreSQL schema is created automatically on first
 startup when TUSSHARE_SUPERUSER_URL is set.  After that it is locked:
-  - The schema owner role has NOLOGIN — no one can authenticate as it.
   - BEFORE UPDATE/DELETE triggers raise exceptions on any mutation attempt.
   - The app DB role has SELECT only.
 
 At startup, this module:
   1. If the schema is absent and TUSSHARE_SUPERUSER_URL is configured,
      bootstraps the schema automatically (first-run self-setup).
-  2. Loads all rows from sensitive_config.sensitive_functions.
-  3. Computes a SHA-256 of the sorted rows.
+  2. Loads all rows from sensitive_config.sensitive_functions and
+     sensitive_config.config_values.
+  3. Computes a SHA-256 over the combined sorted rows.
   4. Compares to DATA_DIR/.sensitive_config.hash (written at bootstrap time).
   5. On mismatch, raises RuntimeError and refuses to start.
-  6. Stores the config in a frozen module-level dict for O(1) runtime checks.
+  6. Stores the config in frozen module-level dicts for O(1) runtime access.
 
-All runtime callers use is_sensitive() and get_challenge_type() — they never
-touch the database.
+Runtime callers use:
+  is_sensitive(key)       — step-up auth gate
+  get_challenge_type(key) — which verifier to use
+  get_config_value(key)   — arbitrary config blobs (e.g. OPAQUE server setup)
 """
 
 import asyncpg
+import base64
 import hashlib
 import json
 import logging
@@ -31,9 +34,13 @@ logger = logging.getLogger(__name__)
 
 # Module-level frozen state — set once in load(), never mutated after that.
 _config: dict[str, dict[str, Any]] = {}
+_config_values: dict[str, str] = {}
 _loaded = False
 
 _HASH_FILENAME = ".sensitive_config.hash"
+
+# Sensitive config key for the OPAQUE server setup blob (base64-encoded bytes).
+OPAQUE_SERVER_SETUP_KEY = "opaque.server_setup"
 
 # ---------------------------------------------------------------------------
 # Default sensitive function seeds
@@ -65,18 +72,30 @@ _NON_SENSITIVE_DEFAULTS = [
 # Hash utility
 # ---------------------------------------------------------------------------
 
-def _hash_rows(rows: list[dict]) -> str:
-    """Deterministic SHA-256 of the config rows (sorted by function_key)."""
-    canonical = [
+def _hash_rows(func_rows: list[dict], value_rows: list[dict]) -> str:
+    """Deterministic SHA-256 over both config tables (sorted by key).
+
+    Covers sensitive_functions rows AND config_values rows so that tampering
+    with either table (including the OPAQUE server setup) is detected.
+    """
+    canonical_funcs = [
         {
             "function_key": r["function_key"],
             "is_sensitive": bool(r["is_sensitive"]),
             "challenge_type": r["challenge_type"],
         }
-        for r in sorted(rows, key=lambda r: r["function_key"])
+        for r in sorted(func_rows, key=lambda r: r["function_key"])
     ]
+    canonical_values = [
+        {"config_key": r["config_key"], "config_value": r["config_value"]}
+        for r in sorted(value_rows, key=lambda r: r["config_key"])
+    ]
+    payload = {
+        "functions": canonical_funcs,
+        "values": canonical_values,
+    }
     return hashlib.sha256(
-        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
 
 
@@ -91,12 +110,13 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
     Uses a dedicated asyncpg connection (not the app pool) because the app role
     has SELECT-only on this schema and cannot create it.
 
-    The schema is owned by the connecting superuser. Integrity is enforced by:
-      - BEFORE UPDATE/DELETE triggers that block all mutations via the app role
-      - A SHA-256 hash of the rows written to DATA_DIR at bootstrap time,
-        verified on every subsequent startup
-    A separate locked owner role is not used — superusers can bypass triggers
-    regardless, so the extra role added complexity without real security benefit.
+    Creates two tables:
+      sensitive_functions — step-up auth configuration (function key → sensitivity)
+      config_values       — arbitrary config blobs (OPAQUE server setup, etc.)
+
+    Both tables are protected by BEFORE UPDATE/DELETE triggers that block all
+    mutations.  A SHA-256 hash of all rows is written to DATA_DIR at bootstrap
+    time and verified on every subsequent startup.
     """
     logger.info("sensitive_config schema absent — running first-run bootstrap")
 
@@ -121,6 +141,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
         logger.info("Bootstrap: creating schema sensitive_config")
         await conn.execute("CREATE SCHEMA sensitive_config")
 
+        # --- sensitive_functions table ---
         logger.info("Bootstrap: creating sensitive_functions table")
         await conn.execute("""
             CREATE TABLE sensitive_config.sensitive_functions (
@@ -132,6 +153,18 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
             )
         """)
 
+        # --- config_values table ---
+        logger.info("Bootstrap: creating config_values table")
+        await conn.execute("""
+            CREATE TABLE sensitive_config.config_values (
+                config_key    TEXT        PRIMARY KEY,
+                config_value  TEXT        NOT NULL,
+                description   TEXT,
+                created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+
+        # --- Immutability trigger (shared by both tables) ---
         await conn.execute("""
             CREATE OR REPLACE FUNCTION sensitive_config._prevent_mutation()
             RETURNS TRIGGER LANGUAGE plpgsql AS $$
@@ -143,19 +176,21 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
             END;
             $$
         """)
-        await conn.execute("""
-            CREATE TRIGGER prevent_update
-                BEFORE UPDATE ON sensitive_config.sensitive_functions
-                FOR EACH ROW EXECUTE FUNCTION sensitive_config._prevent_mutation()
-        """)
-        await conn.execute("""
-            CREATE TRIGGER prevent_delete
-                BEFORE DELETE ON sensitive_config.sensitive_functions
-                FOR EACH ROW EXECUTE FUNCTION sensitive_config._prevent_mutation()
-        """)
+        for table in ("sensitive_functions", "config_values"):
+            await conn.execute(f"""
+                CREATE TRIGGER prevent_update
+                    BEFORE UPDATE ON sensitive_config.{table}
+                    FOR EACH ROW EXECUTE FUNCTION sensitive_config._prevent_mutation()
+            """)
+            await conn.execute(f"""
+                CREATE TRIGGER prevent_delete
+                    BEFORE DELETE ON sensitive_config.{table}
+                    FOR EACH ROW EXECUTE FUNCTION sensitive_config._prevent_mutation()
+            """)
 
-        logger.info("Bootstrap: seeding default entries")
-        all_rows = []
+        # --- Seed sensitive_functions ---
+        logger.info("Bootstrap: seeding sensitive_functions")
+        func_rows = []
         for key, challenge, desc in _SENSITIVE_DEFAULTS:
             await conn.execute(
                 "INSERT INTO sensitive_config.sensitive_functions "
@@ -163,7 +198,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
                 "VALUES ($1, TRUE, $2, $3)",
                 key, challenge, desc,
             )
-            all_rows.append({"function_key": key, "is_sensitive": True, "challenge_type": challenge})
+            func_rows.append({"function_key": key, "is_sensitive": True, "challenge_type": challenge})
 
         for key, challenge, desc in _NON_SENSITIVE_DEFAULTS:
             await conn.execute(
@@ -172,18 +207,46 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
                 "VALUES ($1, FALSE, $2, $3)",
                 key, challenge, desc,
             )
-            all_rows.append({"function_key": key, "is_sensitive": False, "challenge_type": challenge})
+            func_rows.append({"function_key": key, "is_sensitive": False, "challenge_type": challenge})
 
+        # --- Seed config_values: OPAQUE server setup ---
+        logger.info("Bootstrap: generating OPAQUE server setup")
+        try:
+            import tusshare_opaque
+            import asyncio
+            setup_bytes = await asyncio.to_thread(tusshare_opaque.generate_server_setup)
+            setup_b64 = base64.b64encode(setup_bytes).decode()
+        except ImportError:
+            raise RuntimeError(
+                "tusshare_opaque module not found — the PyO3 wheel must be "
+                "installed before bootstrapping sensitive_config. "
+                "Rebuild the Docker image to include the maturin build stage."
+            )
+
+        value_rows = []
+        await conn.execute(
+            "INSERT INTO sensitive_config.config_values "
+            "(config_key, config_value, description) VALUES ($1, $2, $3)",
+            OPAQUE_SERVER_SETUP_KEY,
+            setup_b64,
+            "OPAQUE aPAKE server setup blob (ServerSetup<TusShareCipherSuite>, base64). "
+            "Contains OPRF seed + server keypair. Treat like a CA private key — "
+            "if leaked an attacker can run offline dictionary attacks against all "
+            "stored registration records.",
+        )
+        value_rows.append({"config_key": OPAQUE_SERVER_SETUP_KEY, "config_value": setup_b64})
+        logger.info("Bootstrap: OPAQUE server setup generated and stored")
+
+        # --- Permissions ---
         logger.info("Bootstrap: granting SELECT on sensitive_config to %s", app_role)
         await conn.execute(f"GRANT USAGE ON SCHEMA sensitive_config TO {app_role}")
         await conn.execute(
             f"GRANT SELECT ON ALL TABLES IN SCHEMA sensitive_config TO {app_role}"
         )
-
-        # Revoke public access so only the app role and superusers can read the schema
         await conn.execute("REVOKE ALL ON SCHEMA sensitive_config FROM PUBLIC")
 
-        config_hash = _hash_rows(all_rows)
+        # --- Write integrity hash ---
+        config_hash = _hash_rows(func_rows, value_rows)
         hash_path = data_dir / _HASH_FILENAME
         data_dir.mkdir(parents=True, exist_ok=True)
         hash_path.write_text(config_hash)
@@ -193,7 +256,6 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
         )
 
     except Exception as exc:
-        # Best-effort rollback on failure
         try:
             await conn.execute("DROP SCHEMA IF EXISTS sensitive_config CASCADE")
         except Exception:
@@ -215,10 +277,11 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
       - Otherwise: raises RuntimeError with instructions.
 
     On subsequent startups:
-      - Loads rows, verifies SHA-256 against DATA_DIR/.sensitive_config.hash.
+      - Loads rows from both tables, verifies SHA-256 against
+        DATA_DIR/.sensitive_config.hash.
       - Raises RuntimeError on hash mismatch (possible tampering).
     """
-    global _config, _loaded
+    global _config, _config_values, _loaded
 
     cursor = await db.execute(
         "SELECT schema_name FROM information_schema.schemata "
@@ -233,23 +296,27 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
                 "Set TUSSHARE_SUPERUSER_URL to a PostgreSQL superuser connection string "
                 "and restart — the schema will be created automatically on first run."
             )
-        parsed = urlparse(superuser_url)
-        app_parsed = urlparse(db.dsn if hasattr(db, "dsn") else "")
-        # Derive app role from the live connection if possible, else fall back
-        # to parsing it from the app DATABASE_URL setting.
         from app.config import settings
         app_role = urlparse(settings.DATABASE_URL).username or "tusshare"
         await _bootstrap(superuser_url, app_role, data_dir)
 
-    # Load all rows
+    # Load sensitive_functions
     cursor = await db.execute(
         "SELECT function_key, is_sensitive, challenge_type "
         "FROM sensitive_config.sensitive_functions "
         "ORDER BY function_key"
     )
-    rows = [dict(row) for row in await cursor.fetchall()]
+    func_rows = [dict(row) for row in await cursor.fetchall()]
 
-    # Verify against the hash file written at bootstrap time
+    # Load config_values
+    cursor = await db.execute(
+        "SELECT config_key, config_value "
+        "FROM sensitive_config.config_values "
+        "ORDER BY config_key"
+    )
+    value_rows = [dict(row) for row in await cursor.fetchall()]
+
+    # Verify combined hash
     hash_path = data_dir / _HASH_FILENAME
     if not hash_path.exists():
         raise RuntimeError(
@@ -259,7 +326,7 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
         )
 
     stored_hash = hash_path.read_text().strip()
-    computed_hash = _hash_rows(rows)
+    computed_hash = _hash_rows(func_rows, value_rows)
 
     if computed_hash != stored_hash:
         logger.critical(
@@ -269,7 +336,7 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
         )
         raise RuntimeError(
             "Sensitive config integrity check FAILED — "
-            "sensitive_config.sensitive_functions does not match the stored hash. "
+            "sensitive_config tables do not match the stored hash. "
             "If this change was intentional, DROP SCHEMA sensitive_config CASCADE, "
             "delete DATA_DIR/.sensitive_config.hash, and restart."
         )
@@ -279,16 +346,17 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
             "is_sensitive": bool(row["is_sensitive"]),
             "challenge_type": row["challenge_type"],
         }
-        for row in rows
+        for row in func_rows
     }
+    _config_values = {row["config_key"]: row["config_value"] for row in value_rows}
     _loaded = True
 
     sensitive_count = sum(1 for v in _config.values() if v["is_sensitive"])
     logger.info(
-        "Sensitive config loaded: %d entries (%d sensitive, %d not sensitive)",
+        "Sensitive config loaded: %d function entries (%d sensitive), %d config values",
         len(_config),
         sensitive_count,
-        len(_config) - sensitive_count,
+        len(_config_values),
     )
 
 
@@ -343,3 +411,29 @@ def get_challenge_type(function_key: str) -> str:
             return entry["challenge_type"]
 
     return "password"
+
+
+def get_config_value(key: str) -> str | None:
+    """Return a config value by key, or None if not present.
+
+    Values are stored as text (binary blobs are base64-encoded by convention).
+    Raises RuntimeError if called before load().
+    """
+    if not _loaded:
+        raise RuntimeError("sensitive_config.load() has not been called")
+    return _config_values.get(key)
+
+
+def get_opaque_server_setup() -> bytes:
+    """Return the OPAQUE ServerSetup blob as raw bytes.
+
+    Decodes the base64 value stored under OPAQUE_SERVER_SETUP_KEY.
+    Raises RuntimeError if the key is missing (schema not bootstrapped correctly).
+    """
+    raw = get_config_value(OPAQUE_SERVER_SETUP_KEY)
+    if raw is None:
+        raise RuntimeError(
+            "OPAQUE server setup not found in sensitive_config. "
+            "Drop the sensitive_config schema and restart to re-bootstrap."
+        )
+    return base64.b64decode(raw)

@@ -29,6 +29,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _run_opaque_session_cleanup(db_session_factory, interval: int = 120) -> None:
+    """Sweep expired OPAQUE login sessions every `interval` seconds.
+
+    Sessions have a 60-second TTL set by the application; this task removes
+    any survivors that were abandoned before the finish call (e.g. client crash).
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with db_session_factory() as db:
+                from app.auth.opaque_provider import OPAQUEAuthProvider
+                provider = OPAQUEAuthProvider(db)
+                removed = await provider.sweep_expired_sessions()
+                if removed:
+                    logger.debug("Swept %d expired OPAQUE login session(s)", removed)
+        except Exception:
+            logger.exception("Error in OPAQUE session cleanup task")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle."""
@@ -55,9 +74,10 @@ async def lifespan(app: FastAPI):
         await _bootstrap_admin(db)
 
     # Start background tasks
-    rate_limit_task     = asyncio.create_task(run_rate_limit_cleanup())
-    token_cleanup_task  = asyncio.create_task(run_token_cleanup(db_session))
-    upload_cleanup_task = asyncio.create_task(run_upload_cleanup(db_session))
+    rate_limit_task         = asyncio.create_task(run_rate_limit_cleanup())
+    token_cleanup_task      = asyncio.create_task(run_token_cleanup(db_session))
+    upload_cleanup_task     = asyncio.create_task(run_upload_cleanup(db_session))
+    opaque_session_cleanup  = asyncio.create_task(_run_opaque_session_cleanup(db_session))
 
     if settings.FORCE_HTTPS:
         logger.info("HTTPS enforcement active — HTTP requests will be redirected (X-Forwarded-Proto)")
@@ -71,7 +91,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown — cancel background tasks
-    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task):
+    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, opaque_session_cleanup):
         task.cancel()
         try:
             await task
@@ -126,6 +146,7 @@ def create_app() -> FastAPI:
 
     # --- API routes ---
     from app.routes.auth import router as auth_router
+    from app.routes.opaque_auth import router as opaque_auth_router
     from app.routes.users import router as users_router
     from app.routes.folders import router as folders_router
     from app.routes.files import router as files_router
@@ -137,6 +158,7 @@ def create_app() -> FastAPI:
     from app.routes.events import router as events_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
+    app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
     app.include_router(users_router, prefix="/api/v1/admin/users", tags=["admin-users"])
     app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
     app.include_router(folders_router, prefix="/api/v1/folders", tags=["folders"])

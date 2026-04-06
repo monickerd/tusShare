@@ -1,26 +1,24 @@
-"""Authentication routes: login, logout, refresh, profile, and registration."""
+"""Authentication routes: logout, refresh, profile, and step-up re-auth.
+
+Registration and login are handled by the OPAQUE routes in opaque_auth.py.
+"""
 
 import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import base64 as _b64
-
-import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import get_current_user, require_user_role, _get_auth_provider
-from app.auth.interface import AuthenticatedUser, LocalCredentials
+from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import (
     create_access_token,
     create_refresh_token,
     generate_csrf_token,
     hash_refresh_token,
-    store_refresh_token,
 )
-from app.auth.local import LocalAuthProvider
 from app.auth.stepup import (
     StepUpContext,
     create_step_up_token,
@@ -28,12 +26,11 @@ from app.auth.stepup import (
     get_verifier,
     log_security_event,
 )
-from app.conf.auth import BCRYPT_ROUNDS, COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, PASSWORD_LOGIN_MIN_LENGTH, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, REFRESH_TOKEN_COOKIE_PATH
+from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import get_db
 from app.middleware.rate_limit import _get_client_ip
-from app.models.role import ROLE_USER
-from app.validation.sanitizers import sanitize_username, validate_base64
+from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 import app.sensitive_config as sensitive_config
 
 logger = logging.getLogger(__name__)
@@ -41,90 +38,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-    @field_validator("username")
-    @classmethod
-    def validate_username(cls, v: str) -> str:
-        return sanitize_username(v)
-
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, v: str) -> str:
-        if len(v) < PASSWORD_LOGIN_MIN_LENGTH or len(v) > PASSWORD_MAX_LENGTH:
-            raise ValueError(f"Password must be {PASSWORD_LOGIN_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters")
-        return v
-
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-    new_encryption_salt: str
-    new_wrapped_master_key: str
-    new_wrapped_master_key_iv: str
-
-    @field_validator("new_password")
-    @classmethod
-    def validate_new_password(cls, v: str) -> str:
-        if len(v) < PASSWORD_MIN_LENGTH or len(v) > PASSWORD_MAX_LENGTH:
-            raise ValueError(f"Password must be {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters")
-        return v
-
-    @field_validator("new_encryption_salt")
-    @classmethod
-    def validate_salt(cls, v: str) -> str:
-        # Minimum 64 hex chars = 32 bytes, matching ENCRYPTION_SALT_BYTES.
-        # A shorter salt weakens the uniqueness guarantee PBKDF2 relies on.
-        if not v or len(v) < 64 or len(v) > 128 or not all(c in "0123456789abcdef" for c in v):
-            raise ValueError("Invalid encryption salt (expected 64–128 hex chars)")
-        return v
-
-    @field_validator("new_wrapped_master_key")
-    @classmethod
-    def validate_wrapped_key(cls, v: str) -> str:
-        validate_base64(v)
-        # AES-256-GCM wrap of a 32-byte key = 32 bytes key + 16 bytes tag = 48 bytes minimum
-        try:
-            raw_len = len(_b64.b64decode(v + "=="))
-        except Exception:
-            raise ValueError("Invalid base64 encoding for new_wrapped_master_key")
-        if raw_len < 48:
-            raise ValueError(
-                "new_wrapped_master_key is too short to be a valid AES-256-GCM ciphertext"
-            )
-        return v
-
-    @field_validator("new_wrapped_master_key_iv")
-    @classmethod
-    def validate_wrapped_key_iv(cls, v: str) -> str:
-        validate_base64(v)
-        # AES-GCM IV must be at least 12 bytes
-        try:
-            raw_len = len(_b64.b64decode(v + "=="))
-        except Exception:
-            raise ValueError("Invalid base64 encoding for new_wrapped_master_key_iv")
-        if raw_len < 12:
-            raise ValueError(
-                "new_wrapped_master_key_iv is too short to be a valid AES-GCM IV"
-            )
-        return v
-
-
 def _user_response_dict(user) -> dict:
-    """Build the user dict returned to the client, including key wrapping blobs and roles.
-
-    Includes wrapped private keys so the client can unwrap them after login
-    using the masterKey.  Public keys are also returned for informational use.
-    """
+    """Build the user dict returned to the client, including key wrapping blobs and roles."""
     return {
         "id": user.id,
         "username": user.username,
+        "auth_method": user.auth_method,
         "is_admin": user.is_admin,
         "is_admin_only": user.is_admin_only,
         "roles": sorted(user.roles),
-        "encryption_salt": user.encryption_salt,
         "wrapped_master_key": user.wrapped_master_key,
         "wrapped_master_key_iv": user.wrapped_master_key_iv,
         "recovery_key_wrapped": user.recovery_key_wrapped,
@@ -174,31 +96,6 @@ def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(key=COOKIE_ACCESS, path="/")
     response.delete_cookie(key=COOKIE_REFRESH, path=REFRESH_TOKEN_COOKIE_PATH)
     response.delete_cookie(key=COOKIE_CSRF, path="/")
-
-
-@router.post("/login")
-async def login(
-    body: LoginRequest,
-    response: Response,
-    auth_provider=Depends(_get_auth_provider),
-    db=Depends(get_db),
-):
-    """Authenticate with username/password. Sets JWT cookies on success."""
-    credentials = LocalCredentials(username=body.username, password=body.password)
-    user = await auth_provider.authenticate(credentials)
-
-    if user is None:
-        # Deliberately vague — same message for wrong password and nonexistent user
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    raw_refresh, token_hash = create_refresh_token()
-    token_id = await store_refresh_token(db, user.id, token_hash)
-    access_token = create_access_token(user.id, user.is_admin, session_id=token_id)
-    csrf_token = generate_csrf_token()
-
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token)
-
-    return {"user": _user_response_dict(user)}
 
 
 @router.post("/logout")
@@ -311,56 +208,6 @@ async def me(user: AuthenticatedUser = Depends(get_current_user)):
     return {"user": _user_response_dict(user)}
 
 
-@router.put("/me/password")
-async def change_password(
-    body: ChangePasswordRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
-    auth_provider=Depends(_get_auth_provider),
-):
-    """Change the current user's password.
-
-    The client must also send the re-wrapped master key (encrypted under the
-    new password-derived KEK) so the master key survives the password change.
-    """
-    # Verify current password
-    credentials = LocalCredentials(username=user.username, password=body.current_password)
-    verified = await auth_provider.authenticate(credentials)
-    if verified is None:
-        raise HTTPException(status_code=401, detail="Current password is incorrect")
-
-    # Hash new password
-    new_hash = bcrypt.hashpw(
-        body.new_password.encode("utf-8"), bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
-    ).decode("utf-8")
-
-    # Update password hash and key wrapping blobs atomically.
-    # All three wrapped-key fields are required (validated in ChangePasswordRequest)
-    # so the master key is always re-wrapped under the new KEK in the same transaction.
-    await db.execute("BEGIN")
-    try:
-        await db.execute(
-            "UPDATE users SET password_hash = ?, encryption_salt = ?, "
-            "wrapped_master_key = ?, wrapped_master_key_iv = ?, "
-            "updated_at = NOW() "
-            "WHERE id = ?",
-            (new_hash, body.new_encryption_salt,
-             body.new_wrapped_master_key, body.new_wrapped_master_key_iv, user.id),
-        )
-
-        # Revoke all existing refresh tokens (force re-login on other sessions)
-        await db.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
-            (user.id,),
-        )
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
-
-    return {"message": "Password changed. Please log in again on other devices."}
-
-
 # ---------------------------------------------------------------------------
 # Asymmetric key registration (Phase 5b — PQ-KEM sharing)
 # ---------------------------------------------------------------------------
@@ -418,10 +265,6 @@ async def register_asymmetric_keys(
     All five fields (two public, two wrapped private, one IV) are required.
     Private keys are wrapped with the user's masterKey client-side — the server
     never sees raw private key material.
-
-    Note: replacing existing keys will make any previously received user shares
-    undecryptable until those shares are re-created by senders.  This will be
-    enforced more strictly when team PRE rotation is added in Phase 6.
     """
     await db.execute(
         "UPDATE users SET "
@@ -441,97 +284,8 @@ async def register_asymmetric_keys(
 
 
 # ---------------------------------------------------------------------------
-# Invite validation + registration (Phase 7)
+# Invite validation (consumed during OPAQUE register/finish)
 # ---------------------------------------------------------------------------
-
-class RegisterRequest(BaseModel):
-    """Full registration payload. Client generates all crypto material
-    client-side so the server never sees plaintext passwords or key material."""
-    token: str
-    username: str
-    password: str
-    encryption_salt: str
-    wrapped_master_key: str
-    wrapped_master_key_iv: str
-    recovery_key_wrapped: str | None = None
-    recovery_key_iv: str | None = None
-    recovery_key_hash: str | None = None
-    # Asymmetric PQ keys (optional — can be set on first post-login key setup)
-    x25519_public_key: str | None = None
-    mlkem768_public_key: str | None = None
-    x25519_private_wrapped: str | None = None
-    mlkem768_private_wrapped: str | None = None
-    asymmetric_key_iv: str | None = None
-
-    @field_validator("token")
-    @classmethod
-    def validate_token(cls, v: str) -> str:
-        if not v or len(v) > 200:
-            raise ValueError("Invalid token")
-        return v
-
-    @field_validator("username")
-    @classmethod
-    def validate_username(cls, v: str) -> str:
-        return sanitize_username(v)
-
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, v: str) -> str:
-        if len(v) < PASSWORD_MIN_LENGTH or len(v) > PASSWORD_MAX_LENGTH:
-            raise ValueError(f"Password must be {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters")
-        return v
-
-    @field_validator("encryption_salt")
-    @classmethod
-    def validate_salt(cls, v: str) -> str:
-        if not v or len(v) < 64 or len(v) > 128 or not all(c in "0123456789abcdef" for c in v):
-            raise ValueError("Invalid encryption salt (expected 64–128 hex chars)")
-        return v
-
-    @field_validator("wrapped_master_key")
-    @classmethod
-    def validate_wrapped_key(cls, v: str) -> str:
-        validate_base64(v)
-        try:
-            raw_len = len(_b64.b64decode(v + "=="))
-        except Exception:
-            raise ValueError("Invalid base64 for wrapped_master_key")
-        if raw_len < 48:
-            raise ValueError("wrapped_master_key too short for AES-256-GCM ciphertext")
-        return v
-
-    @field_validator("wrapped_master_key_iv")
-    @classmethod
-    def validate_wrapped_key_iv(cls, v: str) -> str:
-        validate_base64(v)
-        try:
-            raw_len = len(_b64.b64decode(v + "=="))
-        except Exception:
-            raise ValueError("Invalid base64 for wrapped_master_key_iv")
-        if raw_len < 12:
-            raise ValueError("wrapped_master_key_iv too short for AES-GCM IV")
-        return v
-
-    @field_validator(
-        "recovery_key_wrapped", "recovery_key_iv",
-        "x25519_public_key", "mlkem768_public_key",
-        "x25519_private_wrapped", "mlkem768_private_wrapped",
-        "asymmetric_key_iv",
-    )
-    @classmethod
-    def validate_optional_blobs(cls, v: str | None) -> str | None:
-        if v is not None:
-            validate_base64(v)
-        return v
-
-    @field_validator("recovery_key_hash")
-    @classmethod
-    def validate_recovery_hash(cls, v: str | None) -> str | None:
-        if v is not None and (not v or len(v) > 128 or not all(c in "0123456789abcdef" for c in v)):
-            raise ValueError("Invalid recovery_key_hash (expected hex)")
-        return v
-
 
 @router.get("/invite/{token}")
 async def validate_invite(token: str, db=Depends(get_db)):
@@ -557,83 +311,6 @@ async def validate_invite(token: str, db=Depends(get_db)):
     return {"valid": True}
 
 
-@router.post("/register")
-async def register(
-    body: RegisterRequest,
-    response: Response,
-    db=Depends(get_db),
-):
-    """Register a new account using a single-use invite token.
-
-    Invite validation and consumption are atomic (BEGIN IMMEDIATE) to prevent
-    two concurrent requests from using the same token. User creation runs in its
-    own transaction after the invite is consumed. If user creation fails the
-    invite is consumed but no account is created — admin can issue a new invite.
-
-    On success, auth cookies are set and the user is effectively logged in.
-    """
-    token_hash = hashlib.sha256(body.token.encode()).hexdigest()
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # Step 1: Atomically validate and consume the invite
-    await db.execute("BEGIN")
-    try:
-        cursor = await db.execute(
-            "SELECT id FROM invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
-            (token_hash, now),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            await db.rollback()
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid, expired, or already-used invite",
-            )
-
-        await db.execute(
-            "UPDATE invites SET used_at = ? WHERE id = ?",
-            (now, row["id"]),
-        )
-        await db.commit()
-    except HTTPException:
-        raise
-    except Exception:
-        await db.rollback()
-        raise
-
-    # Step 2: Create the user (LocalAuthProvider handles its own transaction)
-    provider = LocalAuthProvider(db)
-    try:
-        user = await provider.create_user(
-            username=body.username,
-            password=body.password,
-            role=ROLE_USER,
-            encryption_salt=body.encryption_salt,
-            wrapped_master_key=body.wrapped_master_key,
-            wrapped_master_key_iv=body.wrapped_master_key_iv,
-            recovery_key_wrapped=body.recovery_key_wrapped,
-            recovery_key_iv=body.recovery_key_iv,
-            recovery_key_hash=body.recovery_key_hash,
-            x25519_public_key=body.x25519_public_key,
-            mlkem768_public_key=body.mlkem768_public_key,
-            x25519_private_wrapped=body.x25519_private_wrapped,
-            mlkem768_private_wrapped=body.mlkem768_private_wrapped,
-            asymmetric_key_iv=body.asymmetric_key_iv,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
-
-    # Issue auth cookies so the client is immediately logged in
-    access_token = create_access_token(user.id, user.is_admin)
-    raw_refresh, token_hash_rt = create_refresh_token()
-    await store_refresh_token(db, user.id, token_hash_rt)
-    csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token)
-
-    logger.info("New user registered via invite: %s (id=%s)", user.username, user.id)
-    return {"user": _user_response_dict(user)}
-
-
 @router.get("/users/{username}/public-keys")
 async def get_user_public_keys(
     username: str,
@@ -649,15 +326,13 @@ async def get_user_public_keys(
     username = sanitize_username(username)
 
     cursor = await db.execute(
-        "SELECT x25519_public_key, mlkem768_public_key FROM users "
-        "WHERE username = ? AND is_active = 1",
+        "SELECT username, x25519_public_key, mlkem768_public_key FROM users "
+        "WHERE LOWER(username) = LOWER(?) AND is_active = 1",
         (username,),
     )
     row = await cursor.fetchone()
 
     if row is None or row["x25519_public_key"] is None or row["mlkem768_public_key"] is None:
-        # Same message for both "no such user" and "user has no keys" to prevent
-        # authenticated username enumeration via differing 404 bodies.
         raise HTTPException(
             status_code=404,
             detail="User not found or has not set up sharing keys yet. "
@@ -665,7 +340,7 @@ async def get_user_public_keys(
         )
 
     return {
-        "username": username,
+        "username": row["username"],
         "x25519_public_key": row["x25519_public_key"],
         "mlkem768_public_key": row["mlkem768_public_key"],
     }
@@ -677,10 +352,13 @@ async def get_user_public_keys(
 
 class StepUpRequest(BaseModel):
     action_key: str
-    payload_hash: str   # SHA-256 hex of the request body the client will send
-    timestamp: int      # unix seconds (client clock)
-    password: str       # plaintext — used for bcrypt verify + PBKDF2 KEK derivation
-    hmac: str           # hex HMAC-SHA256 proving KEK derivation
+    payload_hash: str     # SHA-256 hex of the request body the client will send
+    timestamp: int        # unix seconds (client clock)
+    hmac: str             # hex HMAC-SHA256 proving key derivation
+
+    # OPAQUE path fields
+    session_id: str | None = None
+    client_login_finish: str | None = None   # base64 CredentialFinalization bytes
 
     @field_validator("action_key")
     @classmethod
@@ -688,7 +366,6 @@ class StepUpRequest(BaseModel):
         v = v.strip()
         if not v or len(v) > 128:
             raise ValueError("action_key must be 1–128 characters")
-        # Dot-separated alphanumeric segments + optional trailing .*
         allowed = set("abcdefghijklmnopqrstuvwxyz0123456789._*")
         if not all(c in allowed for c in v):
             raise ValueError("action_key contains invalid characters")
@@ -707,17 +384,25 @@ class StepUpRequest(BaseModel):
     def validate_timestamp(cls, v: int) -> int:
         import time
         now = int(time.time())
-        # Rough sanity check: timestamp must be within ±10 minutes of server time.
-        # Tight enforcement happens inside the verifier using STEP_UP_TIMESTAMP_TOLERANCE.
         if abs(now - v) > 600:
             raise ValueError("timestamp is too far from server time")
         return v
 
-    @field_validator("password")
+    @field_validator("session_id")
     @classmethod
-    def validate_password(cls, v: str) -> str:
-        if len(v) < 1 or len(v) > PASSWORD_MAX_LENGTH:
-            raise ValueError(f"password must be 1–{PASSWORD_MAX_LENGTH} characters")
+    def validate_session_id(cls, v: str | None) -> str | None:
+        if v is not None:
+            try:
+                return validate_uuid(v)
+            except ValueError:
+                raise ValueError("session_id must be a valid UUID")
+        return v
+
+    @field_validator("client_login_finish")
+    @classmethod
+    def validate_client_login_finish(cls, v: str | None) -> str | None:
+        if v is not None:
+            validate_base64(v, max_length=512)  # CredentialFinalization ~256 bytes → 344 b64
         return v
 
     @field_validator("hmac")
@@ -736,26 +421,27 @@ async def step_up(
     user: AuthenticatedUser = Depends(require_user_role),
     db=Depends(get_db),
 ):
-    """Issue a step-up token after verifying re-authentication credentials.
+    """Issue a step-up token after verifying OPAQUE re-authentication credentials.
 
-    The client re-enters their password (or another challenge), computes an
-    HMAC over the pending action payload, and POSTs here.  On success a
-    short-lived JWT is returned.  The client attaches it as
+    The client re-runs an OPAQUE login exchange (via /auth/opaque/step-up/start),
+    computes an HMAC over the pending action payload, and POSTs here.  On success
+    a short-lived JWT is returned.  The client attaches it as
     X-Step-Up-Token: <token> when retrying the sensitive request.
-
-    Failed attempts are counted per user.  Exceeding STEP_UP_MAX_FAILURES
-    locks the session and logs a step_up_lockout security event.
     """
     client_ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent", "")
 
-    # Validate that this action_key is actually sensitive (prevent fishing
-    # for valid action keys by trying to step-up on arbitrary strings)
     if not sensitive_config.is_sensitive(body.action_key):
         raise HTTPException(status_code=400, detail="action_key is not a sensitive function")
 
-    challenge_type = sensitive_config.get_challenge_type(body.action_key)
-    verifier = get_verifier(challenge_type)
+    if not body.session_id or not body.client_login_finish:
+        raise HTTPException(
+            status_code=422,
+            detail="OPAQUE step-up requires session_id and client_login_finish",
+        )
+
+    verifier = get_verifier("opaque")
+    credential = (body.session_id, body.client_login_finish)
 
     context = StepUpContext(
         action_key=body.action_key,
@@ -764,7 +450,7 @@ async def step_up(
         hmac_hex=body.hmac,
     )
 
-    verified = await verifier.verify(body.password, context, user, db)
+    verified = await verifier.verify(credential, context, user, db)
 
     if not verified:
         count = await failure_tracker.record_failure(user.id)
@@ -779,7 +465,6 @@ async def step_up(
         )
 
         if count >= settings.STEP_UP_MAX_FAILURES:
-            # Lockout: revoke all sessions for this user
             await db.execute(
                 "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
                 (user.id,),
@@ -801,7 +486,6 @@ async def step_up(
 
         raise HTTPException(status_code=403, detail="Step-up verification failed")
 
-    # Success — reset failure counter and issue token
     await failure_tracker.reset(user.id)
     token = create_step_up_token(user.id, body.action_key, body.payload_hash)
 
@@ -810,7 +494,6 @@ async def step_up(
         action_key=body.action_key,
         detail={
             "payload_hash": body.payload_hash,
-            "challenge_type": challenge_type,
             "window_seconds": settings.STEP_UP_WINDOW_SECONDS,
         },
     )

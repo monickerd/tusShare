@@ -3,19 +3,19 @@
 Flow:
   1. Client attempts a sensitive action → require_step_up() dependency returns
      HTTP 403 {"error": "step_up_required", "action": ..., "challenge_type": ...}
-  2. Client shows the appropriate challenge modal (password / TOTP / WebAuthn).
-  3. Client POSTs to /auth/step-up with credentials + HMAC of the action payload.
-  4. Server verifies credentials and HMAC, then issues a short-lived step-up JWT.
+  2. Client shows the OPAQUE re-authentication modal.
+  3. Client runs an OPAQUE login exchange via /auth/opaque/step-up/start, then
+     POSTs to /auth/step-up with the KE3 message + HMAC of the action payload.
+  4. Server verifies the OPAQUE exchange and HMAC, then issues a short-lived step-up JWT.
   5. Client re-submits the original request with X-Step-Up-Token: <jwt>.
   6. require_step_up() dependency validates the token and allows the action.
 
-The HMAC (password challenge) uses:
-  signing_key = HKDF-SHA256(KEK, salt=action_key, info="tusShare-stepup-v1")
+--- OPAQUE HMAC ---
+  OPAQUE login/step-up produces an identical session_key on both sides (64-byte
+  SHA-512 output from the 3DH key exchange). Both client and server derive:
+  signing_key = HKDF-SHA256(session_key, salt=action_key, info="tusShare-stepup-v2")
   hmac = HMAC-SHA256(signing_key, action_key + "|" + payload_hash + "|" + timestamp_bucket)
   timestamp_bucket = floor(unix_seconds / STEP_UP_TIMESTAMP_TOLERANCE)
-
-This proves the client both (a) knows the current password and (b) can derive
-the same KEK, binding the signature to the specific action payload.
 """
 
 import asyncio
@@ -30,10 +30,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-import bcrypt
 import jwt
 
-from app.conf.auth import PBKDF2_ITERATIONS, STEP_UP_TIMESTAMP_TOLERANCE
+from app.conf.auth import STEP_UP_TIMESTAMP_TOLERANCE
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -140,80 +139,107 @@ class StepUpVerifier(ABC):
     challenge_type: str
 
     @abstractmethod
-    async def verify(self, password: str, context: StepUpContext, user, db) -> bool:
+    async def verify(self, credential, context: StepUpContext, user, db) -> bool:
         """Verify the step-up credentials.
 
         Args:
-            password:  Raw credential (password string for password challenge;
-                       TOTP code, etc. for other types).
-            context:   StepUpContext with action/payload/timestamp/hmac.
-            user:      AuthenticatedUser — carries encryption_salt, username, etc.
-            db:        DB connection for any lookups needed.
+            credential: Auth-method-specific credential.
+                        - PasswordStepUpVerifier: str (plaintext password)
+                        - OPAQUEStepUpVerifier:   (session_id: str, client_login_finish: str)
+            context:    StepUpContext with action/payload/timestamp/hmac.
+            user:       AuthenticatedUser — carries auth_method, username, etc.
+            db:         DB connection for any lookups needed.
 
         Returns True if the challenge is satisfied, False otherwise.
         """
         ...
 
 
-class PasswordStepUpVerifier(StepUpVerifier):
-    """Password + HMAC step-up verifier.
+class OPAQUEStepUpVerifier(StepUpVerifier):
+    """OPAQUE-based step-up verifier.
 
-    Verifies:
-      1. bcrypt password check (via authenticate()).
-      2. Timestamp within STEP_UP_TIMESTAMP_TOLERANCE seconds of server time.
-      3. HMAC-SHA256 over (action_key|payload_hash|timestamp_bucket) using a
-         signing key derived from HKDF-SHA256(KEK, salt=action_key, info=INFO).
+    The client re-runs a full OPAQUE login exchange against
+    POST /auth/opaque/step-up/start (round 1) and then submits the result
+    here as part of POST /auth/step-up (round 2).
 
-    The HMAC proves the client correctly derived the KEK (i.e. they can unwrap
-    the masterKey), not merely that they knew the password at login time.
+    Verification:
+      1. Atomically consume the opaque_login_sessions row.
+      2. Run tusshare_opaque.server_finish_login → session_key (or None).
+      3. Verify timestamp within tolerance.
+      4. Re-derive signing_key = HKDF-SHA256(session_key, salt=action_key,
+                                              info="tusShare-stepup-v2").
+      5. Verify HMAC-SHA256(signing_key, action_key|payload_hash|timestamp_bucket).
+
+    This proves the client knows the current OPAQUE password and can derive the
+    same session_key — binding the signature to the specific action payload.
     """
 
-    challenge_type = "password"
-    _INFO = b"tusShare-stepup-v1"
+    challenge_type = "opaque"
+    _INFO = b"tusShare-stepup-v2"
 
-    async def verify(self, password: str, context: StepUpContext, user, db) -> bool:
-        # 1. bcrypt check — run in thread to avoid blocking the event loop
-        cursor = await db.execute(
-            "SELECT password_hash FROM users WHERE id = ? AND is_active = 1",
-            (user.id,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
+    async def verify(self, credential: tuple[str, str], context: StepUpContext, user, db) -> bool:
+        session_id, client_login_finish_b64 = credential
+
+        # 1. Consume the login session atomically
+        from app.auth.opaque_provider import OPAQUEAuthProvider
+        provider = OPAQUEAuthProvider(db)
+        session = await provider.consume_login_session(session_id)
+        if session is None:
+            logger.warning("OPAQUE step-up: session not found or expired (user=%s)", user.id)
             return False
 
-        stored_hash = row["password_hash"].encode("utf-8")
-        password_ok = await asyncio.to_thread(
-            bcrypt.checkpw, password.encode("utf-8"), stored_hash
-        )
-        if not password_ok:
+        stored_username, server_state_bytes = session
+
+        # Username in session must match authenticated user (belt-and-suspenders)
+        if stored_username.lower() != user.username.lower():
+            logger.warning(
+                "OPAQUE step-up: session username mismatch (session=%s user=%s)",
+                stored_username, user.username,
+            )
             return False
 
-        # 2. Timestamp check
+        # 2. Finish OPAQUE login — returns session_key bytes or None
+        try:
+            import base64
+            login_finish_bytes = base64.b64decode(client_login_finish_b64)
+        except Exception:
+            return False
+
+        try:
+            import tusshare_opaque
+            session_key: bytes | None = await asyncio.to_thread(
+                tusshare_opaque.server_finish_login,
+                server_state_bytes,
+                login_finish_bytes,
+                user.username.encode("utf-8"),
+            )
+        except Exception as exc:
+            logger.warning("OPAQUE step-up: server_finish_login error (user=%s): %s", user.id, exc)
+            return False
+
+        if session_key is None:
+            return False
+
+        # 3. Timestamp check
         server_now = int(time.time())
         if abs(server_now - context.timestamp) > STEP_UP_TIMESTAMP_TOLERANCE:
             logger.warning(
-                "Step-up timestamp outside tolerance: client=%d server=%d diff=%d",
+                "OPAQUE step-up timestamp outside tolerance: client=%d server=%d diff=%d",
                 context.timestamp, server_now, abs(server_now - context.timestamp),
             )
             return False
 
-        # 3. HMAC verification — PBKDF2 is expensive, run in thread
-        salt_bytes = bytes.fromhex(user.encryption_salt)
-        kek = await asyncio.to_thread(
-            hashlib.pbkdf2_hmac, "sha256", password.encode("utf-8"), salt_bytes, PBKDF2_ITERATIONS
-        )
+        # 4–5. Re-derive signing key and verify HMAC
+        action_salt = context.action_key.encode("utf-8")
+        signing_key = hkdf_sha256(session_key, 32, action_salt, self._INFO)
 
         timestamp_bucket = context.timestamp // STEP_UP_TIMESTAMP_TOLERANCE
-        action_salt = context.action_key.encode("utf-8")
-        signing_key = hkdf_sha256(kek, 32, action_salt, self._INFO)
-
         msg = f"{context.action_key}|{context.payload_hash}|{timestamp_bucket}".encode()
         expected_hmac = _hmac.new(signing_key, msg, hashlib.sha256).hexdigest()
 
-        # Constant-time comparison to prevent timing oracle on HMAC
         if not _hmac.compare_digest(expected_hmac, context.hmac_hex.lower()):
             logger.warning(
-                "Step-up HMAC mismatch for user=%s action=%s",
+                "OPAQUE step-up HMAC mismatch for user=%s action=%s",
                 user.id, context.action_key,
             )
             return False
@@ -223,15 +249,15 @@ class PasswordStepUpVerifier(StepUpVerifier):
 
 # Singleton verifier instances
 _VERIFIERS: dict[str, StepUpVerifier] = {
-    "password": PasswordStepUpVerifier(),
+    "opaque": OPAQUEStepUpVerifier(),
     # "totp": TOTPStepUpVerifier(),     # stubbed — implement when TOTP is added
     # "webauthn": WebAuthnStepUpVerifier(),  # stubbed — implement when WebAuthn is added
 }
 
 
 def get_verifier(challenge_type: str) -> StepUpVerifier:
-    """Return the verifier for the given challenge type. Defaults to password."""
-    return _VERIFIERS.get(challenge_type, _VERIFIERS["password"])
+    """Return the verifier for the given challenge type."""
+    return _VERIFIERS.get(challenge_type, _VERIFIERS["opaque"])
 
 
 # ---------------------------------------------------------------------------

@@ -17,18 +17,11 @@ class AuthCredentials:
 
 
 @dataclass
-class LocalCredentials(AuthCredentials):
-    """Username/password credentials for local auth."""
-    username: str
-    password: str
-
-
-@dataclass
 class AuthenticatedUser:
     """Minimal user representation returned by auth providers."""
     id: str
     username: str
-    encryption_salt: str
+    auth_method: str  # 'opaque'
     roles: set[str] = None  # set of global role IDs (e.g. {"role_admin", "role_user"})
     wrapped_master_key: str | None = None
     wrapped_master_key_iv: str | None = None

@@ -1,4 +1,18 @@
 /**
+ * OPAQUE module loader — singleton that initialises the @serenity-kit/opaque WASM once
+ * and caches it for the lifetime of the page.  Used by Auth and StepUp.
+ */
+let _opaqueModule = null;
+async function _loadOpaque() {
+    if (_opaqueModule) return _opaqueModule;
+    const mod = await import('/js/lib/opaque.js');
+    await mod.ready;
+    _opaqueModule = mod;
+    return _opaqueModule;
+}
+
+
+/**
  * tusShare — Authentication UI and session management.
  *
  * Key wrapping model:
@@ -87,6 +101,43 @@ const Auth = (() => {
     }
 
     // ------------------------------------------------------------------
+    // OPAQUE login helper — two-round-trip OPAQUE exchange.
+    // Returns { data, exportKey } where data is the /login/finish JSON response.
+    // ------------------------------------------------------------------
+
+    async function _runOpaqueLogin(username, password) {
+        const opaque = await _loadOpaque();
+
+        // Round 1: client generates blinded credential request
+        const { clientLoginState, startLoginRequest } = opaque.client.startLogin({ password });
+
+        const round1 = await Api.post(`${Config.app.apiPrefix}/auth/opaque/login/start`, {
+            username,
+            client_login_start: startLoginRequest,
+        });
+
+        // Client processes server OPRF response and generates KE3 MAC
+        const loginResult = opaque.client.finishLogin({
+            clientLoginState,
+            loginResponse: round1.login_response,
+            password,
+            identifiers: { client: username, server: 'tusshare' },
+        });
+        if (!loginResult) throw new Error('Invalid credentials');
+
+        const { finishLoginRequest, exportKey } = loginResult;
+
+        // Round 2: server verifies MAC, issues auth cookies
+        const data = await Api.post(`${Config.app.apiPrefix}/auth/opaque/login/finish`, {
+            username,
+            session_id: round1.session_id,
+            client_login_finish: finishLoginRequest,
+        });
+
+        return { data, exportKey };
+    }
+
+    // ------------------------------------------------------------------
     // Login
     // ------------------------------------------------------------------
 
@@ -126,10 +177,12 @@ const Auth = (() => {
         const btn = e.target.querySelector('button[type="submit"]');
 
         btn.disabled = true;
-        status.textContent = 'Authenticating...';
+        status.textContent = 'Authenticating…';
 
         try {
-            const data = await Api.post(`${Config.app.apiPrefix}/auth/login`, { username, password });
+            status.textContent = 'Running zero-knowledge auth…';
+            const { data, exportKey } = await _runOpaqueLogin(username, password);
+
             _currentUser = data.user;
 
             // Admin accounts have no encryption keys — go straight to the admin panel
@@ -139,25 +192,16 @@ const Auth = (() => {
                 return;
             }
 
-            status.textContent = 'Deriving encryption key...';
+            status.textContent = 'Deriving encryption key…';
+            const kek = await Crypto.deriveOpaqueKEK(exportKey);
 
-            // Derive KEK from password + salt, then unwrap the master key
-            const kek = await Crypto.deriveKEK(password, data.user.encryption_salt);
+            _masterKeyObj = await Crypto.unwrapMasterKey(
+                data.user.wrapped_master_key,
+                data.user.wrapped_master_key_iv,
+                kek
+            );
 
-            if (data.user.wrapped_master_key && data.user.wrapped_master_key_iv) {
-                // New model: unwrap the stored master key
-                _masterKeyObj = await Crypto.unwrapMasterKey(
-                    data.user.wrapped_master_key,
-                    data.user.wrapped_master_key_iv,
-                    kek
-                );
-            } else {
-                // Legacy fallback: KEK *is* the master key (pre-migration accounts)
-                _masterKeyObj = kek;
-            }
-
-            // Cache key + salt so page reloads within the grace period skip the prompt
-            await _saveSessionKeyData(_masterKeyObj, data.user.encryption_salt);
+            await _saveSessionKeyData(_masterKeyObj, null);
 
             // Set up asymmetric PQ keys (generate + register if first login)
             _setupAsymmetricKeys(data.user, _masterKeyObj).catch((err) => {
@@ -217,19 +261,19 @@ const Auth = (() => {
         status.textContent = 'Deriving encryption key...';
 
         try {
-            const kek = await Crypto.deriveKEK(password, _currentUser.encryption_salt);
+            // Re-run the full OPAQUE login challenge to get a fresh export_key → KEK
+            status.textContent = 'Running zero-knowledge auth…';
+            const { data, exportKey } = await _runOpaqueLogin(_currentUser.username, password);
+            _currentUser = data.user;
+            const kek = await Crypto.deriveOpaqueKEK(exportKey);
 
-            if (_currentUser.wrapped_master_key && _currentUser.wrapped_master_key_iv) {
-                _masterKeyObj = await Crypto.unwrapMasterKey(
-                    _currentUser.wrapped_master_key,
-                    _currentUser.wrapped_master_key_iv,
-                    kek
-                );
-            } else {
-                _masterKeyObj = kek;
-            }
+            _masterKeyObj = await Crypto.unwrapMasterKey(
+                _currentUser.wrapped_master_key,
+                _currentUser.wrapped_master_key_iv,
+                kek
+            );
 
-            await _saveSessionKeyData(_masterKeyObj, _currentUser.encryption_salt);
+            await _saveSessionKeyData(_masterKeyObj, null);
 
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
                 console.error('Asymmetric key setup failed:', err);
@@ -302,7 +346,7 @@ const Auth = (() => {
                 recoveryKey
             );
 
-            await _saveSessionKeyData(_masterKeyObj, _currentUser.encryption_salt);
+            await _saveSessionKeyData(_masterKeyObj, null);
 
             // Set up asymmetric keys so share operations work this session
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
@@ -498,15 +542,42 @@ const Auth = (() => {
         }
 
         btn.disabled = true;
-        status.textContent = 'Generating encryption keys…';
+        status.textContent = 'Starting OPAQUE registration…';
 
         try {
-            // Generate client-side salt (32 random bytes, hex-encoded)
-            const saltBytes = crypto.getRandomValues(new Uint8Array(32));
-            const saltHex   = Array.from(saltBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+            // OPAQUE registration round 1 — client generates blinded OPRF input
+            const opaque = await _loadOpaque();
+            const { clientRegistrationState, registrationRequest } =
+                opaque.client.startRegistration({ password });
 
-            // Generate masterKey + recovery key bundle
-            const bundle = await Crypto.generateRegistrationBundle(password, saltHex);
+            const round1 = await Api.post(`${Config.app.apiPrefix}/auth/opaque/register/start`, {
+                token,
+                username,
+                client_registration_request: registrationRequest,
+            });
+
+            // Client processes server OPRF response and derives export_key
+            status.textContent = 'Generating encryption keys…';
+            const { registrationRecord, exportKey } = opaque.client.finishRegistration({
+                clientRegistrationState,
+                registrationResponse: round1.registration_response,
+                password,
+                identifiers: { client: username, server: 'tusshare' },
+            });
+
+            // Derive KEK from OPAQUE export_key (never sent to server)
+            const kek = await Crypto.deriveOpaqueKEK(exportKey);
+
+            // Generate and wrap master key
+            const masterKey = await Crypto.generateMasterKey();
+            const { wrappedKeyB64: wrappedMasterKeyB64, ivB64: wrappedMasterKeyIvB64 } =
+                await Crypto.wrapMasterKey(masterKey, kek);
+
+            // Generate recovery key
+            const { recoveryKey, recoveryKeyString } = await Crypto.generateRecoveryKey();
+            const { wrappedKeyB64: recoveryWrappedB64, ivB64: recoveryIvB64 } =
+                await Crypto.wrapMasterKey(masterKey, recoveryKey);
+            const recoveryKeyHash = await Crypto.hashRecoveryKey(recoveryKeyString);
 
             // Generate asymmetric key pair
             status.textContent = 'Generating sharing keys…';
@@ -514,20 +585,19 @@ const Auth = (() => {
             const { x25519PublicKeyB64, mlkem768PublicKeyB64 } =
                 await Crypto.exportAsymmetricPublicKeys(x25519KeyPair, mlkem768KeyPair);
             const { x25519PrivWrappedB64, mlkem768PrivWrappedB64, asymKeyIvB64 } =
-                await Crypto.wrapAsymmetricPrivateKeys(x25519KeyPair, mlkem768KeyPair, bundle.masterKey);
+                await Crypto.wrapAsymmetricPrivateKeys(x25519KeyPair, mlkem768KeyPair, masterKey);
 
+            // OPAQUE registration round 2 — server stores record and creates user
             status.textContent = 'Creating account…';
-
-            const data = await Api.post(`${Config.app.apiPrefix}/auth/register`, {
+            const data = await Api.post(`${Config.app.apiPrefix}/auth/opaque/register/finish`, {
                 token,
                 username,
-                password,
-                encryption_salt:       saltHex,
-                wrapped_master_key:    bundle.wrappedMasterKeyB64,
-                wrapped_master_key_iv: bundle.wrappedMasterKeyIvB64,
-                recovery_key_wrapped:  bundle.recoveryWrappedB64,
-                recovery_key_iv:       bundle.recoveryIvB64,
-                recovery_key_hash:     bundle.recoveryKeyHash,
+                client_registration_record: registrationRecord,
+                wrapped_master_key:    wrappedMasterKeyB64,
+                wrapped_master_key_iv: wrappedMasterKeyIvB64,
+                recovery_key_wrapped:  recoveryWrappedB64,
+                recovery_key_iv:       recoveryIvB64,
+                recovery_key_hash:     recoveryKeyHash,
                 x25519_public_key:        x25519PublicKeyB64,
                 mlkem768_public_key:      mlkem768PublicKeyB64,
                 x25519_private_wrapped:   x25519PrivWrappedB64,
@@ -535,17 +605,17 @@ const Auth = (() => {
                 asymmetric_key_iv:        asymKeyIvB64,
             });
 
-            // Session setup — mirrors post-login flow
+            // Session setup
             _currentUser   = data.user;
-            _masterKeyObj  = bundle.masterKey;
+            _masterKeyObj  = masterKey;
             _asymmetricKeys = {
                 x25519PrivateKey:  x25519KeyPair.privateKey,
                 mlkem768SecretKey: mlkem768KeyPair.secretKey,
             };
-            await _saveSessionKeyData(_masterKeyObj, saltHex);
+            await _saveSessionKeyData(_masterKeyObj, null);
 
             // Show recovery key (one-time display before going to files)
-            renderRecoveryKeyDisplay(container, bundle.recoveryKeyString);
+            renderRecoveryKeyDisplay(container, recoveryKeyString);
 
         } catch (err) {
             status.textContent = err.message;
@@ -770,17 +840,47 @@ const StepUp = (() => {
 
             try {
                 const user = Auth.getCurrentUser();
-                if (!user || !user.encryption_salt) {
+                if (!user) {
                     throw new Error('Session data unavailable — please log in again.');
                 }
 
-                // Re-derive KEK from the entered password + stored salt
-                const kek = await Crypto.deriveKEK(password, user.encryption_salt);
-
-                // Build HMAC
                 const nowSeconds = Math.floor(Date.now() / 1000);
                 const timestampBucket = Math.floor(nowSeconds / 30);
-                const hmac = await computeStepUpHmac(kek, actionKey, payloadHash, timestampBucket);
+                let reqBody;
+
+                // OPAQUE step-up: run login challenge, derive HMAC from session_key
+                const opaque = await _loadOpaque();
+                const { clientLoginState, startLoginRequest } =
+                    opaque.client.startLogin({ password });
+
+                const round1 = await Api.post(`${Config.app.apiPrefix}/auth/opaque/step-up/start`, {
+                    action_key: actionKey,
+                    payload_hash: payloadHash,
+                    timestamp: nowSeconds,
+                    client_step_up_start: startLoginRequest,
+                });
+
+                const loginResult = opaque.client.finishLogin({
+                    clientLoginState,
+                    loginResponse: round1.login_response,
+                    password,
+                    identifiers: { client: user.username, server: 'tusshare' },
+                });
+                if (!loginResult) throw new Error('Invalid credentials');
+
+                const { finishLoginRequest, sessionKey } = loginResult;
+                const hmac = await computeOpaqueStepUpHmac(
+                    sessionKey, actionKey, payloadHash, timestampBucket
+                );
+
+                reqBody = {
+                    action_key: actionKey,
+                    payload_hash: payloadHash,
+                    timestamp: nowSeconds,
+                    hmac,
+                    session_id: round1.session_id,
+                    client_login_finish: finishLoginRequest,
+                };
 
                 // POST to /auth/step-up
                 const res = await fetch(`${Config.app.apiPrefix}/auth/step-up`, {
@@ -789,14 +889,8 @@ const StepUp = (() => {
                         'Content-Type': 'application/json',
                         'X-CSRF-Token': Api.getCsrfToken(),
                     },
-                    body: JSON.stringify({
-                        action_key: actionKey,
-                        payload_hash: payloadHash,
-                        timestamp: nowSeconds,
-                        password,
-                        hmac,
-                    }),
-                    credentials: 'include',
+                    body: JSON.stringify(reqBody),
+                    credentials: 'same-origin',
                 });
 
                 if (!res.ok) {

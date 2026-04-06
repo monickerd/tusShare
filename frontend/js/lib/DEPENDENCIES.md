@@ -64,6 +64,65 @@ alerts on new releases and security patches.
 
 ---
 
+## opaque.js
+
+| Field        | Value |
+|--------------|-------|
+| Package      | `@serenity-kit/opaque@1.1.0` |
+| Source file  | `node_modules/@serenity-kit/opaque/esm/index.js` (self-contained ESM with inline WASM) |
+| Bundle date  | 2026-04-05 |
+| SHA-256      | `1e8d56383a77948e453085b6d4f52dcb9645f8bfff32395738b63d3a2e2fcb52` |
+| npm integrity (sha512) | `sha512-Y6v/+hRMn0MdMEk5+/ArM0vPIiFfFEbdTZc7oAx+cWyvGODGezAQ/sMjXBVogf7NsS9z9EV0Ve5paZCVULuedw==` |
+| Exports      | `client`, `server`, `ready` |
+
+### What it is
+
+OPAQUE aPAKE (Augmented Password-Authenticated Key Exchange) client-side implementation.
+Wraps `opaque-ke` (same Rust crate as the backend PyO3 bindings) compiled to WASM.
+Ristretto255 cipher suite. Used for zero-knowledge login and registration — the server
+never sees the user's password.
+
+### API used
+
+```js
+const opaque = await import('/js/lib/opaque.js');
+await opaque.ready;
+
+// Registration
+const { clientRegistrationState, registrationRequest } =
+    opaque.client.startRegistration({ password });
+const { registrationRecord, exportKey } =
+    opaque.client.finishRegistration({ clientRegistrationState, registrationResponse, password,
+                                       identifiers: { client: username, server: 'tusshare' } });
+
+// Login
+const { clientLoginState, startLoginRequest } = opaque.client.startLogin({ password });
+const { finishLoginRequest, exportKey, sessionKey } =
+    opaque.client.finishLogin({ clientLoginState, loginResponse, password,
+                                 identifiers: { client: username, server: 'tusshare' } });
+```
+
+`exportKey` → HKDF → KEK → unwrap masterKey (zero-knowledge — server never sees it).
+`sessionKey` → HKDF → step-up signing key (v2 path; both parties derive same value).
+
+### Monitoring for updates
+
+- **GitHub releases**: https://github.com/serenity-kit/opaque/releases
+- **npm advisories**: `npm audit`
+
+### Update process
+
+1. `npm install @serenity-kit/opaque@<new-version>`
+2. Copy `node_modules/@serenity-kit/opaque/esm/index.js` → `frontend/js/lib/opaque.js`
+3. Compute SHA-256: `sha256sum frontend/js/lib/opaque.js`
+4. Update SHA-256 and npm integrity in the table above.
+5. Verify the API: `client.startLogin`, `client.finishLogin`, `client.startRegistration`,
+   `client.finishRegistration`, and that `FinishLoginResult` still exposes `exportKey`.
+6. Verify `identifiers` parameter is still accepted by `finishRegistration` and `finishLogin`.
+7. Clean up: `rm -rf node_modules package.json package-lock.json`
+
+---
+
 ## noble-curves-bls12381.js
 
 | Field        | Value |

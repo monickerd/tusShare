@@ -157,6 +157,11 @@ _ROUTE_LIMITS = [
     ("/api/v1/auth/me/password", {"POST", "PUT"},  settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # Registration via invite — same limit as login to prevent invite brute-force
     ("/api/v1/auth/register",   {"POST"},         settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    # OPAQUE login and registration — same limits as above
+    ("/api/v1/auth/opaque/login/",    {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/register/", {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/step-up/",  {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/migrate/",  {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # Invite validation — tighter window to slow token enumeration
     ("/api/v1/auth/invite/",    {"GET"},          20,                        60),
     # Public share/short-link resolution — keyed by IP to slow token enumeration

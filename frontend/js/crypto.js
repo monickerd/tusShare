@@ -23,32 +23,6 @@ const Crypto = (() => {
     // KEK derivation (replaces the old deriveMasterKey)
     // ===================================================================
 
-    /**
-     * Derive a KEK (Key Encryption Key) from password + salt via PBKDF2.
-     * The KEK is used to wrap/unwrap the real masterKey.
-     */
-    async function deriveKEK(password, saltHex) {
-        const enc = new TextEncoder();
-        const keyMaterial = await crypto.subtle.importKey(
-            'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
-        );
-        const salt = _hexToBytes(saltHex);
-        return crypto.subtle.deriveKey(
-            { name: 'PBKDF2', salt, iterations: _cfg().pbkdf2Iterations, hash: _cfg().hashAlgorithm },
-            keyMaterial,
-            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
-            false,
-            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
-        );
-    }
-
-    /**
-     * @deprecated Use deriveKEK instead. Kept for backward compat during migration.
-     */
-    async function deriveMasterKey(password, saltHex) {
-        return deriveKEK(password, saltHex);
-    }
-
     // ===================================================================
     // Master key generation and wrapping
     // ===================================================================
@@ -150,90 +124,8 @@ const Crypto = (() => {
     // Full registration bundle
     // ===================================================================
 
-    /**
-     * Generate everything needed for a new account's E2E encryption setup.
-     *
-     * Called client-side during registration. Returns all the wrapped blobs
-     * and the plaintext recovery key (shown once to the user).
-     *
-     * @param {string} password - The user's chosen password.
-     * @param {string} saltHex  - Hex-encoded salt (generated server-side or client-side).
-     * @returns {object} { masterKey, wrappedMasterKeyB64, wrappedMasterKeyIvB64,
-     *                      recoveryKeyString, recoveryWrappedB64, recoveryIvB64,
-     *                      recoveryKeyHash }
-     */
-    async function generateRegistrationBundle(password, saltHex) {
-        // 1. Generate the permanent master key
-        const masterKey = await generateMasterKey();
-
-        // 2. Derive KEK from password + salt, wrap master key
-        const kek = await deriveKEK(password, saltHex);
-        const { wrappedKeyB64: wrappedMasterKeyB64, ivB64: wrappedMasterKeyIvB64 } =
-            await wrapMasterKey(masterKey, kek);
-
-        // 3. Generate recovery key, wrap master key with it
-        const { recoveryKey, recoveryKeyString } = await generateRecoveryKey();
-        const { wrappedKeyB64: recoveryWrappedB64, ivB64: recoveryIvB64 } =
-            await wrapMasterKey(masterKey, recoveryKey);
-
-        // 4. Hash recovery key for server-side verification
-        const recoveryKeyHash = await hashRecoveryKey(recoveryKeyString);
-
-        return {
-            masterKey,
-            wrappedMasterKeyB64,
-            wrappedMasterKeyIvB64,
-            recoveryKeyString,
-            recoveryWrappedB64,
-            recoveryIvB64,
-            recoveryKeyHash,
-        };
-    }
-
-    /**
-     * Re-wrap the master key after a password change.
-     *
-     * @param {string} oldPassword - Current password.
-     * @param {string} newPassword - New password.
-     * @param {string} oldSaltHex  - Current salt.
-     * @param {string} newSaltHex  - New salt (rotated on password change).
-     * @param {string} wrappedMasterKeyB64 - Current wrapped master key.
-     * @param {string} wrappedMasterKeyIvB64 - Current wrapping IV.
-     * @returns {object} { masterKey, newWrappedKeyB64, newIvB64 }
-     */
-    async function rewrapMasterKeyForPasswordChange(
-        oldPassword, newPassword, oldSaltHex, newSaltHex,
-        wrappedMasterKeyB64, wrappedMasterKeyIvB64
-    ) {
-        // Unwrap with old KEK
-        const oldKEK = await deriveKEK(oldPassword, oldSaltHex);
-        const masterKey = await unwrapMasterKey(wrappedMasterKeyB64, wrappedMasterKeyIvB64, oldKEK);
-
-        // Re-wrap with new KEK
-        const newKEK = await deriveKEK(newPassword, newSaltHex);
-        const { wrappedKeyB64: newWrappedKeyB64, ivB64: newIvB64 } =
-            await wrapMasterKey(masterKey, newKEK);
-
-        // Round-trip verify: unwrap the new blob immediately and compare raw bytes.
-        // Catches logic bugs (wrong key passed to wrapMasterKey) before they reach the server.
-        // AES-GCM auth tag ensures tampered ciphertext would throw here; this adds a
-        // belt-and-suspenders byte-level check on top of that.
-        const verifiedMasterKey = await unwrapMasterKey(newWrappedKeyB64, newIvB64, newKEK);
-        const [origRaw, verRaw] = await Promise.all([
-            crypto.subtle.exportKey('raw', masterKey),
-            crypto.subtle.exportKey('raw', verifiedMasterKey),
-        ]);
-        const origBytes = new Uint8Array(origRaw);
-        const verBytes  = new Uint8Array(verRaw);
-        if (origBytes.length !== verBytes.length || origBytes.some((b, i) => b !== verBytes[i])) {
-            throw new Error('Master key re-wrap verification failed: round-trip byte mismatch');
-        }
-
-        return { masterKey, newWrappedKeyB64, newIvB64 };
-    }
-
     // ===================================================================
-    // Per-file key operations (unchanged)
+    // Per-file key operations
     // ===================================================================
 
     /**
@@ -753,14 +645,6 @@ const Crypto = (() => {
     // Internal helpers
     // ===================================================================
 
-    function _hexToBytes(hex) {
-        const bytes = new Uint8Array(hex.length / 2);
-        for (let i = 0; i < hex.length; i += 2) {
-            bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
-        }
-        return bytes;
-    }
-
     function _arrayBufToHex(buffer) {
         const bytes = new Uint8Array(buffer);
         let hex = '';
@@ -795,10 +679,40 @@ const Crypto = (() => {
         return _base64ToArrayBuf(b64);
     }
 
+    // ===================================================================
+    // OPAQUE export_key → KEK derivation
+    // ===================================================================
+
+    /**
+     * Derive a KEK from the OPAQUE export_key returned by client.finishLogin /
+     * client.finishRegistration.  The export_key is the OPRF output: the server
+     * never sees it, giving us the zero-knowledge KEK source.
+     *
+     * @param {string} exportKeyB64 - Base64 export_key from @serenity-kit/opaque
+     * @returns {Promise<CryptoKey>} AES-256-GCM key usable for wrap/unwrap
+     */
+    async function deriveOpaqueKEK(exportKeyB64) {
+        const keyBytes = _base64ToArrayBuf(exportKeyB64);
+        const keyMaterial = await crypto.subtle.importKey(
+            'raw', keyBytes, 'HKDF', false, ['deriveKey']
+        );
+        const enc = new TextEncoder();
+        return crypto.subtle.deriveKey(
+            {
+                name: 'HKDF',
+                hash: 'SHA-256',
+                salt: enc.encode('tusShare-opaque'),
+                info: enc.encode('tusShare-KEK-v1'),
+            },
+            keyMaterial,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            false,
+            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey'],
+        );
+    }
+
     return {
-        // KEK / master key wrapping
-        deriveKEK,
-        deriveMasterKey,  // deprecated alias
+        // Master key generation and wrapping
         generateMasterKey,
         wrapMasterKey,
         unwrapMasterKey,
@@ -806,9 +720,6 @@ const Crypto = (() => {
         generateRecoveryKey,
         importRecoveryKey,
         hashRecoveryKey,
-        // Convenience bundles
-        generateRegistrationBundle,
-        rewrapMasterKeyForPasswordChange,
         // File keys
         generateFileKey,
         encryptFileKey,
@@ -829,57 +740,51 @@ const Crypto = (() => {
         unwrapAsymmetricPrivateKeys,
         encapsulateFileKeyForUser,
         decapsulateFileKeyFromUser,
-        // Step-up authentication
-        computeStepUpHmac,
+        // OPAQUE KEK derivation
+        deriveOpaqueKEK,
         hashPayload,
     };
 })();
 
 
 /**
- * computeStepUpHmac — HMAC for sensitive action step-up challenge.
+ * computeOpaqueStepUpHmac — HMAC for OPAQUE step-up challenge.
  *
- * Derives: HKDF-SHA256(KEK, salt=actionKey, info="tusShare-stepup-v1") → signing key
+ * Uses the OPAQUE session_key (from client.finishLogin) as the HMAC root.
+ * Derives: HKDF-SHA256(sessionKey, salt=actionKey, info="tusShare-stepup-v2") → signing key
  * Computes: HMAC-SHA256(signing_key, actionKey + "|" + payloadHash + "|" + timestampBucket)
- * where timestampBucket = Math.floor(unixSeconds / 30)
  *
- * Must produce the same result as the server-side PasswordStepUpVerifier.
+ * Must produce the same result as the server-side OPAQUEStepUpVerifier.
  *
- * @param {CryptoKey} kek             - KEK derived from password+salt via PBKDF2
- * @param {string}    actionKey       - Sensitive function key (e.g. "policy.escrow.enable")
- * @param {string}    payloadHash     - SHA-256 hex of the pending request body
- * @param {number}    timestampBucket - Math.floor(Date.now() / 1000 / 30)
+ * @param {string} sessionKeyB64   - Base64 session_key from opaque.client.finishLogin
+ * @param {string} actionKey       - Sensitive function key
+ * @param {string} payloadHash     - SHA-256 hex of the pending request body
+ * @param {number} timestampBucket - Math.floor(Date.now() / 1000 / 30)
  * @returns {Promise<string>} lowercase hex HMAC-SHA256
  */
-async function computeStepUpHmac(kek, actionKey, payloadHash, timestampBucket) {
+async function computeOpaqueStepUpHmac(sessionKeyB64, actionKey, payloadHash, timestampBucket) {
     const enc = new TextEncoder();
+    const binary = atob(sessionKeyB64);
+    const keyBytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) keyBytes[i] = binary.charCodeAt(i);
 
-    // Export KEK raw bytes for HKDF
-    const kekRaw = await crypto.subtle.exportKey('raw', kek);
-
-    // Import as HKDF source key material
     const hkdfKey = await crypto.subtle.importKey(
-        'raw', kekRaw, 'HKDF', false, ['deriveKey']
+        'raw', keyBytes, 'HKDF', false, ['deriveKey']
     );
-
-    // Derive step-up signing key via HKDF-SHA256
     const signingKey = await crypto.subtle.deriveKey(
         {
             name: 'HKDF',
             hash: 'SHA-256',
             salt: enc.encode(actionKey),
-            info: enc.encode('tusShare-stepup-v1'),
+            info: enc.encode('tusShare-stepup-v2'),
         },
         hkdfKey,
         { name: 'HMAC', hash: { name: 'SHA-256' }, length: 256 },
         false,
         ['sign'],
     );
-
-    // Message: actionKey|payloadHash|timestampBucket
     const message = enc.encode(`${actionKey}|${payloadHash}|${timestampBucket}`);
     const sigBuf = await crypto.subtle.sign('HMAC', signingKey, message);
-
     return Array.from(new Uint8Array(sigBuf))
         .map(b => b.toString(16).padStart(2, '0'))
         .join('');
