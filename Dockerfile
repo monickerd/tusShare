@@ -19,7 +19,7 @@ WORKDIR /tusshare-opaque
 COPY tusshare-opaque/ .
 
 # Build a release wheel targeting the current platform (linux/musl)
-RUN maturin build --release --out /dist
+RUN maturin build --release --out /dist --manylinux off
 
 # ---------------------------------------------------------------------------
 # Stage 2: Runtime image
