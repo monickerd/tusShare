@@ -20,8 +20,8 @@
 
 use argon2::Argon2;
 use opaque_ke::{
-    ClientRegistrationFinishParameters, CredentialFinalization, CredentialRequest,
-    CredentialResponse, Identifiers, RegistrationRequest, RegistrationResponse, RegistrationUpload,
+    CredentialFinalization, CredentialRequest,
+    Identifiers, RegistrationRequest, RegistrationUpload,
     ServerLogin, ServerLoginParameters, ServerRegistration, ServerSetup,
 };
 use opaque_ke::ciphersuite::CipherSuite;
@@ -154,6 +154,7 @@ fn server_finish_registration(py: Python<'_>, reg_upload: &[u8]) -> PyResult<Vec
 ///   server_login_state – bincode-serialized `ServerLogin` state; store with a
 ///                        60-second TTL in `opaque_login_sessions`
 #[pyfunction]
+#[pyo3(signature = (server_setup, reg_record, login_start, username))]
 fn server_start_login(
     py: Python<'_>,
     server_setup: &[u8],
