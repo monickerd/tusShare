@@ -86,7 +86,7 @@ CACHE_CONTROL_REVALIDATE = "no-cache"
 # and replacing with CSS class toggles or nonce-based inline styles. Deferred to Phase C (SRI+CSP).
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
-    "script-src 'self'; "
+    "script-src 'self' 'wasm-unsafe-eval'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob:; "
     "connect-src 'self'; "
