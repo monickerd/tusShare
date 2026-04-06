@@ -894,6 +894,28 @@ async def _validate_bootstrap_token(token: str, db) -> None:
         raise HTTPException(status_code=400, detail="Invalid or already-used bootstrap token")
 
 
+@router.get("/bootstrap/status")
+async def opaque_bootstrap_status(db=Depends(get_db)):
+    """Return whether first-run admin bootstrap is still pending.
+
+    Returns {"needs_bootstrap": true} only when both conditions hold:
+      - the users table is empty (no accounts registered yet), and
+      - a bootstrap_token_hash is present in admin_settings (token was generated).
+
+    The frontend uses this to show the bootstrap UI instead of the login form.
+    """
+    cursor = await db.execute("SELECT COUNT(*) FROM users")
+    user_count = (await cursor.fetchone())[0]
+    if user_count > 0:
+        return {"needs_bootstrap": False}
+
+    cursor = await db.execute(
+        "SELECT 1 FROM admin_settings WHERE key = 'bootstrap_token_hash'"
+    )
+    token_pending = (await cursor.fetchone()) is not None
+    return {"needs_bootstrap": token_pending}
+
+
 @router.post("/bootstrap/start")
 async def opaque_bootstrap_start(
     body: OpaqueBootstrapStartRequest,

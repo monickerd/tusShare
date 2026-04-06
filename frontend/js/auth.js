@@ -624,10 +624,151 @@ const Auth = (() => {
     }
 
     // ------------------------------------------------------------------
+    // First-run bootstrap (admin account creation)
+    // ------------------------------------------------------------------
+
+    function renderBootstrap(container) {
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        const form = Utils.el('form', { className: 'auth-form', onSubmit: (e) => _handleBootstrap(e, container) }, [
+            Utils.el('h1', { textContent: Config.app.name }),
+            Utils.el('h2', { textContent: 'First-Run Setup' }),
+            Utils.el('p', { className: 'text-muted', textContent:
+                'No admin account exists yet. Enter the bootstrap token from the server logs and choose credentials for the initial admin account.' }),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'bs-token', textContent: 'Bootstrap Token' }),
+                Utils.el('input', {
+                    type: 'text', id: 'bs-token', name: 'token',
+                    autocomplete: 'off', required: 'true',
+                    style: 'font-family:var(--font-family-mono)',
+                    placeholder: 'Paste the token printed in the server log',
+                }),
+            ]),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'bs-username', textContent: 'Admin Username' }),
+                Utils.el('input', {
+                    type: 'text', id: 'bs-username', name: 'username',
+                    autocomplete: 'username', required: 'true',
+                    maxlength: String(Config.auth.usernameMaxLength),
+                    pattern: Config.auth.usernamePattern,
+                    title: 'Letters, digits, . _ + - @',
+                }),
+            ]),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'bs-password', textContent: 'Password' }),
+                Utils.el('input', {
+                    type: 'password', id: 'bs-password', name: 'password',
+                    autocomplete: 'new-password', required: 'true',
+                    minlength: '8',
+                    maxlength: String(Config.auth.passwordMaxLength),
+                }),
+            ]),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'bs-password2', textContent: 'Confirm Password' }),
+                Utils.el('input', {
+                    type: 'password', id: 'bs-password2', name: 'password2',
+                    autocomplete: 'new-password', required: 'true',
+                    maxlength: String(Config.auth.passwordMaxLength),
+                }),
+            ]),
+            Utils.el('button', { type: 'submit', className: 'btn btn-primary btn-full', textContent: 'Create Admin Account' }),
+            Utils.el('p', { id: 'bs-status', className: 'auth-status' }),
+        ]);
+        container.appendChild(form);
+    }
+
+    async function _handleBootstrap(e, container) {
+        e.preventDefault();
+        const token    = document.getElementById('bs-token').value.trim();
+        const username = document.getElementById('bs-username').value.trim();
+        const password  = document.getElementById('bs-password').value;
+        const password2 = document.getElementById('bs-password2').value;
+        const status    = document.getElementById('bs-status');
+        const btn       = e.target.querySelector('button[type="submit"]');
+
+        if (password !== password2) {
+            status.textContent = 'Passwords do not match.';
+            return;
+        }
+
+        btn.disabled = true;
+        status.textContent = 'Starting OPAQUE registration…';
+
+        try {
+            const opaque = await _loadOpaque();
+            const { clientRegistrationState, registrationRequest } =
+                opaque.client.startRegistration({ password });
+
+            const round1 = await Api.post(`${Config.app.apiPrefix}/auth/opaque/bootstrap/start`, {
+                token,
+                username,
+                client_registration_request: registrationRequest,
+            });
+
+            status.textContent = 'Generating encryption keys…';
+            const { registrationRecord, exportKey } = opaque.client.finishRegistration({
+                clientRegistrationState,
+                registrationResponse: round1.registration_response,
+                password,
+                identifiers: { client: username, server: 'tusshare' },
+            });
+
+            const kek = await Crypto.deriveOpaqueKEK(exportKey);
+
+            const masterKey = await Crypto.generateMasterKey();
+            const { wrappedKeyB64: wrappedMasterKeyB64, ivB64: wrappedMasterKeyIvB64 } =
+                await Crypto.wrapMasterKey(masterKey, kek);
+
+            const { recoveryKey, recoveryKeyString } = await Crypto.generateRecoveryKey();
+            const { wrappedKeyB64: recoveryWrappedB64, ivB64: recoveryIvB64 } =
+                await Crypto.wrapMasterKey(masterKey, recoveryKey);
+            const recoveryKeyHash = await Crypto.hashRecoveryKey(recoveryKeyString);
+
+            status.textContent = 'Generating sharing keys…';
+            const { x25519KeyPair, mlkem768KeyPair } = await Crypto.generateAsymmetricKeyPair();
+            const { x25519PublicKeyB64, mlkem768PublicKeyB64 } =
+                await Crypto.exportAsymmetricPublicKeys(x25519KeyPair, mlkem768KeyPair);
+            const { x25519PrivWrappedB64, mlkem768PrivWrappedB64, asymKeyIvB64 } =
+                await Crypto.wrapAsymmetricPrivateKeys(x25519KeyPair, mlkem768KeyPair, masterKey);
+
+            status.textContent = 'Creating admin account…';
+            const data = await Api.post(`${Config.app.apiPrefix}/auth/opaque/bootstrap/finish`, {
+                token,
+                username,
+                client_registration_record: registrationRecord,
+                wrapped_master_key:    wrappedMasterKeyB64,
+                wrapped_master_key_iv: wrappedMasterKeyIvB64,
+                recovery_key_wrapped:  recoveryWrappedB64,
+                recovery_key_iv:       recoveryIvB64,
+                recovery_key_hash:     recoveryKeyHash,
+                x25519_public_key:        x25519PublicKeyB64,
+                mlkem768_public_key:      mlkem768PublicKeyB64,
+                x25519_private_wrapped:   x25519PrivWrappedB64,
+                mlkem768_private_wrapped: mlkem768PrivWrappedB64,
+                asymmetric_key_iv:        asymKeyIvB64,
+            });
+
+            _currentUser = data.user;
+            _masterKeyObj = masterKey;
+            _asymmetricKeys = {
+                x25519PrivateKey:  x25519KeyPair.privateKey,
+                mlkem768SecretKey: mlkem768KeyPair.secretKey,
+            };
+            await _saveSessionKeyData(_masterKeyObj, null);
+
+            renderRecoveryKeyDisplay(container, recoveryKeyString, true);
+
+        } catch (err) {
+            status.textContent = err.message;
+            btn.disabled = false;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Recovery key display (shown once after account creation)
     // ------------------------------------------------------------------
 
-    function renderRecoveryKeyDisplay(container, recoveryKeyString) {
+    function renderRecoveryKeyDisplay(container, recoveryKeyString, isAdmin = false) {
         while (container.firstChild) container.removeChild(container.firstChild);
 
         const card = Utils.el('div', { className: 'auth-form' }, [
@@ -656,7 +797,7 @@ const Auth = (() => {
                 style: 'margin-top:8px',
                 textContent: 'I have saved my recovery key',
                 onClick: () => {
-                    window.location.replace('/#/files');
+                    window.location.replace(isAdmin ? '/#/admin' : '/#/files');
                 },
             }),
         ]);
@@ -704,6 +845,7 @@ const Auth = (() => {
         getMasterKeyObj,
         getAsymmetricKeys,
         renderLogin,
+        renderBootstrap,
         renderKeyPrompt,
         renderRecoveryPrompt,
         renderRecoveryKeyDisplay,

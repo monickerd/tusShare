@@ -36,6 +36,12 @@ CSRF_EXEMPT_PREFIXES = (
     # exists yet so the double-submit CSRF pattern doesn't apply.
     "/api/v1/auth/register",
     "/api/v1/auth/invite/",
+    # OPAQUE pre-auth endpoints — unauthenticated, no session cookie exists.
+    # step-up is intentionally excluded (it requires an active session).
+    "/api/v1/auth/opaque/login/",
+    "/api/v1/auth/opaque/register/",
+    "/api/v1/auth/opaque/bootstrap/",
+    "/api/v1/auth/opaque/migrate/",
     "/s/",
     "/l/",
 )

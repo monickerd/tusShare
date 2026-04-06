@@ -141,7 +141,17 @@ const App = (() => {
         window.location.hash = '#/files';
     }
 
-    function _routeLogin(container) {
+    async function _routeLogin(container) {
+        // On first run, show the bootstrap UI instead of the login form.
+        try {
+            const status = await Api.get(`${Config.app.apiPrefix}/auth/opaque/bootstrap/status`);
+            if (status.needs_bootstrap) {
+                Auth.renderBootstrap(container);
+                return;
+            }
+        } catch {
+            // If the status check fails (network error, server starting up), fall through to login.
+        }
         Auth.renderLogin(container);
     }
 
