@@ -102,27 +102,60 @@ async def lifespan(app: FastAPI):
 
 
 async def _bootstrap_admin(db) -> None:
-    """Create the initial admin user if the users table is empty and
-    ADMIN_USERNAME + ADMIN_PASSWORD env vars are set."""
-    if not settings.ADMIN_USERNAME or not settings.ADMIN_PASSWORD:
-        return
+    """On first run (empty users table), generate a one-time OPAQUE bootstrap token.
+
+    The token is logged at CRITICAL level and stored as a SHA-256 hash in
+    admin_settings under the key 'bootstrap_token_hash'.  The operator uses
+    it with POST /api/v1/auth/opaque/bootstrap/start+finish to register the
+    initial admin account via OPAQUE.  The token is consumed (deleted) on
+    successful registration.
+
+    ADMIN_USERNAME and ADMIN_PASSWORD env vars are no longer used — OPAQUE
+    means the server never handles the plaintext password.
+    """
+    import hashlib
+    import secrets
 
     cursor = await db.execute("SELECT COUNT(*) FROM users")
     row = await cursor.fetchone()
     if row[0] > 0:
         return
 
-    # Import here to avoid circular dependency at module level
-    from app.auth.local import LocalAuthProvider
-    from app.models.role import ROLE_ADMIN
-
-    provider = LocalAuthProvider(db)
-    user = await provider.create_user(
-        username=settings.ADMIN_USERNAME,
-        password=settings.ADMIN_PASSWORD,
-        role=ROLE_ADMIN,
+    # If a token is already pending (e.g. container restarted before use),
+    # don't regenerate — just warn so the operator knows to reuse the first one.
+    cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'bootstrap_token_hash'"
     )
-    logger.info("Bootstrapped admin user: %s (id=%s)", user.username, user.id)
+    if await cursor.fetchone() is not None:
+        logger.warning(
+            "Bootstrap token already pending (no users registered yet). "
+            "Use the previously logged token, or wipe admin_settings to regenerate."
+        )
+        return
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode()).hexdigest()
+
+    await db.execute(
+        "INSERT INTO admin_settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        ("bootstrap_token_hash", token_hash),
+    )
+    await db.commit()
+
+    logger.critical(
+        "\n"
+        "================================================================\n"
+        "  TUSSHARE FIRST-RUN BOOTSTRAP\n"
+        "  Register the initial admin account with this one-time token:\n"
+        "\n"
+        "  %s\n"
+        "\n"
+        "  POST to /api/v1/auth/opaque/bootstrap/start then /finish\n"
+        "  This token is single-use and consumed on successful registration.\n"
+        "================================================================",
+        token,
+    )
 
 
 def create_app() -> FastAPI:

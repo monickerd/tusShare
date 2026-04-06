@@ -16,8 +16,6 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.auth.local import LocalAuthProvider
-from app.conf.auth import PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH
 from app.config import settings
 from app.database import get_db
 from app.models.role import ROLE_ADMIN, ROLE_USER, grant_role, revoke_role
@@ -33,25 +31,9 @@ logger = logging.getLogger(__name__)
 # Request models — separate schemas for users vs admins
 # ---------------------------------------------------------------------------
 
-class _UsernamePasswordBase(BaseModel):
-    username: str
-    password: str
-
-    @field_validator("username")
-    @classmethod
-    def validate_username(cls, v: str) -> str:
-        return sanitize_username(v)
-
-    @field_validator("password")
-    @classmethod
-    def validate_password(cls, v: str) -> str:
-        if len(v) < PASSWORD_MIN_LENGTH or len(v) > PASSWORD_MAX_LENGTH:
-            raise ValueError(f"Password must be {PASSWORD_MIN_LENGTH}-{PASSWORD_MAX_LENGTH} characters")
-        return v
-
-
-class CreateUserRequest(_UsernamePasswordBase):
+class CreateUserRequest(BaseModel):
     """Regular user — has E2E encryption, quotas, file operations."""
+    username: str
     disk_quota: int | None = None
     bandwidth_limit: int | None = None
     max_file_size: int | None = None
@@ -89,9 +71,9 @@ class CreateUserRequest(_UsernamePasswordBase):
         return v
 
 
-class CreateAdminRequest(_UsernamePasswordBase):
+class CreateAdminRequest(BaseModel):
     """Admin-only account — management operations only, no file storage."""
-    pass
+    username: str
 
 
 class UpdateUserRequest(BaseModel):
@@ -138,56 +120,20 @@ async def create_user(
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
 ):
-    """Create a regular user with the 'user' role."""
-    provider = LocalAuthProvider(db)
-    try:
-        user = await provider.create_user(
-            username=body.username,
-            password=body.password,
-            role=ROLE_USER,
-            wrapped_master_key=body.wrapped_master_key,
-            wrapped_master_key_iv=body.wrapped_master_key_iv,
-            recovery_key_wrapped=body.recovery_key_wrapped,
-            recovery_key_iv=body.recovery_key_iv,
-            recovery_key_hash=body.recovery_key_hash,
-            x25519_public_key=body.x25519_public_key,
-            mlkem768_public_key=body.mlkem768_public_key,
-            x25519_private_wrapped=body.x25519_private_wrapped,
-            mlkem768_private_wrapped=body.mlkem768_private_wrapped,
-            asymmetric_key_iv=body.asymmetric_key_iv,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    """Create a regular user — use the invite flow instead.
 
-    # Set optional quotas/limits
-    updates = []
-    params = []
-    if body.disk_quota is not None:
-        updates.append("disk_quota = ?")
-        params.append(body.disk_quota)
-    if body.bandwidth_limit is not None:
-        updates.append("bandwidth_limit = ?")
-        params.append(body.bandwidth_limit)
-    if body.max_file_size is not None:
-        updates.append("max_file_size = ?")
-        params.append(body.max_file_size)
-
-    if updates:
-        params.append(user.id)
-        await db.execute(
-            f"UPDATE users SET {', '.join(updates)} WHERE id = ?",
-            params,
-        )
-        await db.commit()
-
-    return {
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "is_admin": user.is_admin,
-            "roles": sorted(user.roles),
-        }
-    }
+    Direct password-based user creation is not compatible with OPAQUE
+    authentication.  Generate an invite via POST /api/v1/admin/invites and
+    have the user register via /api/v1/auth/opaque/register/start+finish.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Direct user creation is not supported with OPAQUE authentication. "
+            "Use POST /api/v1/admin/invites to generate an invite link, "
+            "then have the user register via the OPAQUE registration flow."
+        ),
+    )
 
 
 @router.post("/admins")
@@ -196,25 +142,22 @@ async def create_admin(
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
 ):
-    """Create an admin-only account (no file storage, no encryption blobs)."""
-    provider = LocalAuthProvider(db)
-    try:
-        user = await provider.create_user(
-            username=body.username,
-            password=body.password,
-            role=ROLE_ADMIN,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    """Create an admin-only account — use the invite+role-grant flow instead.
 
-    return {
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "is_admin": user.is_admin,
-            "roles": sorted(user.roles),
-        }
-    }
+    Direct password-based admin creation is not compatible with OPAQUE
+    authentication.  Generate an invite via POST /api/v1/admin/invites,
+    have the user register, then grant the admin role via
+    POST /api/v1/admin/users/{id}/roles/role_admin.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Direct admin creation is not supported with OPAQUE authentication. "
+            "Use POST /api/v1/admin/invites to generate an invite link, "
+            "have the user register via OPAQUE, then grant the admin role via "
+            "POST /api/v1/admin/users/{user_id}/roles/role_admin."
+        ),
+    )
 
 
 @router.get("/{user_id}")
