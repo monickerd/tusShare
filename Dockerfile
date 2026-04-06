@@ -32,8 +32,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# bcrypt → cffi → libffi; asyncpg → libpq (PostgreSQL client library)
-RUN apk add --no-cache libffi libpq
+# bcrypt → cffi → libffi; asyncpg → libpq; tusshare-opaque Rust .so → libgcc
+RUN apk add --no-cache libffi libpq libgcc
 
 # Install dependencies first (layer caching)
 COPY backend/requirements.txt .
