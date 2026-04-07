@@ -731,12 +731,24 @@ const Files = (() => {
     /**
      * Open the move-destination picker modal.
      * items: [{ type: 'file'|'folder', id: string, name: string }]
+     * sourceIsTeam derived from _isTeamView at call time.
      */
     async function _openMoveModal(items) {
         if (items.length === 0) return;
 
-        let selectedDest = null;
+        const sourceIsTeam = _isTeamView;
+        let selectedDest = null; // { id: string|null, label: string, isTeam: boolean }
         let currentSelectedEl = null;
+
+        const moveBtn = Utils.el('button', {
+            className: 'btn btn-primary',
+            textContent: 'Move here',
+            disabled: true,
+            onClick: async () => {
+                overlay.remove();
+                await _confirmAndExecuteMoves(items, selectedDest, sourceIsTeam);
+            },
+        });
 
         function _selectDest(optionEl, dest) {
             if (currentSelectedEl) currentSelectedEl.classList.remove('selected');
@@ -748,11 +760,14 @@ const Files = (() => {
 
         const pickerList = Utils.el('ul', { className: 'folder-picker' });
 
-        // "My Files (root)" is always the first option
+        // Personal section header
+        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: 'My Files' }));
+
+        // My Files root option
         const rootRow = Utils.el('div', { className: 'folder-picker-option' }, [
             Utils.el('span', { className: 'picker-folder-name', textContent: 'My Files (root)' }),
         ]);
-        rootRow.addEventListener('click', () => _selectDest(rootRow, { id: null, label: 'My Files (root)' }));
+        rootRow.addEventListener('click', () => _selectDest(rootRow, { id: null, label: 'My Files (root)', isTeam: false }));
         pickerList.appendChild(Utils.el('li', { className: 'folder-picker-item' }, [rootRow]));
 
         const loadingLi = Utils.el('li', { className: 'folder-picker-loading', textContent: 'Loading…' });
@@ -761,16 +776,6 @@ const Files = (() => {
         const overlay = Utils.el('div', {
             className: 'modal-overlay',
             onClick: (e) => { if (e.target === overlay) overlay.remove(); },
-        });
-
-        const moveBtn = Utils.el('button', {
-            className: 'btn btn-primary',
-            textContent: 'Move here',
-            disabled: true,
-            onClick: async () => {
-                overlay.remove();
-                await _executeMoves(items, selectedDest);
-            },
         });
 
         const title = items.length === 1
@@ -791,30 +796,59 @@ const Files = (() => {
         ]));
         document.body.appendChild(overlay);
 
-        // Populate folder tree after modal is in DOM
+        // Load personal folders and teams in parallel, then team folders sequentially
         try {
-            const data = await Api.get(`${Config.app.apiPrefix}/folders`);
+            const [foldersData, teamsData] = await Promise.all([
+                Api.get(`${Config.app.apiPrefix}/folders`),
+                Api.get(`${Config.app.apiPrefix}/teams`),
+            ]);
             loadingLi.remove();
-            for (const folder of (data.folders || [])) {
-                pickerList.appendChild(_createPickerFolderNode(folder, 0, _selectDest));
+
+            // Personal folders
+            for (const folder of (foldersData.folders || [])) {
+                pickerList.appendChild(_createPickerFolderNode(folder, 0, _selectDest, false));
             }
-            if ((data.folders || []).length === 0) {
+
+            // One section per team with its root-level team folders
+            for (const team of (teamsData.teams || [])) {
                 pickerList.appendChild(Utils.el('li', {
-                    className: 'folder-picker-loading',
-                    textContent: 'No folders',
+                    className: 'folder-picker-section',
+                    textContent: team.name,
                 }));
+                try {
+                    const tfData = await Api.get(`${Config.app.apiPrefix}/teams/${team.id}/folders`);
+                    const teamFolders = tfData.folders || [];
+                    if (teamFolders.length === 0) {
+                        pickerList.appendChild(Utils.el('li', {
+                            className: 'folder-picker-loading',
+                            textContent: 'No folders in this team',
+                        }));
+                    } else {
+                        for (const tf of teamFolders) {
+                            // TeamFolder shape: { folder_id, folder_name, ... }
+                            pickerList.appendChild(_createPickerFolderNode(
+                                { id: tf.folder_id, name: tf.folder_name },
+                                0, _selectDest, true,
+                            ));
+                        }
+                    }
+                } catch {
+                    pickerList.appendChild(Utils.el('li', {
+                        className: 'folder-picker-error',
+                        textContent: 'Failed to load folders',
+                    }));
+                }
             }
         } catch {
-            loadingLi.textContent = 'Failed to load folders';
+            if (loadingLi.parentNode) loadingLi.textContent = 'Failed to load folders';
         }
     }
 
     /**
      * Build a lazily-expandable folder node for the move picker.
-     * depth controls the left-indent level.
-     * onSelect(optionEl, dest) is called when the row is clicked.
+     * isTeam: true if this node is in a team context (propagated to children).
      */
-    function _createPickerFolderNode(folder, depth, onSelect) {
+    function _createPickerFolderNode(folder, depth, onSelect, isTeam) {
         const li = Utils.el('li', { className: 'folder-picker-item' });
         let expanded = false;
 
@@ -839,7 +873,7 @@ const Files = (() => {
                     expandBtn.textContent = '\u25BC';
                     const sublist = Utils.el('ul');
                     for (const child of children) {
-                        sublist.appendChild(_createPickerFolderNode(child, depth + 1, onSelect));
+                        sublist.appendChild(_createPickerFolderNode(child, depth + 1, onSelect, isTeam));
                     }
                     li.appendChild(sublist);
                 }
@@ -857,14 +891,56 @@ const Files = (() => {
             expandBtn,
             Utils.el('span', { className: 'picker-folder-name', textContent: folder.name }),
         ]);
-        row.addEventListener('click', () => onSelect(row, { id: folder.id, label: folder.name }));
+        row.addEventListener('click', () => onSelect(row, { id: folder.id, label: folder.name, isTeam }));
 
         li.appendChild(row);
         return li;
     }
 
     /**
-     * Execute moves for a list of items to a destination.
+     * Run pre-move checks (active shares, cross-boundary warning) then execute.
+     * destination: { id: string|null, label: string, isTeam: boolean }
+     */
+    async function _confirmAndExecuteMoves(items, destination, sourceIsTeam) {
+        // 1. Active share check — warn if any item has a live share link
+        const allIds = items.map(i => i.id);
+        let idsWithShares = [];
+        try {
+            const res = await Api.post(
+                `${Config.app.apiPrefix}/shares/active-for-items`,
+                { resource_ids: allIds },
+            );
+            idsWithShares = res.ids_with_shares || [];
+        } catch {
+            // Best-effort; skip the check if the endpoint fails
+        }
+
+        if (idsWithShares.length > 0) {
+            const shareMsg = idsWithShares.length === 1
+                ? `One of the selected items has an active share link. Recipients of that link may lose access after the move.`
+                : `${idsWithShares.length} of the selected items have active share links. Recipients of those links may lose access after the move.`;
+            const ok = await Utils.showConfirm(shareMsg + '\n\nProceed anyway?');
+            if (!ok) return;
+        }
+
+        // 2. Cross-boundary warning
+        const destIsTeam = destination.isTeam;
+        if (sourceIsTeam !== destIsTeam) {
+            let boundaryMsg;
+            if (!sourceIsTeam && destIsTeam) {
+                boundaryMsg = `Warning: By moving to "${destination.label}", you will be sharing ${items.length === 1 ? 'this item' : 'these items'} with everyone who has access to that folder.`;
+            } else {
+                boundaryMsg = `Warning: By moving to your personal files, team members will lose access to ${items.length === 1 ? 'this item' : 'these items'}.`;
+            }
+            const ok = await Utils.showConfirm(boundaryMsg + '\n\nProceed?');
+            if (!ok) return;
+        }
+
+        await _executeMoves(items, destination);
+    }
+
+    /**
+     * Execute moves for a list of items to a destination (no confirmation).
      * destination: { id: string|null, label: string }
      */
     async function _executeMoves(items, destination) {

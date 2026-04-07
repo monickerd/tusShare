@@ -127,7 +127,9 @@ async def update_file(
         if target_folder is None:
             raise HTTPException(status_code=404, detail="Target folder not found")
         if target_folder["owner_id"] != user.id and not user.is_admin:
-            raise HTTPException(status_code=403, detail="Access denied to target folder")
+            # Allow moves into team folders where the user is a member
+            if not await is_team_folder_member(db, body.folder_id, user.id):
+                raise HTTPException(status_code=403, detail="Access denied to target folder")
         updates.append("folder_id = ?")
         params.append(body.folder_id)
 

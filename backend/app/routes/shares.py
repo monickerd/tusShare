@@ -400,6 +400,44 @@ async def list_received_shares(
     return {"shares": result, "total": total, "offset": offset, "limit": limit}
 
 
+class _CheckSharesRequest(BaseModel):
+    resource_ids: list[str]
+
+    @field_validator("resource_ids")
+    @classmethod
+    def validate_ids(cls, v: list[str]) -> list[str]:
+        if len(v) > 100:
+            raise ValueError("Too many IDs (max 100)")
+        return [validate_uuid(r) for r in v]
+
+
+@router.post("/api/v1/shares/active-for-items")
+async def check_active_shares_for_items(
+    body: _CheckSharesRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+    _rl=Depends(check_management_rate_limit),
+):
+    """Return which of the given resource IDs have at least one active share (by any user).
+
+    Used by the move modal to warn before moving items with live share links.
+    """
+    if not body.resource_ids:
+        return {"ids_with_shares": []}
+
+    placeholders = ",".join(["?" for _ in body.resource_ids])
+    cursor = await db.execute(
+        f"SELECT DISTINCT si.resource_id "
+        f"FROM share_items si "
+        f"JOIN shares s ON s.id = si.share_id "
+        f"WHERE si.resource_id IN ({placeholders}) "
+        f"AND s.is_active = 1",
+        tuple(body.resource_ids),
+    )
+    rows = await cursor.fetchall()
+    return {"ids_with_shares": [r["resource_id"] for r in rows]}
+
+
 @router.get("/api/v1/shares")
 async def list_shares(
     user: AuthenticatedUser = Depends(require_user_role),
