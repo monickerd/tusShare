@@ -171,8 +171,7 @@ const App = (() => {
 
     function _routeFolder(container, folderId) {
         _renderShell(container);
-        Files.renderFileBrowser(document.getElementById('main-content'));
-        Files.loadFolder(folderId);
+        Files.renderFileBrowser(document.getElementById('main-content'), { initialFolderId: folderId });
     }
 
     async function _routeShared(container) {
@@ -203,8 +202,7 @@ const App = (() => {
 
     function _routeTeamFolder(container, folderId) {
         _renderShell(container);
-        Files.renderFileBrowser(document.getElementById('main-content'), { teamView: true });
-        Files.loadFolder(folderId);
+        Files.renderFileBrowser(document.getElementById('main-content'), { teamView: true, initialFolderId: folderId });
     }
 
     function _routeTeamFolders(container) {

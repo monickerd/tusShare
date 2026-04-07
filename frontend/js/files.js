@@ -73,7 +73,11 @@ const Files = (() => {
 
         container.appendChild(main);
         if (!_isSharedView) {
-            _loadRootFolders();
+            if (opts.initialFolderId) {
+                loadFolder(opts.initialFolderId);
+            } else {
+                _loadRootFolders();
+            }
             _loadFolderTree();
         }
 
