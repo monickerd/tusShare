@@ -105,6 +105,22 @@ const { finishLoginRequest, exportKey, sessionKey } =
 `exportKey` → HKDF → KEK → unwrap masterKey (zero-knowledge — server never sees it).
 `sessionKey` → HKDF → step-up signing key (v2 path; both parties derive same value).
 
+### Wire encoding (verified v1.1.0)
+
+All values (`registrationRequest`, `startLoginRequest`, `registrationRecord`, `finishLoginRequest`,
+`registrationResponse`, `loginResponse`, `exportKey`, `sessionKey`) use **base64url with no `=` padding**
+(`-` and `_` instead of `+` and `/`) in both directions.
+
+**Client-side rules:**
+- Pass `registrationResponse` / `loginResponse` from the server directly to `finishRegistration` /
+  `finishLogin` — no re-encoding needed (the WASM expects base64url and rejects `+`/`/`).
+- `exportKey` and `sessionKey` are base64url — use `_base64urlToArrayBuf()` for crypto operations,
+  **never** `atob()` / `_base64ToArrayBuf()` (those are standard-base64 only and throw on `-`/`_`).
+
+**Server-side rules (Python):**
+- Receive: `base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))`
+- Send: `base64.urlsafe_b64encode(raw_bytes).decode().rstrip("=")`
+
 ### Monitoring for updates
 
 - **GitHub releases**: https://github.com/serenity-kit/opaque/releases
