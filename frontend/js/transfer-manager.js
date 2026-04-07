@@ -104,6 +104,8 @@ const TransferManager = (() => {
         const trackEl = Utils.el('div',  { className: 'transfer-row-track' }, [fillEl]);
         const pctEl   = Utils.el('span', { className: 'transfer-row-pct', textContent: '0%' });
 
+        const { onLogout } = opts;
+
         // Pause/resume button — uploads only.
         // The onclick handler is re-assigned by setPaused() to toggle between pause and resume.
         let pauseBtn = null;
@@ -145,7 +147,9 @@ const TransferManager = (() => {
             [iconEl, nameEl, trackEl, pctEl, pauseSlot, stopSlot]);
 
         _listEl.appendChild(rowEl);
-        _transfers.set(id, { rowEl, status: 'active' });
+        // Store onLogout so pauseAll() can signal this transfer without the stop
+        // button's delete-on-server semantics.  Falls back to onStop if not provided.
+        _transfers.set(id, { rowEl, status: 'active', onLogout: onLogout ?? onStop });
         _refreshVisibility();
 
         /** Shared teardown for complete / cancelled / fail. Guards against double-calls. */
@@ -201,5 +205,32 @@ const TransferManager = (() => {
         };
     }
 
-    return { start };
+    /**
+     * Signal every active/paused transfer to stop due to logout.
+     * Each transfer's onLogout callback is called (falling back to onStop).
+     * For uploads this means stop-without-delete; for downloads it aborts the fetch.
+     * The panel rows are left in place briefly — dismissAll() removes them immediately.
+     */
+    function pauseAll() {
+        for (const t of _transfers.values()) {
+            if (t.status === 'active' || t.status === 'paused') {
+                t.onLogout?.();
+            }
+        }
+    }
+
+    /**
+     * Immediately remove every row and hide the panel.
+     * Call before pauseAll() so the UI disappears at once rather than waiting
+     * for each upload loop to reach its next chunk boundary.
+     */
+    function dismissAll() {
+        for (const t of _transfers.values()) {
+            if (t.rowEl.parentNode) t.rowEl.parentNode.removeChild(t.rowEl);
+        }
+        _transfers.clear();
+        _refreshVisibility();
+    }
+
+    return { start, pauseAll, dismissAll };
 })();

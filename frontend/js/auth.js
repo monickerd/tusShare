@@ -809,6 +809,18 @@ const Auth = (() => {
     // ------------------------------------------------------------------
 
     async function logout() {
+        // Dismiss the transfer panel immediately so the UI is clean at once,
+        // then signal every active transfer to stop.  Uploads are stopped without
+        // deleting the server-side partial so they appear as resumable pending rows
+        // on the user's next login.  Downloads are aborted (no server state to keep).
+        TransferManager.dismissAll();
+        TransferManager.pauseAll();
+
+        // Close any open confirm/prompt modals so they don't linger on the login page.
+        document.querySelectorAll('.modal-overlay').forEach(el => {
+            if (el.parentNode) el.parentNode.removeChild(el);
+        });
+
         try {
             await Api.post(`${Config.app.apiPrefix}/auth/logout`);
         } catch {}

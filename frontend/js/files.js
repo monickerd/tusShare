@@ -376,10 +376,12 @@ const Files = (() => {
             return;
         }
 
-        const abortCtrl = new AbortController();
-        const overlay   = _showUploadOverlay(file.original_name);
-        const transfer  = TransferManager.start(file.original_name, 'download', {
-            onStop: () => abortCtrl.abort(),
+        const abortCtrl   = new AbortController();
+        const abortDownload = () => abortCtrl.abort();
+        const overlay     = _showUploadOverlay(file.original_name);
+        const transfer    = TransferManager.start(file.original_name, 'download', {
+            onStop:   abortDownload,
+            onLogout: abortDownload,
         });
         try {
             await Download.downloadFile(file.id, masterKey, (done, total) => {
@@ -467,7 +469,8 @@ const Files = (() => {
             const transfer = TransferManager.start(upload.original_name, 'upload', {
                 onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
                 onResume: () => { ctrl.resume(); transfer.setPaused(false); },
-                onStop:   () => ctrl.stop(),
+                onStop:   () => ctrl.stop(true),
+                onLogout: () => ctrl.stop(false),
             });
 
             try {
@@ -483,8 +486,10 @@ const Files = (() => {
                 overlay.remove();
                 if (err instanceof Upload.AbortedError) {
                     transfer.cancelled();
-                    Api.del(err.location).catch(() => {});
-                    Utils.showToast(`"${upload.original_name}" upload cancelled`, 'info');
+                    if (ctrl.shouldDeleteOnAbort()) {
+                        Api.del(err.location).catch(() => {});
+                        Utils.showToast(`"${upload.original_name}" upload cancelled`, 'info');
+                    }
                 } else {
                     transfer.fail();
                     Utils.showToast(`Resume failed: ${err.message}`, 'error');
@@ -1059,7 +1064,8 @@ const Files = (() => {
             const transfer = TransferManager.start(label, 'upload', {
                 onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
                 onResume: () => { ctrl.resume(); transfer.setPaused(false); },
-                onStop:   () => ctrl.stop(),
+                onStop:   () => ctrl.stop(true),
+                onLogout: () => ctrl.stop(false),
             });
 
             try {
@@ -1075,15 +1081,15 @@ const Files = (() => {
                 overlay.remove();
                 if (err instanceof Upload.AbortedError) {
                     transfer.cancelled();
-                    Api.del(err.location).catch(() => {});
-                    Utils.showToast(`"${file.name}" upload cancelled`, 'info');
-                    // Cancelled by user — stop the queue
+                    if (ctrl.shouldDeleteOnAbort()) {
+                        Api.del(err.location).catch(() => {});
+                        Utils.showToast(`"${file.name}" upload cancelled`, 'info');
+                    }
                     ctrl.cleanup();
                     break;
                 }
                 transfer.fail();
                 Utils.showToast(`Upload failed: ${err.message}`, 'error');
-                // Stop the queue on first error
                 ctrl.cleanup();
                 break;
             }
@@ -1169,9 +1175,10 @@ const Files = (() => {
      * are suppressed while the live TransferManager row is active.
      */
     function _makeUploadCtrl() {
-        let _paused   = false;
-        let _stopped  = false;
-        let _uploadId = null;
+        let _paused        = false;
+        let _stopped       = false;
+        let _deleteOnAbort = true;   // false when stopped by logout (leave partial for resume)
+        let _uploadId      = null;
         let _resumeResolvers = [];
 
         const ctrl = {
@@ -1192,7 +1199,9 @@ const Files = (() => {
                 rs.forEach(r => r());
             },
 
-            stop() {
+            /** @param {boolean} [deleteOnAbort=true] - false for logout (leave partial on server). */
+            stop(deleteOnAbort = true) {
+                _deleteOnAbort = deleteOnAbort;
                 _stopped = true;
                 // Unblock waitIfPaused so the upload loop can detect the stop flag
                 if (_paused) ctrl.resume();
@@ -1205,6 +1214,9 @@ const Files = (() => {
             },
 
             isStopped() { return _stopped; },
+
+            /** Whether the catch block should DELETE the partial upload from the server. */
+            shouldDeleteOnAbort() { return _deleteOnAbort; },
 
             cleanup() {
                 if (_uploadId) _activeUploadIds.delete(_uploadId);
