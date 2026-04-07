@@ -989,7 +989,8 @@
 
 .transfer-row {
     display: grid;
-    grid-template-columns: 16px 1fr 72px 32px;
+    /* icon | name | progress track | pct | pause btn | stop btn */
+    grid-template-columns: 16px 1fr 72px 28px 20px 20px;
     align-items: center;
     gap: var(--space-2);
     padding: var(--space-2) var(--space-3);
@@ -1026,7 +1027,8 @@
 }
 
 .transfer-row--done .transfer-row-track,
-.transfer-row--failed .transfer-row-track {
+.transfer-row--failed .transfer-row-track,
+.transfer-row--cancelled .transfer-row-track {
     display: none;
 }
 
@@ -1049,6 +1051,56 @@
 
 .transfer-row--failed .transfer-row-pct {
     color: var(--color-danger);
+}
+
+.transfer-row--cancelled .transfer-row-pct {
+    color: var(--color-text-muted);
+}
+
+/* Paused state — dim the fill and name to signal inactivity */
+.transfer-row--paused .transfer-row-fill {
+    background: var(--color-text-muted);
+    opacity: 0.6;
+}
+
+.transfer-row--paused .transfer-row-name {
+    opacity: 0.7;
+}
+
+/* Per-row control buttons (pause/resume ⏸▶ and stop ■) */
+.transfer-row-ctrl {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 3px;
+    color: var(--color-text-muted);
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+    min-height: unset; /* override global 44px touch target for compact panel */
+}
+
+.transfer-row-ctrl:hover:not(:disabled) {
+    color: var(--color-text);
+    background: var(--color-surface-hover);
+}
+
+.transfer-row-ctrl:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* placeholder keeps the grid columns intact when a button is absent */
+.transfer-row-ctrl-placeholder {
+    display: block;
+    width: 20px;
+    height: 20px;
 }
 
 /* ── Step-up authentication modal ─────────────────────────────────────── */

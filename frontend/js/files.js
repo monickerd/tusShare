@@ -281,7 +281,8 @@ const Files = (() => {
         }
 
         for (const upload of pendingUploads) {
-            tbody.appendChild(_createPendingUploadRow(upload));
+            const row = _createPendingUploadRow(upload);
+            if (row) tbody.appendChild(row);
         }
 
         table.appendChild(tbody);
@@ -375,24 +376,35 @@ const Files = (() => {
             return;
         }
 
-        const overlay  = _showUploadOverlay(file.original_name);
-        const transfer = TransferManager.start(file.original_name, 'download');
+        const abortCtrl = new AbortController();
+        const overlay   = _showUploadOverlay(file.original_name);
+        const transfer  = TransferManager.start(file.original_name, 'download', {
+            onStop: () => abortCtrl.abort(),
+        });
         try {
             await Download.downloadFile(file.id, masterKey, (done, total) => {
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 overlay.update(pct, file.original_name);
                 transfer.update(pct);
-            });
+            }, abortCtrl.signal);
             overlay.remove();
             transfer.complete();
         } catch (err) {
             overlay.remove();
-            transfer.fail();
-            Utils.showToast(`Download failed: ${err.message}`, 'error');
+            if (err.name === 'AbortError') {
+                transfer.cancelled();
+            } else {
+                transfer.fail();
+                Utils.showToast(`Download failed: ${err.message}`, 'error');
+            }
         }
     }
 
     function _createPendingUploadRow(upload) {
+        // Suppress the static row while a live TransferManager row is showing progress
+        // for this same upload (e.g. navigating away and back during an active upload).
+        if (_activeUploadIds.has(upload.upload_id)) return null;
+
         const pct = upload.total_size > 0
             ? Math.round((upload.current_offset / upload.total_size) * 100)
             : 0;
@@ -449,22 +461,36 @@ const Files = (() => {
             }
 
             const location = `${Config.app.apiPrefix}/uploads/${upload.upload_id}`;
+            const ctrl     = _makeUploadCtrl();
+            ctrl.onCreated(upload.upload_id); // ID is already known — register immediately
             const overlay  = _showUploadOverlay(upload.original_name);
-            const transfer = TransferManager.start(upload.original_name, 'upload');
+            const transfer = TransferManager.start(upload.original_name, 'upload', {
+                onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
+                onResume: () => { ctrl.resume(); transfer.setPaused(false); },
+                onStop:   () => ctrl.stop(),
+            });
 
             try {
                 await Upload.resumeUpload(location, selectedFile, fileKey, (done, total) => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, upload.original_name);
                     transfer.update(pct);
-                });
+                }, ctrl);
                 overlay.remove();
                 transfer.complete();
                 Utils.showToast(`"${upload.original_name}" uploaded`, 'success');
             } catch (err) {
                 overlay.remove();
-                transfer.fail();
-                Utils.showToast(`Resume failed: ${err.message}`, 'error');
+                if (err instanceof Upload.AbortedError) {
+                    transfer.cancelled();
+                    Api.del(err.location).catch(() => {});
+                    Utils.showToast(`"${upload.original_name}" upload cancelled`, 'info');
+                } else {
+                    transfer.fail();
+                    Utils.showToast(`Resume failed: ${err.message}`, 'error');
+                }
+            } finally {
+                ctrl.cleanup();
             }
 
             _reloadCurrentView();
