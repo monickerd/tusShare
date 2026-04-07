@@ -87,15 +87,18 @@ def _user_response_dict(user: AuthenticatedUser) -> dict:
 
 
 def _decode_b64_field(value: str, field_name: str) -> bytes:
-    """Decode a standard or base64url field (with or without padding).
+    """Decode a client-supplied OPAQUE field to bytes.
 
-    The @serenity-kit/opaque WASM library returns base64url strings (- and _
-    instead of + and /, no = padding).  Python's b64decode only handles standard
-    base64, so we use urlsafe_b64decode with padding added to cover both variants.
+    Encoding asymmetry in @serenity-kit/opaque v1.1.0:
+      - Client → server (startLoginRequest, registrationRequest, etc.):
+            base64url, no padding  (- and _ instead of + and /)
+      - Server → client (loginResponse, registrationResponse):
+            standard base64 with padding (b64encode)  ← what the WASM expects as input
+
+    urlsafe_b64decode handles both alphabets; adding padding covers the
+    unpadded base64url strings the client sends.
     """
     try:
-        # Add padding to a multiple of 4 chars, then decode as base64url.
-        # urlsafe_b64decode handles both - / _ variants of the alphabet.
         padded = value + "=" * (-len(value) % 4)
         return base64.urlsafe_b64decode(padded)
     except Exception:
@@ -364,7 +367,7 @@ async def opaque_register_start(
         logger.warning("OPAQUE register/start failed: %s", exc)
         raise HTTPException(status_code=400, detail="Invalid registration request")
 
-    return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
+    return {"registration_response": base64.b64encode(reg_response_bytes).decode()}
 
 
 @router.post("/register/finish")
@@ -505,7 +508,7 @@ async def opaque_login_start(
     await provider.store_login_session(session_id, body.username, server_state_bytes)
 
     return {
-        "login_response": base64.urlsafe_b64encode(login_response_bytes).decode().rstrip("="),
+        "login_response": base64.b64encode(login_response_bytes).decode(),
         "session_id": session_id,
     }
 
@@ -626,7 +629,7 @@ async def opaque_step_up_start(
     await provider.store_login_session(session_id, user.username, server_state_bytes, ttl_seconds=30)
 
     return {
-        "login_response": base64.urlsafe_b64encode(login_response_bytes).decode().rstrip("="),
+        "login_response": base64.b64encode(login_response_bytes).decode(),
         "session_id": session_id,
     }
 
@@ -689,7 +692,7 @@ async def opaque_migrate_start(
         logger.warning("OPAQUE migrate/start failed for user %s: %s", user.id, exc)
         raise HTTPException(status_code=400, detail="Invalid registration request")
 
-    return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
+    return {"registration_response": base64.b64encode(reg_response_bytes).decode()}
 
 
 @router.post("/migrate/finish")
@@ -956,7 +959,7 @@ async def opaque_bootstrap_start(
         logger.warning("OPAQUE bootstrap/start failed: %s", exc)
         raise HTTPException(status_code=400, detail="Invalid registration request")
 
-    return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
+    return {"registration_response": base64.b64encode(reg_response_bytes).decode()}
 
 
 @router.post("/bootstrap/finish")
