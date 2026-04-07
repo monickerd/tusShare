@@ -692,7 +692,9 @@ const Crypto = (() => {
      * @returns {Promise<CryptoKey>} AES-256-GCM key usable for wrap/unwrap
      */
     async function deriveOpaqueKEK(exportKeyB64) {
-        const keyBytes = _base64ToArrayBuf(exportKeyB64);
+        // exportKey from @serenity-kit/opaque is base64url (- and _, no padding).
+        // Use _base64urlToArrayBuf, not _base64ToArrayBuf/atob, which rejects those chars.
+        const keyBytes = _base64urlToArrayBuf(exportKeyB64);
         const keyMaterial = await crypto.subtle.importKey(
             'raw', keyBytes, 'HKDF', false, ['deriveKey']
         );
