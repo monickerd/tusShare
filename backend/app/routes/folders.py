@@ -37,6 +37,7 @@ class CreateFolderRequest(BaseModel):
 class UpdateFolderRequest(BaseModel):
     name: str | None = None
     parent_id: str | None = None
+    move_to_root: bool = False
 
     @field_validator("name")
     @classmethod
@@ -299,12 +300,20 @@ async def update_folder(
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot modify the shared folder")
 
+    if body.move_to_root and body.parent_id is not None:
+        raise HTTPException(status_code=400, detail="Cannot specify both parent_id and move_to_root")
+
     updates = []
     params = []
     if body.name is not None:
         updates.append("name = ?")
         params.append(body.name)
-    if body.parent_id is not None:
+    if body.move_to_root:
+        if folder_row["parent_id"] is None:
+            raise HTTPException(status_code=400, detail="Folder is already at root")
+        updates.append("parent_id = ?")
+        params.append(None)
+    elif body.parent_id is not None:
         parent_id = validate_uuid(body.parent_id)
         # Walk the ancestor chain of parent_id and confirm folder_id doesn't appear in it.
         # Without this, moving A into one of its own descendants creates a parent_id cycle

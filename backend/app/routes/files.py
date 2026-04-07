@@ -46,6 +46,7 @@ router = APIRouter()
 class UpdateFileRequest(BaseModel):
     original_name: str | None = None
     folder_id: str | None = None
+    move_to_root: bool = False
 
     @field_validator("original_name")
     @classmethod
@@ -99,6 +100,9 @@ async def update_file(
     if row["owner_id"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    if body.move_to_root and body.folder_id is not None:
+        raise HTTPException(status_code=400, detail="Cannot specify both folder_id and move_to_root")
+
     updates = []
     params = []
     removed_chars: list[str] = []
@@ -109,7 +113,10 @@ async def update_file(
         updates.append("sanitized_name = ?")
         params.append(sanitized.name)
         removed_chars = sanitized.removed_chars
-    if body.folder_id is not None:
+    if body.move_to_root:
+        updates.append("folder_id = ?")
+        params.append(None)
+    elif body.folder_id is not None:
         # Verify the target folder exists and is owned by this user.
         # Without this check, a user could move their file into another user's folder,
         # making it appear in that user's folder listing (since listing queries by folder_id).

@@ -318,7 +318,7 @@ const Files = (() => {
     function _createFolderRow(folder) {
         const folderHash = _isTeamView ? `#/team-folders/${folder.id}` : `#/files/${folder.id}`;
         return Utils.el('tr', { className: 'row-folder' }, [
-            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'folder', id: folder.id } })]),
+            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'folder', id: folder.id, name: folder.name } })]),
             Utils.el('td', {}, [
                 Utils.el('a', {
                     href: folderHash,
@@ -331,6 +331,7 @@ const Files = (() => {
             Utils.el('td', { className: 'row-actions' }, [
                 _createContextButton([
                     { label: 'Share', action: () => Shares.openFolderShareDialog(folder) },
+                    { label: 'Move', action: () => _openMoveModal([{ type: 'folder', id: folder.id, name: folder.name }]) },
                     { label: 'Rename', action: () => _renameFolder(folder) },
                     { label: 'Delete', action: () => _deleteFolder(folder), danger: true },
                 ]),
@@ -340,7 +341,7 @@ const Files = (() => {
 
     function _createFileRow(file) {
         return Utils.el('tr', { className: 'row-file' }, [
-            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'file', id: file.id } })]),
+            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'file', id: file.id, name: file.original_name } })]),
             Utils.el('td', { textContent: file.original_name }),
             Utils.el('td', { textContent: Utils.formatBytes(file.size_bytes) }),
             Utils.el('td', { textContent: Utils.timeAgo(file.created_at) }),
@@ -350,6 +351,7 @@ const Files = (() => {
                     { label: 'Share (link)', action: () => Shares.openShareDialog([file]) },
                     { label: 'Share with user', action: () => Shares.openUserShareDialog([file]) },
                     { label: 'Add to Team', action: () => Teams.openAddToTeamDialog([file]) },
+                    { label: 'Move', action: () => _openMoveModal([{ type: 'file', id: file.id, name: file.original_name }]) },
                     { label: 'Rename', action: () => _renameFile(file) },
                     { label: 'Delete', action: () => _deleteFile(file), danger: true },
                 ]),
@@ -390,9 +392,11 @@ const Files = (() => {
 
         return Utils.el('tr', { className: 'row-pending' }, [
             Utils.el('td'),   // no checkbox — pending rows aren't selectable
-            Utils.el('td', { className: 'pending-name' }, [
-                Utils.el('span', { className: 'pending-icon', textContent: '↺' }),
-                Utils.el('span', { textContent: upload.original_name }),
+            Utils.el('td', {}, [
+                Utils.el('div', { className: 'pending-name' }, [
+                    Utils.el('span', { className: 'pending-icon', textContent: '↺' }),
+                    Utils.el('span', { textContent: upload.original_name }),
+                ]),
             ]),
             Utils.el('td', { textContent: progress }),
             Utils.el('td', { textContent: expiresLabel }),
@@ -634,6 +638,11 @@ const Files = (() => {
             onClick: () => _bulkAddToTeam(selected),
         }));
         bar.appendChild(Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Move selected',
+            onClick: () => _openMoveModal(selected),
+        }));
+        bar.appendChild(Utils.el('button', {
             className: 'btn btn-danger btn-sm',
             textContent: 'Delete selected',
             onClick: () => _bulkDelete(selected),
@@ -715,6 +724,182 @@ const Files = (() => {
         }
 
         Teams.openAddToTeamDialog(files);
+    }
+
+    // ── Move files / folders ──────────────────────────────────────────────────
+
+    /**
+     * Open the move-destination picker modal.
+     * items: [{ type: 'file'|'folder', id: string, name: string }]
+     */
+    async function _openMoveModal(items) {
+        if (items.length === 0) return;
+
+        let selectedDest = null;
+        let currentSelectedEl = null;
+
+        function _selectDest(optionEl, dest) {
+            if (currentSelectedEl) currentSelectedEl.classList.remove('selected');
+            optionEl.classList.add('selected');
+            currentSelectedEl = optionEl;
+            selectedDest = dest;
+            moveBtn.disabled = false;
+        }
+
+        const pickerList = Utils.el('ul', { className: 'folder-picker' });
+
+        // "My Files (root)" is always the first option
+        const rootRow = Utils.el('div', { className: 'folder-picker-option' }, [
+            Utils.el('span', { className: 'picker-folder-name', textContent: 'My Files (root)' }),
+        ]);
+        rootRow.addEventListener('click', () => _selectDest(rootRow, { id: null, label: 'My Files (root)' }));
+        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-item' }, [rootRow]));
+
+        const loadingLi = Utils.el('li', { className: 'folder-picker-loading', textContent: 'Loading…' });
+        pickerList.appendChild(loadingLi);
+
+        const overlay = Utils.el('div', {
+            className: 'modal-overlay',
+            onClick: (e) => { if (e.target === overlay) overlay.remove(); },
+        });
+
+        const moveBtn = Utils.el('button', {
+            className: 'btn btn-primary',
+            textContent: 'Move here',
+            disabled: true,
+            onClick: async () => {
+                overlay.remove();
+                await _executeMoves(items, selectedDest);
+            },
+        });
+
+        const title = items.length === 1
+            ? `Move "${items[0].name}"`
+            : `Move ${items.length} items`;
+
+        overlay.appendChild(Utils.el('div', { className: 'modal move-modal' }, [
+            Utils.el('h3', { textContent: title }),
+            pickerList,
+            Utils.el('div', { className: 'modal-actions' }, [
+                Utils.el('button', {
+                    className: 'btn btn-secondary',
+                    textContent: 'Cancel',
+                    onClick: () => overlay.remove(),
+                }),
+                moveBtn,
+            ]),
+        ]));
+        document.body.appendChild(overlay);
+
+        // Populate folder tree after modal is in DOM
+        try {
+            const data = await Api.get(`${Config.app.apiPrefix}/folders`);
+            loadingLi.remove();
+            for (const folder of (data.folders || [])) {
+                pickerList.appendChild(_createPickerFolderNode(folder, 0, _selectDest));
+            }
+            if ((data.folders || []).length === 0) {
+                pickerList.appendChild(Utils.el('li', {
+                    className: 'folder-picker-loading',
+                    textContent: 'No folders',
+                }));
+            }
+        } catch {
+            loadingLi.textContent = 'Failed to load folders';
+        }
+    }
+
+    /**
+     * Build a lazily-expandable folder node for the move picker.
+     * depth controls the left-indent level.
+     * onSelect(optionEl, dest) is called when the row is clicked.
+     */
+    function _createPickerFolderNode(folder, depth, onSelect) {
+        const li = Utils.el('li', { className: 'folder-picker-item' });
+        let expanded = false;
+
+        const expandBtn = Utils.el('span', { className: 'picker-expand', textContent: '\u25B6' });
+        expandBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (expanded) {
+                const sub = li.querySelector(':scope > ul');
+                if (sub) sub.remove();
+                expanded = false;
+                expandBtn.textContent = '\u25B6';
+                return;
+            }
+            expanded = true;
+            expandBtn.textContent = '\u2026';
+            try {
+                const data = await Api.get(`${Config.app.apiPrefix}/folders/${folder.id}`);
+                const children = data.child_folders || [];
+                if (children.length === 0) {
+                    expandBtn.textContent = '\u00B7';
+                } else {
+                    expandBtn.textContent = '\u25BC';
+                    const sublist = Utils.el('ul');
+                    for (const child of children) {
+                        sublist.appendChild(_createPickerFolderNode(child, depth + 1, onSelect));
+                    }
+                    li.appendChild(sublist);
+                }
+            } catch {
+                expanded = false;
+                expandBtn.textContent = '\u25B6';
+            }
+        });
+
+        const indentPx = 12 + depth * 20;
+        const row = Utils.el('div', {
+            className: 'folder-picker-option',
+            style: `padding-left: ${indentPx}px`,
+        }, [
+            expandBtn,
+            Utils.el('span', { className: 'picker-folder-name', textContent: folder.name }),
+        ]);
+        row.addEventListener('click', () => onSelect(row, { id: folder.id, label: folder.name }));
+
+        li.appendChild(row);
+        return li;
+    }
+
+    /**
+     * Execute moves for a list of items to a destination.
+     * destination: { id: string|null, label: string }
+     */
+    async function _executeMoves(items, destination) {
+        const destId = destination.id;
+        let errors = 0;
+
+        for (const item of items) {
+            try {
+                if (item.type === 'folder') {
+                    const body = destId === null
+                        ? { move_to_root: true }
+                        : { parent_id: destId };
+                    await Api.put(`${Config.app.apiPrefix}/folders/${item.id}`, body);
+                } else {
+                    const body = destId === null
+                        ? { move_to_root: true }
+                        : { folder_id: destId };
+                    await Api.put(`${Config.app.apiPrefix}/files/${item.id}`, body);
+                }
+            } catch {
+                errors++;
+            }
+        }
+
+        if (errors > 0) {
+            Utils.showToast(`Moved with ${errors} error(s)`, 'warning');
+        } else {
+            Utils.showToast(
+                items.length === 1
+                    ? `"${items[0].name}" moved to ${destination.label}`
+                    : `${items.length} items moved to ${destination.label}`,
+                'success'
+            );
+        }
+        _reloadCurrentView();
     }
 
     function _promptNewFolder() {
@@ -858,6 +1043,7 @@ const Files = (() => {
         return Array.from(checkboxes).map(cb => ({
             type: cb.dataset.type,
             id: cb.dataset.id,
+            name: cb.dataset.name || '',
         }));
     }
 

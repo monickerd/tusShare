@@ -1092,3 +1092,80 @@
     margin-bottom: var(--spacing-sm);
 }
 
+/* ── Move / folder-picker modal ────────────────────────────────────────── */
+
+.move-modal {
+    max-width: 480px;
+}
+
+.folder-picker {
+    list-style: none;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    max-height: 280px;
+    overflow-y: auto;
+    margin-bottom: var(--space-2);
+    background: var(--color-bg);
+}
+
+.folder-picker-item {
+    border-bottom: 1px solid var(--color-border);
+}
+
+.folder-picker-item:last-child {
+    border-bottom: none;
+}
+
+/* Children sublist — no extra border, indent is handled by padding-left on each row */
+.folder-picker-item > ul {
+    list-style: none;
+}
+
+.folder-picker-option {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    user-select: none;
+    font-size: var(--font-size-sm);
+    transition: background var(--transition-fast);
+}
+
+.folder-picker-option:hover {
+    background: var(--color-surface-hover);
+}
+
+.folder-picker-option.selected {
+    background: var(--color-primary-muted);
+    color: var(--color-primary);
+    font-weight: 600;
+}
+
+.picker-expand {
+    font-size: var(--font-size-xs);
+    width: 14px;
+    text-align: center;
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+}
+
+.picker-folder-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.folder-picker-loading,
+.folder-picker-error {
+    padding: var(--space-3);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    text-align: center;
+    list-style: none;
+}
+
+.folder-picker-error {
+    color: var(--color-danger);
+}
+
