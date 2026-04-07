@@ -11,7 +11,22 @@
  * Resuming an in-progress upload:
  *   HEAD → get current encrypted offset → compute starting chunk index →
  *   continue PATCHing with fresh IVs (chunked re-encryption from that point).
+ *
+ * Upload control (ctrl parameter):
+ *   Pass a ctrl object to uploadFile/resumeUpload to support pause/stop.
+ *   Shape: { onCreated?(uploadId), waitIfPaused?(): Promise, isStopped?(): boolean }
+ *   When isStopped() returns true, the loop throws UploadAbortedError carrying
+ *   the upload location so the caller can issue DELETE for server-side cleanup.
  */
+
+class UploadAbortedError extends Error {
+    constructor(location) {
+        super('Upload cancelled');
+        this.name = 'UploadAbortedError';
+        this.location = location;
+    }
+}
+
 const Upload = (() => {
     const _cfg = () => Config.upload;
     const _prefix = () => Config.app.apiPrefix;
@@ -27,9 +42,14 @@ const Upload = (() => {
      * @param {string|null} folderId  - Target folder UUID, or null for root.
      * @param {CryptoKey}  masterKey  - Decrypted master key.
      * @param {function}   onProgress - Called with (bytesEncrypted, totalEncryptedBytes).
+     * @param {object}    [ctrl]      - Optional control object for pause/stop.
+     *   ctrl.onCreated(uploadId)     - Called immediately after the upload is created on the server.
+     *   ctrl.waitIfPaused(): Promise - Resolves when the upload is no longer paused.
+     *   ctrl.isStopped(): boolean    - Returns true when the upload should abort.
      * @returns {Promise<{fileId: string, location: string}>}
+     * @throws {UploadAbortedError}  When ctrl signals a stop.
      */
-    async function uploadFile(file, folderId, masterKey, onProgress) {
+    async function uploadFile(file, folderId, masterKey, onProgress, ctrl = null) {
         const chunkSize = _cfg().defaultChunkSize;
         const totalChunks = Math.ceil(file.size / chunkSize);
 
@@ -55,17 +75,29 @@ const Upload = (() => {
             original_size:      String(file.size),
         });
 
-        // POST — create the upload
-        const createResp = await fetch(`${_prefix()}/uploads`, {
+        // POST — create the upload (retry once on 401 to handle expired access tokens)
+        const _createHeaders = () => ({
+            'Tus-Resumable':   '1.0.0',
+            'Upload-Length':   String(totalEncryptedSize),
+            'Upload-Metadata': meta,
+            'X-CSRF-Token':    _csrf(),
+        });
+
+        let createResp = await fetch(`${_prefix()}/uploads`, {
             method: 'POST',
-            headers: {
-                'Tus-Resumable':   '1.0.0',
-                'Upload-Length':   String(totalEncryptedSize),
-                'Upload-Metadata': meta,
-                'X-CSRF-Token':    _csrf(),
-            },
+            headers: _createHeaders(),
             credentials: 'same-origin',
         });
+
+        if (createResp.status === 401) {
+            const refreshed = await Api.refreshTokens();
+            if (!refreshed) throw new Error('Session expired. Please log in and try again.');
+            createResp = await fetch(`${_prefix()}/uploads`, {
+                method: 'POST',
+                headers: _createHeaders(),
+                credentials: 'same-origin',
+            });
+        }
 
         if (!createResp.ok) {
             const body = await createResp.json().catch(() => ({}));
@@ -75,10 +107,21 @@ const Upload = (() => {
         const location = createResp.headers.get('Location');
         if (!location) throw new Error('Server did not return an upload location');
 
+        // Notify caller of the server-assigned upload ID so it can be tracked
+        // (e.g., to suppress the static pending-upload row while active)
+        const uploadId = location.split('/').pop();
+        ctrl?.onCreated?.(uploadId);
+
         // PATCH — send each encrypted chunk
         const integrityTracker = _makeIntegrityTracker(totalChunks);
         let encryptedOffset = 0;
         for (let i = 0; i < totalChunks; i++) {
+            // Pause/stop checks happen at chunk boundaries (before encrypting the next chunk).
+            // Any in-flight PATCH is always allowed to finish before we abort.
+            if (ctrl) {
+                await ctrl.waitIfPaused?.();
+                if (ctrl.isStopped?.()) throw new UploadAbortedError(location);
+            }
             const start = i * chunkSize;
             const end   = Math.min(start + chunkSize, file.size);
             const plain = await file.slice(start, end).arrayBuffer();
@@ -172,9 +215,13 @@ const Upload = (() => {
      * @param {File}     file       - Original File object (same file).
      * @param {CryptoKey} fileKey   - Decrypted per-file key.
      * @param {function} onProgress - Called with (bytesEncrypted, totalEncryptedBytes).
+     * @param {object}  [ctrl]      - Optional control object (same shape as uploadFile).
+     *   ctrl.waitIfPaused(): Promise - Resolves when not paused.
+     *   ctrl.isStopped(): boolean    - Returns true when the upload should abort.
      * @returns {Promise<{fileId: string|null, location: string}>}
+     * @throws {UploadAbortedError}  When ctrl signals a stop.
      */
-    async function resumeUpload(location, file, fileKey, onProgress) {
+    async function resumeUpload(location, file, fileKey, onProgress, ctrl = null) {
         const chunkSize = _cfg().defaultChunkSize;
         const totalChunks = Math.ceil(file.size / chunkSize);
 
@@ -215,6 +262,10 @@ const Upload = (() => {
         // Continue from startChunk with fresh IVs (re-encrypt from plaintext offset)
         const integrityTracker = _makeIntegrityTracker(totalChunks);
         for (let i = startChunk; i < totalChunks; i++) {
+            if (ctrl) {
+                await ctrl.waitIfPaused?.();
+                if (ctrl.isStopped?.()) throw new UploadAbortedError(location);
+            }
             const start = i * chunkSize;
             const end   = Math.min(start + chunkSize, file.size);
             const plain = await file.slice(start, end).arrayBuffer();
@@ -372,5 +423,5 @@ const Upload = (() => {
         return new Promise(r => setTimeout(r, ms));
     }
 
-    return { uploadFile, resumeUpload };
+    return { uploadFile, resumeUpload, AbortedError: UploadAbortedError };
 })();

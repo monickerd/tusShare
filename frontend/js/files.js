@@ -15,6 +15,11 @@ const Files = (() => {
     let _liveSource = null;
     let _liveReloadTimer = null;
 
+    // Upload IDs that are currently being actively uploaded in this page session.
+    // Used to suppress their static pending-upload rows while a live TransferManager
+    // row is already showing progress.
+    const _activeUploadIds = new Set();
+
     function _startLive(folderId) {
         _stopLive();
         const url = folderId
@@ -1022,25 +1027,41 @@ const Files = (() => {
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
-            const overlay  = _showUploadOverlay(label);
-            const transfer = TransferManager.start(label, 'upload');
+
+            const ctrl = _makeUploadCtrl();
+            const overlay = _showUploadOverlay(label);
+            const transfer = TransferManager.start(label, 'upload', {
+                onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
+                onResume: () => { ctrl.resume(); transfer.setPaused(false); },
+                onStop:   () => ctrl.stop(),
+            });
 
             try {
                 await Upload.uploadFile(file, _currentFolderId, masterKey, (done, total) => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, label);
                     transfer.update(pct);
-                });
+                }, ctrl);
                 overlay.remove();
                 transfer.complete();
                 Utils.showToast(`"${file.name}" uploaded`, 'success');
             } catch (err) {
                 overlay.remove();
+                if (err instanceof Upload.AbortedError) {
+                    transfer.cancelled();
+                    Api.del(err.location).catch(() => {});
+                    Utils.showToast(`"${file.name}" upload cancelled`, 'info');
+                    // Cancelled by user — stop the queue
+                    ctrl.cleanup();
+                    break;
+                }
                 transfer.fail();
                 Utils.showToast(`Upload failed: ${err.message}`, 'error');
                 // Stop the queue on first error
+                ctrl.cleanup();
                 break;
             }
+            ctrl.cleanup();
         }
 
         _reloadCurrentView();
@@ -1109,6 +1130,62 @@ const Files = (() => {
                 _uploadFiles(Array.from(files));
             }
         });
+    }
+
+    /**
+     * Create a pause/stop controller for a single upload.
+     *
+     * Exposes the duck-typed shape that Upload.uploadFile / resumeUpload accept
+     * as their `ctrl` parameter, plus wiring points for TransferManager buttons.
+     *
+     * Call ctrl.onCreated(uploadId) is invoked by uploadFile after the server
+     * creates the upload resource; it registers the ID so pending-upload rows
+     * are suppressed while the live TransferManager row is active.
+     */
+    function _makeUploadCtrl() {
+        let _paused   = false;
+        let _stopped  = false;
+        let _uploadId = null;
+        let _resumeResolvers = [];
+
+        const ctrl = {
+            get uploadId() { return _uploadId; },
+
+            onCreated(id) {
+                _uploadId = id;
+                _activeUploadIds.add(id);
+            },
+
+            pause() {
+                _paused = true;
+            },
+
+            resume() {
+                _paused = false;
+                const rs = _resumeResolvers.splice(0);
+                rs.forEach(r => r());
+            },
+
+            stop() {
+                _stopped = true;
+                // Unblock waitIfPaused so the upload loop can detect the stop flag
+                if (_paused) ctrl.resume();
+            },
+
+            async waitIfPaused() {
+                while (_paused) {
+                    await new Promise(resolve => _resumeResolvers.push(resolve));
+                }
+            },
+
+            isStopped() { return _stopped; },
+
+            cleanup() {
+                if (_uploadId) _activeUploadIds.delete(_uploadId);
+            },
+        };
+
+        return ctrl;
     }
 
     /** Remove all child nodes properly instead of innerHTML = '' */

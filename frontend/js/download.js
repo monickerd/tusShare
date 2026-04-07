@@ -22,11 +22,13 @@ const Download = (() => {
     /**
      * Download and decrypt a file.
      *
-     * @param {string}   fileId    - File UUID.
-     * @param {CryptoKey} masterKey - Decrypted master key (from Auth).
-     * @param {function} onProgress - Called with (chunksDecrypted, totalChunks).
+     * @param {string}   fileId     - File UUID.
+     * @param {CryptoKey} masterKey  - Decrypted master key (from Auth).
+     * @param {function} onProgress  - Called with (chunksDecrypted, totalChunks).
+     * @param {AbortSignal} [signal] - Optional AbortSignal to cancel the download.
+     *   When aborted, the in-flight fetch throws an AbortError which propagates to the caller.
      */
-    async function downloadFile(fileId, masterKey, onProgress) {
+    async function downloadFile(fileId, masterKey, onProgress, signal = null) {
         // 1. Fetch full chunk manifest (handles pagination internally)
         const manifest = await _fetchManifest(fileId);
 
@@ -57,6 +59,7 @@ const Download = (() => {
             const resp = await fetch(`${_prefix()}/files/${fileId}/content`, {
                 headers: { Range: `bytes=${rangeStart}-${rangeEnd}` },
                 credentials: 'same-origin',
+                signal,
             });
 
             // 206 Partial Content is the expected success code for Range requests

@@ -5,10 +5,21 @@
  * Persists across route changes since it renders directly to document.body.
  *
  * Usage:
- *   const handle = TransferManager.start('filename.zip', 'upload');
- *   handle.update(42);   // percent complete
- *   handle.complete();   // marks done and auto-removes after a delay
- *   handle.fail();       // marks failed and auto-removes after a delay
+ *   const handle = TransferManager.start('filename.zip', 'upload', {
+ *       onPause: () => ctrl.pause(),
+ *       onResume: () => ctrl.resume(),
+ *       onStop:  () => ctrl.stop(),
+ *   });
+ *   handle.update(42);        // percent complete
+ *   handle.setPaused(true);   // switch pause btn ⏸→▶ and dim the row
+ *   handle.setPaused(false);  // switch back to ⏸
+ *   handle.complete();        // marks done and auto-removes after a delay
+ *   handle.cancelled();       // marks cancelled and auto-removes after a delay
+ *   handle.fail();            // marks failed and auto-removes after a delay
+ *
+ * opts.onPause / opts.onResume are only meaningful for uploads.
+ * opts.onStop works for both uploads and downloads.
+ * Omit individual callbacks to hide the corresponding button.
  */
 const TransferManager = (() => {
     const _transfers = new Map(); // id → { rowEl, status }
@@ -51,7 +62,8 @@ const TransferManager = (() => {
 
     function _refreshVisibility() {
         if (!_panel) return;
-        const active = Array.from(_transfers.values()).filter(t => t.status === 'active').length;
+        const active = Array.from(_transfers.values())
+            .filter(t => t.status === 'active' || t.status === 'paused').length;
         _countEl.textContent = active > 0 ? `${active} active` : '';
         _panel.classList.toggle('transfer-panel--visible', _transfers.size > 0);
     }
@@ -66,47 +78,125 @@ const TransferManager = (() => {
 
     /**
      * Register a new transfer and return a handle to update it.
+     *
      * @param {string} label   - Filename or display label
      * @param {'upload'|'download'} type
-     * @returns {{ update(pct: number): void, complete(): void, fail(): void }}
+     * @param {object} [opts]
+     * @param {function} [opts.onPause]  - Called when user clicks pause (uploads only).
+     * @param {function} [opts.onResume] - Called when user clicks resume (uploads only).
+     * @param {function} [opts.onStop]   - Called when user clicks stop.
+     * @returns {{
+     *   update(pct: number): void,
+     *   setPaused(paused: boolean): void,
+     *   complete(): void,
+     *   cancelled(): void,
+     *   fail(): void,
+     * }}
      */
-    function start(label, type) {
+    function start(label, type, opts = {}) {
         _ensurePanel();
         const id = _nextId++;
+        const { onPause, onResume, onStop } = opts;
 
         const iconEl  = Utils.el('span', { className: 'transfer-row-icon', textContent: type === 'upload' ? '↑' : '↓' });
         const nameEl  = Utils.el('span', { className: 'transfer-row-name', textContent: label });
         const fillEl  = Utils.el('div',  { className: 'transfer-row-fill', style: 'width:0%' });
         const trackEl = Utils.el('div',  { className: 'transfer-row-track' }, [fillEl]);
         const pctEl   = Utils.el('span', { className: 'transfer-row-pct', textContent: '0%' });
-        const rowEl   = Utils.el('div',  { className: 'transfer-row' }, [iconEl, nameEl, trackEl, pctEl]);
+
+        // Pause/resume button — uploads only.
+        // The onclick handler is re-assigned by setPaused() to toggle between pause and resume.
+        let pauseBtn = null;
+        if (onPause && onResume) {
+            pauseBtn = Utils.el('button', {
+                className: 'transfer-row-ctrl',
+                title: 'Pause',
+                textContent: '⏸',
+                onClick: () => {
+                    const t = _transfers.get(id);
+                    if (t?.status === 'active') onPause();
+                },
+            });
+        }
+
+        // Stop button — uploads and downloads.
+        let stopBtn = null;
+        if (onStop) {
+            stopBtn = Utils.el('button', {
+                className: 'transfer-row-ctrl',
+                title: 'Stop',
+                textContent: '■',
+                onClick: () => {
+                    const t = _transfers.get(id);
+                    if (!t || (t.status !== 'active' && t.status !== 'paused')) return;
+                    // Disable both buttons immediately to prevent double-clicks
+                    if (pauseBtn) pauseBtn.disabled = true;
+                    if (stopBtn)  stopBtn.disabled  = true;
+                    onStop();
+                },
+            });
+        }
+
+        // Always emit both control slots so the grid columns align across all rows.
+        const pauseSlot = pauseBtn ?? Utils.el('span', { className: 'transfer-row-ctrl-placeholder' });
+        const stopSlot  = stopBtn  ?? Utils.el('span', { className: 'transfer-row-ctrl-placeholder' });
+
+        const rowEl = Utils.el('div', { className: 'transfer-row' },
+            [iconEl, nameEl, trackEl, pctEl, pauseSlot, stopSlot]);
 
         _listEl.appendChild(rowEl);
         _transfers.set(id, { rowEl, status: 'active' });
         _refreshVisibility();
+
+        /** Shared teardown for complete / cancelled / fail. Guards against double-calls. */
+        function _endTransfer(cssClass, pctText, delay) {
+            const t = _transfers.get(id);
+            if (!t || (t.status !== 'active' && t.status !== 'paused')) return;
+            t.status = cssClass.replace('transfer-row--', '');
+            rowEl.classList.add(cssClass);
+            pctEl.textContent = pctText;
+            if (pauseBtn) pauseBtn.style.display = 'none';
+            if (stopBtn)  stopBtn.style.display  = 'none';
+            _refreshVisibility();
+            _removeTransfer(id, rowEl, delay);
+        }
 
         return {
             update(pct) {
                 fillEl.style.width = `${pct}%`;
                 pctEl.textContent  = `${pct}%`;
             },
-            complete() {
+
+            /** Reflect pause state: toggles the pause/resume button icon and dims the row. */
+            setPaused(paused) {
                 const t = _transfers.get(id);
-                if (!t || t.status !== 'active') return;
-                t.status = 'done';
-                rowEl.classList.add('transfer-row--done');
-                pctEl.textContent = '✓';
+                if (!t) return;
+                t.status = paused ? 'paused' : 'active';
+                rowEl.classList.toggle('transfer-row--paused', paused);
+                if (pauseBtn) {
+                    pauseBtn.textContent = paused ? '▶' : '⏸';
+                    pauseBtn.title       = paused ? 'Resume' : 'Pause';
+                    // Re-bind click so it calls the right callback
+                    pauseBtn.onclick = () => {
+                        const t2 = _transfers.get(id);
+                        if (!t2) return;
+                        if (t2.status === 'paused') onResume();
+                        else if (t2.status === 'active') onPause();
+                    };
+                }
                 _refreshVisibility();
-                _removeTransfer(id, rowEl, 1500);
             },
+
+            complete() {
+                _endTransfer('transfer-row--done', '✓', 1500);
+            },
+
+            cancelled() {
+                _endTransfer('transfer-row--cancelled', '✕', 1500);
+            },
+
             fail() {
-                const t = _transfers.get(id);
-                if (!t || t.status !== 'active') return;
-                t.status = 'failed';
-                rowEl.classList.add('transfer-row--failed');
-                pctEl.textContent = 'Failed';
-                _refreshVisibility();
-                _removeTransfer(id, rowEl, 3000);
+                _endTransfer('transfer-row--failed', 'Failed', 3000);
             },
         };
     }
