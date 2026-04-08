@@ -227,14 +227,16 @@ async def list_folder_files_recursive(
     user: AuthenticatedUser = Depends(require_user_role),
     db=Depends(get_db),
     limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
-    """Return a flat list of all complete files within a folder tree (recursive).
+    """Return a paginated flat list of all complete files within a folder tree (recursive).
 
     Uses a recursive CTE to walk the folder hierarchy.  Only files owned by the
     requesting user are included — shared-tree folders are excluded to prevent
     accidentally exposing other users' file keys.
 
-    Returns: { files: [{ id, original_name, size_bytes, encrypted_file_key, key_iv }] }
+    Returns: { files: [...], total: <int>, offset: <int>, limit: <int> }
+    `total` is the full count across all pages; use with offset/limit for pagination.
     Caller is responsible for re-wrapping each file's key before sharing.
     """
     folder_id = validate_uuid(folder_id)
@@ -247,11 +249,10 @@ async def list_folder_files_recursive(
     if folder_row["owner_id"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Recursive CTE: walk entire subtree rooted at folder_id.
+    # Recursive CTE shared by both the count and data queries.
     # Scoped to owner_id so we never traverse folders owned by other users
     # even if they happen to share a parent_id (shouldn't happen, but defense-in-depth).
-    cursor = await db.execute(
-        """
+    _cte = """
         WITH RECURSIVE folder_tree(id) AS (
             SELECT ? AS id
             UNION ALL
@@ -260,6 +261,23 @@ async def list_folder_files_recursive(
               JOIN folder_tree ft ON f.parent_id = ft.id
              WHERE f.owner_id = ?
         )
+    """
+
+    count_cursor = await db.execute(
+        _cte + """
+        SELECT COUNT(*) AS total
+          FROM files fi
+          JOIN folder_tree ft ON fi.folder_id = ft.id
+         WHERE fi.upload_complete = 1
+           AND fi.owner_id = ?
+        """,
+        (folder_id, user.id, user.id),
+    )
+    count_row = await count_cursor.fetchone()
+    total = count_row["total"] if count_row else 0
+
+    cursor = await db.execute(
+        _cte + """
         SELECT fi.id, fi.original_name, fi.size_bytes,
                fi.encrypted_file_key, fi.key_iv
           FROM files fi
@@ -267,9 +285,9 @@ async def list_folder_files_recursive(
          WHERE fi.upload_complete = 1
            AND fi.owner_id = ?
          ORDER BY fi.original_name
-         LIMIT ?
+         LIMIT ? OFFSET ?
         """,
-        (folder_id, user.id, user.id, limit),
+        (folder_id, user.id, user.id, limit, offset),
     )
     rows = await cursor.fetchall()
     files = [
@@ -282,7 +300,7 @@ async def list_folder_files_recursive(
         }
         for r in rows
     ]
-    return {"files": files, "total": len(files)}
+    return {"files": files, "total": total, "offset": offset, "limit": limit}
 
 
 @router.put("/{folder_id}")

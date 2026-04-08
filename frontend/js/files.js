@@ -1002,7 +1002,6 @@ const Files = (() => {
     /**
      * Execute moves for a list of items to a destination (no confirmation).
      * destination: { id: string|null, label: string, isTeam: boolean }
-     * sourceIsTeam: whether the items originate from a team folder view
      */
     async function _executeMoves(items, destination) {
         const destId = destination.id;
@@ -1028,85 +1027,112 @@ const Files = (() => {
             }
         }
 
-        // Re-encryption is needed only when crossing team boundaries.
-        // Moving within the same team leaves file_team_keys intact.
+        // Cross-team folder moves require re-encryption; same-team/personal use a simple PATCH.
         const srcTeamId = _currentTeamId || null;
-        const needsCrypto = srcTeamId !== destTeamId;   // null !== null is false ✓
+        const folderNeedsCrypto = srcTeamId !== destTeamId;  // null !== null is false ✓
 
-        // Separate folders and files
         const folders = items.filter(i => i.type === 'folder');
         const files   = items.filter(i => i.type === 'file');
 
         let errors = 0;
+        let done = 0;
+        const total = items.length;
+        let cancelled = false;
+
+        const initialLabel = items.length === 1
+            ? `Moving "${items[0].name}"…`
+            : `Moving ${items.length} items…`;
+        const overlay = _showMoveOverlay(initialLabel);
+        overlay.onCancel(() => { cancelled = true; });
 
         // --- Folder moves ---
         for (const folder of folders) {
+            if (cancelled) break;
+            overlay.update(done, total, `Moving "${folder.name}"…`);
             try {
-                if (needsCrypto) {
-                    await _moveFolderAcrossTeamBoundary(folder, destId, destTeamPK);
+                if (folderNeedsCrypto) {
+                    await _moveFolderAcrossTeamBoundary(
+                        folder, destId, destTeamPK,
+                        (label) => overlay.update(done, total, label),
+                        () => cancelled,
+                    );
                 } else {
                     await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`,
                         destId === null ? { move_to_root: true } : { parent_id: destId });
                 }
             } catch { errors++; }
+            done++;
+            overlay.update(done, total);
         }
 
-        // --- File moves ---
-        if (files.length > 0) {
-            if (needsCrypto) {
-                const masterKey = Auth.getMasterKeyObj();
-                const batches = _chunk(files, 50);
-                for (const batch of batches) {
-                    const batchItems = [];
-                    for (const file of batch) {
-                        try {
-                            const fileKeyBytes = await _resolveFileKeyBytes(file, masterKey);
-                            const teamKey = destTeamPK
-                                ? await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK)
-                                : null;
-                            batchItems.push({ id: file.id, team_key: teamKey });
-                        } catch { errors++; }
-                    }
-                    if (batchItems.length > 0) {
-                        try {
-                            const result = await Api.post(
-                                `${Config.app.apiPrefix}/files/batch-move`,
-                                { files: batchItems, destination_folder_id: destId },
-                            );
-                            errors += (result.failed || []).length;
-                        } catch { errors += batchItems.length; }
-                    }
-                }
-            } else {
-                for (const file of files) {
+        // --- File moves — always use batch-move ---
+        // For team destinations: fetch full metadata (encrypted_file_key + key_iv) per file
+        // if not already present, then encrypt a team_key via PRE.
+        // For personal destinations: team_key is null — no crypto needed.
+        if (files.length > 0 && !cancelled) {
+            const masterKey = destTeamPK ? Auth.getMasterKeyObj() : null;
+            const batches = _chunk(files, 50);
+            for (const batch of batches) {
+                if (cancelled) break;
+                overlay.update(done, total, `Moving files…`);
+                const batchItems = [];
+                for (const file of batch) {
                     try {
-                        await Api.put(`${Config.app.apiPrefix}/files/${file.id}`,
-                            destId === null ? { move_to_root: true } : { folder_id: destId });
+                        let teamKey = null;
+                        if (destTeamPK) {
+                            // Items from the file list only carry { type, id, name };
+                            // fetch full metadata to get the crypto fields.
+                            let fileData = file;
+                            if (!file.encrypted_file_key) {
+                                const fetched = await Api.get(`${Config.app.apiPrefix}/files/${file.id}`);
+                                fileData = fetched.file || fetched;
+                            }
+                            const fileKeyBytes = await _resolveFileKeyBytes(fileData, masterKey);
+                            teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK);
+                        }
+                        batchItems.push({ id: file.id, team_key: teamKey });
                     } catch { errors++; }
                 }
+                if (batchItems.length > 0) {
+                    try {
+                        const result = await Api.post(
+                            `${Config.app.apiPrefix}/files/batch-move`,
+                            { files: batchItems, destination_folder_id: destId },
+                        );
+                        errors += (result.failed || []).length;
+                    } catch { errors += batchItems.length; }
+                }
+                done += batch.length;
+                overlay.update(done, total);
             }
         }
 
-        _finishMoveToast(items, destination, errors);
+        overlay.remove();
+
+        if (cancelled) {
+            const moved = done - errors;
+            Utils.showToast(
+                `Move cancelled — ${moved} of ${total} item${total === 1 ? '' : 's'} moved`,
+                'warning',
+            );
+        } else {
+            _finishMoveToast(items, destination, errors);
+        }
         _reloadCurrentView();
     }
 
     /**
      * Move a folder across a team boundary by recreating its structure at the
-     * destination and batch-moving all contained files.
+     * destination and batch-moving all contained files page by page.
+     *
+     * onProgress(label) — optional; called with a status string for the outer overlay.
+     * isCancelled()     — optional; returns true if the user cancelled.
      */
-    async function _moveFolderAcrossTeamBoundary(folder, destParentId, destTeamPK) {
+    async function _moveFolderAcrossTeamBoundary(folder, destParentId, destTeamPK, onProgress, isCancelled) {
         const masterKey = Auth.getMasterKeyObj();
 
-        // Enumerate all files in the subtree
-        const filesData = await Api.get(
-            `${Config.app.apiPrefix}/folders/${folder.id}/files?limit=500`
-        );
-        const allFiles = filesData.files || [];
-
-        // Create mirror folder at destination (single top-level folder for now;
-        // nested structure requires a recursive walk — handled by the subtree endpoint
-        // returning a flat file list, so we create one destination folder for all files).
+        // Create mirror folder at destination.
+        // The subtree endpoint returns a flat file list; all files land in this one folder.
         let newFolderId = destParentId;
         try {
             const created = await Api.post(`${Config.app.apiPrefix}/folders`, {
@@ -1118,18 +1144,23 @@ const Files = (() => {
             throw new Error(`Failed to create destination folder "${folder.name}"`);
         }
 
-        // Batch-move all files into the new folder
-        if (allFiles.length > 0) {
-            const batches = _chunk(allFiles, 50);
+        // Paginated enumeration — process each page as it arrives
+        await _enumerateFolderFiles(folder.id, async (pageFiles, doneSoFar, totalFiles) => {
+            if (isCancelled && isCancelled()) return;
+            if (onProgress) {
+                onProgress(`Moving "${folder.name}" — ${doneSoFar} / ${totalFiles} files…`);
+            }
+
+            const batches = _chunk(pageFiles, 50);
             for (const batch of batches) {
+                if (isCancelled && isCancelled()) break;
                 const batchItems = [];
                 for (const file of batch) {
                     try {
                         const fileKeyBytes = await _resolveFileKeyBytes(file, masterKey);
-                        let teamKey = null;
-                        if (destTeamPK) {
-                            teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK);
-                        }
+                        const teamKey = destTeamPK
+                            ? await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK)
+                            : null;
                         batchItems.push({ id: file.id, team_key: teamKey });
                     } catch { /* skip file, leave in source */ }
                 }
@@ -1140,7 +1171,7 @@ const Files = (() => {
                     );
                 }
             }
-        }
+        });
 
         // Delete the now-empty source folder
         await Api.del(`${Config.app.apiPrefix}/folders/${folder.id}`);
@@ -1166,6 +1197,26 @@ const Files = (() => {
         const out = [];
         for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
         return out;
+    }
+
+    /**
+     * Paginated fetch of all files in a folder subtree.
+     * Calls onPage(files, doneSoFar, total) for each page as it arrives.
+     * doneSoFar is the cumulative file count after this page.
+     */
+    async function _enumerateFolderFiles(folderId, onPage) {
+        const pageSize = 500;
+        let offset = 0;
+        let total = Infinity;
+        while (offset < total) {
+            const data = await Api.get(
+                `${Config.app.apiPrefix}/folders/${folderId}/files?limit=${pageSize}&offset=${offset}`
+            );
+            total = data.total;
+            offset += data.files.length;
+            await onPage(data.files, offset, total);
+            if (data.files.length < pageSize) break;
+        }
     }
 
     function _finishMoveToast(items, destination, errors) {
@@ -1281,6 +1332,51 @@ const Files = (() => {
      * Render a small progress bar in the toolbar.
      * Returns { update(pct, label), remove() }.
      */
+    /**
+     * Show a progress bar below the toolbar for a move operation.
+     * Returns { update(done, total, label?), remove(), onCancel(fn) }.
+     * done/total are file counts; label replaces the text when provided.
+     */
+    function _showMoveOverlay(initialLabel) {
+        let onCancelFn = null;
+
+        const cancelBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm upload-progress-cancel',
+            textContent: 'Cancel',
+            onClick: () => { if (onCancelFn) onCancelFn(); },
+        });
+
+        const bar = Utils.el('div', { className: 'upload-progress' }, [
+            Utils.el('span', { className: 'upload-progress-label', textContent: initialLabel }),
+            Utils.el('div', { className: 'upload-progress-track' }, [
+                Utils.el('div', { className: 'upload-progress-fill', style: 'width:0%' }),
+            ]),
+            Utils.el('span', { className: 'upload-progress-pct', textContent: '' }),
+            cancelBtn,
+        ]);
+
+        const toolbar = document.getElementById('files-toolbar');
+        if (toolbar) toolbar.after(bar);
+
+        return {
+            update(done, total, label) {
+                const labelEl = bar.querySelector('.upload-progress-label');
+                const fillEl  = bar.querySelector('.upload-progress-fill');
+                const pctEl   = bar.querySelector('.upload-progress-pct');
+                if (label !== undefined && labelEl) labelEl.textContent = label;
+                if (total > 0) {
+                    const pct = Math.round((done / total) * 100);
+                    if (fillEl) fillEl.style.width = `${pct}%`;
+                    if (pctEl)  pctEl.textContent  = `${done} / ${total}`;
+                }
+            },
+            remove() {
+                if (bar.parentNode) bar.parentNode.removeChild(bar);
+            },
+            onCancel(fn) { onCancelFn = fn; },
+        };
+    }
+
     function _showUploadOverlay(initialLabel) {
         const bar = Utils.el('div', { className: 'upload-progress' }, [
             Utils.el('span', { className: 'upload-progress-label', textContent: initialLabel }),
