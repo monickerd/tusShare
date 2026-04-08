@@ -281,7 +281,7 @@ const App = (() => {
             }));
         }
 
-        const shell = Utils.el('div', { className: 'app-shell' }, [
+        const shellChildren = [
             Utils.el('header', { className: 'app-header' }, [
                 Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
                     sidebarToggle,
@@ -296,6 +296,29 @@ const App = (() => {
                     }),
                 ]),
             ]),
+        ];
+
+        // Public device banner — shown when the user checked "Public Device" at login.
+        // Dismissed by clicking X (removes it from DOM and clears the sessionStorage flag
+        // so it does not re-appear on route changes within the same tab).
+        const cfg = Config.publicDevice;
+        if (cfg.bannerVisible && sessionStorage.getItem(cfg.sessionStorageKey) === '1') {
+            const banner = Utils.el('div', { className: 'public-device-banner' }, [
+                Utils.el('span', { textContent: cfg.bannerText }),
+                Utils.el('button', {
+                    className: 'public-device-banner-dismiss',
+                    title: 'Dismiss',
+                    textContent: '\u00d7',   // ×
+                    onClick: () => {
+                        sessionStorage.removeItem(cfg.sessionStorageKey);
+                        if (banner.parentNode) banner.parentNode.removeChild(banner);
+                    },
+                }),
+            ]);
+            shellChildren.push(banner);
+        }
+
+        shellChildren.push(
             Utils.el('div', { className: 'app-body' }, [
                 Utils.el('aside', { className: 'sidebar', id: 'folder-sidebar' }, [
                     nav,
@@ -303,7 +326,9 @@ const App = (() => {
                 ]),
                 Utils.el('div', { id: 'main-content', className: 'app-main' }),
             ]),
-        ]);
+        );
+
+        const shell = Utils.el('div', { className: 'app-shell' }, shellChildren);
 
         container.appendChild(shell);
     }

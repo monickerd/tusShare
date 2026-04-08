@@ -265,6 +265,11 @@ a:hover {
     text-align: right;
 }
 
+.upload-progress-cancel {
+    margin-left: var(--space-2);
+    flex-shrink: 0;
+}
+
 /* === Folder tree === */
 .folder-tree {
     padding: 0 var(--space-2);
@@ -495,6 +500,57 @@ a:hover {
     font-size: var(--font-size-md);
     color: var(--color-danger);
     min-height: 20px;
+}
+
+/* === Public device checkbox (login form) === */
+.public-device-row {
+    margin-bottom: var(--space-4);
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    user-select: none;
+}
+
+.checkbox-label input[type="checkbox"] {
+    width: auto;
+    margin: 0;
+    cursor: pointer;
+}
+
+/* === Public device banner === */
+.public-device-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    padding: var(--space-2) var(--space-5);
+    background: var(--color-warning-bg, #fff8e1);
+    color: var(--color-warning-text, #5d4037);
+    font-size: var(--font-size-sm);
+    border-bottom: 1px solid var(--color-warning-border, #ffe082);
+    /* Sits between the header and the app-body, so no z-index needed */
+}
+
+.public-device-banner-dismiss {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: var(--font-size-xl, 1.25rem);
+    line-height: 1;
+    color: inherit;
+    opacity: 0.6;
+    padding: 0 var(--space-1);
+}
+
+.public-device-banner-dismiss:hover {
+    opacity: 1;
 }
 
 /* === Loading === */

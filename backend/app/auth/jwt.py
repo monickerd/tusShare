@@ -64,15 +64,27 @@ def hash_refresh_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
-async def store_refresh_token(db, user_id: str, token_hash: str) -> str:
+async def store_refresh_token(
+    db,
+    user_id: str,
+    token_hash: str,
+    expire_minutes: int | None = None,
+    is_public_device: bool = False,
+) -> str:
     """Store a refresh token hash in the database. Returns the token row ID.
+
+    expire_minutes overrides the default REFRESH_TOKEN_EXPIRE_DAYS TTL.
+    is_public_device is stored in the row for admin audit and future policy use.
 
     Also prunes expired or revoked tokens for this user to prevent unbounded
     accumulation when a user logs in many times without logging out.
     """
     token_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
-    expires_at = (now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)).isoformat()
+    if expire_minutes is not None:
+        expires_at = (now + timedelta(minutes=expire_minutes)).isoformat()
+    else:
+        expires_at = (now + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)).isoformat()
     now_iso = now.isoformat()
 
     # Remove stale tokens for this user before inserting the new one
@@ -81,9 +93,9 @@ async def store_refresh_token(db, user_id: str, token_hash: str) -> str:
         (user_id, now_iso),
     )
     await db.execute(
-        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (token_id, user_id, token_hash, expires_at, now_iso),
+        "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at, is_public_device) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (token_id, user_id, token_hash, expires_at, now_iso, 1 if is_public_device else 0),
     )
     await db.commit()
     return token_id

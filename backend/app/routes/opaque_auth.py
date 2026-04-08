@@ -50,7 +50,14 @@ router = APIRouter()
 # Shared helpers (mirrors auth.py — kept local to avoid circular imports)
 # ---------------------------------------------------------------------------
 
-def _set_auth_cookies(response: Response, access_token: str, refresh_token: str, csrf_token: str) -> None:
+def _set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    csrf_token: str,
+    refresh_max_age: int | None = None,
+) -> None:
+    rt_max_age = refresh_max_age if refresh_max_age is not None else settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
     response.set_cookie(
         key=COOKIE_ACCESS, value=access_token,
         httponly=True, secure=True, samesite="strict", path="/",
@@ -60,12 +67,12 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
         key=COOKIE_REFRESH, value=refresh_token,
         httponly=True, secure=True, samesite="strict",
         path=REFRESH_TOKEN_COOKIE_PATH,
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=rt_max_age,
     )
     response.set_cookie(
         key=COOKIE_CSRF, value=csrf_token,
         httponly=False, secure=True, samesite="strict", path="/",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=rt_max_age,
     )
 
 
@@ -263,6 +270,7 @@ class OpaqueLoginFinishRequest(BaseModel):
     username: str
     session_id: str
     client_login_finish: str   # base64 CredentialFinalization bytes
+    is_public_device: bool = False
 
     @field_validator("username")
     @classmethod
@@ -559,13 +567,31 @@ async def opaque_login_finish(
         # both succeeded, but guard anyway
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    # Public device sessions get a shorter-lived refresh token to limit exposure
+    # if the user forgets to log out.  Key material stays in sessionStorage only
+    # (cleared on tab close) — enforced on the client side.
+    is_public_device = body.is_public_device
+    if is_public_device:
+        rt_expire_minutes = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+        rt_max_age = rt_expire_minutes * 60
+    else:
+        rt_expire_minutes = None  # uses default REFRESH_TOKEN_EXPIRE_DAYS
+        rt_max_age = None
+
     raw_refresh, rt_hash = create_refresh_token()
-    token_id = await store_refresh_token(db, user.id, rt_hash)
+    token_id = await store_refresh_token(
+        db, user.id, rt_hash,
+        expire_minutes=rt_expire_minutes,
+        is_public_device=is_public_device,
+    )
     access_token = create_access_token(user.id, user.is_admin, session_id=token_id)
     csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token)
+    _set_auth_cookies(response, access_token, raw_refresh, csrf_token, refresh_max_age=rt_max_age)
 
-    logger.info("OPAQUE login: user=%s (id=%s)", user.username, user.id)
+    logger.info(
+        "OPAQUE login: user=%s (id=%s) public_device=%s",
+        user.username, user.id, is_public_device,
+    )
     return {"user": _user_response_dict(user)}
 
 

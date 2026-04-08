@@ -79,6 +79,13 @@ class Settings(BaseSettings):
     RATE_LIMIT_ESCALATED_WINDOW: int = 1   # seconds per escalated request slot (1 req/s)
     RATE_LIMIT_ESCALATED_DURATION: int = 300  # seconds the IP stays in escalated mode (5 min)
 
+    # Public / shared device sessions (B4)
+    # Refresh token TTL for sessions where the user checked "Public Device" at login.
+    # Intentionally much shorter than the normal REFRESH_TOKEN_EXPIRE_DAYS to limit
+    # the exposure window if the user forgets to log out.
+    # TODO (Phase D): expose this in theme.json so admins can tune it without a restart.
+    PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES: int = 60  # 1 hour
+
     # Share session tokens
     SHARE_SESSION_EXPIRE_HOURS: int = 2  # short-lived IP-bound JWT for public share access
 

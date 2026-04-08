@@ -101,6 +101,15 @@ const Config = Object.freeze({
         defaultExpiryDays: 7,      // default link expiry when creating a share
     }),
 
+    /* --- Public / shared device mode (B4) --- */
+    // TODO (Phase D): migrate bannerVisible and bannerText into theme.json so
+    // admins can customise them without touching source files.
+    publicDevice: Object.freeze({
+        sessionStorageKey: 'publicDevice',
+        bannerVisible: true,
+        bannerText: 'Public Device: Consider avoiding transferring particularly sensitive files. Remember to log out or close the tab when finished.',
+    }),
+
     /* --- Admin --- */
     admin: Object.freeze({
         inviteExpireHours:          24,

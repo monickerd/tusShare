@@ -103,9 +103,10 @@ const Auth = (() => {
     // ------------------------------------------------------------------
     // OPAQUE login helper — two-round-trip OPAQUE exchange.
     // Returns { data, exportKey } where data is the /login/finish JSON response.
+    // is_public_device is forwarded to the server so it can issue a shorter token.
     // ------------------------------------------------------------------
 
-    async function _runOpaqueLogin(username, password) {
+    async function _runOpaqueLogin(username, password, isPublicDevice = false) {
         const opaque = await _loadOpaque();
 
         // Round 1: client generates blinded credential request
@@ -132,6 +133,7 @@ const Auth = (() => {
             username,
             session_id: round1.session_id,
             client_login_finish: finishLoginRequest,
+            is_public_device: isPublicDevice,
         });
 
         return { data, exportKey };
@@ -163,6 +165,12 @@ const Auth = (() => {
                     maxlength: String(Config.auth.passwordMaxLength),
                 }),
             ]),
+            Utils.el('div', { className: 'form-group public-device-row' }, [
+                Utils.el('label', { className: 'checkbox-label' }, [
+                    Utils.el('input', { type: 'checkbox', id: 'public-device', name: 'public-device' }),
+                    Utils.el('span', { textContent: 'Public / shared device' }),
+                ]),
+            ]),
             Utils.el('button', { type: 'submit', className: 'btn btn-primary btn-full', textContent: 'Log In' }),
             Utils.el('div', { style: 'text-align:center;margin-top:12px' }, [
                 Utils.el('a', {
@@ -185,6 +193,7 @@ const Auth = (() => {
         e.preventDefault();
         const username = document.getElementById('username').value.trim();
         const password = document.getElementById('password').value;
+        const isPublicDevice = document.getElementById('public-device')?.checked || false;
         const status = document.getElementById('login-status');
         const btn = e.target.querySelector('button[type="submit"]');
 
@@ -193,7 +202,7 @@ const Auth = (() => {
 
         try {
             status.textContent = 'Running zero-knowledge auth…';
-            const { data, exportKey } = await _runOpaqueLogin(username, password);
+            const { data, exportKey } = await _runOpaqueLogin(username, password, isPublicDevice);
 
             _currentUser = data.user;
 
@@ -212,6 +221,15 @@ const Auth = (() => {
                 data.user.wrapped_master_key_iv,
                 kek
             );
+
+            // Public device mode: key material lives in sessionStorage only (already the
+            // case — sessionStorage is cleared on tab close).  We also store a flag so the
+            // app shell can show the dismissable public-device banner.
+            if (isPublicDevice) {
+                sessionStorage.setItem(Config.publicDevice.sessionStorageKey, '1');
+            } else {
+                sessionStorage.removeItem(Config.publicDevice.sessionStorageKey);
+            }
 
             await _saveSessionKeyData(_masterKeyObj, null);
 
@@ -1004,6 +1022,7 @@ const Auth = (() => {
         _currentUser = null;
         _masterKeyObj = null;
         sessionStorage.removeItem(Config.auth.sessionStorageKey);
+        sessionStorage.removeItem(Config.publicDevice.sessionStorageKey);
         window.location.hash = '#/login';
     }
 
