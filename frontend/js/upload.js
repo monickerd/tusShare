@@ -62,6 +62,7 @@ const Upload = (() => {
 
         // Generate a per-file key and wrap it with the master key
         const fileKey = await Crypto.generateFileKey();
+        const fileKeyBytes = new Uint8Array(await crypto.subtle.exportKey('raw', fileKey));
         const { encryptedKeyB64, ivB64: keyIvB64 } = await Crypto.encryptFileKey(fileKey, masterKey);
 
         // Build tus Upload-Metadata header
@@ -154,7 +155,7 @@ const Upload = (() => {
                     // Final chunk — server includes X-File-ID
                     if (i === totalChunks - 1) {
                         const fileId = patchResp.headers.get('X-File-ID') || null;
-                        return { fileId, location };
+                        return { fileId, fileKeyBytes, location };
                     }
                     break;
                 }
@@ -202,7 +203,7 @@ const Upload = (() => {
             }
         }
 
-        return { fileId: null, location };
+        return { fileId: null, fileKeyBytes, location };
     }
 
     /**

@@ -19,7 +19,7 @@ from app.config import settings
 from app.database import get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.models.file import File, FileChunk
-from app.routes._access import is_in_shared_tree, is_team_folder_member
+from app.routes._access import copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
 from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
 
@@ -61,6 +61,170 @@ class UpdateFileRequest(BaseModel):
         if v is not None:
             return validate_uuid(v)
         return v
+
+
+class _BatchMoveFileKey(BaseModel):
+    """PRE-encrypted file key for a team destination. All fields are base64."""
+    pre_c1: str
+    encrypted_file_key: str
+    key_iv: str
+
+    @field_validator("pre_c1", "encrypted_file_key", "key_iv")
+    @classmethod
+    def validate_b64(cls, v: str) -> str:
+        from app.validation.sanitizers import validate_base64
+        return validate_base64(v)
+
+
+class _BatchMoveItem(BaseModel):
+    id: str
+    # Required when the destination is a team folder; absent for personal destinations
+    team_key: _BatchMoveFileKey | None = None
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, v: str) -> str:
+        return validate_uuid(v)
+
+
+_BATCH_MOVE_MAX = 50
+
+
+class BatchMoveRequest(BaseModel):
+    files: list[_BatchMoveItem]
+    destination_folder_id: str | None = None
+
+    @field_validator("files")
+    @classmethod
+    def validate_files(cls, v: list) -> list:
+        if not v:
+            raise ValueError("files list must not be empty")
+        if len(v) > _BATCH_MOVE_MAX:
+            raise ValueError(f"Cannot move more than {_BATCH_MOVE_MAX} files per request")
+        return v
+
+    @field_validator("destination_folder_id")
+    @classmethod
+    def validate_dest(cls, v: str | None) -> str | None:
+        if v is not None:
+            return validate_uuid(v)
+        return v
+
+
+@router.post("/batch-move")
+async def batch_move_files(
+    body: BatchMoveRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Move up to 50 files to a destination folder in a single request.
+
+    When the destination is a team folder, each item must include a ``team_key``
+    containing the PRE-encrypted file key for that team.  The endpoint atomically
+    updates ``folder_id``, inserts the new ``file_team_keys`` row (if destination
+    is a team folder), and deletes the old ``file_team_keys`` row (if the source
+    was a different team folder).  Inherited ``permissions`` rows are also
+    refreshed from the destination folder.
+
+    Returns a summary of succeeded and failed file IDs.
+    """
+    dest_id = body.destination_folder_id
+
+    # Resolve destination team (if any)
+    dest_team_id: str | None = None
+    if dest_id:
+        cursor = await db.execute("SELECT owner_id FROM folders WHERE id = ?", (dest_id,))
+        dest_folder = await cursor.fetchone()
+        if dest_folder is None:
+            raise HTTPException(status_code=404, detail="Destination folder not found")
+        if dest_folder["owner_id"] != user.id and not user.is_admin:
+            if not await is_team_folder_member(db, dest_id, user.id):
+                raise HTTPException(status_code=403, detail="Access denied to destination folder")
+        dest_team_id = await get_folder_team_id(db, dest_id)
+
+    # Validate team_key presence: required for each file when dest is a team folder
+    if dest_team_id:
+        missing = [item.id for item in body.files if item.team_key is None]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"team_key required for all files when destination is a team folder; missing for: {missing[:5]}",
+            )
+
+    succeeded: list[str] = []
+    failed: list[str] = []
+
+    for item in body.files:
+        try:
+            cursor = await db.execute(
+                "SELECT id, folder_id, owner_id FROM files WHERE id = ?", (item.id,)
+            )
+            file_row = await cursor.fetchone()
+            if file_row is None or file_row["owner_id"] != user.id:
+                failed.append(item.id)
+                continue
+
+            src_folder_id = file_row["folder_id"]
+            src_team_id = await get_folder_team_id(db, src_folder_id) if src_folder_id else None
+
+            await db.execute("BEGIN")
+            try:
+                # Move the file
+                await db.execute(
+                    "UPDATE files SET folder_id = ?, updated_at = NOW() WHERE id = ?",
+                    (dest_id, item.id),
+                )
+
+                # Replace inherited permissions
+                await db.execute(
+                    "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
+                    (item.id,),
+                )
+                if dest_id:
+                    await copy_folder_permissions(db, dest_id, "file", item.id)
+
+                # Remove old team key if source was a team folder
+                if src_team_id and src_team_id != dest_team_id:
+                    await db.execute(
+                        "DELETE FROM file_team_keys WHERE team_id = ? AND file_id = ?",
+                        (src_team_id, item.id),
+                    )
+
+                # Insert new team key if destination is a team folder
+                if dest_team_id and item.team_key:
+                    tk = item.team_key
+                    new_ftk_id = str(uuid.uuid4())
+                    await db.execute(
+                        "INSERT INTO file_team_keys "
+                        "(id, team_id, file_id, pre_c1, encrypted_file_key, key_iv) "
+                        "VALUES (?, ?, ?, ?, ?, ?) "
+                        "ON CONFLICT(team_id, file_id) DO UPDATE SET "
+                        "    pre_c1 = excluded.pre_c1, "
+                        "    encrypted_file_key = excluded.encrypted_file_key, "
+                        "    key_iv = excluded.key_iv",
+                        (new_ftk_id, dest_team_id, item.id,
+                         tk.pre_c1, tk.encrypted_file_key, tk.key_iv),
+                    )
+
+                await db.commit()
+                succeeded.append(item.id)
+
+                # SSE notifications
+                if src_folder_id:
+                    sse_broker.publish(src_folder_id, {"type": "change"})
+                else:
+                    sse_broker.publish(f"root:{user.id}", {"type": "change"})
+                if dest_id and dest_id != src_folder_id:
+                    sse_broker.publish(dest_id, {"type": "change"})
+
+            except Exception:
+                await db.rollback()
+                failed.append(item.id)
+
+        except Exception:
+            failed.append(item.id)
+
+    return {"succeeded": succeeded, "failed": failed}
 
 
 @router.get("/{file_id}")
@@ -143,6 +307,18 @@ async def update_file(
         f"UPDATE files SET {', '.join(updates)} WHERE id = ?",
         params,
     )
+
+    # On a folder change, replace inherited permissions with those from the new folder.
+    new_folder_id = body.folder_id if (body.folder_id and not body.move_to_root) else None
+    is_move = body.move_to_root or body.folder_id is not None
+    if is_move:
+        await db.execute(
+            "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
+            (file_id,),
+        )
+        if new_folder_id:
+            await copy_folder_permissions(db, new_folder_id, "file", file_id)
+
     await db.commit()
 
     # Notify the folder the file was in (and the destination if it was moved)

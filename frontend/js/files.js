@@ -9,6 +9,8 @@ const Files = (() => {
     let _currentFolder = null;
     let _isSharedView = false;
     let _isTeamView = false;
+    let _currentTeamId = null;    // non-null when browsing a team folder tree
+    let _currentTeamPK = null;    // base64 team public key, cached alongside _currentTeamId
     const _pageSize = Config.ui.paginationDefaultLimit;
 
     // Live update state — one EventSource per viewed folder/root
@@ -49,8 +51,10 @@ const Files = (() => {
      */
     function renderFileBrowser(container, opts = {}) {
         _stopLive();
-        _isSharedView = !!opts.shared;
-        _isTeamView   = !!opts.teamView;
+        _isSharedView  = !!opts.shared;
+        _isTeamView    = !!opts.teamView;
+        _currentTeamId = null;
+        _currentTeamPK = null;
         _clearContainer(container);
 
         const main = Utils.el('main', { className: 'files-main' }, [
@@ -94,6 +98,8 @@ const Files = (() => {
     async function _loadRootFolders() {
         _currentFolderId = null;
         _currentFolder = null;
+        _currentTeamId = null;
+        _currentTeamPK = null;
         const listEl = document.getElementById('file-list');
         if (!listEl) return;
         // Show root breadcrumb
@@ -192,6 +198,20 @@ const Files = (() => {
         try {
             const data = await Api.get(`${Config.app.apiPrefix}/folders/${folderId}`);
             _currentFolder = data.folder || null;
+
+            // Cache team context so uploads and moves can use it without an extra round-trip
+            if (data.team_id && data.team_id !== _currentTeamId) {
+                _currentTeamId = data.team_id;
+                _currentTeamPK = null; // will be fetched on demand
+                try {
+                    const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${data.team_id}`);
+                    _currentTeamPK = teamData.team?.pre_public_key || null;
+                } catch { /* best-effort; uploads will fall back to no team key */ }
+            } else if (!data.team_id) {
+                _currentTeamId = null;
+                _currentTeamPK = null;
+            }
+
             _renderBreadcrumbs(data.breadcrumbs || [], data.folder);
             _renderFolderContents(listEl, data.child_folders, data.files, data.pending_uploads || []);
             _startLive(folderId);
@@ -981,30 +1001,174 @@ const Files = (() => {
 
     /**
      * Execute moves for a list of items to a destination (no confirmation).
-     * destination: { id: string|null, label: string }
+     * destination: { id: string|null, label: string, isTeam: boolean }
+     * sourceIsTeam: whether the items originate from a team folder view
      */
     async function _executeMoves(items, destination) {
         const destId = destination.id;
-        let errors = 0;
 
-        for (const item of items) {
+        // Resolve destination team (if any)
+        let destTeamPK = null;
+        let destTeamId = null;
+        if (destination.isTeam && destId) {
             try {
-                if (item.type === 'folder') {
-                    const body = destId === null
-                        ? { move_to_root: true }
-                        : { parent_id: destId };
-                    await Api.put(`${Config.app.apiPrefix}/folders/${item.id}`, body);
-                } else {
-                    const body = destId === null
-                        ? { move_to_root: true }
-                        : { folder_id: destId };
-                    await Api.put(`${Config.app.apiPrefix}/files/${item.id}`, body);
+                const folderData = await Api.get(`${Config.app.apiPrefix}/folders/${destId}`);
+                destTeamId = folderData.team_id || null;
+                if (destTeamId) {
+                    const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}`);
+                    destTeamPK = teamData.team?.pre_public_key || null;
                 }
             } catch {
-                errors++;
+                Utils.showToast('Failed to resolve destination team — move cancelled', 'error');
+                return;
+            }
+            if (!destTeamPK) {
+                Utils.showToast('Destination folder is not part of a team — move cancelled', 'error');
+                return;
             }
         }
 
+        // Re-encryption is needed only when crossing team boundaries.
+        // Moving within the same team leaves file_team_keys intact.
+        const srcTeamId = _currentTeamId || null;
+        const needsCrypto = srcTeamId !== destTeamId;   // null !== null is false ✓
+
+        // Separate folders and files
+        const folders = items.filter(i => i.type === 'folder');
+        const files   = items.filter(i => i.type === 'file');
+
+        let errors = 0;
+
+        // --- Folder moves ---
+        for (const folder of folders) {
+            try {
+                if (needsCrypto) {
+                    await _moveFolderAcrossTeamBoundary(folder, destId, destTeamPK);
+                } else {
+                    await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`,
+                        destId === null ? { move_to_root: true } : { parent_id: destId });
+                }
+            } catch { errors++; }
+        }
+
+        // --- File moves ---
+        if (files.length > 0) {
+            if (needsCrypto) {
+                const masterKey = Auth.getMasterKeyObj();
+                const batches = _chunk(files, 50);
+                for (const batch of batches) {
+                    const batchItems = [];
+                    for (const file of batch) {
+                        try {
+                            const fileKeyBytes = await _resolveFileKeyBytes(file, masterKey);
+                            const teamKey = destTeamPK
+                                ? await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK)
+                                : null;
+                            batchItems.push({ id: file.id, team_key: teamKey });
+                        } catch { errors++; }
+                    }
+                    if (batchItems.length > 0) {
+                        try {
+                            const result = await Api.post(
+                                `${Config.app.apiPrefix}/files/batch-move`,
+                                { files: batchItems, destination_folder_id: destId },
+                            );
+                            errors += (result.failed || []).length;
+                        } catch { errors += batchItems.length; }
+                    }
+                }
+            } else {
+                for (const file of files) {
+                    try {
+                        await Api.put(`${Config.app.apiPrefix}/files/${file.id}`,
+                            destId === null ? { move_to_root: true } : { folder_id: destId });
+                    } catch { errors++; }
+                }
+            }
+        }
+
+        _finishMoveToast(items, destination, errors);
+        _reloadCurrentView();
+    }
+
+    /**
+     * Move a folder across a team boundary by recreating its structure at the
+     * destination and batch-moving all contained files.
+     */
+    async function _moveFolderAcrossTeamBoundary(folder, destParentId, destTeamPK) {
+        const masterKey = Auth.getMasterKeyObj();
+
+        // Enumerate all files in the subtree
+        const filesData = await Api.get(
+            `${Config.app.apiPrefix}/folders/${folder.id}/files?limit=500`
+        );
+        const allFiles = filesData.files || [];
+
+        // Create mirror folder at destination (single top-level folder for now;
+        // nested structure requires a recursive walk — handled by the subtree endpoint
+        // returning a flat file list, so we create one destination folder for all files).
+        let newFolderId = destParentId;
+        try {
+            const created = await Api.post(`${Config.app.apiPrefix}/folders`, {
+                name: folder.name,
+                parent_id: destParentId,
+            });
+            newFolderId = created.folder.id;
+        } catch {
+            throw new Error(`Failed to create destination folder "${folder.name}"`);
+        }
+
+        // Batch-move all files into the new folder
+        if (allFiles.length > 0) {
+            const batches = _chunk(allFiles, 50);
+            for (const batch of batches) {
+                const batchItems = [];
+                for (const file of batch) {
+                    try {
+                        const fileKeyBytes = await _resolveFileKeyBytes(file, masterKey);
+                        let teamKey = null;
+                        if (destTeamPK) {
+                            teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK);
+                        }
+                        batchItems.push({ id: file.id, team_key: teamKey });
+                    } catch { /* skip file, leave in source */ }
+                }
+                if (batchItems.length > 0) {
+                    await Api.post(
+                        `${Config.app.apiPrefix}/files/batch-move`,
+                        { files: batchItems, destination_folder_id: newFolderId },
+                    );
+                }
+            }
+        }
+
+        // Delete the now-empty source folder
+        await Api.del(`${Config.app.apiPrefix}/folders/${folder.id}`);
+    }
+
+    /**
+     * Recover raw file key bytes for a file owned by the current user.
+     *
+     * The personal copy (encrypted_file_key / key_iv) is always present for
+     * files the user owns, regardless of whether the file is in a team folder.
+     * file must have encrypted_file_key and key_iv fields (present in all
+     * folder listing and /folders/{id}/files responses).
+     */
+    async function _resolveFileKeyBytes(file, masterKey) {
+        const fileKey = await Crypto.decryptFileKey(
+            file.encrypted_file_key, file.key_iv, masterKey
+        );
+        return new Uint8Array(await crypto.subtle.exportKey('raw', fileKey));
+    }
+
+    /** Split an array into chunks of at most `size`. */
+    function _chunk(arr, size) {
+        const out = [];
+        for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+        return out;
+    }
+
+    function _finishMoveToast(items, destination, errors) {
         if (errors > 0) {
             Utils.showToast(`Moved with ${errors} error(s)`, 'warning');
         } else {
@@ -1015,7 +1179,6 @@ const Files = (() => {
                 'success'
             );
         }
-        _reloadCurrentView();
     }
 
     function _promptNewFolder() {
@@ -1069,13 +1232,28 @@ const Files = (() => {
             });
 
             try {
-                await Upload.uploadFile(file, _currentFolderId, masterKey, (done, total) => {
+                const result = await Upload.uploadFile(file, _currentFolderId, masterKey, (done, total) => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, label);
                     transfer.update(pct);
                 }, ctrl);
                 overlay.remove();
                 transfer.complete();
+
+                // Register file_team_keys so team members can decrypt this file
+                if (_currentTeamId && _currentTeamPK && result.fileId && result.fileKeyBytes) {
+                    try {
+                        const teamKey = await Teams.encryptFileKeyForTeam(result.fileKeyBytes, _currentTeamPK);
+                        await Api.post(
+                            `${Config.app.apiPrefix}/teams/${_currentTeamId}/file-keys`,
+                            { file_keys: [{ file_id: result.fileId, ...teamKey }] },
+                        );
+                    } catch (teamKeyErr) {
+                        // Non-fatal: file is uploaded and owner can access it; log the failure
+                        console.warn('Failed to register team file key for', result.fileId, teamKeyErr);
+                    }
+                }
+
                 Utils.showToast(`"${file.name}" uploaded`, 'success');
             } catch (err) {
                 overlay.remove();

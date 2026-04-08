@@ -10,7 +10,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
-from app.routes._access import is_in_shared_tree, is_team_folder_member
+from app.routes._access import copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
 
@@ -123,6 +123,9 @@ async def create_folder(
             "INSERT INTO folders (id, name, parent_id, owner_id) VALUES (?, ?, ?, ?)",
             (folder_id, body.name, body.parent_id, user.id),
         )
+        # Inherit recursive permissions from the parent folder (personal root = no-inherit)
+        if body.parent_id:
+            await copy_folder_permissions(db, body.parent_id, "folder", folder_id)
         await db.commit()
     except Exception as e:
         if "UNIQUE constraint failed" in str(e):
@@ -206,12 +209,15 @@ async def get_folder_contents(
         breadcrumbs.insert(0, {"id": parent.id, "name": parent.name})
         current = parent
 
+    team_id = await get_folder_team_id(db, folder_id)
+
     return {
         "folder": folder.to_dict(),
         "child_folders": child_folders,
         "files": files,
         "pending_uploads": pending_uploads,
         "breadcrumbs": breadcrumbs,
+        "team_id": team_id,
     }
 
 
@@ -345,6 +351,19 @@ async def update_folder(
         f"UPDATE folders SET {', '.join(updates)} WHERE id = ?",
         params,
     )
+
+    # On a parent change, replace inherited permissions with those from the new parent.
+    # Rename-only (body.parent_id is None and not move_to_root) leaves permissions untouched.
+    is_move = body.move_to_root or body.parent_id is not None
+    if is_move:
+        new_parent_id = body.parent_id if not body.move_to_root else None
+        await db.execute(
+            "DELETE FROM permissions WHERE resource_type = 'folder' AND resource_id = ? AND recursive = 1",
+            (folder_id,),
+        )
+        if new_parent_id:
+            await copy_folder_permissions(db, new_parent_id, "folder", folder_id)
+
     await db.commit()
 
     # Notify old parent (rename) and new parent (move) if different

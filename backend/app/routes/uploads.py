@@ -20,6 +20,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.auth.dependencies import require_user_role
+from app.routes._access import copy_folder_permissions
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.database import get_db
@@ -249,6 +250,9 @@ async def create_upload(
                 encrypted_file_key, key_iv,
             ),
         )
+        # Inherit recursive permissions from the parent folder (personal root = no-inherit)
+        if folder_id:
+            await copy_folder_permissions(db, folder_id, "file", file_id)
         await db.execute(
             """
             INSERT INTO tus_uploads
