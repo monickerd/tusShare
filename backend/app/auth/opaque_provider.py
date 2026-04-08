@@ -219,3 +219,62 @@ class OPAQUEAuthProvider(AuthProvider):
         )
         await self._db.commit()
         return result.rowcount
+
+    # ------------------------------------------------------------------
+    # Password recovery session helpers
+    # ------------------------------------------------------------------
+
+    async def get_recovery_key_fields(self, username: str) -> dict | None:
+        """Return id + recovery key fields for a user, or None if not found."""
+        cursor = await self._db.execute(
+            "SELECT id, recovery_key_wrapped, recovery_key_iv, recovery_key_hash, is_active "
+            "FROM users WHERE LOWER(username) = LOWER(?) AND auth_method = 'opaque'",
+            (username,),
+        )
+        row = await cursor.fetchone()
+        if row is None or not row["is_active"]:
+            return None
+        return {
+            "id": row["id"],
+            "recovery_key_wrapped": row["recovery_key_wrapped"],
+            "recovery_key_iv": row["recovery_key_iv"],
+            "recovery_key_hash": row["recovery_key_hash"],
+        }
+
+    async def store_recovery_session(
+        self,
+        session_id: str,
+        username: str,
+        ttl_seconds: int = 90,
+    ) -> None:
+        """Persist an in-flight OPAQUE password recovery session."""
+        await self._db.execute(
+            "INSERT INTO opaque_recovery_sessions (id, username, expires_at) "
+            "VALUES (?, ?, NOW() + (? * INTERVAL '1 second'))",
+            (session_id, username, ttl_seconds),
+        )
+        await self._db.commit()
+
+    async def consume_recovery_session(self, session_id: str) -> str | None:
+        """Atomically fetch and delete an unexpired recovery session.
+
+        Returns username or None if expired / not found.
+        """
+        cursor = await self._db.execute(
+            "DELETE FROM opaque_recovery_sessions "
+            "WHERE id = ? AND expires_at > NOW() "
+            "RETURNING username",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return row["username"]
+
+    async def sweep_expired_recovery_sessions(self) -> int:
+        """Delete all expired recovery sessions. Returns the number of rows removed."""
+        result = await self._db.execute(
+            "DELETE FROM opaque_recovery_sessions WHERE expires_at <= NOW()"
+        )
+        await self._db.commit()
+        return result.rowcount

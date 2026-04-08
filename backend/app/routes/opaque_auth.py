@@ -13,6 +13,8 @@ Endpoints:
   POST /auth/opaque/login/start      — login round 1
   POST /auth/opaque/login/finish     — login round 2
   POST /auth/opaque/step-up/start    — initiate OPAQUE step-up challenge
+  POST /auth/opaque/recover/start    — password recovery round 1
+  POST /auth/opaque/recover/finish   — password recovery round 2
 """
 
 import asyncio
@@ -24,12 +26,13 @@ import uuid
 from datetime import datetime, timezone
 
 import tusshare_opaque
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 import app.sensitive_config as sensitive_config
+from app.auth.stepup import log_security_event
 from app.auth.dependencies import get_current_user, require_user_role
-from app.middleware.rate_limit import _counter
+from app.middleware.rate_limit import _counter, _get_client_ip
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
 from app.auth.opaque_provider import OPAQUEAuthProvider
@@ -763,6 +766,212 @@ async def opaque_migrate_finish(
         raise HTTPException(status_code=500, detail="Failed to load updated user record")
 
     return {"user": _user_response_dict(updated)}
+
+
+# ---------------------------------------------------------------------------
+# Password recovery via recovery key (unauthenticated, two-round)
+# ---------------------------------------------------------------------------
+# The server never sees the raw recovery key.  Round 1 returns the user's
+# encrypted recovery key material so the client can verify the key locally by
+# attempting an AES-GCM unwrap.  Round 2 requires the client to prove it held
+# the old key by sending SHA-256(old_recovery_key_string), which the server
+# compares (constant-time) against the stored recovery_key_hash.
+# ---------------------------------------------------------------------------
+
+
+class OpaqueRecoverStartRequest(BaseModel):
+    username: str
+    client_registration_request: str   # base64 RegistrationRequest for the new password
+
+    @field_validator("username")
+    @classmethod
+    def val_username(cls, v: str) -> str:
+        return sanitize_username(v)
+
+    @field_validator("client_registration_request")
+    @classmethod
+    def val_reg_request(cls, v: str) -> str:
+        validate_base64(v, max_length=_OPAQUE_REG_REQUEST_B64_MAX)
+        return v
+
+
+class OpaqueRecoverFinishRequest(BaseModel):
+    username: str
+    session_id: str
+    client_registration_record: str    # base64 RegistrationUpload for the new password
+    wrapped_master_key: str            # master key re-wrapped under new OPAQUE KEK
+    wrapped_master_key_iv: str
+    recovery_key_wrapped: str          # master key wrapped under new recovery key
+    recovery_key_iv: str
+    recovery_key_hash: str             # SHA-256 hex of new recovery key string
+    old_recovery_key_proof: str        # SHA-256 hex of old recovery key string (proof of possession)
+
+    @field_validator("username")
+    @classmethod
+    def val_username(cls, v: str) -> str:
+        return sanitize_username(v)
+
+    @field_validator("session_id")
+    @classmethod
+    def val_session_id(cls, v: str) -> str:
+        try:
+            return validate_uuid(v)
+        except ValueError:
+            raise ValueError("session_id must be a valid UUID")
+
+    @field_validator("client_registration_record")
+    @classmethod
+    def val_reg_record(cls, v: str) -> str:
+        validate_base64(v, max_length=_OPAQUE_REG_RECORD_B64_MAX)
+        return v
+
+    @field_validator("wrapped_master_key", "recovery_key_wrapped")
+    @classmethod
+    def val_wrapped_key_fields(cls, v: str) -> str:
+        validate_base64(v, max_length=_WRAPPED_KEY_B64_MAX)
+        return v
+
+    @field_validator("wrapped_master_key_iv", "recovery_key_iv")
+    @classmethod
+    def val_iv_fields(cls, v: str) -> str:
+        validate_base64(v, max_length=_IV_B64_MAX)
+        return v
+
+    @field_validator("recovery_key_hash", "old_recovery_key_proof")
+    @classmethod
+    def val_hex_fields(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or len(v) > 128 or not all(c in "0123456789abcdef" for c in v):
+            raise ValueError("Must be a hex string (SHA-256)")
+        return v
+
+
+@router.post("/recover/start")
+async def opaque_recover_start(
+    body: OpaqueRecoverStartRequest,
+    db=Depends(get_db),
+):
+    """Password recovery round 1.
+
+    Runs the OPAQUE registration start for the new password (server-side is
+    stateless between registration rounds, so no state is stored for this).
+    Also returns the user's encrypted recovery key material so the client can
+    verify the recovery key locally — by attempting AES-GCM unwrap — without
+    ever transmitting the raw key to the server.
+
+    Always performs the full OPAQUE computation and stores a recovery session
+    regardless of whether the username exists, to keep response timing uniform.
+    Non-existent users receive null recovery_key_wrapped/iv; the client shows
+    the same "Invalid username or recovery key" error either way.
+    """
+    reg_request_bytes = _decode_b64_field(body.client_registration_request, "client_registration_request")
+    setup_bytes = sensitive_config.get_opaque_server_setup()
+    username_bytes = body.username.encode("utf-8")
+
+    try:
+        reg_response_bytes = await asyncio.to_thread(
+            tusshare_opaque.server_start_registration,
+            setup_bytes, reg_request_bytes, username_bytes,
+        )
+    except ValueError as exc:
+        logger.warning("OPAQUE recover/start failed: %s", exc)
+        raise HTTPException(status_code=400, detail="Invalid registration request")
+
+    provider = OPAQUEAuthProvider(db)
+    user_fields = await provider.get_recovery_key_fields(body.username)
+
+    session_id = str(uuid.uuid4())
+    await provider.store_recovery_session(session_id, body.username)
+
+    return {
+        "registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("="),
+        "session_id": session_id,
+        "recovery_key_wrapped": user_fields["recovery_key_wrapped"] if user_fields else None,
+        "recovery_key_iv": user_fields["recovery_key_iv"] if user_fields else None,
+    }
+
+
+@router.post("/recover/finish")
+async def opaque_recover_finish(
+    body: OpaqueRecoverFinishRequest,
+    request: Request,
+    db=Depends(get_db),
+):
+    """Password recovery round 2.
+
+    Verifies the recovery session token (consumed atomically to prevent replay),
+    then checks that the client supplied SHA-256(old_recovery_key_string) as proof
+    of possession — compared constant-time against the stored recovery_key_hash.
+
+    On success, atomically replaces the OPAQUE registration record, the wrapped
+    master key, and all recovery key fields, then revokes all existing refresh
+    tokens so the user must log in fresh with the new password.
+
+    Does NOT issue auth cookies — the client is redirected to log in.
+    """
+    provider = OPAQUEAuthProvider(db)
+
+    stored_username = await provider.consume_recovery_session(body.session_id)
+    if stored_username is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired recovery session")
+
+    if stored_username.lower() != body.username.lower():
+        raise HTTPException(status_code=400, detail="Invalid or expired recovery session")
+
+    user_fields = await provider.get_recovery_key_fields(body.username)
+    if user_fields is None:
+        # User doesn't exist or isn't an OPAQUE user — same error as wrong key
+        raise HTTPException(status_code=400, detail="Invalid recovery key")
+
+    stored_hash = user_fields["recovery_key_hash"] or ""
+    if not secrets.compare_digest(body.old_recovery_key_proof.lower(), stored_hash.lower()):
+        logger.warning("OPAQUE recover/finish: wrong key proof for user_id=%s", user_fields["id"])
+        raise HTTPException(status_code=400, detail="Invalid recovery key")
+
+    reg_upload_bytes = _decode_b64_field(body.client_registration_record, "client_registration_record")
+    try:
+        new_reg_record_bytes = await asyncio.to_thread(
+            tusshare_opaque.server_finish_registration,
+            reg_upload_bytes,
+        )
+    except ValueError as exc:
+        logger.warning("OPAQUE recover/finish: registration error for user_id=%s: %s", user_fields["id"], exc)
+        raise HTTPException(status_code=400, detail="Invalid registration data")
+
+    user_id = user_fields["id"]
+
+    await db.execute("BEGIN")
+    try:
+        await db.execute(
+            "UPDATE users SET "
+            "  opaque_registration_record = ?, "
+            "  wrapped_master_key = ?, wrapped_master_key_iv = ?, "
+            "  recovery_key_wrapped = ?, recovery_key_iv = ?, recovery_key_hash = ? "
+            "WHERE id = ?",
+            (
+                new_reg_record_bytes,
+                body.wrapped_master_key, body.wrapped_master_key_iv,
+                body.recovery_key_wrapped, body.recovery_key_iv, body.recovery_key_hash,
+                user_id,
+            ),
+        )
+        await db.execute(
+            "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
+            (user_id,),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    client_ip = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")[:512]
+    logger.info("Password reset via recovery key: user_id=%s ip=%s", user_id, client_ip)
+    await log_security_event(
+        db, "password_reset_via_recovery_key", user_id, client_ip, user_agent,
+    )
+
+    return {"success": True}
 
 
 # ---------------------------------------------------------------------------

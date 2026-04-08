@@ -30,10 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 async def _run_opaque_session_cleanup(db_session_factory, interval: int = 120) -> None:
-    """Sweep expired OPAQUE login sessions every `interval` seconds.
+    """Sweep expired OPAQUE login and recovery sessions every `interval` seconds.
 
-    Sessions have a 60-second TTL set by the application; this task removes
-    any survivors that were abandoned before the finish call (e.g. client crash).
+    Login sessions have a 60-second TTL; recovery sessions have a 90-second TTL.
+    This task removes any survivors abandoned before the finish call (e.g. client crash).
     """
     while True:
         await asyncio.sleep(interval)
@@ -44,6 +44,9 @@ async def _run_opaque_session_cleanup(db_session_factory, interval: int = 120) -
                 removed = await provider.sweep_expired_sessions()
                 if removed:
                     logger.debug("Swept %d expired OPAQUE login session(s)", removed)
+                removed_recovery = await provider.sweep_expired_recovery_sessions()
+                if removed_recovery:
+                    logger.debug("Swept %d expired OPAQUE recovery session(s)", removed_recovery)
         except Exception:
             logger.exception("Error in OPAQUE session cleanup task")
 

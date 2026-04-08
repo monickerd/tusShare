@@ -164,6 +164,18 @@ const Auth = (() => {
                 }),
             ]),
             Utils.el('button', { type: 'submit', className: 'btn btn-primary btn-full', textContent: 'Log In' }),
+            Utils.el('div', { style: 'text-align:center;margin-top:12px' }, [
+                Utils.el('a', {
+                    href: '#',
+                    className: 'text-muted',
+                    textContent: 'Forgot password?',
+                    onClick: (ev) => {
+                        ev.preventDefault();
+                        const prefill = document.getElementById('username')?.value?.trim() || '';
+                        renderForgotPassword(container, prefill);
+                    },
+                }),
+            ]),
             Utils.el('p', { id: 'login-status', className: 'auth-status' }),
         ]);
         container.appendChild(form);
@@ -756,7 +768,7 @@ const Auth = (() => {
             };
             await _saveSessionKeyData(_masterKeyObj, null);
 
-            renderRecoveryKeyDisplay(container, recoveryKeyString, true);
+            renderRecoveryKeyDisplay(container, recoveryKeyString, '/#/admin');
 
         } catch (err) {
             status.textContent = err.message;
@@ -765,17 +777,182 @@ const Auth = (() => {
     }
 
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Forgot password (recovery key → new password → new recovery key)
+    // ------------------------------------------------------------------
+
+    function renderForgotPassword(container, prefillUsername = '') {
+        while (container.firstChild) container.removeChild(container.firstChild);
+
+        async function _handleSubmit(e) {
+            e.preventDefault();
+            const username        = document.getElementById('recover-username').value.trim();
+            const recoveryKeyStr  = document.getElementById('recover-key').value.trim();
+            const newPassword     = document.getElementById('recover-new-password').value;
+            const confirmPassword = document.getElementById('recover-confirm-password').value;
+            const status          = document.getElementById('recover-status');
+            const btn             = e.target.querySelector('button[type="submit"]');
+
+            if (newPassword !== confirmPassword) {
+                status.textContent = 'Passwords do not match.';
+                return;
+            }
+
+            btn.disabled = true;
+            status.textContent = 'Verifying recovery key…';
+
+            try {
+                const opaque = await _loadOpaque();
+
+                // OPAQUE registration round 1 — blinded with the new password
+                const { clientRegistrationState, registrationRequest } =
+                    opaque.client.startRegistration({ password: newPassword });
+
+                const round1 = await Api.post(`${Config.app.apiPrefix}/auth/opaque/recover/start`, {
+                    username,
+                    client_registration_request: registrationRequest,
+                });
+
+                // Verify the recovery key locally: attempt AES-GCM unwrap of the master key.
+                // The raw recovery key is never sent to the server.
+                if (!round1.recovery_key_wrapped || !round1.recovery_key_iv) {
+                    throw new Error('Invalid username or recovery key.');
+                }
+
+                let masterKey;
+                try {
+                    const recoveryKey = await Crypto.importRecoveryKey(recoveryKeyStr);
+                    masterKey = await Crypto.unwrapMasterKey(
+                        round1.recovery_key_wrapped,
+                        round1.recovery_key_iv,
+                        recoveryKey
+                    );
+                } catch {
+                    throw new Error('Invalid username or recovery key.');
+                }
+
+                // Recovery key verified — finalise OPAQUE registration with the new password
+                status.textContent = 'Setting new password…';
+                const { registrationRecord, exportKey } = opaque.client.finishRegistration({
+                    clientRegistrationState,
+                    registrationResponse: round1.registration_response,
+                    password: newPassword,
+                    identifiers: { client: username, server: 'tusshare' },
+                });
+
+                // Derive new KEK from exportKey and re-wrap the master key under it
+                const newKek = await Crypto.deriveOpaqueKEK(exportKey);
+                const { wrappedKeyB64: newWrappedMkB64, ivB64: newWrappedMkIvB64 } =
+                    await Crypto.wrapMasterKey(masterKey, newKek);
+
+                // Generate a new recovery key and wrap the master key under it
+                const { recoveryKey: newRKey, recoveryKeyString: newRKeyStr } =
+                    await Crypto.generateRecoveryKey();
+                const { wrappedKeyB64: newRKeyWrappedB64, ivB64: newRKeyIvB64 } =
+                    await Crypto.wrapMasterKey(masterKey, newRKey);
+                const newRKeyHash = await Crypto.hashRecoveryKey(newRKeyStr);
+
+                // Proof of the old recovery key: SHA-256(old_recovery_key_string)
+                // The server compares this against the stored hash — no raw key ever leaves the client
+                const oldProof = await Crypto.hashRecoveryKey(recoveryKeyStr);
+
+                // Round 2: commit new credentials and revoke existing sessions
+                status.textContent = 'Finalising reset…';
+                await Api.post(`${Config.app.apiPrefix}/auth/opaque/recover/finish`, {
+                    username,
+                    session_id:              round1.session_id,
+                    client_registration_record: registrationRecord,
+                    wrapped_master_key:      newWrappedMkB64,
+                    wrapped_master_key_iv:   newWrappedMkIvB64,
+                    recovery_key_wrapped:    newRKeyWrappedB64,
+                    recovery_key_iv:         newRKeyIvB64,
+                    recovery_key_hash:       newRKeyHash,
+                    old_recovery_key_proof:  oldProof,
+                });
+
+                // Show the new recovery key — button leads to login
+                renderRecoveryKeyDisplay(
+                    container, newRKeyStr, '/#/login',
+                    'Your password has been reset. Save your new recovery key — this is the only time it will be shown.'
+                );
+
+            } catch (err) {
+                status.textContent = err.message || 'Password reset failed. Please try again.';
+                btn.disabled = false;
+            }
+        }
+
+        const form = Utils.el('form', { className: 'auth-form', onSubmit: _handleSubmit }, [
+            Utils.el('h2', { textContent: 'Forgot Password' }),
+            Utils.el('p', { className: 'text-muted', textContent:
+                'Enter your username, recovery key, and a new password.' }),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'recover-username', textContent: 'Username' }),
+                Utils.el('input', {
+                    type: 'text', id: 'recover-username', name: 'username',
+                    autocomplete: 'username', required: 'true',
+                    value: prefillUsername,
+                    maxlength: String(Config.auth.usernameMaxLength),
+                    pattern: Config.auth.usernamePattern,
+                    title: 'Letters, digits, . _ + - @',
+                }),
+            ]),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'recover-key', textContent: 'Recovery Key' }),
+                Utils.el('input', {
+                    type: 'text', id: 'recover-key', name: 'recovery-key',
+                    autocomplete: 'off', required: 'true',
+                    style: 'font-family:var(--font-family-mono)',
+                }),
+            ]),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'recover-new-password', textContent: 'New Password' }),
+                Utils.el('input', {
+                    type: 'password', id: 'recover-new-password', name: 'new-password',
+                    autocomplete: 'new-password', required: 'true',
+                    minlength: '8',
+                    maxlength: String(Config.auth.passwordMaxLength),
+                }),
+            ]),
+            Utils.el('div', { className: 'form-group' }, [
+                Utils.el('label', { for: 'recover-confirm-password', textContent: 'Confirm New Password' }),
+                Utils.el('input', {
+                    type: 'password', id: 'recover-confirm-password', name: 'confirm-password',
+                    autocomplete: 'new-password', required: 'true',
+                    maxlength: String(Config.auth.passwordMaxLength),
+                }),
+            ]),
+            Utils.el('button', { type: 'submit', className: 'btn btn-primary btn-full', textContent: 'Reset Password' }),
+            Utils.el('div', { style: 'text-align:center;margin-top:12px' }, [
+                Utils.el('a', {
+                    href: '#',
+                    className: 'text-muted',
+                    textContent: '← Back to login',
+                    onClick: (ev) => {
+                        ev.preventDefault();
+                        renderLogin(container);
+                    },
+                }),
+            ]),
+            Utils.el('p', { id: 'recover-status', className: 'auth-status' }),
+        ]);
+        container.appendChild(form);
+    }
+
     // Recovery key display (shown once after account creation)
     // ------------------------------------------------------------------
 
-    function renderRecoveryKeyDisplay(container, recoveryKeyString, isAdmin = false) {
+    function renderRecoveryKeyDisplay(container, recoveryKeyString, destination = '/#/files', subtitle = null) {
         while (container.firstChild) container.removeChild(container.firstChild);
+
+        const defaultSubtitle = (
+            'This is the ONLY time this key will be shown. If you forget your password, ' +
+            'this key is the only way to recover your encrypted files. Store it somewhere safe.'
+        );
 
         const card = Utils.el('div', { className: 'auth-form' }, [
             Utils.el('h2', { textContent: 'Save Your Recovery Key' }),
-            Utils.el('p', { className: 'text-muted', textContent:
-                'This is the ONLY time this key will be shown. If you forget your password, ' +
-                'this key is the only way to recover your encrypted files. Store it somewhere safe.' }),
+            Utils.el('p', { className: 'text-muted', textContent: subtitle || defaultSubtitle }),
             Utils.el('div', { className: 'form-group' }, [
                 Utils.el('input', {
                     type: 'text', id: 'recovery-key-display',
@@ -797,7 +974,7 @@ const Auth = (() => {
                 style: 'margin-top:8px',
                 textContent: 'I have saved my recovery key',
                 onClick: () => {
-                    window.location.replace(isAdmin ? '/#/admin' : '/#/files');
+                    window.location.replace(destination);
                 },
             }),
         ]);
@@ -861,6 +1038,7 @@ const Auth = (() => {
         renderKeyPrompt,
         renderRecoveryPrompt,
         renderRecoveryKeyDisplay,
+        renderForgotPassword,
         renderRegisterPage,
         logout,
         checkSession,

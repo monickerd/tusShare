@@ -42,6 +42,7 @@ CSRF_EXEMPT_PREFIXES = (
     "/api/v1/auth/opaque/register/",
     "/api/v1/auth/opaque/bootstrap/",
     "/api/v1/auth/opaque/migrate/",
+    "/api/v1/auth/opaque/recover/",
     "/s/",
     "/l/",
 )
