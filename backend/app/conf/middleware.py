@@ -88,9 +88,14 @@ CACHE_CONTROL_NO_STORE = "no-store"
 CACHE_CONTROL_REVALIDATE = "no-cache"
 
 # --- CSP applied to non-API responses ---
-# NOTE: 'unsafe-inline' in style-src is a known weakness (flagged by scanners).
-# Removing it requires auditing all JS that assigns .style.* or injects style="" attributes
-# and replacing with CSS class toggles or nonce-based inline styles. Deferred to Phase C (SRI+CSP).
+# Phase C (SRI+CSP): SRI integrity hashes are injected into index.html at startup
+# (see app/util/sri.py), so every <script> and <link> tag is covered.
+#
+# 'unsafe-inline' in style-src remains intentional: several JS modules set
+# element.style.* to computed pixel values at runtime (context-menu positioning,
+# progress-bar widths) that cannot be expressed as static CSS classes.  Replacing
+# them would require CSS custom properties or a nonce-based <style> pipeline —
+# a non-trivial refactor tracked for a future hardening pass.
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
     "script-src 'self' 'wasm-unsafe-eval'; "

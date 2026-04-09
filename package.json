@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "@noble/curves": "^1.8.1"
+    "@noble/curves": "1.8.1"
   }
 }

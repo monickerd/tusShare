@@ -1,0 +1,31 @@
+{
+  "generated": "2026-04-09T00:38:57.380792+00:00",
+  "files": {
+    "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
+    "frontend/js/admin.js": "sha256-4f2tNGvgOHOeLyf++BleiGPWTekyKrkAJrnm1T9O2jI=",
+    "frontend/js/api.js": "sha256-/OU3R9Fk82G9r7lHHyrpXt7z6kwgFikPy31J90pJOB8=",
+    "frontend/js/app.js": "sha256-D7spj08LTMtJbvUKdnCz37xQJJziFnrEyeYfQznTSTc=",
+    "frontend/js/auth.js": "sha256-Wajy83cnFqp2I4IdCRPihykpq+PPNB4hqLZ3cDZeUrc=",
+    "frontend/js/config.js": "sha256-uR8gVCgDeI7QBHUbLcgTj9VVmmqvuAPTgYcuIs69eB8=",
+    "frontend/js/crypto.js": "sha256-I5zx/nw23uXkdQNPn0YyepR+cboHAwB+jSTtDP1HIvc=",
+    "frontend/js/download.js": "sha256-2CXDvV/yLwfKf9hO6VYmGc4OdVsQCAVU6ZA4tXHaEWM=",
+    "frontend/js/files.js": "sha256-XIGRekIVaVr9liVtLRMxIVxv4RcwYHy5dWQQhrmuCb8=",
+    "frontend/js/permissions.js": "sha256-cPntZh1Uy1zlR3t/9sh4KQw44SODsz/vj3u5Kt3X/yo=",
+    "frontend/js/shares.js": "sha256-lA5UDYVt/LxI26rsPUNROeE+bxZuotVHkP+kIkAvxg0=",
+    "frontend/js/teams.js": "sha256-vuxFWERQ1zlfW5nx2PHvnX7J5GbJgOrSM9+s+qtMvu0=",
+    "frontend/js/transfer-manager.js": "sha256-BFqQC7o3faEb+FS/TxHc4BadDjMTx0ETtndGQGpZ06Q=",
+    "frontend/js/upload.js": "sha256-ATYYFQKUr5efaWQJQQW4/AqP6R4/Kkny/VNauoHcoPM=",
+    "frontend/js/utils.js": "sha256-kCWsuGtF7oMpG7FnSSFAtUYFZoT11pcIq/3PObc1d44=",
+    "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
+    "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
+    "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",
+    "frontend/css/components.css": "sha256-mPzRZ08zaEyTfUqjuPybGegn/lEQkbSPltqBPqReXWg=",
+    "frontend/css/main.css": "sha256-2tPOUcHpNMTnCLgIP/6Be/AGZXIaEC0hBKpib9fD3ek=",
+    "frontend/themes/default/colors.css": "sha256-piHEqylKlAZZDH795benzbeNIlm8uJR5ebLtECwqyOo=",
+    "frontend/themes/default/layout.css": "sha256-0wFe9nBp73p10q+zbxwk87p4ZOy17ATNAVV0qEMh+vw=",
+    "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",
+    "frontend/themes/light/colors.css": "sha256-34MXO41nFwyP15sZR6yyQsorANADMTErAwBzvXzlklk=",
+    "frontend/themes/light/toast.css": "sha256-0co+8266j+EO89oMrY13M4KYueyJfOrhz+KTckCqIwM=",
+    "requirements.txt": "sha256-i0r9UiH5USS0po9FpZczaZv+M6gwgheEkGGp/Dxit3o="
+  }
+}

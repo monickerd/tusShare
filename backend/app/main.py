@@ -21,6 +21,8 @@ from app.middleware.https_redirect import HttpsRedirectMiddleware
 from app.middleware.rate_limit import run_rate_limit_cleanup
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.sanitize import InputSanitizationMiddleware
+from app.util.integrity import check_integrity, get_result as get_integrity_result
+from app.util.sri import inject_sri
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -89,6 +91,20 @@ async def lifespan(app: FastAPI):
             "TUSSHARE_FORCE_HTTPS is not set. Ensure your reverse proxy enforces HTTPS "
             "and that the application port is not directly internet-accessible."
         )
+
+    # Inject SRI hashes into index.html so every <script>/<link> tag carries
+    # an integrity= attribute.  Skipped in DEBUG mode so a server restart isn't
+    # required after every frontend edit.
+    if not settings.DEBUG:
+        _frontend_dir = Path(__file__).parent.parent / "frontend"
+        if _frontend_dir.exists():
+            inject_sri(_frontend_dir)
+
+    # Verify artifact integrity against manifest.json (C2).  SRI injection
+    # runs first because it rewrites index.html — the manifest does not track
+    # index.html (SRI covers that side).
+    if not settings.DEBUG:
+        check_integrity()
 
     logger.info("%s v%s started", settings.APP_NAME, settings.APP_VERSION)
     yield
@@ -208,7 +224,20 @@ def create_app() -> FastAPI:
     # --- Health check ---
     @app.get("/api/v1/health")
     async def health():
-        return {"status": "ok"}
+        integrity = get_integrity_result()
+        if integrity is None:
+            # DEBUG mode — check never ran
+            return {"status": "ok"}
+        if integrity.manifest_missing:
+            return {"status": "ok", "integrity": "no_manifest"}
+        if not integrity.ok:
+            return {
+                "status": "degraded",
+                "integrity": "fail",
+                "missing": integrity.missing,
+                "tampered": integrity.tampered,
+            }
+        return {"status": "ok", "integrity": "ok", "files_verified": integrity.total}
 
     # --- Static files (SPA) — must be last so /api routes take priority ---
     frontend_dir = Path(__file__).parent.parent / "frontend"
