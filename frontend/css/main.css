@@ -507,12 +507,16 @@ a:hover {
     margin-bottom: var(--space-4);
 }
 
+/* More specific than .form-group label to override its display:block/margin. */
+.form-group .checkbox-label,
 .checkbox-label {
     display: flex;
     align-items: center;
     gap: var(--space-2);
+    margin-bottom: 0;
     cursor: pointer;
     font-size: var(--font-size-sm);
+    font-weight: normal;
     color: var(--color-text-muted);
     user-select: none;
 }
@@ -521,6 +525,7 @@ a:hover {
     width: auto;
     margin: 0;
     cursor: pointer;
+    flex-shrink: 0;
 }
 
 /* === Public device banner === */

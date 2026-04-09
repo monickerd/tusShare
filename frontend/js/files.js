@@ -562,8 +562,32 @@ const Files = (() => {
             }));
         }
 
-        anchor.style.position = 'relative';
-        anchor.appendChild(menu);
+        // Attach to body with position:fixed so the menu escapes table stacking
+        // contexts — otherwise the next row's :hover fires through the menu,
+        // making Resume/Cancel unclickable when rows are densely packed.
+        menu.style.position = 'fixed';
+        menu.style.zIndex = '9999';
+        document.body.appendChild(menu);
+
+        // Position below-right of the anchor button
+        const rect = anchor.getBoundingClientRect();
+        const menuWidth = 160; // approximate before layout; adjusted after paint
+        const spaceRight = window.innerWidth - rect.right;
+        menu.style.left = spaceRight >= menuWidth
+            ? `${rect.right - menu.offsetWidth || rect.left}px`
+            : `${rect.left - (menu.offsetWidth || menuWidth)}px`;
+        menu.style.top = `${rect.bottom}px`;
+
+        // After the element is in the DOM, snap to correct position
+        requestAnimationFrame(() => {
+            const mw = menu.offsetWidth;
+            if (rect.right + mw <= window.innerWidth) {
+                menu.style.left = `${rect.left}px`;
+            } else {
+                menu.style.left = `${rect.right - mw}px`;
+            }
+        });
+
         _activeMenu = { menu, dismiss: _onDocClickDismiss };
         document.addEventListener('click', _onDocClickDismiss, { once: true });
     }
@@ -1262,7 +1286,8 @@ const Files = (() => {
      * Upload an array of File objects sequentially, showing a progress overlay.
      * Requires Auth.getMasterKeyObj() to return a valid CryptoKey.
      */
-    async function _uploadFiles(files) {
+    async function _uploadFiles(files, targetFolderId) {
+        const folderId = targetFolderId !== undefined ? targetFolderId : _currentFolderId;
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey) {
             Utils.showToast('Master key not available — please re-enter your password.', 'error');
@@ -1283,7 +1308,7 @@ const Files = (() => {
             });
 
             try {
-                const result = await Upload.uploadFile(file, _currentFolderId, masterKey, (done, total) => {
+                const result = await Upload.uploadFile(file, folderId, masterKey, (done, total) => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, label);
                     transfer.update(pct);
@@ -1431,11 +1456,69 @@ const Files = (() => {
             e.preventDefault();
             dragCounter = 0;
             zone.classList.remove('drag-over');
+
+            // Use the DataTransfer items API so we can detect folders and
+            // traverse them recursively.  Fall back to files if unavailable.
+            const items = e.dataTransfer?.items;
+            if (items && items.length > 0) {
+                const entries = [];
+                for (const item of items) {
+                    const entry = item.getAsEntry?.() ?? item.webkitGetAsEntry?.();
+                    if (entry) entries.push(entry);
+                }
+                if (entries.length > 0) {
+                    _uploadEntries(entries, _currentFolderId);
+                    return;
+                }
+            }
+            // Fallback: plain file list (no folder support)
             const files = e.dataTransfer.files;
             if (files.length > 0) {
                 _uploadFiles(Array.from(files));
             }
         });
+    }
+
+    /**
+     * Recursively upload a list of FileSystemEntry objects (files and/or folders).
+     * Folders are created on the server first, then their contents are uploaded.
+     */
+    async function _uploadEntries(entries, parentFolderId) {
+        for (const entry of entries) {
+            if (entry.isFile) {
+                const file = await new Promise((res, rej) => entry.file(res, rej));
+                await _uploadFiles([file], parentFolderId);
+            } else if (entry.isDirectory) {
+                // Create the folder on the server, then recurse into it
+                let newFolderId;
+                try {
+                    const created = await Api.post(`${Config.app.apiPrefix}/folders`, {
+                        name: entry.name,
+                        parent_id: parentFolderId || null,
+                    });
+                    newFolderId = created.id;
+                } catch (err) {
+                    Utils.showToast(`Failed to create folder "${entry.name}": ${err.message}`, 'error');
+                    return;
+                }
+
+                const reader = entry.createReader();
+                const children = await new Promise((res, rej) => {
+                    const all = [];
+                    function readBatch() {
+                        reader.readEntries((batch) => {
+                            if (batch.length === 0) { res(all); return; }
+                            all.push(...batch);
+                            readBatch();
+                        }, rej);
+                    }
+                    readBatch();
+                });
+                if (children.length > 0) {
+                    await _uploadEntries(children, newFolderId);
+                }
+            }
+        }
     }
 
     /**

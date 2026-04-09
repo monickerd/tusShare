@@ -76,6 +76,12 @@ def _set_auth_cookies(
     )
 
 
+def _clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(key=COOKIE_ACCESS, path="/", secure=True, samesite="strict")
+    response.delete_cookie(key=COOKIE_REFRESH, path=REFRESH_TOKEN_COOKIE_PATH, secure=True, samesite="strict")
+    response.delete_cookie(key=COOKIE_CSRF, path="/", secure=True, samesite="strict")
+
+
 def _user_response_dict(user: AuthenticatedUser) -> dict:
     return {
         "id": user.id,
@@ -496,27 +502,35 @@ async def opaque_login_start(
     at finish, preventing user-enumeration timing attacks.
     """
     provider = OPAQUEAuthProvider(db)
-    reg_record_bytes: bytes | None = await provider.get_registration_record(body.username)
+    reg_record_bytes, canonical_username = await provider.get_registration_record_with_canonical(body.username)
 
     login_start_bytes = _decode_b64_field(body.client_login_start, "client_login_start")
     setup_bytes = sensitive_config.get_opaque_server_setup()
-    username_bytes = body.username.encode("utf-8")
+    # Use the stored canonical username as the OPAQUE identifier so that login
+    # succeeds regardless of the case the user typed (e.g. "groupfolder" finds
+    # the record registered as "GroupFolder" and uses "GroupFolder" in the
+    # OPAQUE crypto — the client must use the same value in finishLogin).
+    identifier = (canonical_username or body.username).encode("utf-8")
 
     try:
         login_response_bytes, server_state_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_login,
-            setup_bytes, reg_record_bytes, login_start_bytes, username_bytes,
+            setup_bytes, reg_record_bytes, login_start_bytes, identifier,
         )
     except ValueError as exc:
         logger.warning("OPAQUE login/start failed: %s", exc)
         raise HTTPException(status_code=400, detail="Invalid login request")
 
     session_id = str(uuid.uuid4())
-    await provider.store_login_session(session_id, body.username, server_state_bytes)
+    canonical = canonical_username or body.username
+    await provider.store_login_session(session_id, canonical, server_state_bytes)
 
     return {
         "login_response": base64.urlsafe_b64encode(login_response_bytes).decode().rstrip("="),
         "session_id": session_id,
+        # Return canonical username so the client uses the same identifier in
+        # finishLogin that was used at registration time.
+        "username": canonical,
     }
 
 
@@ -546,12 +560,14 @@ async def opaque_login_finish(
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     login_finish_bytes = _decode_b64_field(body.client_login_finish, "client_login_finish")
-    username_bytes = body.username.encode("utf-8")
+    # Use the canonical username stored in the session (set at login/start) so
+    # the OPAQUE identifier matches what was used at registration.
+    identifier = stored_username.encode("utf-8")
 
     try:
         session_key = await asyncio.to_thread(
             tusshare_opaque.server_finish_login,
-            server_state_bytes, login_finish_bytes, username_bytes,
+            server_state_bytes, login_finish_bytes, identifier,
         )
     except ValueError as exc:
         logger.warning("OPAQUE login/finish error: %s", exc)
@@ -584,7 +600,7 @@ async def opaque_login_finish(
         expire_minutes=rt_expire_minutes,
         is_public_device=is_public_device,
     )
-    access_token = create_access_token(user.id, user.is_admin, session_id=token_id)
+    access_token = create_access_token(user.id, user.is_admin, session_id=token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
     _set_auth_cookies(response, access_token, raw_refresh, csrf_token, refresh_max_age=rt_max_age)
 
@@ -921,6 +937,7 @@ async def opaque_recover_start(
 async def opaque_recover_finish(
     body: OpaqueRecoverFinishRequest,
     request: Request,
+    response: Response,
     db=Depends(get_db),
 ):
     """Password recovery round 2.
@@ -989,6 +1006,10 @@ async def opaque_recover_finish(
     except Exception:
         await db.rollback()
         raise
+
+    # Clear any existing auth cookies so a stale access-token JWT doesn't leave
+    # the user stranded on the key-prompt screen after reset.
+    _clear_auth_cookies(response)
 
     client_ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent", "")[:512]

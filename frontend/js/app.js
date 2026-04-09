@@ -64,9 +64,19 @@ const App = (() => {
             return;
         }
 
-        // Session exists but may need key derivation (page refresh)
-        // Admin accounts have no encryption keys — skip the key prompt entirely
+        // Session exists but may need key derivation (page refresh).
+        // Admin accounts have no encryption keys — skip the key prompt entirely.
+        // Public-device sessions: no key prompt — the tab close cleared sessionStorage
+        // intentionally, so go to login instead of asking for the password again.
         if (!Auth.getMasterKeyObj() && !Auth.getCurrentUser()?.is_admin) {
+            const user = Auth.getCurrentUser();
+            if (user?.is_public_device) {
+                // Public-device session: tab close cleared key material intentionally.
+                // Go to login rather than prompting for the password again.
+                window.location.hash = '#/login';
+                await _routeLogin(_appEl());
+                return;
+            }
             const container = _appEl();
             Auth.renderKeyPrompt(container);
             return;

@@ -46,6 +46,7 @@ def _user_response_dict(user) -> dict:
         "auth_method": user.auth_method,
         "is_admin": user.is_admin,
         "is_admin_only": user.is_admin_only,
+        "is_public_device": getattr(user, "is_public_device", False),
         "roles": sorted(user.roles),
         "wrapped_master_key": user.wrapped_master_key,
         "wrapped_master_key_iv": user.wrapped_master_key_iv,
@@ -60,8 +61,19 @@ def _user_response_dict(user) -> dict:
     }
 
 
-def _set_auth_cookies(response: Response, access_token: str, refresh_token: str, csrf_token: str) -> None:
-    """Set authentication cookies on a response."""
+def _set_auth_cookies(
+    response: Response,
+    access_token: str,
+    refresh_token: str,
+    csrf_token: str,
+    max_age: int | None = None,
+) -> None:
+    """Set authentication cookies on a response.
+
+    max_age overrides the default refresh-token / CSRF max-age (seconds).
+    Pass a shorter value for public-device sessions.
+    """
+    rt_max_age = max_age if max_age is not None else settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
     response.set_cookie(
         key=COOKIE_ACCESS,
         value=access_token,
@@ -78,7 +90,7 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
         secure=True,
         samesite="strict",
         path=REFRESH_TOKEN_COOKIE_PATH,
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=rt_max_age,
     )
     response.set_cookie(
         key=COOKIE_CSRF,
@@ -87,15 +99,20 @@ def _set_auth_cookies(response: Response, access_token: str, refresh_token: str,
         secure=True,
         samesite="strict",
         path="/",
-        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        max_age=rt_max_age,
     )
 
 
 def _clear_auth_cookies(response: Response) -> None:
-    """Clear all authentication cookies."""
-    response.delete_cookie(key=COOKIE_ACCESS, path="/")
-    response.delete_cookie(key=COOKIE_REFRESH, path=REFRESH_TOKEN_COOKIE_PATH)
-    response.delete_cookie(key=COOKIE_CSRF, path="/")
+    """Clear all authentication cookies.
+
+    secure=True and samesite="strict" must be repeated here — delete_cookie
+    defaults secure=False, which causes browsers to reject the Set-Cookie header
+    for __Host- and __Secure- prefixed cookies (both require the Secure flag).
+    """
+    response.delete_cookie(key=COOKIE_ACCESS, path="/", secure=True, samesite="strict")
+    response.delete_cookie(key=COOKIE_REFRESH, path=REFRESH_TOKEN_COOKIE_PATH, secure=True, samesite="strict")
+    response.delete_cookie(key=COOKIE_CSRF, path="/", secure=True, samesite="strict")
 
 
 @router.post("/logout")
@@ -144,7 +161,7 @@ async def refresh(
     try:
         # Validate: find a non-revoked, non-expired token
         cursor = await db.execute(
-            "SELECT id, user_id FROM refresh_tokens "
+            "SELECT id, user_id, is_public_device FROM refresh_tokens "
             "WHERE token_hash = ? AND revoked = 0 AND expires_at > ?",
             (token_hash, now),
         )
@@ -156,6 +173,7 @@ async def refresh(
 
         token_id = row["id"]
         user_id = row["user_id"]
+        is_public_device = bool(row["is_public_device"])
 
         # Revoke atomically — use WHERE revoked = 0 so a concurrent request
         # that already revoked this token causes 0 rows changed (RETURNING returns nothing)
@@ -175,17 +193,22 @@ async def refresh(
             _clear_auth_cookies(response)
             raise HTTPException(status_code=401, detail="User not found or inactive")
 
-        # Issue new tokens inside same transaction
+        # Issue new tokens inside same transaction — preserve is_public_device
         new_raw_refresh, new_token_hash = create_refresh_token()
         new_token_id = str(uuid.uuid4())
         new_now = datetime.now(timezone.utc).isoformat()
-        new_expires_at = (
-            datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-        ).isoformat()
+        if is_public_device:
+            new_expires_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
+            ).isoformat()
+        else:
+            new_expires_at = (
+                datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+            ).isoformat()
         await db.execute(
-            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (new_token_id, user_id, new_token_hash, new_expires_at, new_now),
+            "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at, is_public_device) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (new_token_id, user_id, new_token_hash, new_expires_at, new_now, 1 if is_public_device else 0),
         )
 
         await db.commit()
@@ -195,9 +218,10 @@ async def refresh(
         await db.rollback()
         raise
 
-    access_token = create_access_token(user.id, user.is_admin, session_id=new_token_id)
+    access_token = create_access_token(user.id, user.is_admin, session_id=new_token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, new_raw_refresh, csrf_token)
+    rt_max_age = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES * 60 if is_public_device else None
+    _set_auth_cookies(response, access_token, new_raw_refresh, csrf_token, max_age=rt_max_age)
 
     return {"message": "Token refreshed"}
 

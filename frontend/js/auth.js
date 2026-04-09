@@ -26,6 +26,9 @@ const Auth = (() => {
     let _masterKeyObj = null;
     // Asymmetric keys in memory: { x25519PrivateKey: CryptoKey, mlkem768SecretKey: Uint8Array }
     // Set after login + key derivation. Null until keys are set up.
+    // Failed unlock attempts — reset on success, triggers auto-logout at the limit.
+    let _unlockFailures = 0;
+    const _UNLOCK_MAX_FAILURES = 3;
     let _asymmetricKeys = null;
 
     function getCurrentUser() {
@@ -117,12 +120,17 @@ const Auth = (() => {
             client_login_start: startLoginRequest,
         });
 
+        // Use the canonical username returned by the server (original casing from
+        // registration) as the OPAQUE identifier.  This ensures case-insensitive
+        // login works: a user registered as "GroupFolder" can log in as "groupfolder".
+        const canonicalUsername = round1.username || username;
+
         // Client processes server OPRF response and generates KE3 MAC
         const loginResult = opaque.client.finishLogin({
             clientLoginState,
             loginResponse: round1.login_response,
             password,
-            identifiers: { client: username, server: 'tusshare' },
+            identifiers: { client: canonicalUsername, server: 'tusshare' },
         });
         if (!loginResult) throw new Error('Invalid credentials');
 
@@ -130,7 +138,7 @@ const Auth = (() => {
 
         // Round 2: server verifies MAC, issues auth cookies
         const data = await Api.post(`${Config.app.apiPrefix}/auth/opaque/login/finish`, {
-            username,
+            username: canonicalUsername,
             session_id: round1.session_id,
             client_login_finish: finishLoginRequest,
             is_public_device: isPublicDevice,
@@ -303,6 +311,7 @@ const Auth = (() => {
                 kek
             );
 
+            _unlockFailures = 0;
             await _saveSessionKeyData(_masterKeyObj, null);
 
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
@@ -311,11 +320,25 @@ const Auth = (() => {
             });
 
             status.textContent = '';
-            // Re-dispatch hashchange so the router navigates to whatever hash is
-            // currently set — preserves deep links like #/files/<id> after a refresh.
-            window.dispatchEvent(new HashChangeEvent('hashchange'));
+            // After unlock, navigate to the current hash — but if the hash is #/login
+            // (which is where the unlock prompt is rendered), redirect to #/files instead
+            // so the user isn't sent back to the login form.
+            const currentHash = window.location.hash;
+            if (!currentHash || currentHash === '#/' || currentHash === '#/login') {
+                window.location.hash = '#/files';
+            } else {
+                window.dispatchEvent(new HashChangeEvent('hashchange'));
+            }
         } catch (err) {
-            status.textContent = 'Failed to unlock. Check your password.';
+            _unlockFailures++;
+            if (_unlockFailures >= _UNLOCK_MAX_FAILURES) {
+                // Too many wrong attempts — force a full logout so the user must
+                // re-authenticate from the login screen.
+                logout();
+                return;
+            }
+            const remaining = _UNLOCK_MAX_FAILURES - _unlockFailures;
+            status.textContent = `Incorrect password. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`;
             btn.disabled = false;
         }
     }
@@ -888,6 +911,14 @@ const Auth = (() => {
                     old_recovery_key_proof:  oldProof,
                 });
 
+                // Wipe any in-memory session state so stale key material can't
+                // persist into the next login session.
+                _currentUser = null;
+                _masterKeyObj = null;
+                _asymmetricKeys = null;
+                sessionStorage.removeItem(Config.auth.sessionStorageKey);
+                sessionStorage.removeItem(Config.publicDevice.sessionStorageKey);
+
                 // Show the new recovery key — button leads to login
                 renderRecoveryKeyDisplay(
                     container, newRKeyStr, '/#/login',
@@ -992,7 +1023,14 @@ const Auth = (() => {
                 style: 'margin-top:8px',
                 textContent: 'I have saved my recovery key',
                 onClick: () => {
+                    const before = window.location.href;
                     window.location.replace(destination);
+                    // If the URL didn't change (destination hash was already active),
+                    // the browser won't fire hashchange — dispatch it manually so the
+                    // router re-renders the target page (e.g. login after password reset).
+                    if (window.location.href === before) {
+                        window.dispatchEvent(new HashChangeEvent('hashchange'));
+                    }
                 },
             }),
         ]);

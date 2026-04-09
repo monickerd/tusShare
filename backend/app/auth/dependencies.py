@@ -63,6 +63,10 @@ async def get_current_user(
     if user is None:
         raise HTTPException(status_code=401, detail="User not found or inactive")
 
+    # Propagate session-level flags from the JWT claims onto the user object.
+    if payload.get("pub"):
+        user.is_public_device = True
+
     # Fire-and-forget: update last_active_at for idle-timeout tracking.
     # Sessions without a sid claim (issued before last_active_at existed) are
     # not tracked and will remain active until they expire normally.

@@ -17,13 +17,20 @@ logger = logging.getLogger(__name__)
 
 
 def create_access_token(
-    user_id: str, is_admin: bool, session_id: str | None = None
+    user_id: str,
+    is_admin: bool,
+    session_id: str | None = None,
+    is_public_device: bool = False,
 ) -> str:
     """Create a short-lived JWT access token.
 
     session_id (sid claim) is the refresh_tokens.id for this session.  When
     present, get_current_user uses it to touch last_active_at on each request
     so the idle-timeout cleanup task can accurately track inactivity.
+
+    is_public_device (pub claim) is stored so the client can detect a public
+    device session after tab close (when sessionStorage has been cleared) and
+    skip the key-prompt screen in favour of the login screen.
     """
     now = datetime.now(timezone.utc)
     payload: dict = {
@@ -35,6 +42,8 @@ def create_access_token(
     }
     if session_id:
         payload["sid"] = session_id
+    if is_public_device:
+        payload["pub"] = True
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 

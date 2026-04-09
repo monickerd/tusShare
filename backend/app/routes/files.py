@@ -369,7 +369,7 @@ async def delete_file(
     await db.execute("BEGIN")
     try:
         await db.execute(
-            "UPDATE users SET disk_used = MAX(0, disk_used - ?) WHERE id = ?",
+            "UPDATE users SET disk_used = GREATEST(0, disk_used - ?::bigint) WHERE id = ?",
             (encrypted_size, owner_id),
         )
         await db.execute("DELETE FROM files WHERE id = ?", (file_id,))

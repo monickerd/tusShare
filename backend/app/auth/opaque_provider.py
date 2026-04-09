@@ -179,6 +179,24 @@ class OPAQUEAuthProvider(AuthProvider):
             return None
         return row["opaque_registration_record"]
 
+    async def get_registration_record_with_canonical(
+        self, username: str
+    ) -> tuple[bytes | None, str | None]:
+        """Return (opaque_registration_record, canonical_username) for a username.
+
+        canonical_username is the stored username with its original casing.
+        Both values are None if the user is not found or not active.
+        """
+        cursor = await self._db.execute(
+            "SELECT username, opaque_registration_record, auth_method, is_active "
+            "FROM users WHERE LOWER(username) = LOWER(?)",
+            (username,),
+        )
+        row = await cursor.fetchone()
+        if row is None or not row["is_active"] or row["auth_method"] != "opaque":
+            return None, None
+        return row["opaque_registration_record"], row["username"]
+
     async def store_login_session(
         self,
         session_id: str,

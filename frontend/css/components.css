@@ -185,10 +185,7 @@
 }
 
 .context-menu {
-    position: absolute;
-    top: 100%;
-    right: 0;
-    z-index: var(--z-dropdown, 100);
+    /* position and top/left set by JS (_showContextMenu) — attached to body */
     min-width: 140px;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
