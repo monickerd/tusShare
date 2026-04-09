@@ -214,6 +214,34 @@ async def revoke_invite(
     return {"message": "Invite revoked"}
 
 
+# ---------------------------------------------------------------------------
+# Theme hot-reload
+# ---------------------------------------------------------------------------
+
+@router.post("/theme/reload")
+async def reload_theme(
+    admin: AuthenticatedUser = Depends(require_admin),
+):
+    """Hot-reload DATA_DIR/theme.json without restarting the server.
+
+    Re-reads and validates theme.json, injects updated CSS variable overrides
+    into index.html.  The next page load will pick up the new theme.
+    """
+    from pathlib import Path as _Path
+    from app.util.theme import inject_theme, get_theme_config
+
+    frontend_dir = _Path(__file__).parent.parent.parent / "frontend"
+    inject_theme(frontend_dir, settings.DATA_DIR)
+
+    config = get_theme_config()
+    return {
+        "message":         "Theme reloaded",
+        "brand_name":      config.get("brand_name"),
+        "has_logo":        "logo_path" in config,
+        "color_overrides": len(config.get("colors", {})),
+    }
+
+
 class CreateInviteShortLinkRequest(BaseModel):
     token: str
     expires_at: str

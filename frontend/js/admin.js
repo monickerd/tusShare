@@ -35,6 +35,7 @@ const Admin = (() => {
             _buildSection('disk',      'Disk Usage',        _renderDiskUsage),
             _buildSection('users',     'User Management',   _renderUsers),
             _buildSection('invites',   'Invites',           _renderInvites),
+            _buildSection('theme',     'Theme & Branding',  _renderTheme),
         ];
         sections.forEach(s => page.appendChild(s));
         container.appendChild(page);
@@ -539,6 +540,75 @@ const Admin = (() => {
 
         // Prepend banner (without clearing the section's header)
         container.insertBefore(banner, container.firstChild);
+    }
+
+    // ------------------------------------------------------------------
+    // Section 5: Theme & Branding
+    // ------------------------------------------------------------------
+
+    async function _renderTheme(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+
+        let current;
+        try {
+            current = await Api.get(`${_api()}/theme`);
+        } catch (err) {
+            _showError(container, 'Failed to load theme config: ' + err.message);
+            return;
+        }
+
+        const statusLines = [
+            Utils.el('p', {}, [
+                Utils.el('strong', { textContent: 'Brand name: ' }),
+                Utils.el('span', { textContent: current.brand_name || '(default — tusShare)' }),
+            ]),
+            Utils.el('p', {}, [
+                Utils.el('strong', { textContent: 'Logo: ' }),
+                Utils.el('span', { textContent: current.logo_url ? 'Configured' : 'None (text brand name)' }),
+            ]),
+        ];
+
+        const reloadBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Reload Theme from Disk',
+            onClick: async () => {
+                reloadBtn.disabled = true;
+                reloadBtn.textContent = 'Reloading…';
+                try {
+                    const result = await Api.post(`${_api()}/admin/theme/reload`);
+                    Utils.showToast(
+                        `Theme reloaded — ${result.color_overrides} color override(s)` +
+                        (result.brand_name ? `, brand: ${result.brand_name}` : '') +
+                        (result.has_logo ? ', logo set' : ''),
+                        'success',
+                    );
+                    _renderTheme(container);
+                } catch (err) {
+                    Utils.showToast('Reload failed: ' + err.message, 'error');
+                    reloadBtn.disabled = false;
+                    reloadBtn.textContent = 'Reload Theme from Disk';
+                }
+            },
+        });
+
+        container.innerHTML = '';
+        container.appendChild(Utils.el('div', { className: 'settings-form' }, [
+            Utils.el('div', { className: 'theme-status' }, statusLines),
+            Utils.el('p', { className: 'settings-hint' }, [
+                Utils.el('span', {
+                    textContent: 'Edit ',
+                }),
+                Utils.el('code', { textContent: '/data/theme.json' }),
+                Utils.el('span', {
+                    textContent: ' on the server, then click Reload. ' +
+                        'Color overrides take effect on the next page load. ' +
+                        'See ',
+                }),
+                Utils.el('code', { textContent: 'frontend/themes/theme.json.example' }),
+                Utils.el('span', { textContent: ' for the full schema.' }),
+            ]),
+            Utils.el('div', { className: 'settings-actions' }, [reloadBtn]),
+        ]));
     }
 
     // ------------------------------------------------------------------

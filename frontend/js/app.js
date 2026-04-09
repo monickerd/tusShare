@@ -7,6 +7,46 @@
 const App = (() => {
     const _appEl = () => document.getElementById('app');
 
+    // Theme config fetched from /api/v1/theme on startup.
+    // Used by _renderShell to apply org brand name and logo.
+    let _themeConfig = null;
+
+    async function _loadTheme() {
+        try {
+            _themeConfig = await Api.get(`${Config.app.apiPrefix}/theme`);
+            if (_themeConfig.brand_name) {
+                document.title = _themeConfig.brand_name;
+            }
+        } catch {
+            _themeConfig = {};
+        }
+    }
+
+    // Apply data-ui-* attributes to <body> from theme.ui flags.
+    // Each flag key (snake_case) becomes data-ui-<kebab-case>="true"/"false".
+    // CSS targets body[data-ui-<flag>="false"] to suppress controlled elements.
+    // Called once on init; <body> persists across route changes so no re-apply needed.
+    function _applyThemeFlags() {
+        const ui = (_themeConfig && _themeConfig.ui) || {};
+        for (const [flag, value] of Object.entries(ui)) {
+            document.body.setAttribute(
+                'data-ui-' + flag.replace(/_/g, '-'),
+                value ? 'true' : 'false',
+            );
+        }
+    }
+
+    function _buildBrandEl() {
+        const name    = (_themeConfig && _themeConfig.brand_name) || Config.app.name;
+        const logoUrl = _themeConfig && _themeConfig.logo_url;
+        if (logoUrl) {
+            return Utils.el('a', { href: '#/files', className: 'header-brand' }, [
+                Utils.el('img', { src: logoUrl, alt: name, className: 'header-logo' }),
+            ]);
+        }
+        return Utils.el('a', { href: '#/files', className: 'header-brand', textContent: name });
+    }
+
     const _routes = [
         { pattern: /^#\/login$/,                          handler: _routeLogin },
         { pattern: /^#\/pinned$/,                         handler: _routePinned },
@@ -25,6 +65,11 @@ const App = (() => {
     ];
 
     async function init() {
+        // Load org theme config (brand name, logo, ui flags) before rendering anything.
+        // Errors are swallowed — falls back to Config.app.name gracefully.
+        await _loadTheme();
+        _applyThemeFlags();
+
         // Path-based public routes — handled before auth check so unauthenticated
         // users land on the correct page rather than being bounced to login.
         const path = window.location.pathname;
@@ -295,7 +340,7 @@ const App = (() => {
             Utils.el('header', { className: 'app-header' }, [
                 Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
                     sidebarToggle,
-                    Utils.el('a', { href: '#/files', className: 'header-brand', textContent: Config.app.name }),
+                    _buildBrandEl(),
                 ]),
                 Utils.el('div', { className: 'header-actions' }, [
                     Utils.el('span', { className: 'header-user', textContent: user ? user.username : '' }),

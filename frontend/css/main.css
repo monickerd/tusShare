@@ -62,6 +62,27 @@ a:hover {
     color: var(--color-primary);
 }
 
+/* Logo variant: constrained to header height, preserving aspect ratio */
+.header-logo {
+    height: 32px;
+    width: auto;
+    display: block;
+    object-fit: contain;
+}
+
+/* === Theme-toggleable UI elements (D2) ===
+ *
+ * Pattern: boolean flags from theme.json["ui"] are applied as
+ * data-ui-<flag-name>="true"/"false" on <body> at startup.
+ * Use body[data-ui-<flag>="false"] selectors to suppress elements.
+ *
+ * Example (E5 admin transparency banner will use this):
+ *
+ *   body[data-ui-admin-transparency-banner="false"] .admin-transparency-banner {
+ *       display: none;
+ *   }
+ */
+
 /* === App body: sidebar + main content === */
 .app-body {
     display: flex;

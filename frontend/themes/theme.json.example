@@ -1,0 +1,50 @@
+{
+    "brand_name": "Acme Corp Files",
+    "logo_path": "logo.png",
+
+    "ui": {
+        "admin_transparency_banner": true
+    },
+
+    "colors": {
+        "--color-primary":             "#6c8cff",
+        "--color-primary-hover":       "#8ba3ff",
+        "--color-primary-muted":       "rgba(108, 140, 255, 0.15)",
+
+        "--color-bg":                  "#0f1117",
+        "--color-surface":             "#1a1d27",
+        "--color-surface-hover":       "#22252f",
+        "--color-surface-active":      "#2a2d3a",
+
+        "--color-border":              "#2a2d3a",
+        "--color-border-light":        "#353849",
+
+        "--color-text":                "#e1e4eb",
+        "--color-text-muted":          "#8b8fa3",
+        "--color-text-inverse":        "#0f1117",
+
+        "--color-danger":              "#ff6b6b",
+        "--color-danger-hover":        "#ff8787",
+        "--color-danger-muted":        "rgba(255, 107, 107, 0.15)",
+
+        "--color-success":             "#51cf66",
+        "--color-success-hover":       "#69db7c",
+        "--color-success-muted":       "rgba(81, 207, 102, 0.15)",
+
+        "--color-warning":             "#fcc419",
+        "--color-warning-hover":       "#ffd43b",
+        "--color-warning-muted":       "rgba(252, 196, 25, 0.15)",
+
+        "--color-info":                "#6c8cff",
+        "--color-info-muted":          "rgba(108, 140, 255, 0.15)",
+
+        "--color-overlay":             "rgba(0, 0, 0, 0.6)",
+        "--color-scrollbar-track":     "#0f1117",
+        "--color-scrollbar-thumb":     "#2a2d3a",
+        "--color-scrollbar-hover":     "#8b8fa3",
+
+        "--shadow-toast":              "0 4px 12px rgba(0, 0, 0, 0.4)",
+        "--shadow-modal":              "0 8px 32px rgba(0, 0, 0, 0.5)",
+        "--shadow-dropdown":           "0 4px 16px rgba(0, 0, 0, 0.3)"
+    }
+}

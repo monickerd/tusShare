@@ -1,10 +1,10 @@
 {
-  "generated": "2026-04-09T00:38:57.380792+00:00",
+  "generated": "2026-04-09T05:15:53.218369+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
-    "frontend/js/admin.js": "sha256-4f2tNGvgOHOeLyf++BleiGPWTekyKrkAJrnm1T9O2jI=",
+    "frontend/js/admin.js": "sha256-V/Fcg1e+4hXxROdhhpNjJkuEzaRVKJafICTC+l7NY7U=",
     "frontend/js/api.js": "sha256-/OU3R9Fk82G9r7lHHyrpXt7z6kwgFikPy31J90pJOB8=",
-    "frontend/js/app.js": "sha256-D7spj08LTMtJbvUKdnCz37xQJJziFnrEyeYfQznTSTc=",
+    "frontend/js/app.js": "sha256-f6WPgQsyRO+u+HO9ptYomAvRB6RGmoXlPj9/ELNFI4I=",
     "frontend/js/auth.js": "sha256-Wajy83cnFqp2I4IdCRPihykpq+PPNB4hqLZ3cDZeUrc=",
     "frontend/js/config.js": "sha256-uR8gVCgDeI7QBHUbLcgTj9VVmmqvuAPTgYcuIs69eB8=",
     "frontend/js/crypto.js": "sha256-I5zx/nw23uXkdQNPn0YyepR+cboHAwB+jSTtDP1HIvc=",
@@ -20,7 +20,7 @@
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
     "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",
     "frontend/css/components.css": "sha256-mPzRZ08zaEyTfUqjuPybGegn/lEQkbSPltqBPqReXWg=",
-    "frontend/css/main.css": "sha256-2tPOUcHpNMTnCLgIP/6Be/AGZXIaEC0hBKpib9fD3ek=",
+    "frontend/css/main.css": "sha256-3+2u36hhA+zgpQ2xvmsYuDJ7TnslRlrAEf6nN/AGPdk=",
     "frontend/themes/default/colors.css": "sha256-piHEqylKlAZZDH795benzbeNIlm8uJR5ebLtECwqyOo=",
     "frontend/themes/default/layout.css": "sha256-0wFe9nBp73p10q+zbxwk87p4ZOy17ATNAVV0qEMh+vw=",
     "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",

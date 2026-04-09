@@ -23,6 +23,7 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.sanitize import InputSanitizationMiddleware
 from app.util.integrity import check_integrity, get_result as get_integrity_result
 from app.util.sri import inject_sri
+from app.util.theme import inject_theme
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -91,6 +92,14 @@ async def lifespan(app: FastAPI):
             "TUSSHARE_FORCE_HTTPS is not set. Ensure your reverse proxy enforces HTTPS "
             "and that the application port is not directly internet-accessible."
         )
+
+    # Inject theme CSS variable overrides into index.html (D1).  Runs before
+    # SRI so the style block is in place when hashes are computed.  Skipped in
+    # DEBUG mode; no-ops silently when DATA_DIR/theme.json is absent.
+    if not settings.DEBUG:
+        _frontend_dir = Path(__file__).parent.parent / "frontend"
+        if _frontend_dir.exists():
+            inject_theme(_frontend_dir, settings.DATA_DIR)
 
     # Inject SRI hashes into index.html so every <script>/<link> tag carries
     # an integrity= attribute.  Skipped in DEBUG mode so a server restart isn't
@@ -208,6 +217,7 @@ def create_app() -> FastAPI:
     from app.routes.admin import router as admin_router
     from app.routes.access_logs import router as access_logs_router
     from app.routes.events import router as events_router
+    from app.routes.theme import router as theme_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
@@ -220,6 +230,7 @@ def create_app() -> FastAPI:
     app.include_router(teams_router, tags=["teams"])
     app.include_router(access_logs_router, prefix="/api/v1/access-logs", tags=["logs"])
     app.include_router(events_router, prefix="/api/v1", tags=["events"])
+    app.include_router(theme_router, prefix="/api/v1", tags=["theme"])
 
     # --- Health check ---
     @app.get("/api/v1/health")
