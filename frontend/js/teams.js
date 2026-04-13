@@ -70,6 +70,14 @@ const Teams = (() => {
         return btoa(bin);
     }
 
+    function _bytesToB64url(bytes) {
+        return _bytesToB64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function _b64urlToBytes(b64url) {
+        return _b64ToBytes(b64url.replace(/-/g, '+').replace(/_/g, '/'));
+    }
+
     function _bigintTo32Bytes(n) {
         const hex = n.toString(16).padStart(64, '0');
         const out = new Uint8Array(32);
@@ -480,6 +488,11 @@ const Teams = (() => {
                 className: 'btn btn-secondary btn-sm',
                 textContent: 'Invite Member',
                 onClick: () => _openInviteMemberDialog(teamId, members, container),
+            }));
+            membersSection.appendChild(Utils.el('button', {
+                className: 'btn btn-secondary btn-sm',
+                textContent: 'Create Invite Link',
+                onClick: () => _openCreateInviteLinkDialog(teamId),
             }));
         }
         container.appendChild(membersSection);
@@ -903,14 +916,118 @@ const Teams = (() => {
                 }));
             }
 
+            const nameCellParts = [document.createTextNode(m.username)];
+            if (m.key_delivery_pending) {
+                nameCellParts.push(Utils.el('span', {
+                    className: 'badge badge-warn',
+                    textContent: 'awaiting key',
+                    title: 'Team key not yet delivered — will be fulfilled when an existing member next logs in',
+                }));
+            }
+            if (m.key_confirmed === false) {
+                nameCellParts.push(Utils.el('span', {
+                    className: 'badge badge-muted',
+                    textContent: 'confirming',
+                    title: 'Member has not yet submitted their Schnorr proof of key possession',
+                }));
+            }
+
             tbody.appendChild(Utils.el('tr', {}, [
-                Utils.el('td', { textContent: m.username }),
+                Utils.el('td', {}, nameCellParts),
                 Utils.el('td', { textContent: roleLabel }),
                 ...(isSupervisor ? [Utils.el('td', {}, actions)] : []),
             ]));
         }
 
         return Utils.el('table', { className: 'team-member-table' }, [thead, tbody]);
+    }
+
+    // =========================================================================
+    // Ephemeral invite link — create slot dialog (admin/supervisor side)
+    // =========================================================================
+
+    async function _openCreateInviteLinkDialog(teamId) {
+        let asymKeys;
+        try { asymKeys = _getMyPrivateKeys(); } catch (e) {
+            Utils.showToast(e.message, 'error');
+            return;
+        }
+
+        const overlay = _createModalOverlay();
+        const modal   = Utils.el('div', { className: 'modal' });
+        modal.appendChild(Utils.el('h3', { textContent: 'Create Invite Link' }));
+        modal.appendChild(Utils.el('p', {
+            className: 'form-error',
+            textContent: 'Warning: this link contains key material in the URL fragment and will be ' +
+                         'visible in browser history. Share only via a secure channel. The link is ' +
+                         'one-time use and expires after 24 hours.',
+        }));
+
+        const statusEl = Utils.el('p', { textContent: 'Generating invite link…' });
+        modal.appendChild(statusEl);
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        try {
+            // Unwrap sk_team
+            const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
+            const { sk_bytes: skBytes } = await unwrapTeamKey(
+                myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+            );
+
+            // Generate k_ephemeral (256-bit, never sent to server)
+            const kRaw = crypto.getRandomValues(new Uint8Array(32));
+            const kKey = await crypto.subtle.importKey(
+                'raw', kRaw, { name: 'AES-GCM' }, false, ['encrypt']
+            );
+
+            // Encrypt sk_team with k_ephemeral
+            const iv        = crypto.getRandomValues(new Uint8Array(12));
+            const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, kKey, skBytes);
+
+            // Create slot on server
+            const resp = await Api.post(`${_api}/teams/${teamId}/ephemeral-slots`, {
+                sk_wrapped: _bytesToB64(new Uint8Array(encrypted)),
+                sk_iv:      _bytesToB64(iv),
+            });
+
+            const link = `${window.location.origin}/#/join/${teamId}/${resp.slot_id}/${_bytesToB64url(kRaw)}`;
+
+            statusEl.remove();
+            const linkInput = Utils.el('input', {
+                type: 'text', className: 'input', readOnly: true, value: link,
+            });
+            modal.appendChild(linkInput);
+
+            const copyBtn = Utils.el('button', {
+                className: 'btn btn-primary btn-sm',
+                textContent: 'Copy Link',
+                onClick: async () => {
+                    try {
+                        await navigator.clipboard.writeText(link);
+                        copyBtn.textContent = 'Copied!';
+                        setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
+                    } catch {
+                        linkInput.select();
+                    }
+                },
+            });
+            modal.appendChild(Utils.el('div', { className: 'modal-buttons' }, [
+                copyBtn,
+                Utils.el('button', {
+                    className: 'btn btn-secondary',
+                    textContent: 'Close',
+                    onClick: () => overlay.remove(),
+                }),
+            ]));
+        } catch (err) {
+            statusEl.textContent = 'Failed: ' + err.message;
+            modal.appendChild(Utils.el('button', {
+                className: 'btn btn-secondary',
+                textContent: 'Close',
+                onClick: () => overlay.remove(),
+            }));
+        }
     }
 
     // =========================================================================
@@ -1593,6 +1710,154 @@ const Teams = (() => {
     }
 
     // =========================================================================
+    // Ephemeral invite link — join page (new member side)
+    // =========================================================================
+
+    /**
+     * Execute the ephemeral join rotation and submit.
+     *
+     * The caller has already decrypted sk_old from the slot using k_ephemeral.
+     * This function generates sk_new, re-encrypts all file C1s, wraps sk_new for
+     * all current members + self, and POSTs to /ephemeral-join.
+     *
+     * @param {string} teamId
+     * @param {string} slotId
+     * @param {Uint8Array} skOldBytes  — sk_team decrypted from slot
+     * @param {{ x25519PrivateKey: CryptoKey, mlkem768SecretKey: Uint8Array }} asymKeys
+     * @param {(msg: string) => void} [onProgress]
+     */
+    async function _performEphemeralJoin(teamId, slotId, skOldBytes, asymKeys, onProgress) {
+        const prog = onProgress || (() => {});
+
+        // 1. Generate new keypair; compute rk scalar and rk_point
+        prog('Generating new key pair…');
+        const { sk_bytes: skNewBytes, pk_bytes: pkNewBytes } = await _generateTeamKey();
+        const rk         = computeRKScalar(skOldBytes, skNewBytes);
+        const rkPointB64 = await _computeRkPoint(rk);
+
+        // 2. Fetch all file keys for this team, re-encrypt, generate DLEQ proofs
+        prog('Fetching file keys…');
+        const fkData      = await Api.get(`${_api}/teams/${teamId}/file-keys`);
+        const oldFileKeys = fkData.file_keys || [];
+
+        prog(`Re-encrypting ${oldFileKeys.length} file key(s)…`);
+        const updatedFileKeys = [];
+        for (let i = 0; i < oldFileKeys.length; i++) {
+            const fk       = oldFileKeys[i];
+            const c1NewB64 = await applyPRERotation(fk.pre_c1, rk);
+            const proof    = await _generateDleqProof(rk, fk.pre_c1, rkPointB64, c1NewB64);
+            updatedFileKeys.push({ file_id: fk.file_id, pre_c1: c1NewB64, ...proof });
+            if (i % 50 === 49) {
+                prog(`Re-encrypting… ${i + 1}/${oldFileKeys.length}`);
+                await new Promise(res => setTimeout(res, 0));
+            }
+        }
+
+        // 3. Wrap sk_new for all current members
+        prog('Wrapping new key for members…');
+        const memberData     = await Api.get(`${_api}/teams/${teamId}/members`);
+        const wrappedMembers = [];
+        for (const m of memberData.members || []) {
+            const pub = await Api.get(
+                `${Config.app.apiPrefix}/auth/users/${encodeURIComponent(m.username)}/public-keys`
+            );
+            const wrapped = await wrapTeamKeyForMember(
+                skNewBytes, pub.x25519_public_key, pub.mlkem768_public_key
+            );
+            wrappedMembers.push({ user_id: m.user_id, ...wrapped });
+        }
+
+        // 4. Wrap sk_new for ourselves (joining user is not yet in members list)
+        const myPubs      = _getMyPublicKeys();
+        const selfWrapped = await wrapTeamKeyForMember(
+            skNewBytes, myPubs.x25519_public_key, myPubs.mlkem768_public_key
+        );
+        wrappedMembers.push({ user_id: Auth.getCurrentUser().id, ...selfWrapped });
+
+        // 5. Submit ephemeral join
+        prog('Committing join…');
+        await Api.post(`${_api}/teams/${teamId}/ephemeral-join`, {
+            slot_id:            slotId,
+            pre_public_key_new: _bytesToB64(pkNewBytes),
+            rk_point:           rkPointB64,
+            file_keys:          updatedFileKeys,
+            members:            wrappedMembers,
+        });
+    }
+
+    /**
+     * Render the ephemeral invite join page.
+     *
+     * Invoked by app.js when the user navigates to #/join/{teamId}/{slotId}/{kB64url}.
+     * If the user is not authenticated, saves the hash to sessionStorage and redirects
+     * to #/login; auth.js restores it after a successful login.
+     *
+     * @param {HTMLElement} container
+     * @param {string} teamId
+     * @param {string} slotId
+     * @param {string} kEphemeralB64url  — 256-bit AES key, base64url encoded, from URL fragment
+     */
+    async function renderEphemeralJoinPage(container, teamId, slotId, kEphemeralB64url) {
+        _clearEl(container);
+
+        // Require authentication — save intent and redirect to login if not signed in
+        if (!Auth.getCurrentUser()) {
+            sessionStorage.setItem('pendingJoinHash', window.location.hash);
+            window.location.hash = '#/login';
+            return;
+        }
+
+        container.appendChild(Utils.el('h2', { textContent: 'Joining Team via Invite Link' }));
+        const statusEl = Utils.el('p', { className: 'join-status', textContent: 'Fetching invite slot…' });
+        container.appendChild(statusEl);
+
+        try {
+            // 1. Fetch slot from server (not consumed yet — read-only GET)
+            const slot = await Api.get(`${_api}/teams/${teamId}/ephemeral-slots/${slotId}`);
+
+            statusEl.textContent = 'Decrypting invite…';
+
+            // 2. Decode k_ephemeral from URL fragment and import as AES-GCM key
+            const kBytes = _b64urlToBytes(kEphemeralB64url);
+            const kKey   = await crypto.subtle.importKey(
+                'raw', kBytes, { name: 'AES-GCM' }, false, ['decrypt']
+            );
+
+            // 3. Decrypt sk_wrapped → sk_old (plaintext sk_team)
+            const skWrappedBytes = _b64ToBytes(slot.sk_wrapped);
+            const ivBytes        = _b64ToBytes(slot.sk_iv);
+            const skOldBytes     = new Uint8Array(
+                await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBytes }, kKey, skWrappedBytes)
+            );
+
+            // 4. Need private keys to wrap sk_new for self
+            let asymKeys;
+            try { asymKeys = _getMyPrivateKeys(); } catch (e) {
+                throw new Error('Encryption keys are not ready — try again in a moment. (' + e.message + ')');
+            }
+
+            // 5. Perform join rotation and submit
+            await _performEphemeralJoin(teamId, slotId, skOldBytes, asymKeys,
+                msg => { statusEl.textContent = msg; });
+
+            statusEl.textContent = 'Joined! Redirecting…';
+            Utils.showToast('You have joined the team.', 'success');
+            window.location.hash = `#/teams/${teamId}`;
+        } catch (err) {
+            statusEl.textContent = '';
+            container.appendChild(Utils.el('div', {
+                className: 'alert alert-error',
+                textContent: 'Failed to join team: ' + err.message,
+            }));
+            container.appendChild(Utils.el('a', {
+                href: '#/teams',
+                className: 'btn btn-secondary btn-sm',
+                textContent: 'Back to Teams',
+            }));
+        }
+    }
+
+    // =========================================================================
     // Public API
     // =========================================================================
 
@@ -1600,6 +1865,7 @@ const Teams = (() => {
         renderTeamsPage,
         renderTeamDetailPage,
         renderTeamFoldersPage,
+        renderEphemeralJoinPage,
         openAddToTeamDialog,
         decryptTeamFileKey,
         processPendingTeamOperations: _processPendingTeamOperations,

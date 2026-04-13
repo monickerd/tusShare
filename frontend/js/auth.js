@@ -253,7 +253,13 @@ const Auth = (() => {
             });
 
             status.textContent = '';
-            window.location.hash = '#/files';
+            const pendingJoin = sessionStorage.getItem('pendingJoinHash');
+            if (pendingJoin) {
+                sessionStorage.removeItem('pendingJoinHash');
+                window.location.hash = pendingJoin;
+            } else {
+                window.location.hash = '#/files';
+            }
         } catch (err) {
             status.textContent = err.message;
             btn.disabled = false;

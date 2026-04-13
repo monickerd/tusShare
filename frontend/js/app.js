@@ -48,20 +48,21 @@ const App = (() => {
     }
 
     const _routes = [
-        { pattern: /^#\/login$/,                          handler: _routeLogin },
-        { pattern: /^#\/pinned$/,                         handler: _routePinned },
-        { pattern: /^#\/files\/([a-f0-9-]+)$/,            handler: _routeFolder },
-        { pattern: /^#\/files$/,                           handler: _routeFiles },
-        { pattern: /^#\/shared$/,                          handler: _routeShared },
-        { pattern: /^#\/shares\/received$/,                handler: _routeReceivedShares },
-        { pattern: /^#\/shares$/,                          handler: _routeShares },
-        { pattern: /^#\/team-folders\/([a-f0-9-]+)$/,      handler: _routeTeamFolder },
-        { pattern: /^#\/team-folders$/,                    handler: _routeTeamFolders },
-        { pattern: /^#\/teams\/([0-9a-f-]+)$/,              handler: _routeTeamDetail },
-        { pattern: /^#\/teams$/,                           handler: _routeTeams },
-        { pattern: /^#\/admin$/,                           handler: _routeAdmin },
-        { pattern: /^#\/s\/(.+)$/,                         handler: _routePublicShare },
-        { pattern: /^#\/l\/(.+)$/,                         handler: _routeShortLink },
+        { pattern: /^#\/login$/,                                                              handler: _routeLogin },
+        { pattern: /^#\/pinned$/,                                                             handler: _routePinned },
+        { pattern: /^#\/files\/([a-f0-9-]+)$/,                                               handler: _routeFolder },
+        { pattern: /^#\/files$/,                                                              handler: _routeFiles },
+        { pattern: /^#\/shared$/,                                                             handler: _routeShared },
+        { pattern: /^#\/shares\/received$/,                                                   handler: _routeReceivedShares },
+        { pattern: /^#\/shares$/,                                                             handler: _routeShares },
+        { pattern: /^#\/team-folders\/([a-f0-9-]+)$/,                                        handler: _routeTeamFolder },
+        { pattern: /^#\/team-folders$/,                                                       handler: _routeTeamFolders },
+        { pattern: /^#\/teams\/([0-9a-f-]+)$/,                                               handler: _routeTeamDetail },
+        { pattern: /^#\/teams$/,                                                              handler: _routeTeams },
+        { pattern: /^#\/admin$/,                                                              handler: _routeAdmin },
+        { pattern: /^#\/join\/([0-9a-f-]+)\/([0-9a-f-]+)\/([A-Za-z0-9_-]+)$/,               handler: _routeEphemeralJoin },
+        { pattern: /^#\/s\/(.+)$/,                                                            handler: _routePublicShare },
+        { pattern: /^#\/l\/(.+)$/,                                                            handler: _routeShortLink },
     ];
 
     async function init() {
@@ -101,6 +102,12 @@ const App = (() => {
         const hasSession = await Auth.checkSession();
 
         if (!hasSession) {
+            // If the user landed on a join link without a session, save the intent so
+            // auth.js can redirect back to it after a successful login.
+            const h = window.location.hash;
+            if (h && h.startsWith('#/join/')) {
+                sessionStorage.setItem('pendingJoinHash', h);
+            }
             // Setting hash to #/login won't fire hashchange if the hash is already
             // #/login (browser no-ops same-value assignments). Render directly so
             // a refresh on the login page doesn't hang on "Loading tusShare...".
@@ -144,8 +151,10 @@ const App = (() => {
         // once their folder finishes loading; all other routes leave it closed.
         Files.stopLive();
 
-        // Public routes — no auth required
-        if (hash.startsWith('#/s/') || hash.startsWith('#/l/')) {
+        // Public / semi-public routes — no auth check at router level.
+        // #/join/ is handled by Teams.renderEphemeralJoinPage which saves intent
+        // and redirects to #/login if the user is not authenticated.
+        if (hash.startsWith('#/s/') || hash.startsWith('#/l/') || hash.startsWith('#/join/')) {
             for (const route of _routes) {
                 const match = hash.match(route.pattern);
                 if (match) {
@@ -295,6 +304,10 @@ const App = (() => {
     function _routeShortLink(container, slug) {
         const shareKeyB64url = '';
         Shares.renderShortLinkPage(container, slug, shareKeyB64url);
+    }
+
+    function _routeEphemeralJoin(container, teamId, slotId, kEphemeralB64url) {
+        Teams.renderEphemeralJoinPage(container, teamId, slotId, kEphemeralB64url);
     }
 
     function _renderShell(container) {

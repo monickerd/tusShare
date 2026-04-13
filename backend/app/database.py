@@ -157,11 +157,12 @@ async def seed_admin_settings(db: Database) -> None:
     source of truth for what the defaults are; the database stores overrides.
     """
     defaults = {
-        'open_registration':      'true' if settings.OPEN_REGISTRATION else 'false',
-        'global_max_file_size':   str(settings.GLOBAL_MAX_FILE_SIZE),
-        'global_bandwidth_limit': str(settings.GLOBAL_BANDWIDTH_LIMIT),
-        'disk_warning_threshold': str(settings.DISK_WARNING_THRESHOLD),
-        'default_chunk_size':     str(settings.DEFAULT_CHUNK_SIZE),
+        'open_registration':           'true' if settings.OPEN_REGISTRATION else 'false',
+        'global_max_file_size':        str(settings.GLOBAL_MAX_FILE_SIZE),
+        'global_bandwidth_limit':      str(settings.GLOBAL_BANDWIDTH_LIMIT),
+        'disk_warning_threshold':      str(settings.DISK_WARNING_THRESHOLD),
+        'default_chunk_size':          str(settings.DEFAULT_CHUNK_SIZE),
+        'allow_ephemeral_team_invites': 'false',
     }
     for key, value in defaults.items():
         await db.execute(
