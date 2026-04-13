@@ -247,6 +247,11 @@ const Auth = (() => {
                 Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
             });
 
+            // Process any pending team operations (rotation, key grants) in background
+            Teams.processPendingTeamOperations().catch((err) => {
+                console.warn('Pending team operations check failed:', err.message);
+            });
+
             status.textContent = '';
             window.location.hash = '#/files';
         } catch (err) {
@@ -317,6 +322,11 @@ const Auth = (() => {
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
                 console.error('Asymmetric key setup failed:', err);
                 Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
+            });
+
+            // Process any pending team operations (rotation, key grants) in background
+            Teams.processPendingTeamOperations().catch((err) => {
+                console.warn('Pending team operations check failed:', err.message);
             });
 
             status.textContent = '';
@@ -405,6 +415,11 @@ const Auth = (() => {
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
                 console.error('Asymmetric key setup failed:', err);
                 Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
+            });
+
+            // Process any pending team operations (rotation, key grants) in background
+            Teams.processPendingTeamOperations().catch((err) => {
+                console.warn('Pending team operations check failed:', err.message);
             });
 
             status.textContent = '';
@@ -1075,6 +1090,9 @@ const Auth = (() => {
                 if (restored && !_currentUser.is_admin) {
                     _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
                         console.error('Asymmetric key setup failed after cache restore:', err);
+                    });
+                    Teams.processPendingTeamOperations().catch((err) => {
+                        console.warn('Pending team operations check failed:', err.message);
                     });
                 }
             }

@@ -47,6 +47,8 @@ class TeamMember:
     user_id: str
     username: str
     role: str   # team_owner | team_supervisor | team_member
+    key_delivery_pending: bool = False  # True when policy grant key_wrapped=0 (no key slot yet)
+    key_confirmed: bool = False         # True when Schnorr PoK submitted post-rotation
 
     @property
     def role_rank(self) -> int:
@@ -61,6 +63,8 @@ class TeamMember:
             "user_id": self.user_id,
             "username": self.username,
             "role": self.role,
+            "key_delivery_pending": self.key_delivery_pending,
+            "key_confirmed": self.key_confirmed,
         }
 
 
@@ -120,17 +124,34 @@ async def get_team_member_role(db, team_id: str, user_id: str) -> str | None:
 
 
 async def get_team_members(db, team_id: str) -> list[TeamMember]:
+    """Return all team members with their key delivery and confirmation state."""
     cursor = await db.execute(
-        "SELECT ur.user_id, u.username, ur.role_id AS role "
+        "SELECT ur.user_id, u.username, ur.role_id AS role, "
+        "       COALESCE(utk.key_confirmed, 0) AS key_confirmed, "
+        "       CASE WHEN EXISTS("
+        "           SELECT 1 FROM policy_team_grants ptg "
+        "           JOIN policy_effects pe ON pe.id = ptg.effect_id "
+        "           WHERE ptg.user_id = ur.user_id "
+        "             AND pe.target_id = ? "
+        "             AND ptg.key_wrapped = 0"
+        "       ) THEN 1 ELSE 0 END AS key_delivery_pending "
         "FROM user_roles ur "
         "JOIN users u ON u.id = ur.user_id "
+        "LEFT JOIN user_team_keys utk "
+        "       ON utk.team_id = ? AND utk.user_id = ur.user_id "
         "WHERE ur.scope_type = 'team' AND ur.scope_id = ? "
         "ORDER BY u.username",
-        (team_id,),
+        (team_id, team_id, team_id),
     )
     rows = await cursor.fetchall()
     return [
-        TeamMember(user_id=r["user_id"], username=r["username"], role=r["role"])
+        TeamMember(
+            user_id=r["user_id"],
+            username=r["username"],
+            role=r["role"],
+            key_delivery_pending=bool(r["key_delivery_pending"]),
+            key_confirmed=bool(r["key_confirmed"]),
+        )
         for r in rows
     ]
 
@@ -146,20 +167,40 @@ async def get_team_member_count(db, team_id: str) -> int:
 
 
 async def get_user_teams(db, user_id: str) -> list[dict]:
-    """Return all teams the user belongs to, with their role per team."""
+    """Return all teams the user belongs to with role, key state, and pending flags.
+
+    Extra fields per team (beyond Team.to_dict()):
+      my_role               — caller's role in this team
+      my_key_confirmed      — True if caller's user_team_keys.key_confirmed = 1
+      has_pending_key_grants — True if any policy_team_grants.key_wrapped=0 exist
+                               on this team (caller should fulfil them on login)
+    """
     cursor = await db.execute(
         "SELECT t.id, t.name, t.description, t.owner_id, t.pre_public_key, "
         "       t.rotation_pending, t.created_at, t.updated_at, "
-        "       ur.role_id AS my_role "
+        "       ur.role_id AS my_role, "
+        "       COALESCE(utk.key_confirmed, 0) AS my_key_confirmed, "
+        "       CASE WHEN EXISTS("
+        "           SELECT 1 FROM policy_team_grants ptg "
+        "           JOIN policy_effects pe ON pe.id = ptg.effect_id "
+        "           WHERE pe.target_id = t.id AND ptg.key_wrapped = 0"
+        "       ) THEN 1 ELSE 0 END AS has_pending_key_grants "
         "FROM teams t "
         "JOIN user_roles ur ON ur.scope_id = t.id AND ur.scope_type = 'team' "
+        "LEFT JOIN user_team_keys utk "
+        "       ON utk.team_id = t.id AND utk.user_id = ur.user_id "
         "WHERE ur.user_id = ? "
         "ORDER BY t.name",
         (user_id,),
     )
     rows = await cursor.fetchall()
     return [
-        {**Team.from_row(r).to_dict(), "my_role": r["my_role"]}
+        {
+            **Team.from_row(r).to_dict(),
+            "my_role":               r["my_role"],
+            "my_key_confirmed":      bool(r["my_key_confirmed"]),
+            "has_pending_key_grants": bool(r["has_pending_key_grants"]),
+        }
         for r in rows
     ]
 

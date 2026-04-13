@@ -9,3 +9,4 @@ bcrypt==4.2.1
 python-multipart==0.0.20
 pydantic-settings==2.7.1
 aiofiles==24.1.0
+py_ecc==7.0.0

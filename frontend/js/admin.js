@@ -1198,6 +1198,34 @@ const Admin = (() => {
             ? Utils.el('span', { className: 'badge badge-team', textContent: 'team' })
             : Utils.el('span', { className: 'badge badge-org', textContent: 'org' });
 
+        // E4b: escrow badge + toggle button in header
+        const escrowBadge = policy.escrow_enabled
+            ? Utils.el('span', { className: 'badge badge-escrow', textContent: 'escrow' })
+            : null;
+
+        const escrowToggleBtn = Utils.el('button', {
+            className: 'btn btn-xs btn-secondary policy-escrow-toggle',
+            textContent: policy.escrow_enabled ? 'Disable escrow' : 'Enable escrow',
+            title: 'Toggle key escrow for teams covered by this policy',
+            onClick: async (e) => {
+                e.stopPropagation();
+                escrowToggleBtn.disabled = true;
+                try {
+                    await Api.patch(`${_api()}/admin/policies/${policy.id}`, {
+                        escrow_enabled: !policy.escrow_enabled,
+                    });
+                    Utils.showToast(
+                        policy.escrow_enabled ? 'Escrow disabled' : 'Escrow enabled',
+                        'success',
+                    );
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Failed: ' + err.message, 'error');
+                    escrowToggleBtn.disabled = false;
+                }
+            },
+        });
+
         const detachBanner = detached
             ? Utils.el('div', { className: 'scope-detach-banner', textContent: 'One or more inherited restrictions have been removed from a parent scope. Review and confirm this policy\'s conditions.' })
             : null;
@@ -1216,6 +1244,7 @@ const Admin = (() => {
         });
         toggleBtn.appendChild(Utils.el('span', { textContent: policy.name }));
         toggleBtn.appendChild(scopeBadge);
+        if (escrowBadge) toggleBtn.appendChild(escrowBadge);
 
         const deleteBtn = Utils.el('button', {
             className: 'btn btn-danger btn-xs policy-card-delete',
@@ -1234,7 +1263,7 @@ const Admin = (() => {
         });
 
         const card = Utils.el('div', { className: `policy-card${detached ? ' policy-card-detached' : ''}` }, [
-            Utils.el('div', { className: 'policy-card-header' }, [toggleBtn, deleteBtn]),
+            Utils.el('div', { className: 'policy-card-header' }, [toggleBtn, escrowToggleBtn, deleteBtn]),
             detachBanner,
             body,
         ].filter(Boolean));
@@ -1340,13 +1369,23 @@ const Admin = (() => {
             </tr></thead>`;
             const tbody = Utils.el('tbody');
             for (const eff of effects) {
+                const badgeClass = eff.effect_type === 'team_member' ? 'team'
+                    : eff.effect_type === 'team_escrow' ? 'escrow'
+                    : 'folder';
                 const typeBadge = Utils.el('span', {
-                    className: `badge badge-effect-${eff.effect_type === 'team_member' ? 'team' : 'folder'}`,
+                    className: `badge badge-effect-${badgeClass}`,
                     textContent: eff.effect_type,
                 });
-                const detailText = eff.effect_type === 'team_member'
-                    ? `role: ${eff.role_level}`
-                    : `${eff.permission}${eff.recursive ? ', recursive' : ''}`;
+                let detailText;
+                if (eff.effect_type === 'team_member') {
+                    detailText = `role: ${eff.role_level}`;
+                } else if (eff.effect_type === 'team_escrow') {
+                    detailText = eff.escrow_override === 1 ? 'force-on'
+                        : eff.escrow_override === 0 ? 'force-off'
+                        : 'override';
+                } else {
+                    detailText = `${eff.permission}${eff.recursive ? ', recursive' : ''}`;
+                }
 
                 const deleteBtn = Utils.el('button', {
                     className: 'btn btn-danger btn-xs',
@@ -1390,7 +1429,8 @@ const Admin = (() => {
 
     function _showAddEffectModal(policy, effectsWrap, refreshFn) {
         const typeEl = Utils.el('select', { className: 'input-sm' });
-        ['team_member', 'folder_acl'].forEach(t => typeEl.appendChild(Utils.el('option', { value: t, textContent: t })));
+        ['team_member', 'folder_acl', 'team_escrow'].forEach(t =>
+            typeEl.appendChild(Utils.el('option', { value: t, textContent: t })));
 
         const targetEl = Utils.el('input', {
             type: 'text', className: 'input-sm',
@@ -1417,10 +1457,26 @@ const Admin = (() => {
             ]),
         ]);
 
+        // team_escrow fields — per-team override
+        const escrowOverrideEl = Utils.el('select', { className: 'input-sm' });
+        [
+            { value: '1', text: '1 — force ON (enable escrow for this team regardless of policy default)' },
+            { value: '0', text: '0 — force OFF (disable escrow for this team regardless of policy default)' },
+        ].forEach(o => escrowOverrideEl.appendChild(Utils.el('option', { value: o.value, textContent: o.text })));
+        const teamEscrowWrap = Utils.el('div', {}, [
+            Utils.el('label', { textContent: 'Escrow override' }),
+            escrowOverrideEl,
+            Utils.el('p', {
+                className: 'text-muted policy-sub-hint',
+                textContent: 'Overrides the policy-level escrow_enabled for this specific team only.',
+            }),
+        ]);
+
         function _syncFields() {
-            const isTeam = typeEl.value === 'team_member';
-            teamMemberWrap.style.display = isTeam ? '' : 'none';
-            folderAclWrap.style.display  = isTeam ? 'none' : '';
+            const t = typeEl.value;
+            teamMemberWrap.style.display = t === 'team_member' ? '' : 'none';
+            folderAclWrap.style.display  = t === 'folder_acl'  ? '' : 'none';
+            teamEscrowWrap.style.display = t === 'team_escrow' ? '' : 'none';
         }
         typeEl.addEventListener('change', _syncFields);
         _syncFields();
@@ -1439,9 +1495,11 @@ const Admin = (() => {
                 };
                 if (typeEl.value === 'team_member') {
                     payload.role_level = roleLevelEl.value;
-                } else {
+                } else if (typeEl.value === 'folder_acl') {
                     payload.permission = permEl.value;
                     payload.recursive  = recursiveEl.checked;
+                } else {
+                    payload.escrow_override = parseInt(escrowOverrideEl.value, 10);
                 }
                 try {
                     await Api.post(`${_api()}/admin/policies/${policy.id}/effects`, payload);
@@ -1461,6 +1519,7 @@ const Admin = (() => {
             Utils.el('label', { textContent: 'Target ID (team or folder UUID)' }), targetEl,
             teamMemberWrap,
             folderAclWrap,
+            teamEscrowWrap,
             errorEl,
             Utils.el('div', { className: 'modal-actions' }, [
                 addBtn,
@@ -1480,6 +1539,12 @@ const Admin = (() => {
         scopeTypeEl.addEventListener('change', () => {
             scopeIdWrap.style.display = scopeTypeEl.value === 'team' ? '' : 'none';
         });
+        // E4b: escrow_enabled toggle
+        const escrowEl = Utils.el('input', { type: 'checkbox' });
+        const escrowRow = Utils.el('div', { className: 'policy-strict-row' }, [
+            escrowEl,
+            Utils.el('label', { textContent: ' Enable key escrow (escrow agents receive sk_team for all covered teams)' }),
+        ]);
         const errorEl = Utils.el('p', { className: 'text-error', style: 'display:none' });
 
         const createBtn = Utils.el('button', {
@@ -1491,9 +1556,10 @@ const Admin = (() => {
                 const scopeIdInput = scopeIdWrap.querySelector('#new-policy-scope-id');
                 try {
                     await Api.post(`${_api()}/admin/policies`, {
-                        name:       nameEl.value.trim(),
-                        scope_type: scopeTypeEl.value,
-                        scope_id:   scopeTypeEl.value === 'team' ? (scopeIdInput ? scopeIdInput.value.trim() : null) : null,
+                        name:           nameEl.value.trim(),
+                        scope_type:     scopeTypeEl.value,
+                        scope_id:       scopeTypeEl.value === 'team' ? (scopeIdInput ? scopeIdInput.value.trim() : null) : null,
+                        escrow_enabled: escrowEl.checked,
                     });
                     Utils.showToast('Policy created', 'success');
                     Utils.closeModal();
@@ -1510,6 +1576,7 @@ const Admin = (() => {
             Utils.el('label', { textContent: 'Policy name' }), nameEl,
             Utils.el('label', { textContent: 'Scope' }), scopeTypeEl,
             scopeIdWrap,
+            escrowRow,
             errorEl,
             Utils.el('div', { className: 'modal-actions' }, [
                 createBtn,

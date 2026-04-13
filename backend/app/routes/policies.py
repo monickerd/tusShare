@@ -102,13 +102,15 @@ def _policy_with_conditions(policy: Policy, conditions: list[PolicyCondition]) -
 # ---------------------------------------------------------------------------
 
 class CreatePolicyRequest(BaseModel):
-    name:       str
-    scope_type: str = "org"      # 'org' | 'team'
-    scope_id:   str | None = None  # team_id for team-scoped
+    name:           str
+    scope_type:     str = "org"      # 'org' | 'team'
+    scope_id:       str | None = None  # team_id for team-scoped
+    escrow_enabled: bool = False     # E4b: write escrow grants for covered teams
 
 
 class UpdatePolicyRequest(BaseModel):
-    name: str | None = None
+    name:           str | None = None
+    escrow_enabled: bool | None = None   # E4b
 
 
 class CreateConditionRequest(BaseModel):
@@ -198,8 +200,10 @@ async def create_policy(
 
     policy_id = str(uuid.uuid4())
     await db.execute(
-        "INSERT INTO policies (id, name, scope_type, scope_id, created_by) VALUES (?, ?, ?, ?, ?)",
-        (policy_id, body.name, body.scope_type, scope_id, user.id),
+        "INSERT INTO policies (id, name, scope_type, scope_id, escrow_enabled, created_by) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (policy_id, body.name, body.scope_type, scope_id,
+         1 if body.escrow_enabled else 0, user.id),
     )
     await db.commit()
     return {"message": "Policy created", "id": policy_id}
@@ -239,13 +243,30 @@ async def update_policy(
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
-    if body.name is None:
+    if body.name is None and body.escrow_enabled is None:
         raise HTTPException(status_code=400, detail="No fields to update")
-    if len(body.name) < 1 or len(body.name) > _MAX_POLICY_NAME_LEN:
-        raise HTTPException(status_code=400, detail=f"Name must be 1–{_MAX_POLICY_NAME_LEN} characters")
 
-    await db.execute("UPDATE policies SET name = ? WHERE id = ?", (body.name, policy_id))
+    updates = []
+    params  = []
+
+    if body.name is not None:
+        if len(body.name) < 1 or len(body.name) > _MAX_POLICY_NAME_LEN:
+            raise HTTPException(status_code=400, detail=f"Name must be 1–{_MAX_POLICY_NAME_LEN} characters")
+        updates.append("name = ?")
+        params.append(body.name)
+
+    if body.escrow_enabled is not None:
+        updates.append("escrow_enabled = ?")
+        params.append(1 if body.escrow_enabled else 0)
+
+    params.append(policy_id)
+    await db.execute(f"UPDATE policies SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
+
+    # If escrow_enabled changed, re-sweep so escrow grants are written / cleared
+    if body.escrow_enabled is not None:
+        asyncio.create_task(sweep_policy_for_all_users(db, policy_id))
+
     return {"message": "Policy updated"}
 
 
@@ -473,11 +494,12 @@ _TEAM_ROLES = frozenset({
 
 
 class CreateEffectRequest(BaseModel):
-    effect_type: str              # 'team_member' | 'folder_acl'
-    target_id:   str              # team_id or folder_id
-    role_level:  str | None = None   # required for team_member
-    permission:  str | None = None   # required for folder_acl
-    recursive:   bool = True         # folder_acl only
+    effect_type:     str                   # 'team_member' | 'folder_acl' | 'team_escrow'
+    target_id:       str                   # team_id or folder_id
+    role_level:      str | None = None     # required for team_member
+    permission:      str | None = None     # required for folder_acl
+    recursive:       bool = True           # folder_acl only
+    escrow_override: int | None = None     # team_escrow only: 0=force-off, 1=force-on
 
 
 async def _load_effect(db, policy_id: str, effect_id: str) -> PolicyEffect:
@@ -534,8 +556,11 @@ async def create_effect(
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
-    if body.effect_type not in ("team_member", "folder_acl"):
-        raise HTTPException(status_code=400, detail="effect_type must be 'team_member' or 'folder_acl'")
+    if body.effect_type not in ("team_member", "folder_acl", "team_escrow"):
+        raise HTTPException(
+            status_code=400,
+            detail="effect_type must be 'team_member', 'folder_acl', or 'team_escrow'",
+        )
 
     target_id = validate_uuid(body.target_id)
 
@@ -550,31 +575,62 @@ async def create_effect(
         cursor = await db.execute("SELECT 1 FROM roles WHERE id = ?", (body.role_level,))
         if await cursor.fetchone() is None:
             raise HTTPException(status_code=400, detail=f"Role not found: {body.role_level!r}")
-        permission = None
-        recursive  = 1
+        permission      = None
+        recursive       = 1
+        escrow_override = None
 
-    else:  # folder_acl
+    elif body.effect_type == "folder_acl":
         # Validate folder exists
         cursor = await db.execute("SELECT 1 FROM folders WHERE id = ?", (target_id,))
         if await cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Folder not found")
         if not body.permission or body.permission not in ("read", "write", "admin"):
-            raise HTTPException(status_code=400, detail="permission must be 'read', 'write', or 'admin' for folder_acl effects")
-        permission = body.permission
-        recursive  = 1 if body.recursive else 0
+            raise HTTPException(
+                status_code=400,
+                detail="permission must be 'read', 'write', or 'admin' for folder_acl effects",
+            )
+        permission      = body.permission
+        recursive       = 1 if body.recursive else 0
+        escrow_override = None
+
+    else:  # team_escrow — per-team escrow override
+        # Validate team exists
+        cursor = await db.execute("SELECT 1 FROM teams WHERE id = ?", (target_id,))
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Team not found")
+        if body.escrow_override not in (0, 1):
+            raise HTTPException(
+                status_code=400,
+                detail="escrow_override must be 0 (force-off) or 1 (force-on) for team_escrow effects",
+            )
+        # Prevent duplicate team_escrow effect for the same (policy, team)
+        cursor = await db.execute(
+            "SELECT 1 FROM policy_effects "
+            "WHERE policy_id = ? AND effect_type = 'team_escrow' AND target_id = ?",
+            (policy_id, target_id),
+        )
+        if await cursor.fetchone() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="A team_escrow override already exists for this team on this policy",
+            )
+        permission      = None
+        recursive       = 1
+        escrow_override = body.escrow_override
 
     effect_id = str(uuid.uuid4())
     await db.execute(
         "INSERT INTO policy_effects "
-        "(id, policy_id, effect_type, target_id, role_level, permission, recursive) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(id, policy_id, effect_type, target_id, role_level, permission, recursive, escrow_override) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (effect_id, policy_id, body.effect_type, target_id,
          body.role_level if body.effect_type == "team_member" else None,
-         permission, recursive),
+         permission, recursive, escrow_override),
     )
     await db.commit()
 
-    # Trigger 2 — immediately apply new effect to all currently matching users
+    # Trigger 2 — immediately apply new effect to all currently matching users.
+    # For team_escrow effects this re-writes or suppresses escrow grants for the target team.
     asyncio.create_task(sweep_policy_for_all_users(db, policy_id))
 
     return {"message": "Effect added", "id": effect_id}

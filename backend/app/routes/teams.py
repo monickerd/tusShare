@@ -1,31 +1,42 @@
 """Team management routes.
 
 Endpoints:
-    POST   /api/v1/teams                              create team
-    GET    /api/v1/teams                              list my teams
-    GET    /api/v1/teams/{team_id}                    team detail + members + folders
-    PUT    /api/v1/teams/{team_id}                    update name/description
-    DELETE /api/v1/teams/{team_id}                    delete team (owner only)
+    POST   /api/v1/teams                                        create team
+    GET    /api/v1/teams                                        list my teams
+    GET    /api/v1/teams/{team_id}                              team detail + members + folders
+    PUT    /api/v1/teams/{team_id}                              update name/description
+    DELETE /api/v1/teams/{team_id}                              delete team (owner only)
 
-    GET    /api/v1/teams/{team_id}/members            list members
-    POST   /api/v1/teams/{team_id}/members            invite member
-    PUT    /api/v1/teams/{team_id}/members/{user_id}  change role
-    DELETE /api/v1/teams/{team_id}/members/{user_id}  remove member
+    GET    /api/v1/teams/{team_id}/members                      list members
+    POST   /api/v1/teams/{team_id}/members                      invite member
+    PUT    /api/v1/teams/{team_id}/members/{user_id}            change role
+    DELETE /api/v1/teams/{team_id}/members/{user_id}            remove member
 
-    GET    /api/v1/teams/{team_id}/my-key             get my wrapped team key
+    GET    /api/v1/teams/{team_id}/my-key                       get my wrapped team key
 
-    GET    /api/v1/teams/{team_id}/folders            list team folders
-    POST   /api/v1/teams/{team_id}/folders            add folder
-    DELETE /api/v1/teams/{team_id}/folders/{folder_id} remove folder
+    GET    /api/v1/teams/{team_id}/folders                      list team folders
+    POST   /api/v1/teams/{team_id}/folders                      add folder
+    DELETE /api/v1/teams/{team_id}/folders/{folder_id}          remove folder
 
-    GET    /api/v1/teams/{team_id}/file-keys          list PRE file keys
-    POST   /api/v1/teams/{team_id}/file-keys          add/update PRE file keys (batch)
+    GET    /api/v1/teams/{team_id}/file-keys                    list PRE file keys
+    POST   /api/v1/teams/{team_id}/file-keys                    add/update PRE file keys (batch)
 
-    POST   /api/v1/teams/{team_id}/rotate             apply PRE key rotation
+    POST   /api/v1/teams/{team_id}/rotate                       apply PRE key rotation (DLEQ-verified)
+    POST   /api/v1/teams/{team_id}/key-confirmation             Schnorr PoK confirming sk_new
+
+    GET    /api/v1/teams/escrow-agents                          list escrow agent users + public keys
+
+    GET    /api/v1/teams/{team_id}/pending-key-grants           list unfulfilled policy grants
+    POST   /api/v1/teams/{team_id}/pending-key-grants/complete  fulfil pending key grants
+
+    POST   /api/v1/teams/{team_id}/ephemeral-slots              create one-time invite link slot
+    GET    /api/v1/teams/{team_id}/ephemeral-slots/{slot_id}    fetch slot (does not consume)
+    POST   /api/v1/teams/{team_id}/ephemeral-join               consume slot + rotate keys
 """
 
 import logging
 import uuid
+from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -45,6 +56,11 @@ from app.conf.teams import (
 )
 from app.database import get_db
 from app.middleware.rate_limit import check_management_rate_limit
+from app.util.bls_verify import (
+    verify_rk_consistency,
+    verify_batch_dleq,
+    verify_schnorr_pok,
+)
 from app.models.role import grant_role, revoke_role
 from app.models.team import (
     TeamFileKey,
@@ -114,6 +130,10 @@ class CreateTeamRequest(BaseModel):
     kem_ciphertext: str
     encrypted_sk: str
     sk_iv: str
+    # E4b: optional pre-wrapped key slots for escrow agents.
+    # Client fetches GET /teams/escrow-agents, wraps sk_team for each, and includes here.
+    # Each entry must identify a user holding can_act_as_escrow.
+    escrow_members: list[_MemberKeyIn] = []
 
     @field_validator("name")
     @classmethod
@@ -270,9 +290,17 @@ class AddFileKeysRequest(BaseModel):
 
 
 class _RotatedFileKeyIn(BaseModel):
-    """Updated C1 value for a single file after PRE rotation."""
+    """Updated C1 value for a single file after PRE rotation.
+
+    dleq_s / dleq_R1 / dleq_R2 carry the Chaum-Pedersen DLEQ proof that the
+    same scalar rk was used for rk_point = rk×G1 and C1_new = rk×C1_old.
+    All three proof fields are required (E4 verification active).
+    """
     file_id: str
     pre_c1: str
+    dleq_s:  str   # Fiat-Shamir response scalar (32 bytes), base64
+    dleq_R1: str   # G1 commitment r×G1 (48 bytes), base64
+    dleq_R2: str   # G1 commitment r×C1_old (48 bytes), base64
 
     @field_validator("file_id")
     @classmethod
@@ -283,6 +311,12 @@ class _RotatedFileKeyIn(BaseModel):
     @classmethod
     def validate_c1(cls, v: str) -> str:
         return validate_g1_point(v)
+
+    @field_validator("dleq_s", "dleq_R1", "dleq_R2")
+    @classmethod
+    def validate_dleq_fields(cls, v: str) -> str:
+        # dleq_s is a 32-byte scalar; dleq_R1 and dleq_R2 are 48-byte G1 points
+        return validate_base64(v, max_length=68)
 
 
 class _RotatedMemberIn(BaseModel):
@@ -322,13 +356,18 @@ class _RotatedMemberIn(BaseModel):
 class RotateKeysRequest(BaseModel):
     """Payload for a client-side PRE rotation.
 
-    The team owner performs all BLS12-381 scalar multiplications in the browser
+    Any team member performs all BLS12-381 scalar multiplications in the browser
     (using @noble/curves) and submits:
       - New G2 public key (sk_new * G2)
-      - Every file_team_keys row with its updated C1 (= rk * C1_old)
+      - rk_point = rk × G1 (for server-side pairing consistency check, E4)
+      - Every file_team_keys row with its updated C1 (= rk * C1_old) + DLEQ proof
       - New user_team_keys entries wrapping sk_new for each remaining member
+
+    rk_point and per-file DLEQ proofs are optional in this prereq phase
+    (accept-without-verify); required once E4 verification is enabled.
     """
-    pre_public_key_new: str             # G2 point, base64
+    pre_public_key_new: str              # G2 point, base64 — pk_new
+    rk_point: str                        # G1 point, base64 — rk × G1 (required, E4 active)
     file_keys: list[_RotatedFileKeyIn]
     members: list[_RotatedMemberIn]
 
@@ -336,6 +375,11 @@ class RotateKeysRequest(BaseModel):
     @classmethod
     def validate_pk(cls, v: str) -> str:
         return validate_g2_point(v)
+
+    @field_validator("rk_point")
+    @classmethod
+    def validate_rk_point(cls, v: str) -> str:
+        return validate_g1_point(v)
 
     @field_validator("file_keys")
     @classmethod
@@ -385,13 +429,70 @@ async def _require_team_role(db, team_id: str, user: AuthenticatedUser, min_role
 # Teams CRUD
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Escrow agents (E4b)
+# ---------------------------------------------------------------------------
+
+@router.get("/escrow-agents")
+async def list_escrow_agents(
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Return all users holding the escrow_agent role with their public keys.
+
+    Used by clients when creating a new team to pre-wrap sk_team for all
+    escrow agents (so no pending grants are needed at team creation time).
+    Returns only agents who have completed key setup (x25519 + mlkem public keys present).
+    """
+    cursor = await db.execute(
+        "SELECT u.id, u.username, u.x25519_public_key, u.mlkem768_public_key "
+        "FROM users u "
+        "JOIN user_roles ur ON ur.user_id = u.id "
+        "WHERE ur.role_id = 'escrow_agent' AND ur.scope_type IS NULL "
+        "AND u.x25519_public_key IS NOT NULL AND u.mlkem768_public_key IS NOT NULL "
+        "ORDER BY u.username",
+    )
+    rows = await cursor.fetchall()
+    return {
+        "escrow_agents": [
+            {
+                "user_id":            r["id"],
+                "username":           r["username"],
+                "x25519_public_key":  r["x25519_public_key"],
+                "mlkem768_public_key": r["mlkem768_public_key"],
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.post("", status_code=201)
 async def create_team(
     body: CreateTeamRequest,
     user: AuthenticatedUser = Depends(require_user_role),
     db=Depends(get_db),
 ):
-    """Create a new team. Creator becomes team_owner automatically."""
+    """Create a new team. Creator becomes team_owner automatically.
+
+    If escrow_members are provided, each must identify a user with can_act_as_escrow.
+    Their wrapped key slots and team_member roles are written immediately — no pending
+    grants needed.
+    """
+    # Validate escrow_members before any writes
+    for em in body.escrow_members:
+        cursor = await db.execute(
+            "SELECT 1 FROM user_roles ur "
+            "JOIN role_permissions rp ON rp.role_id = ur.role_id "
+            "WHERE ur.user_id = ? AND ur.scope_type IS NULL "
+            "AND rp.flag = 'can_act_as_escrow' AND rp.value = '1'",
+            (em.user_id,),
+        )
+        if not await cursor.fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail=f"User {em.user_id} does not have can_act_as_escrow permission",
+            )
+
     team_id = str(uuid.uuid4())
     ur_id   = str(uuid.uuid4())
     utk_id  = str(uuid.uuid4())
@@ -415,6 +516,25 @@ async def create_team(
         (utk_id, team_id, user.id, body.ephemeral_x25519_pub,
          body.kem_ciphertext, body.encrypted_sk, body.sk_iv),
     )
+    # E4b: write escrow agent key slots and team membership if provided
+    for em in body.escrow_members:
+        ea_ur_id  = str(uuid.uuid4())
+        ea_utk_id = str(uuid.uuid4())
+        # Grant team_member role to escrow agent
+        await db.execute(
+            "INSERT OR IGNORE INTO user_roles "
+            "(id, user_id, role_id, scope_type, scope_id, granted_by) "
+            "VALUES (?, ?, 'team_member', 'team', ?, ?)",
+            (ea_ur_id, em.user_id, team_id, user.id),
+        )
+        # Write escrow agent's wrapped key slot (key_confirmed starts at 0)
+        await db.execute(
+            "INSERT OR IGNORE INTO user_team_keys "
+            "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv, key_confirmed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            (ea_utk_id, team_id, em.user_id,
+             em.ephemeral_x25519_pub, em.kem_ciphertext, em.encrypted_sk, em.sk_iv),
+        )
     # Auto-create the team's shared folder and register it
     folder_id = str(uuid.uuid4())
     tf_id     = str(uuid.uuid4())
@@ -427,7 +547,10 @@ async def create_team(
         (tf_id, team_id, folder_id, user.id),
     )
     await db.commit()
-    logger.info("Team %s (%s) created by user %s", body.name, team_id, user.id)
+    logger.info(
+        "Team %s (%s) created by user %s (escrow_members=%d)",
+        body.name, team_id, user.id, len(body.escrow_members),
+    )
     return {"team_id": team_id, "folder_id": folder_id}
 
 
@@ -907,20 +1030,21 @@ async def rotate_team_keys(
 ):
     """Apply a client-computed PRE key rotation.
 
-    The team owner must:
+    Any team member may execute the rotation (permission dropped from owner-only
+    to member with E4 DLEQ verification — the math is the safety gate, not the role).
+
       1. Fetch their user_team_keys entry (GET /my-key) and unwrap sk_old.
-      2. Generate sk_new, pk_new = sk_new * G2.
-      3. Compute rk = sk_old * inv(sk_new) mod BLS_ORDER.
-      4. For each file_team_key: compute C1_new = rk * C1_old using @noble/curves.
-      5. Wrap sk_new for each remaining member via hybrid KEM.
-      6. Submit this endpoint with: pk_new, [{file_id, C1_new}], [{user_id, ...KEM}].
+      2. Generate sk_new, pk_new = sk_new * G2; compute rk = sk_old * inv(sk_new).
+      3. For each file_team_key: compute C1_new = rk * C1_old; generate DLEQ proof.
+      4. Wrap sk_new for each remaining member via hybrid KEM.
+      5. Submit with: pk_new, rk_point, [{file_id, C1_new, dleq_*}], [{user_id, ...KEM}].
 
     The server validates structure and atomically commits. Rotation clears
     rotation_pending.
     """
     team_id = validate_uuid(team_id)
     team = await _get_team_or_404(db, team_id)
-    await _require_team_role(db, team_id, user, TEAM_ROLE_OWNER)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_MEMBER)
 
     # --- Validate file_ids belong to this team ---
     if body.file_keys:
@@ -955,11 +1079,11 @@ async def rotate_team_keys(
     # --- Validate members match current (non-owner) members minus any removed ones ---
     submitted_user_ids = {m.user_id for m in body.members}
 
-    # The requester (owner) must be in the members list
+    # The requester must be in the members list
     if user.id not in submitted_user_ids:
         raise HTTPException(
             status_code=422,
-            detail="Rotation members list must include the owner themselves"
+            detail="Rotation members list must include the requesting user"
         )
 
     # Every submitted user_id must currently be a member
@@ -975,6 +1099,40 @@ async def rotate_team_keys(
             detail=f"Submitted members include non-members: {list(non_members)[:5]}"
         )
 
+    # --- DLEQ / rk_consistency verification ---
+    # Fetch current C1 values from DB so we can pass c1_old to DLEQ proofs.
+    old_c1_map: dict[str, str] = {}
+    if body.file_keys:
+        file_ids = [fk.file_id for fk in body.file_keys]
+        placeholders2 = ",".join("?" for _ in file_ids)
+        cursor3 = await db.execute(
+            f"SELECT file_id, pre_c1 FROM file_team_keys "
+            f"WHERE team_id = ? AND file_id IN ({placeholders2})",
+            (team_id, *file_ids),
+        )
+        for row in await cursor3.fetchall():
+            old_c1_map[row["file_id"]] = row["pre_c1"]
+
+    # Pairing check: e(rk_point, pk_new) == e(G1, pk_old)
+    if not verify_rk_consistency(body.rk_point, team.pre_public_key, body.pre_public_key_new):
+        raise HTTPException(status_code=422, detail="rk_point pairing consistency check failed")
+
+    # Per-file DLEQ check
+    if body.file_keys:
+        dleq_inputs = [
+            {
+                "rk_point": body.rk_point,
+                "c1_old":   old_c1_map[fk.file_id],
+                "c1_new":   fk.pre_c1,
+                "dleq_s":   fk.dleq_s,
+                "dleq_R1":  fk.dleq_R1,
+                "dleq_R2":  fk.dleq_R2,
+            }
+            for fk in body.file_keys
+        ]
+        if not verify_batch_dleq(dleq_inputs):
+            raise HTTPException(status_code=422, detail="DLEQ proof verification failed")
+
     # --- Atomically apply the rotation ---
     # 1. Update each C1
     for fk in body.file_keys:
@@ -983,27 +1141,576 @@ async def rotate_team_keys(
             (fk.pre_c1, team_id, fk.file_id),
         )
 
-    # 2. Replace all user_team_keys for this team
+    # 2. Replace all user_team_keys for this team.
+    #    key_confirmed resets to 0 — members submit Schnorr PoK on next login.
     await db.execute("DELETE FROM user_team_keys WHERE team_id = ?", (team_id,))
     for m in body.members:
         utk_id = str(uuid.uuid4())
         await db.execute(
             "INSERT INTO user_team_keys "
-            "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv, key_confirmed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
             (utk_id, team_id, m.user_id, m.ephemeral_x25519_pub,
              m.kem_ciphertext, m.encrypted_sk, m.sk_iv),
         )
 
     # 3. Update team public key and clear rotation_pending
     await db.execute(
-        "UPDATE teams SET pre_public_key = ?, rotation_pending = 0, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
-        "WHERE id = ?",
+        "UPDATE teams SET pre_public_key = ?, rotation_pending = 0, "
+        "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
         (body.pre_public_key_new, team_id),
     )
     await db.commit()
     logger.info(
-        "PRE rotation committed for team %s by owner %s (%d files, %d members)",
+        "PRE rotation committed for team %s by user %s (%d files, %d members)",
         team_id, user.id, len(body.file_keys), len(body.members),
     )
     return {"ok": True, "rotated_files": len(body.file_keys)}
+
+
+# ---------------------------------------------------------------------------
+# Key confirmation (Schnorr PoK — E4 prereq scaffold)
+# ---------------------------------------------------------------------------
+
+class KeyConfirmationRequest(BaseModel):
+    """Schnorr PoK proving the caller holds sk_new after a rotation.
+
+    Member computes: r = random; R = r × G2; c = Hash(pk_new, R); s = r - c × sk_new
+    Server verifies:  s × G2 + c × pk_new == R
+    """
+    schnorr_R: str   # G2 point, base64
+    schnorr_s: str   # scalar, base64
+
+    @field_validator("schnorr_R")
+    @classmethod
+    def validate_R(cls, v: str) -> str:
+        return validate_g2_point(v)
+
+    @field_validator("schnorr_s")
+    @classmethod
+    def validate_s(cls, v: str) -> str:
+        return validate_base64(v, max_length=60)
+
+
+@router.post("/{team_id}/key-confirmation")
+async def confirm_team_key(
+    team_id: str,
+    body: KeyConfirmationRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Record that the caller has successfully decrypted their post-rotation team key.
+
+    The member submits a Schnorr PoK proving they hold sk_new such that
+    pk_new = sk_new × G2 matches the team's current pre_public_key.  On success
+    the server sets user_team_keys.key_confirmed = 1 for this (team, user) pair.
+
+    This is called automatically by the login background hook (_processPendingTeamOperations)
+    for any team where my_key_confirmed = 0.
+    """
+    team_id = validate_uuid(team_id)
+    team = await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_MEMBER)
+
+    # Verify Schnorr PoK: s × G2 + c × pk_new == R  (c = SHA-256(pk_new ‖ R) mod Fr)
+    if not verify_schnorr_pok(body.schnorr_R, body.schnorr_s, team.pre_public_key):
+        raise HTTPException(status_code=422, detail="Invalid Schnorr PoK")
+
+    await db.execute(
+        "UPDATE user_team_keys SET key_confirmed = 1 WHERE team_id = ? AND user_id = ?",
+        (team_id, user.id),
+    )
+    await db.commit()
+    logger.info("Key confirmation accepted for user %s in team %s", user.id, team_id)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# E4a — Pending key grants (policy-granted members awaiting sk_team delivery)
+# ---------------------------------------------------------------------------
+
+class _CompleteKeyGrantIn(BaseModel):
+    """Wrapped sk_team for a single policy-granted user."""
+    grant_id: str
+    user_id: str
+    ephemeral_x25519_pub: str
+    kem_ciphertext: str
+    encrypted_sk: str
+    sk_iv: str
+
+    @field_validator("grant_id", "user_id")
+    @classmethod
+    def validate_ids(cls, v: str) -> str:
+        return validate_uuid(v)
+
+    @field_validator("ephemeral_x25519_pub")
+    @classmethod
+    def validate_x25519(cls, v: str) -> str:
+        return validate_base64(v, max_length=60)
+
+    @field_validator("kem_ciphertext")
+    @classmethod
+    def validate_kem(cls, v: str) -> str:
+        return validate_base64(v, max_length=1500)
+
+    @field_validator("encrypted_sk")
+    @classmethod
+    def validate_encrypted_sk(cls, v: str) -> str:
+        return validate_base64(v, max_length=68)
+
+    @field_validator("sk_iv")
+    @classmethod
+    def validate_sk_iv(cls, v: str) -> str:
+        return validate_base64(v, max_length=20)
+
+
+class CompleteKeyGrantsRequest(BaseModel):
+    grants: list[_CompleteKeyGrantIn]
+
+    @field_validator("grants")
+    @classmethod
+    def validate_grants(cls, v: list) -> list:
+        if not v:
+            raise ValueError("grants list must not be empty")
+        if len(v) > TEAM_MAX_MEMBERS:
+            raise ValueError(f"Cannot complete more than {TEAM_MAX_MEMBERS} grants at once")
+        return v
+
+
+@router.get("/{team_id}/pending-key-grants")
+async def get_pending_key_grants(
+    team_id: str,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Return users waiting for sk_team delivery (policy_team_grants.key_wrapped=0).
+
+    Called by the login background hook to discover who needs the team key
+    wrapped for them.  Only returns users who have asymmetric keys registered;
+    users with no public keys are silently skipped (retried on the next login).
+
+    Requires existing team membership.
+    """
+    team_id = validate_uuid(team_id)
+    await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_MEMBER)
+
+    cursor = await db.execute(
+        "SELECT ptg.id AS grant_id, ptg.user_id, "
+        "       u.x25519_public_key, u.mlkem768_public_key "
+        "FROM policy_team_grants ptg "
+        "JOIN policy_effects pe ON pe.id = ptg.effect_id "
+        "JOIN users u ON u.id = ptg.user_id "
+        "WHERE pe.target_id = ? AND ptg.key_wrapped = 0 AND u.is_active = 1",
+        (team_id,),
+    )
+    rows = await cursor.fetchall()
+
+    pending = []
+    for r in rows:
+        if not r["x25519_public_key"] or not r["mlkem768_public_key"]:
+            # User hasn't completed key setup yet — skip, will be retried
+            continue
+        pending.append({
+            "grant_id":            r["grant_id"],
+            "user_id":             r["user_id"],
+            "x25519_public_key":   r["x25519_public_key"],
+            "mlkem768_public_key": r["mlkem768_public_key"],
+        })
+
+    return {"pending_grants": pending}
+
+
+@router.post("/{team_id}/pending-key-grants/complete", status_code=201)
+async def complete_pending_key_grants(
+    team_id: str,
+    body: CompleteKeyGrantsRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Fulfil pending key grants by writing user_team_keys for each grantee.
+
+    The caller (an existing team member) has already:
+      1. Unwrapped their own sk_team via GET /my-key.
+      2. For each pending grant, wrapped sk_team for the grantee's public keys.
+
+    This endpoint atomically:
+      - Inserts user_team_keys rows (ON CONFLICT DO NOTHING if a manual invite
+        already gave them access).
+      - Sets policy_team_grants.key_wrapped = 1 for each grant_id.
+    """
+    team_id = validate_uuid(team_id)
+    await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_MEMBER)
+
+    # Verify all grant_ids belong to this team and are still pending
+    grant_ids = [g.grant_id for g in body.grants]
+    placeholders = ",".join("?" for _ in grant_ids)
+    cursor = await db.execute(
+        f"SELECT ptg.id FROM policy_team_grants ptg "
+        f"JOIN policy_effects pe ON pe.id = ptg.effect_id "
+        f"WHERE ptg.id IN ({placeholders}) AND pe.target_id = ? AND ptg.key_wrapped = 0",
+        (*grant_ids, team_id),
+    )
+    valid_ids = {row["id"] for row in await cursor.fetchall()}
+    invalid = [gid for gid in grant_ids if gid not in valid_ids]
+    if invalid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid or already-fulfilled grant IDs: {invalid[:5]}"
+        )
+
+    fulfilled = 0
+    for g in body.grants:
+        # ON CONFLICT DO NOTHING: if a manual invite already gave them a key slot,
+        # leave it in place and just mark the policy grant as fulfilled.
+        utk_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO user_team_keys "
+            "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(team_id, user_id) DO NOTHING",
+            (utk_id, team_id, g.user_id, g.ephemeral_x25519_pub,
+             g.kem_ciphertext, g.encrypted_sk, g.sk_iv),
+        )
+        await db.execute(
+            "UPDATE policy_team_grants SET key_wrapped = 1 WHERE id = ?",
+            (g.grant_id,),
+        )
+        fulfilled += 1
+
+    await db.commit()
+    logger.info(
+        "User %s fulfilled %d pending key grant(s) for team %s",
+        user.id, fulfilled, team_id,
+    )
+    return {"fulfilled": fulfilled}
+
+
+# ---------------------------------------------------------------------------
+# E4c — Ephemeral invite slots
+# ---------------------------------------------------------------------------
+
+# Default slot lifetime in hours (configurable per-request up to this cap)
+_EPHEMERAL_SLOT_MAX_HOURS = 72
+_EPHEMERAL_SLOT_DEFAULT_HOURS = 24
+
+
+class CreateEphemeralSlotRequest(BaseModel):
+    """Admin creates a one-time invite slot.
+
+    sk_wrapped = AES-GCM-256(k_ephemeral, sk_team_bytes)
+    k_ephemeral is a 256-bit key kept only in the invite link fragment — never stored.
+    """
+    sk_wrapped:   str   # AES-GCM ciphertext of sk_team (48 bytes w/ tag → 64 base64 chars)
+    sk_iv:        str   # AES-GCM IV (12 bytes)
+    expires_hours: int = _EPHEMERAL_SLOT_DEFAULT_HOURS  # link lifetime
+
+    @field_validator("sk_wrapped")
+    @classmethod
+    def validate_sk_wrapped(cls, v: str) -> str:
+        return validate_base64(v, max_length=68)
+
+    @field_validator("sk_iv")
+    @classmethod
+    def validate_sk_iv(cls, v: str) -> str:
+        return validate_base64(v, max_length=20)
+
+    @field_validator("expires_hours")
+    @classmethod
+    def validate_expires(cls, v: int) -> int:
+        if v < 1 or v > _EPHEMERAL_SLOT_MAX_HOURS:
+            raise ValueError(f"expires_hours must be between 1 and {_EPHEMERAL_SLOT_MAX_HOURS}")
+        return v
+
+
+class EphemeralJoinRequest(BaseModel):
+    """New member completes join via ephemeral slot + immediate rotation.
+
+    After fetching and decrypting the slot, the joining member:
+      1. Generates sk_new / pk_new.
+      2. Re-encrypts all file C1s with rk = sk_old * inv(sk_new).
+      3. Wraps sk_new for every current member including themselves.
+      4. Submits this payload atomically alongside slot_id so the server can
+         consume the slot and commit all key material in one transaction.
+    """
+    slot_id:           str
+    pre_public_key_new: str                # G2 point, base64 — pk_new
+    rk_point:           str                # G1 point, base64 — rk × G1
+    file_keys:          list[_RotatedFileKeyIn]
+    members:            list[_RotatedMemberIn]
+
+    @field_validator("slot_id")
+    @classmethod
+    def validate_slot(cls, v: str) -> str:
+        return validate_uuid(v)
+
+    @field_validator("pre_public_key_new")
+    @classmethod
+    def validate_pk(cls, v: str) -> str:
+        return validate_g2_point(v)
+
+    @field_validator("rk_point")
+    @classmethod
+    def validate_rk(cls, v: str) -> str:
+        return validate_g1_point(v)
+
+    @field_validator("members")
+    @classmethod
+    def validate_members(cls, v: list) -> list:
+        if not v:
+            raise ValueError("members list must not be empty after join rotation")
+        return v
+
+
+@router.post("/{team_id}/ephemeral-slots", status_code=201)
+async def create_ephemeral_slot(
+    team_id: str,
+    body: CreateEphemeralSlotRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Create a one-time invite slot for a new team member.
+
+    The admin client:
+      1. Unwraps their sk_team.
+      2. Generates k_ephemeral (256-bit, stays in browser/link only).
+      3. Computes sk_wrapped = AES-GCM(k_ephemeral, sk_team_bytes).
+      4. Submits sk_wrapped + sk_iv here.
+      5. Returns slot_id to the admin, who constructs:
+           #/join/{team_id}/{slot_id}/{k_ephemeral_b64url}
+
+    Requires supervisor role.  The allow_ephemeral_team_invites admin setting
+    is checked before creating a slot.
+    """
+    team_id = validate_uuid(team_id)
+    await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_SUPERVISOR)
+
+    # Check org setting
+    cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'allow_ephemeral_team_invites'"
+    )
+    row = await cursor.fetchone()
+    if not row or row["value"] != "true":
+        raise HTTPException(
+            status_code=403,
+            detail="Ephemeral team invite links are disabled. "
+                   "Enable allow_ephemeral_team_invites in admin settings."
+        )
+
+    slot_id    = str(uuid.uuid4())
+    now        = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(hours=body.expires_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    await db.execute(
+        "INSERT INTO team_ephemeral_slots "
+        "(id, team_id, sk_wrapped, sk_iv, created_by, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (slot_id, team_id, body.sk_wrapped, body.sk_iv, user.id, created_at, expires_at),
+    )
+    await db.commit()
+    logger.info(
+        "Ephemeral slot %s created for team %s by user %s (expires %s)",
+        slot_id, team_id, user.id, expires_at,
+    )
+    return {"slot_id": slot_id, "expires_at": expires_at}
+
+
+@router.get("/{team_id}/ephemeral-slots/{slot_id}")
+async def get_ephemeral_slot(
+    team_id: str,
+    slot_id: str,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Fetch a slot's wrapped sk_team blob without consuming the slot.
+
+    The joining client decrypts with k_ephemeral from the URL fragment, then
+    immediately calls POST /ephemeral-join which rotates keys and consumes the slot.
+
+    Does NOT require existing team membership (the joining user is not a member yet).
+    """
+    team_id = validate_uuid(team_id)
+    slot_id = validate_uuid(slot_id)
+    await _get_team_or_404(db, team_id)
+
+    cursor = await db.execute(
+        "SELECT sk_wrapped, sk_iv, expires_at, consumed "
+        "FROM team_ephemeral_slots WHERE id = ? AND team_id = ?",
+        (slot_id, team_id),
+    )
+    slot = await cursor.fetchone()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Invite slot not found")
+    if slot["consumed"]:
+        raise HTTPException(status_code=410, detail="Invite slot has already been used")
+
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if slot["expires_at"] < now_str:
+        raise HTTPException(status_code=410, detail="Invite slot has expired")
+
+    return {"sk_wrapped": slot["sk_wrapped"], "sk_iv": slot["sk_iv"]}
+
+
+@router.post("/{team_id}/ephemeral-join", status_code=201)
+async def ephemeral_join(
+    team_id: str,
+    body: EphemeralJoinRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Complete an ephemeral slot join with immediate key rotation.
+
+    The joining client has already:
+      1. Fetched and decrypted the slot (sk_team = AES-GCM.decrypt(sk_wrapped, k_ephemeral)).
+      2. Generated sk_new / pk_new.
+      3. Computed rk = sk_old * inv(sk_new) and rk_point = rk × G1.
+      4. Re-encrypted every file C1 with rk and generated per-file DLEQ proofs.
+      5. Wrapped sk_new for every current member plus themselves.
+
+    The server atomically:
+      - Validates the slot is unexpired and unconsumed.
+      - Verifies rk_consistency and all DLEQ proofs.
+      - Writes the new user_roles + user_team_keys for the joining user.
+      - Updates all file_team_keys C1 values.
+      - Replaces all user_team_keys with new sk_new wraps.
+      - Updates teams.pre_public_key and clears rotation_pending.
+      - Marks the slot consumed = 1.
+    """
+    team_id = validate_uuid(team_id)
+    slot_id = validate_uuid(body.slot_id)
+    team    = await _get_team_or_404(db, team_id)
+
+    # Caller must NOT already be a member
+    existing_role = await get_team_member_role(db, team_id, user.id)
+    if existing_role:
+        raise HTTPException(status_code=409, detail="You are already a member of this team")
+
+    # Enforce member cap (joining user will be added)
+    count = await get_team_member_count(db, team_id)
+    if count >= TEAM_MAX_MEMBERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Team has reached the member limit ({TEAM_MAX_MEMBERS})"
+        )
+
+    # Validate slot: unexpired, unconsumed, belongs to this team
+    cursor = await db.execute(
+        "SELECT expires_at, consumed FROM team_ephemeral_slots WHERE id = ? AND team_id = ?",
+        (slot_id, team_id),
+    )
+    slot = await cursor.fetchone()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Invite slot not found")
+    if slot["consumed"]:
+        raise HTTPException(status_code=410, detail="Invite slot has already been used")
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if slot["expires_at"] < now_str:
+        raise HTTPException(status_code=410, detail="Invite slot has expired")
+
+    # Validate file_ids belong to this team
+    if body.file_keys:
+        file_ids = [fk.file_id for fk in body.file_keys]
+        ph = ",".join("?" for _ in file_ids)
+        c2 = await db.execute(
+            f"SELECT COUNT(*) FROM file_team_keys WHERE team_id = ? AND file_id IN ({ph})",
+            (team_id, *file_ids),
+        )
+        if (await c2.fetchone())[0] != len(file_ids):
+            raise HTTPException(status_code=422, detail="file_ids mismatch for this team")
+        c3 = await db.execute(
+            "SELECT COUNT(*) FROM file_team_keys WHERE team_id = ?", (team_id,)
+        )
+        if (await c3.fetchone())[0] != len(file_ids):
+            raise HTTPException(
+                status_code=422, detail="Rotation must include all file keys"
+            )
+
+    # Joining user must be in the members list (they wrap sk_new for themselves)
+    submitted_user_ids = {m.user_id for m in body.members}
+    if user.id not in submitted_user_ids:
+        raise HTTPException(
+            status_code=422, detail="members list must include the joining user"
+        )
+
+    # Fetch old C1 values for DLEQ verification
+    old_c1_map: dict[str, str] = {}
+    if body.file_keys:
+        file_ids = [fk.file_id for fk in body.file_keys]
+        ph = ",".join("?" for _ in file_ids)
+        c4 = await db.execute(
+            f"SELECT file_id, pre_c1 FROM file_team_keys WHERE team_id = ? AND file_id IN ({ph})",
+            (team_id, *file_ids),
+        )
+        for row in await c4.fetchall():
+            old_c1_map[row["file_id"]] = row["pre_c1"]
+
+    # Verify rk_consistency and DLEQ proofs
+    if not verify_rk_consistency(body.rk_point, team.pre_public_key, body.pre_public_key_new):
+        raise HTTPException(status_code=422, detail="rk_point pairing consistency check failed")
+
+    if body.file_keys:
+        dleq_inputs = [
+            {
+                "rk_point": body.rk_point,
+                "c1_old":   old_c1_map[fk.file_id],
+                "c1_new":   fk.pre_c1,
+                "dleq_s":   fk.dleq_s,
+                "dleq_R1":  fk.dleq_R1,
+                "dleq_R2":  fk.dleq_R2,
+            }
+            for fk in body.file_keys
+        ]
+        if not verify_batch_dleq(dleq_inputs):
+            raise HTTPException(status_code=422, detail="DLEQ proof verification failed")
+
+    # --- Atomically commit the join + rotation ---
+
+    # 1. Grant joining user team_member role
+    ur_id = str(uuid.uuid4())
+    await db.execute(
+        "INSERT INTO user_roles (id, user_id, role_id, scope_type, scope_id, granted_by) "
+        "VALUES (?, ?, 'team_member', 'team', ?, ?)",
+        (ur_id, user.id, team_id, user.id),
+    )
+
+    # 2. Update file C1 values
+    for fk in body.file_keys:
+        await db.execute(
+            "UPDATE file_team_keys SET pre_c1 = ? WHERE team_id = ? AND file_id = ?",
+            (fk.pre_c1, team_id, fk.file_id),
+        )
+
+    # 3. Replace all user_team_keys (key_confirmed resets to 0)
+    await db.execute("DELETE FROM user_team_keys WHERE team_id = ?", (team_id,))
+    for m in body.members:
+        utk_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO user_team_keys "
+            "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv, key_confirmed) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            (utk_id, team_id, m.user_id, m.ephemeral_x25519_pub,
+             m.kem_ciphertext, m.encrypted_sk, m.sk_iv),
+        )
+
+    # 4. Update team public key, clear rotation_pending
+    await db.execute(
+        "UPDATE teams SET pre_public_key = ?, rotation_pending = 0, "
+        "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+        (body.pre_public_key_new, team_id),
+    )
+
+    # 5. Consume the slot atomically
+    await db.execute(
+        "UPDATE team_ephemeral_slots SET consumed = 1 WHERE id = ?",
+        (slot_id,),
+    )
+
+    await db.commit()
+    logger.info(
+        "Ephemeral join committed: user %s joined team %s via slot %s (%d files, %d members)",
+        user.id, team_id, slot_id, len(body.file_keys), len(body.members),
+    )
+    return {"ok": True, "team_id": team_id}

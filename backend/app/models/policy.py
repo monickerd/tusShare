@@ -108,12 +108,13 @@ class AdminScopeCondition:
 
 @dataclass
 class Policy:
-    id:         str
-    name:       str
-    scope_type: str          # 'org' | 'team'
-    scope_id:   str | None   # team_id or None
-    created_by: str | None
-    created_at: str
+    id:             str
+    name:           str
+    scope_type:     str          # 'org' | 'team'
+    scope_id:       str | None   # team_id or None
+    escrow_enabled: bool         # E4b: whether escrow grants are written for covered teams
+    created_by:     str | None
+    created_at:     str
 
     @classmethod
     def from_row(cls, row) -> "Policy":
@@ -122,18 +123,20 @@ class Policy:
             name=row["name"],
             scope_type=row["scope_type"],
             scope_id=row["scope_id"],
+            escrow_enabled=bool(row["escrow_enabled"]) if row["escrow_enabled"] is not None else False,
             created_by=row["created_by"],
             created_at=row["created_at"],
         )
 
     def to_dict(self) -> dict:
         return {
-            "id":         self.id,
-            "name":       self.name,
-            "scope_type": self.scope_type,
-            "scope_id":   self.scope_id,
-            "created_by": self.created_by,
-            "created_at": self.created_at,
+            "id":             self.id,
+            "name":           self.name,
+            "scope_type":     self.scope_type,
+            "scope_id":       self.scope_id,
+            "escrow_enabled": self.escrow_enabled,
+            "created_by":     self.created_by,
+            "created_at":     self.created_at,
         }
 
 
@@ -176,14 +179,15 @@ class PolicyCondition:
 
 @dataclass
 class PolicyEffect:
-    id:          str
-    policy_id:   str
-    effect_type: str          # 'team_member' | 'folder_acl'
-    target_id:   str          # team_id or folder_id
-    role_level:  str | None   # roles.id for team_member; None for folder_acl
-    permission:  str | None   # 'read'|'write'|'admin' for folder_acl; None for team_member
-    recursive:   bool
-    created_at:  str
+    id:              str
+    policy_id:       str
+    effect_type:     str                # 'team_member' | 'folder_acl' | 'team_escrow'
+    target_id:       str                # team_id or folder_id
+    role_level:      str | None         # roles.id for team_member; None otherwise
+    permission:      str | None         # 'read'|'write'|'admin' for folder_acl; None otherwise
+    recursive:       bool
+    escrow_override: int | None = None  # E4b: None=use policy default, 1=force-on, 0=force-off
+    created_at:      str = ""
 
     @classmethod
     def from_row(cls, row) -> "PolicyEffect":
@@ -195,19 +199,21 @@ class PolicyEffect:
             role_level=row["role_level"],
             permission=row["permission"],
             recursive=bool(row["recursive"]),
+            escrow_override=row["escrow_override"],
             created_at=row["created_at"],
         )
 
     def to_dict(self) -> dict:
         return {
-            "id":          self.id,
-            "policy_id":   self.policy_id,
-            "effect_type": self.effect_type,
-            "target_id":   self.target_id,
-            "role_level":  self.role_level,
-            "permission":  self.permission,
-            "recursive":   self.recursive,
-            "created_at":  self.created_at,
+            "id":              self.id,
+            "policy_id":       self.policy_id,
+            "effect_type":     self.effect_type,
+            "target_id":       self.target_id,
+            "role_level":      self.role_level,
+            "permission":      self.permission,
+            "recursive":       self.recursive,
+            "escrow_override": self.escrow_override,
+            "created_at":      self.created_at,
         }
 
 
@@ -591,10 +597,34 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
         )
         effects = await cursor.fetchall()
 
+        # E4b: build policy escrow map and per-team escrow overrides from team_escrow effects
+        policy_escrow_map: dict[str, bool] = {
+            p.id: p.escrow_enabled for p in policies if p.id in matching_policy_ids
+        }
+        # {policy_id: {team_id: override_value}}  — team_escrow effects override policy default
+        escrow_overrides: dict[str, dict[str, int | None]] = {}
+        for eff in effects:
+            if eff["effect_type"] == "team_escrow":
+                pid = eff["policy_id"]
+                if pid not in escrow_overrides:
+                    escrow_overrides[pid] = {}
+                escrow_overrides[pid][eff["target_id"]] = eff["escrow_override"]
+
+        # E4b: load org-level escrow agents once (users holding the escrow_agent role)
+        cursor2 = await db.execute(
+            "SELECT DISTINCT ur.user_id FROM user_roles ur "
+            "WHERE ur.role_id = 'escrow_agent' AND ur.scope_type IS NULL",
+        )
+        escrow_agent_ids: list[str] = [r["user_id"] for r in await cursor2.fetchall()]
+
         for eff in effects:
             effect_id   = eff["id"]
             effect_type = eff["effect_type"]
             target_id   = eff["target_id"]
+
+            if effect_type == "team_escrow":
+                # Pure metadata / override marker — no direct grants written here
+                continue
 
             if effect_type == "team_member":
                 role_level = eff["role_level"]
@@ -632,6 +662,45 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                         "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
                         (effect_id, user_id),
                     )
+
+                # E4b: write pending escrow grants for this team if effective escrow is ON.
+                # Escrow grants are written as a side effect of any matching team_member
+                # evaluation — INSERT OR IGNORE makes this idempotent across evaluations.
+                if escrow_agent_ids:
+                    policy_escrow = policy_escrow_map.get(eff["policy_id"], False)
+                    team_override = escrow_overrides.get(eff["policy_id"], {}).get(target_id)
+                    # team_override: None=use policy default, 1=force-on, 0=force-off
+                    effective_escrow = (team_override == 1) if team_override is not None else policy_escrow
+
+                    if effective_escrow:
+                        for ea_id in escrow_agent_ids:
+                            # Grant team_member role to escrow agent for this team
+                            ea_ur_id = str(_uuid.uuid4())
+                            await db.execute(
+                                "INSERT OR IGNORE INTO user_roles "
+                                "(id, user_id, role_id, scope_type, scope_id, granted_by, policy_effect_id) "
+                                "VALUES (?, ?, 'team_member', 'team', ?, NULL, ?)",
+                                (ea_ur_id, ea_id, target_id, effect_id),
+                            )
+                            # Check if escrow agent already has a key for this team
+                            cursor_ea = await db.execute(
+                                "SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id = ?",
+                                (target_id, ea_id),
+                            )
+                            ea_has_key = await cursor_ea.fetchone() is not None
+                            # Write pending grant (key_wrapped=0 until E4a fulfillment loop delivers it)
+                            ea_tg_id = str(_uuid.uuid4())
+                            await db.execute(
+                                "INSERT OR IGNORE INTO policy_team_grants "
+                                "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?)",
+                                (ea_tg_id, effect_id, ea_id, 1 if ea_has_key else 0),
+                            )
+                            if ea_has_key:
+                                await db.execute(
+                                    "UPDATE policy_team_grants SET key_wrapped = 1 "
+                                    "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
+                                    (effect_id, ea_id),
+                                )
 
             elif effect_type == "folder_acl":
                 permission = eff["permission"]

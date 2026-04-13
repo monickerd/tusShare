@@ -218,6 +218,75 @@ const Teams = (() => {
         return skOld * _modinv(skNew, _BLS_ORDER) % _BLS_ORDER;
     }
 
+    // Fr field helpers for DLEQ arithmetic
+    function _frMul(a, b) { return a * b % _BLS_ORDER; }
+    function _frSub(a, b) { return ((a - b) % _BLS_ORDER + _BLS_ORDER) % _BLS_ORDER; }
+
+    /**
+     * Compute rk_point = rk × G1 for inclusion in the rotation payload.
+     * The server uses this for the pairing consistency check: e(rk_point, pk_new) == e(G1, pk_old).
+     *
+     * @param {BigInt} rkBigInt  Re-encryption scalar.
+     * @returns {string}  Base64 compressed G1 point (48 bytes).
+     */
+    async function _computeRkPoint(rkBigInt) {
+        const bls = await _getBLS();
+        return _bytesToB64(bls.G1.ProjectivePoint.BASE.multiply(rkBigInt).toRawBytes(true));
+    }
+
+    /**
+     * Generate a Chaum-Pedersen DLEQ proof for a single C1 re-encryption.
+     *
+     * Proves the same scalar rk was used for both:
+     *   rk_point = rk × G1  and  C1_new = rk × C1_old
+     *
+     * Fiat-Shamir (non-interactive):
+     *   r  = random Fr element
+     *   R1 = r × G1;  R2 = r × C1_old
+     *   c  = SHA-256(G1 ‖ C1_old ‖ rk_point ‖ C1_new ‖ R1 ‖ R2) mod BLS_ORDER
+     *   s  = r − c × rk  (mod BLS_ORDER)
+     *
+     * Verifier checks: s×G1 + c×rk_point == R1  and  s×C1_old + c×C1_new == R2
+     *
+     * @param {BigInt} rkBigInt     Re-encryption scalar.
+     * @param {string} c1OldB64    Base64 G1 point — C1 before rotation.
+     * @param {string} rkPointB64  Base64 G1 point — rk × G1 (precomputed).
+     * @param {string} c1NewB64    Base64 G1 point — C1 after rotation.
+     * @returns {{ dleq_s: string, dleq_R1: string, dleq_R2: string }}
+     */
+    async function _generateDleqProof(rkBigInt, c1OldB64, rkPointB64, c1NewB64) {
+        const bls    = await _getBLS();
+        const G1base = bls.G1.ProjectivePoint.BASE;
+        const C1old  = bls.G1.ProjectivePoint.fromHex(_b64ToBytes(c1OldB64));
+
+        // Random blinding scalar r ∈ Fr
+        const rRaw = crypto.getRandomValues(new Uint8Array(32));
+        const r    = BigInt('0x' + _bytesToHex(rRaw)) % _BLS_ORDER;
+
+        // R1 = r × G1,  R2 = r × C1_old
+        const R1bytes = G1base.multiply(r).toRawBytes(true);
+        const R2bytes = C1old.multiply(r).toRawBytes(true);
+
+        // Fiat-Shamir challenge — concatenate all six G1 points (48 bytes each)
+        const parts = [G1base.toRawBytes(true), _b64ToBytes(c1OldB64),
+                       _b64ToBytes(rkPointB64), _b64ToBytes(c1NewB64), R1bytes, R2bytes];
+        const msg = new Uint8Array(6 * 48);
+        let off = 0;
+        for (const chunk of parts) { msg.set(chunk, off); off += 48; }
+
+        const cHash = await crypto.subtle.digest('SHA-256', msg);
+        const c = BigInt('0x' + _bytesToHex(new Uint8Array(cHash))) % _BLS_ORDER;
+
+        // s = r − c × rk  (mod BLS_ORDER)
+        const s = _frSub(r, _frMul(c, rkBigInt));
+
+        return {
+            dleq_s:  _bytesToB64(_bigintTo32Bytes(s)),
+            dleq_R1: _bytesToB64(R1bytes),
+            dleq_R2: _bytesToB64(R2bytes),
+        };
+    }
+
     // =========================================================================
     // Layer 2: wrap/unwrap sk_team via hybrid KEM (reuses Crypto module)
     // =========================================================================
@@ -890,6 +959,29 @@ const Teams = (() => {
                     const wrappedKey = await wrapTeamKeyForMember(
                         sk_bytes, myPubs.x25519_public_key, myPubs.mlkem768_public_key
                     );
+
+                    // E4b: fetch escrow agents and pre-wrap sk_team for each
+                    let escrow_members = [];
+                    try {
+                        const agentsResp = await Api.get(`${_api}/teams/escrow-agents`);
+                        const agents = agentsResp.escrow_agents || [];
+                        for (const agent of agents) {
+                            const agentWrap = await wrapTeamKeyForMember(
+                                sk_bytes, agent.x25519_public_key, agent.mlkem768_public_key
+                            );
+                            escrow_members.push({
+                                user_id:             agent.user_id,
+                                ephemeral_x25519_pub: agentWrap.ephemeral_x25519_pub,
+                                kem_ciphertext:       agentWrap.kem_ciphertext,
+                                encrypted_sk:         agentWrap.encrypted_sk,
+                                sk_iv:                agentWrap.sk_iv,
+                            });
+                        }
+                    } catch (_) {
+                        // Escrow agents fetch failure is non-fatal; team creates without escrow slots
+                        escrow_members = [];
+                    }
+
                     await Api.post(`${_api}/teams`, {
                         name,
                         description: desc,
@@ -898,6 +990,7 @@ const Teams = (() => {
                         kem_ciphertext:        wrappedKey.kem_ciphertext,
                         encrypted_sk:          wrappedKey.encrypted_sk,
                         sk_iv:                 wrappedKey.sk_iv,
+                        escrow_members,
                     });
                     overlay.remove();
                     Utils.showToast(`Team "${name}" created`, 'success');
@@ -1154,6 +1247,72 @@ const Teams = (() => {
     // PRE rotation
     // =========================================================================
 
+    /**
+     * Perform a PRE key rotation — headless (no UI).
+     * Called by _triggerRotation (interactive) and _processPendingTeamOperations (background).
+     *
+     * @param {string} teamId
+     * @param {{ x25519PrivateKey: CryptoKey, mlkem768SecretKey: Uint8Array }} asymKeys
+     * @param {(msg: string) => void} [onProgress]  Optional progress callback.
+     */
+    async function _performRotation(teamId, asymKeys, onProgress) {
+        const prog = onProgress || (() => {});
+
+        // 1. Unwrap current sk_team
+        prog('Unwrapping team key…');
+        const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
+        const { sk_bytes: skOldBytes } = await unwrapTeamKey(
+            myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+        );
+
+        // 2. Generate new keypair; compute rk scalar and rk_point
+        prog('Generating new key pair…');
+        const { sk_bytes: skNewBytes, pk_bytes: pkNewBytes } = await _generateTeamKey();
+        const rk         = computeRKScalar(skOldBytes, skNewBytes);
+        const rkPointB64 = await _computeRkPoint(rk);
+
+        // 3. Fetch all file keys, re-encrypt, generate DLEQ proofs
+        prog('Fetching file keys…');
+        const fkData     = await Api.get(`${_api}/teams/${teamId}/file-keys`);
+        const oldFileKeys = fkData.file_keys || [];
+
+        prog(`Re-encrypting ${oldFileKeys.length} file key(s)…`);
+        const updatedFileKeys = [];
+        for (let i = 0; i < oldFileKeys.length; i++) {
+            const fk      = oldFileKeys[i];
+            const c1NewB64 = await applyPRERotation(fk.pre_c1, rk);
+            const proof    = await _generateDleqProof(rk, fk.pre_c1, rkPointB64, c1NewB64);
+            updatedFileKeys.push({ file_id: fk.file_id, pre_c1: c1NewB64, ...proof });
+            if (i % 50 === 49) {
+                prog(`Re-encrypting… ${i + 1}/${oldFileKeys.length}`);
+                await new Promise(res => setTimeout(res, 0)); // yield to UI
+            }
+        }
+
+        // 4. Wrap sk_new for each remaining member
+        prog('Wrapping new key for members…');
+        const memberData   = await Api.get(`${_api}/teams/${teamId}/members`);
+        const wrappedMembers = [];
+        for (const m of memberData.members || []) {
+            const pub = await Api.get(
+                `${Config.app.apiPrefix}/auth/users/${encodeURIComponent(m.username)}/public-keys`
+            );
+            const wrapped = await wrapTeamKeyForMember(
+                skNewBytes, pub.x25519_public_key, pub.mlkem768_public_key
+            );
+            wrappedMembers.push({ user_id: m.user_id, ...wrapped });
+        }
+
+        // 5. Submit rotation
+        prog('Committing rotation…');
+        await Api.post(`${_api}/teams/${teamId}/rotate`, {
+            pre_public_key_new: _bytesToB64(pkNewBytes),
+            rk_point:           rkPointB64,
+            file_keys:          updatedFileKeys,
+            members:            wrappedMembers,
+        });
+    }
+
     async function _triggerRotation(teamId, team, refreshContainer) {
         let asymKeys;
         try { asymKeys = _getMyPrivateKeys(); } catch (e) {
@@ -1170,67 +1329,154 @@ const Teams = (() => {
         refreshContainer.appendChild(statusEl);
 
         try {
-            // 1. Unwrap current sk_team
-            statusEl.textContent = 'Unwrapping team key…';
-            const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
-            const { sk_bytes: skOldBytes } = await unwrapTeamKey(
-                myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
-            );
-
-            // 2. Generate new keypair
-            statusEl.textContent = 'Generating new key pair…';
-            const { sk_bytes: skNewBytes, pk_bytes: pkNewBytes } = await _generateTeamKey();
-            const rk = computeRKScalar(skOldBytes, skNewBytes);
-
-            // 3. Fetch all file keys and re-encrypt
-            statusEl.textContent = 'Fetching file keys…';
-            const fkData = await Api.get(`${_api}/teams/${teamId}/file-keys`);
-            const oldFileKeys = fkData.file_keys || [];
-
-            statusEl.textContent = `Re-encrypting ${oldFileKeys.length} file key(s)…`;
-            const updatedFileKeys = [];
-            for (let i = 0; i < oldFileKeys.length; i++) {
-                const fk = oldFileKeys[i];
-                const newC1 = await applyPRERotation(fk.pre_c1, rk);
-                updatedFileKeys.push({ file_id: fk.file_id, pre_c1: newC1 });
-                if (i % 50 === 0) {
-                    statusEl.textContent = `Re-encrypting… ${i + 1}/${oldFileKeys.length}`;
-                    await new Promise(r => setTimeout(r, 0)); // yield to UI
-                }
-            }
-
-            // 4. Fetch remaining members and wrap sk_new for each
-            statusEl.textContent = 'Wrapping new key for members…';
-            const memberData = await Api.get(`${_api}/teams/${teamId}/members`);
-            const members    = memberData.members || [];
-            const wrappedMembers = [];
-
-            for (const m of members) {
-                // Fetch member's public keys
-                const pub = await Api.get(
-                    `${Config.app.apiPrefix}/auth/users/${encodeURIComponent(m.username)}/public-keys`
-                );
-                const wrapped = await wrapTeamKeyForMember(
-                    skNewBytes, pub.x25519_public_key, pub.mlkem768_public_key
-                );
-                wrappedMembers.push({ user_id: m.user_id, ...wrapped });
-            }
-
-            // 5. Submit rotation
-            statusEl.textContent = 'Committing rotation…';
-            await Api.post(`${_api}/teams/${teamId}/rotate`, {
-                pre_public_key_new: _bytesToB64(pkNewBytes),
-                file_keys:          updatedFileKeys,
-                members:            wrappedMembers,
-            });
-
+            await _performRotation(teamId, asymKeys, msg => { statusEl.textContent = msg; });
             statusEl.remove();
             Utils.showToast('Key rotation complete', 'success');
             renderTeamDetailPage(refreshContainer, teamId);
-
         } catch (err) {
             statusEl.textContent = 'Rotation failed: ' + err.message;
             Utils.showToast('Rotation failed: ' + err.message, 'error');
+        }
+    }
+
+    /**
+     * Fulfil pending policy-granted key slots for a team.
+     *
+     * Fetches all policy_team_grants where key_wrapped=0 on this team, unwraps
+     * our own sk_team, wraps it for each pending user's public keys, and submits.
+     * Users with no asymmetric keys yet are silently skipped by the server.
+     *
+     * This is NOT a rotation — sk_team does not change.
+     *
+     * @param {string} teamId
+     * @param {{ x25519PrivateKey: CryptoKey, mlkem768SecretKey: Uint8Array }} asymKeys
+     */
+    async function _fulfillPendingKeyGrants(teamId, asymKeys) {
+        const data = await Api.get(`${_api}/teams/${teamId}/pending-key-grants`);
+        const pending = data.pending_grants || [];
+        if (pending.length === 0) return;
+
+        // Unwrap our sk_team
+        const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
+        const { sk_bytes: skBytes } = await unwrapTeamKey(
+            myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+        );
+
+        // Wrap sk_team for each pending grantee
+        const grants = [];
+        for (const grant of pending) {
+            if (!grant.x25519_public_key || !grant.mlkem768_public_key) continue;
+            const wrapped = await wrapTeamKeyForMember(
+                skBytes, grant.x25519_public_key, grant.mlkem768_public_key
+            );
+            grants.push({ grant_id: grant.grant_id, user_id: grant.user_id, ...wrapped });
+        }
+
+        if (grants.length === 0) return;
+
+        await Api.post(`${_api}/teams/${teamId}/pending-key-grants/complete`, { grants });
+        console.log(`[teams] fulfilled ${grants.length} pending key grant(s) for team ${teamId}`);
+    }
+
+    /**
+     * Submit a Schnorr PoK proving we hold sk_new for a team.
+     *
+     * Called post-rotation when my_key_confirmed=false.  Unwraps our user_team_keys
+     * entry, generates a Schnorr PoK on G2, and POSTs to /key-confirmation.
+     *
+     * Protocol (must match server verify_schnorr_pok in bls_verify.py):
+     *   r  = random Fr scalar
+     *   R  = r × G2_base  (96 bytes compressed)
+     *   c  = SHA-256(pk_new_96bytes ‖ R_96bytes) mod Fr
+     *   s  = r - c × sk_new  (mod Fr)
+     *
+     * @param {string} teamId
+     * @param {string} pkNewB64  Base64 G2 point — team's current pre_public_key.
+     * @param {{ x25519PrivateKey: CryptoKey, mlkem768SecretKey: Uint8Array }} asymKeys
+     */
+    async function _submitSchnorrPoK(teamId, pkNewB64, asymKeys) {
+        // Unwrap sk_new from our key slot
+        const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
+        const { sk_bigint: skBigInt } = await unwrapTeamKey(
+            myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+        );
+
+        const bls    = await _getBLS();
+        const G2base = bls.G2.ProjectivePoint.BASE;
+
+        // r ∈ Fr (random)
+        const rRaw = crypto.getRandomValues(new Uint8Array(32));
+        const r    = BigInt('0x' + _bytesToHex(rRaw)) % _BLS_ORDER;
+
+        // R = r × G2  (96 bytes compressed)
+        const RBytes = G2base.multiply(r).toRawBytes(true);
+
+        // pk_new raw bytes (96 bytes)
+        const pkNewBytes = _b64ToBytes(pkNewB64);
+
+        // c = SHA-256(pk_new ‖ R) mod Fr
+        const msg = new Uint8Array(192);
+        msg.set(pkNewBytes, 0);
+        msg.set(RBytes, 96);
+        const cHash = await crypto.subtle.digest('SHA-256', msg);
+        const c = BigInt('0x' + _bytesToHex(new Uint8Array(cHash))) % _BLS_ORDER;
+
+        // s = r - c × sk_new  (mod Fr)
+        const s = _frSub(r, _frMul(c, skBigInt));
+
+        await Api.post(`${_api}/teams/${teamId}/key-confirmation`, {
+            schnorr_R: _bytesToB64(RBytes),
+            schnorr_s: _bytesToB64(_bigintTo32Bytes(s)),
+        });
+        console.log(`[teams] Schnorr PoK submitted for team ${teamId}`);
+    }
+
+    /**
+     * Background hook — fires after login once private keys are in memory.
+     *
+     * Handles:
+     *   (a) Teams with rotation_pending=1: any member silently executes the rotation.
+     *   (b) Teams with has_pending_key_grants: fulfil sk_team delivery for policy grantees.
+     *   (c) Teams with my_key_confirmed=false: submit Schnorr PoK for this member's slot.
+     */
+    async function _processPendingTeamOperations() {
+        let asymKeys;
+        try { asymKeys = _getMyPrivateKeys(); } catch { return; }
+
+        let teams;
+        try {
+            const data = await Api.get(`${_api}/teams`);
+            teams = data.teams || [];
+        } catch { return; }
+
+        for (const team of teams) {
+            // (a) Pending rotation — any member can execute
+            if (team.rotation_pending) {
+                try {
+                    await _performRotation(team.id, asymKeys);
+                    console.log(`[teams] background rotation complete for team ${team.id}`);
+                } catch (err) {
+                    console.warn(`[teams] background rotation failed for team ${team.id}:`, err.message);
+                }
+            }
+
+            // (b) Pending key grants — wrap sk_team for policy grantees who lack it
+            if (team.has_pending_key_grants) {
+                try {
+                    await _fulfillPendingKeyGrants(team.id, asymKeys);
+                } catch (err) {
+                    console.warn(`[teams] key grant fulfillment failed for team ${team.id}:`, err.message);
+                }
+            }
+
+            // (c) Unconfirmed key slot — prove we can decrypt our user_team_keys entry
+            if (team.my_key_confirmed === false) {
+                try {
+                    await _submitSchnorrPoK(team.id, team.pre_public_key, asymKeys);
+                } catch (err) {
+                    console.warn(`[teams] Schnorr PoK failed for team ${team.id}:`, err.message);
+                }
+            }
         }
     }
 
@@ -1356,6 +1602,7 @@ const Teams = (() => {
         renderTeamFoldersPage,
         openAddToTeamDialog,
         decryptTeamFileKey,
+        processPendingTeamOperations: _processPendingTeamOperations,
         // Exposed for tests / other modules
         encryptFileKeyForTeam,
         decryptFileKeyFromTeam,
