@@ -31,11 +31,13 @@ const Admin = (() => {
         ]);
 
         const sections = [
-            _buildSection('settings',  'System Settings',  _renderSettings),
-            _buildSection('disk',      'Disk Usage',        _renderDiskUsage),
-            _buildSection('users',     'User Management',   _renderUsers),
-            _buildSection('invites',   'Invites',           _renderInvites),
-            _buildSection('theme',     'Theme & Branding',  _renderTheme),
+            _buildSection('settings',  'System Settings',   _renderSettings),
+            _buildSection('disk',      'Disk Usage',         _renderDiskUsage),
+            _buildSection('users',     'User Management',    _renderUsers),
+            _buildSection('invites',   'Invites',            _renderInvites),
+            _buildSection('theme',     'Theme & Branding',   _renderTheme),
+            _buildSection('roles',     'Roles & Permissions',_renderRoles),
+            _buildSection('policy',    'Policy Engine',      _renderPolicySection),
         ];
         sections.forEach(s => page.appendChild(s));
         container.appendChild(page);
@@ -609,6 +611,979 @@ const Admin = (() => {
             ]),
             Utils.el('div', { className: 'settings-actions' }, [reloadBtn]),
         ]));
+    }
+
+    // ------------------------------------------------------------------
+    // Section 6: Roles & Permissions
+    // ------------------------------------------------------------------
+
+    // Category display order and labels
+    const _FLAG_CATEGORIES = [
+        { key: 'admin',        label: 'Administration' },
+        { key: 'roles',        label: 'Role Management' },
+        { key: 'observability',label: 'Observability' },
+        { key: 'audit',        label: 'Audit Trail' },
+        { key: 'integrations', label: 'Integrations' },
+        { key: 'policy',       label: 'Policy Engine' },
+        { key: 'files',        label: 'File Access' },
+    ];
+
+    async function _renderRoles(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+        let data;
+        try {
+            data = await Api.get(`${_api()}/admin/roles`);
+        } catch (err) {
+            _showError(container, 'Failed to load roles: ' + err.message);
+            return;
+        }
+
+        const { roles, flags } = data;
+
+        // Index flags by category for grouped rendering
+        const flagsByCategory = {};
+        for (const f of flags) {
+            (flagsByCategory[f.category] = flagsByCategory[f.category] || []).push(f);
+        }
+
+        const createBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Create Custom Role',
+            onClick: () => _showCreateRoleModal(flags, () => _renderRoles(container)),
+        });
+
+        const roleList = Utils.el('div', { className: 'roles-list' });
+        for (const role of roles) {
+            roleList.appendChild(_buildRoleCard(role, flags, flagsByCategory, () => _renderRoles(container)));
+        }
+
+        container.innerHTML = '';
+        container.appendChild(Utils.el('div', { className: 'roles-header' }, [createBtn]));
+        container.appendChild(roleList);
+    }
+
+    function _buildRoleCard(role, flags, flagsByCategory, refreshFn) {
+        const body = Utils.el('div', { className: 'role-card-body', style: 'display:none' });
+        let bodyLoaded = false;
+
+        const toggleBtn = Utils.el('button', {
+            className: 'role-card-toggle collapsed',
+            onClick: () => {
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : '';
+                toggleBtn.classList.toggle('collapsed', open);
+                if (!open && !bodyLoaded) {
+                    bodyLoaded = true;
+                    _populateRoleCardBody(body, role, flags, flagsByCategory, refreshFn);
+                }
+            },
+        });
+        toggleBtn.appendChild(Utils.el('span', { className: 'role-card-name', textContent: role.name }));
+        toggleBtn.appendChild(Utils.el('span', {
+            className: 'role-card-badge' + (role.is_system ? ' badge-system' : ' badge-custom'),
+            textContent: role.is_system ? 'system' : 'custom',
+        }));
+
+        const card = Utils.el('div', {
+            className: 'role-card',
+            id: `role-card-${role.id}`,
+        }, [
+            Utils.el('div', { className: 'role-card-header' }, [toggleBtn]),
+            body,
+        ]);
+        return card;
+    }
+
+    function _populateRoleCardBody(container, role, flags, flagsByCategory, refreshFn) {
+        // Description row
+        const descEl = Utils.el('p', { className: 'role-desc text-muted', textContent: role.description || '(no description)' });
+
+        // Rename / description form (always shown — system roles can be renamed)
+        const fldName = Utils.el('input', {
+            type: 'text', className: 'input-sm', value: role.name,
+            placeholder: 'Role name',
+        });
+        const fldDesc = Utils.el('input', {
+            type: 'text', className: 'input-sm', value: role.description,
+            placeholder: 'Description',
+        });
+        const saveMetaBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Save Name/Desc',
+            onClick: async () => {
+                saveMetaBtn.disabled = true;
+                try {
+                    await Api.patch(`${_api()}/admin/roles/${role.id}`, {
+                        name:        fldName.value.trim(),
+                        description: fldDesc.value.trim(),
+                    });
+                    Utils.showToast('Role updated', 'success');
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Save failed: ' + err.message, 'error');
+                    saveMetaBtn.disabled = false;
+                }
+            },
+        });
+
+        const deleteBtn = role.is_system ? null : Utils.el('button', {
+            className: 'btn btn-danger btn-sm',
+            textContent: 'Delete Role',
+            onClick: async () => {
+                if (!confirm(`Delete role "${role.name}"? All users currently holding this role will lose it.`)) return;
+                try {
+                    await Api.del(`${_api()}/admin/roles/${role.id}`);
+                    Utils.showToast(`Role "${role.name}" deleted`, 'success');
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Delete failed: ' + err.message, 'error');
+                }
+            },
+        });
+
+        // Permission flag toggles, grouped by category
+        const flagInputs = {};   // flag → checkbox element
+        const flagSections = _FLAG_CATEGORIES
+            .filter(cat => flagsByCategory[cat.key])
+            .map(cat => {
+                const rows = (flagsByCategory[cat.key] || []).map(f => {
+                    const currentVal = (role.permissions || {})[f.flag] || '0';
+                    const chk = Utils.el('input', {
+                        type: 'checkbox',
+                        checked: currentVal === '1',
+                        title: f.is_sensitive ? 'Sensitive — requires Server Admin or Org Admin to activate' : '',
+                    });
+                    flagInputs[f.flag] = chk;
+                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') }, [
+                        Utils.el('label', { className: 'flag-label' }, [
+                            chk,
+                            Utils.el('span', { className: 'flag-name', textContent: f.flag }),
+                            f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
+                        ].filter(Boolean)),
+                        Utils.el('span', { className: 'flag-desc', textContent: f.description }),
+                    ]);
+                });
+                return Utils.el('div', { className: 'flag-category' }, [
+                    Utils.el('h5', { className: 'flag-category-label', textContent: cat.label }),
+                    ...rows,
+                ]);
+            });
+
+        const saveFlagsBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Save Permissions',
+            onClick: async () => {
+                const permissions = {};
+                for (const [flag, chk] of Object.entries(flagInputs)) {
+                    permissions[flag] = chk.checked ? '1' : '0';
+                }
+                saveFlagsBtn.disabled = true;
+                try {
+                    await Api.put(`${_api()}/admin/roles/${role.id}/permissions`, { permissions });
+                    Utils.showToast('Permissions saved', 'success');
+                } catch (err) {
+                    Utils.showToast('Save failed: ' + err.message, 'error');
+                } finally {
+                    saveFlagsBtn.disabled = false;
+                }
+            },
+        });
+
+        container.innerHTML = '';
+        container.appendChild(Utils.el('div', { className: 'role-card-content' }, [
+            Utils.el('div', { className: 'role-meta-form' }, [
+                Utils.el('div', { className: 'role-meta-fields' }, [
+                    Utils.el('label', { textContent: 'Name' }),
+                    fldName,
+                    Utils.el('label', { textContent: 'Description' }),
+                    fldDesc,
+                ]),
+                Utils.el('div', { className: 'role-meta-actions' }, [
+                    saveMetaBtn,
+                    deleteBtn,
+                ].filter(Boolean)),
+            ]),
+            Utils.el('div', { className: 'role-flags' }, [
+                Utils.el('h4', { className: 'role-flags-title', textContent: 'Permission Flags' }),
+                ...flagSections,
+                Utils.el('div', { className: 'role-flags-actions' }, [saveFlagsBtn]),
+            ]),
+        ]));
+    }
+
+    function _showCreateRoleModal(flags, refreshFn) {
+        // Reuse the existing modal infrastructure — build a form in a dialog
+        const flagsByCategory = {};
+        for (const f of flags) {
+            (flagsByCategory[f.category] = flagsByCategory[f.category] || []).push(f);
+        }
+
+        const fldId   = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'e.g. finance_reviewer' });
+        const fldName = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Role display name' });
+        const fldDesc = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Optional description' });
+
+        const flagInputs = {};
+        const flagSections = _FLAG_CATEGORIES
+            .filter(cat => flagsByCategory[cat.key])
+            .map(cat => {
+                const rows = (flagsByCategory[cat.key] || []).map(f => {
+                    const chk = Utils.el('input', {
+                        type: 'checkbox',
+                        title: f.is_sensitive ? 'Sensitive — only Server/Org Admin may activate' : '',
+                    });
+                    flagInputs[f.flag] = chk;
+                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') }, [
+                        Utils.el('label', { className: 'flag-label' }, [
+                            chk,
+                            Utils.el('span', { className: 'flag-name', textContent: f.flag }),
+                            f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
+                        ].filter(Boolean)),
+                        Utils.el('span', { className: 'flag-desc', textContent: f.description }),
+                    ]);
+                });
+                return Utils.el('div', { className: 'flag-category' }, [
+                    Utils.el('h5', { className: 'flag-category-label', textContent: cat.label }),
+                    ...rows,
+                ]);
+            });
+
+        const errorEl = Utils.el('p', { className: 'text-error', style: 'display:none' });
+
+        const createBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Create Role',
+            onClick: async () => {
+                const id = fldId.value.trim();
+                const name = fldName.value.trim();
+                if (!id || !name) {
+                    errorEl.textContent = 'Role ID and name are required.';
+                    errorEl.style.display = '';
+                    return;
+                }
+                const permissions = {};
+                for (const [flag, chk] of Object.entries(flagInputs)) {
+                    permissions[flag] = chk.checked ? '1' : '0';
+                }
+                createBtn.disabled = true;
+                try {
+                    await Api.post(`${_api()}/admin/roles`, {
+                        id, name, description: fldDesc.value.trim(), permissions,
+                    });
+                    Utils.showToast(`Role "${name}" created`, 'success');
+                    Utils.closeModal();
+                    refreshFn();
+                } catch (err) {
+                    errorEl.textContent = 'Create failed: ' + err.message;
+                    errorEl.style.display = '';
+                    createBtn.disabled = false;
+                }
+            },
+        });
+
+        const cancelBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Cancel',
+            onClick: () => Utils.closeModal(),
+        });
+
+        const formContent = Utils.el('div', { className: 'create-role-form' }, [
+            Utils.el('div', { className: 'role-meta-fields' }, [
+                Utils.el('label', { textContent: 'Role ID (slug, e.g. finance_reviewer)' }),
+                fldId,
+                Utils.el('label', { textContent: 'Display Name' }),
+                fldName,
+                Utils.el('label', { textContent: 'Description' }),
+                fldDesc,
+            ]),
+            Utils.el('div', { className: 'role-flags' }, [
+                Utils.el('h4', { className: 'role-flags-title', textContent: 'Initial Permission Flags' }),
+                Utils.el('p', { className: 'text-muted settings-hint', textContent: 'Permissions you do not hold yourself cannot be granted (inheritance cap enforced server-side).' }),
+                ...flagSections,
+            ]),
+            errorEl,
+            Utils.el('div', { className: 'modal-actions' }, [createBtn, cancelBtn]),
+        ]);
+
+        Utils.showModal('Create Custom Role', formContent);
+    }
+
+    // ------------------------------------------------------------------
+    // Section 7: Policy Engine
+    // ------------------------------------------------------------------
+    // Three sub-sections rendered in one collapsible panel:
+    //   (a) Field Registry — list + add LDAP/OIDC fields
+    //   (b) Admin Scopes   — scope conditions per user/role
+    //   (c) Policies       — policy list with conditions; add/delete conditions
+
+    const _POLICY_OPERATORS = ['=', '!=', 'contains', 'starts_with', 'ends_with', 'in'];
+
+    async function _renderPolicySection(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+        let fieldsData, scopesData, policiesData;
+        try {
+            [fieldsData, scopesData, policiesData] = await Promise.all([
+                Api.get(`${_api()}/admin/policy-fields`),
+                Api.get(`${_api()}/admin/scopes`),
+                Api.get(`${_api()}/admin/policies`),
+            ]);
+        } catch (err) {
+            _showError(container, 'Failed to load policy data: ' + err.message);
+            return;
+        }
+
+        container.innerHTML = '';
+        container.appendChild(_buildFieldRegistry(fieldsData.fields, () => _renderPolicySection(container)));
+        container.appendChild(_buildAdminScopes(scopesData.conditions, fieldsData.fields, () => _renderPolicySection(container)));
+        container.appendChild(_buildPoliciesPanel(policiesData.policies, fieldsData.fields, () => _renderPolicySection(container)));
+    }
+
+    // ── (a) Field Registry ──────────────────────────────────────────────
+
+    function _buildFieldRegistry(fields, refreshFn) {
+        const wrap = Utils.el('div', { className: 'policy-subsection' });
+
+        const header = Utils.el('div', { className: 'policy-sub-header' }, [
+            Utils.el('h4', { textContent: 'Field Registry' }),
+            Utils.el('button', {
+                className: 'btn btn-primary btn-xs',
+                textContent: 'Add Field',
+                onClick: () => _showAddFieldModal(fields, refreshFn),
+            }),
+        ]);
+        wrap.appendChild(header);
+
+        if (!fields.length) {
+            wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No custom fields registered.' }));
+            return wrap;
+        }
+
+        const table = Utils.el('table', { className: 'policy-table' });
+        table.innerHTML = `<thead><tr>
+            <th>Name</th><th>Label</th><th>Source</th><th>Type</th><th>Claim Path</th><th></th>
+        </tr></thead>`;
+        const tbody = Utils.el('tbody');
+        for (const f of fields) {
+            const isInternal = f.source === 'internal';
+            const deleteBtn = isInternal ? null : Utils.el('button', {
+                className: 'btn btn-danger btn-xs',
+                textContent: 'Delete',
+                onClick: async () => {
+                    if (!confirm(`Delete field "${f.name}"?`)) return;
+                    try {
+                        await Api.delete(`${_api()}/admin/policy-fields/${f.name}`);
+                        Utils.showToast('Field deleted', 'success');
+                        refreshFn();
+                    } catch (err) {
+                        Utils.showToast('Delete failed: ' + err.message, 'error');
+                    }
+                },
+            });
+            const tr = Utils.el('tr');
+            tr.innerHTML = `
+                <td><code>${f.name}</code></td>
+                <td>${f.display_label}</td>
+                <td><span class="badge badge-${f.source}">${f.source}</span></td>
+                <td>${f.data_type}</td>
+                <td>${f.claim_path || '—'}</td>
+            `;
+            const actionTd = Utils.el('td');
+            if (deleteBtn) actionTd.appendChild(deleteBtn);
+            tr.appendChild(actionTd);
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        return wrap;
+    }
+
+    function _showAddFieldModal(existingFields, refreshFn) {
+        const nameEl     = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'e.g. department' });
+        const labelEl    = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'e.g. Department' });
+        const sourceEl   = Utils.el('select', { className: 'input-sm' });
+        ['ldap', 'oidc'].forEach(s => {
+            sourceEl.appendChild(Utils.el('option', { value: s, textContent: s.toUpperCase() }));
+        });
+        const typeEl     = Utils.el('select', { className: 'input-sm' });
+        ['string', 'boolean'].forEach(t => {
+            typeEl.appendChild(Utils.el('option', { value: t, textContent: t }));
+        });
+        const pathEl     = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'e.g. ou or https://app.com/department' });
+        const errorEl    = Utils.el('p', { className: 'text-error', style: 'display:none' });
+
+        const addBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Register Field',
+            onClick: async () => {
+                addBtn.disabled = true;
+                errorEl.style.display = 'none';
+                try {
+                    await Api.post(`${_api()}/admin/policy-fields`, {
+                        name:          nameEl.value.trim(),
+                        display_label: labelEl.value.trim(),
+                        source:        sourceEl.value,
+                        data_type:     typeEl.value,
+                        claim_path:    pathEl.value.trim(),
+                    });
+                    Utils.showToast('Field registered', 'success');
+                    Utils.closeModal();
+                    refreshFn();
+                } catch (err) {
+                    errorEl.textContent = 'Failed: ' + err.message;
+                    errorEl.style.display = '';
+                    addBtn.disabled = false;
+                }
+            },
+        });
+
+        Utils.showModal('Register Policy Field', Utils.el('div', { className: 'policy-modal-form' }, [
+            Utils.el('label', { textContent: 'Field name (snake_case)' }), nameEl,
+            Utils.el('label', { textContent: 'Display label' }), labelEl,
+            Utils.el('label', { textContent: 'Source' }), sourceEl,
+            Utils.el('label', { textContent: 'Data type' }), typeEl,
+            Utils.el('label', { textContent: 'Claim path (LDAP attr or OIDC claim key)' }), pathEl,
+            errorEl,
+            Utils.el('div', { className: 'modal-actions' }, [
+                addBtn,
+                Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', onClick: () => Utils.closeModal() }),
+            ]),
+        ]));
+    }
+
+    // ── (b) Admin Scopes ───────────────────────────────────────────────
+
+    function _buildAdminScopes(conditions, fields, refreshFn) {
+        const wrap = Utils.el('div', { className: 'policy-subsection' });
+
+        const header = Utils.el('div', { className: 'policy-sub-header' }, [
+            Utils.el('h4', { textContent: 'Admin Scope Conditions' }),
+            Utils.el('p', { className: 'text-muted policy-sub-hint', textContent: 'Scope conditions restrict which users an admin can target. All conditions for an admin are ANDed — more conditions = narrower scope.' }),
+            Utils.el('button', {
+                className: 'btn btn-primary btn-xs',
+                textContent: 'Add Scope Condition',
+                onClick: () => _showAddScopeModal(fields, refreshFn),
+            }),
+        ]);
+        wrap.appendChild(header);
+
+        if (!conditions.length) {
+            wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No scope conditions defined. All admins are unrestricted.' }));
+            return wrap;
+        }
+
+        // Group by holder
+        const byHolder = {};
+        for (const c of conditions) {
+            const key = `${c.holder_type}:${c.holder_id}`;
+            (byHolder[key] = byHolder[key] || { holder_type: c.holder_type, holder_id: c.holder_id, conds: [] }).conds.push(c);
+        }
+
+        const list = Utils.el('div', { className: 'scope-groups' });
+        for (const group of Object.values(byHolder)) {
+            const title = group.holder_type === 'user'
+                ? `User: ${group.holder_id}`
+                : `Role: ${group.holder_id}`;
+            const groupEl = Utils.el('div', { className: 'scope-group' }, [
+                Utils.el('div', { className: 'scope-group-title', textContent: title }),
+            ]);
+            for (const c of group.conds) {
+                const row = Utils.el('div', { className: 'scope-cond-row' }, [
+                    Utils.el('code', { textContent: `${c.field} ${c.operator} "${c.value}"` }),
+                    Utils.el('button', {
+                        className: 'btn btn-danger btn-xs',
+                        textContent: 'Delete',
+                        onClick: async () => {
+                            if (!confirm('Delete this scope condition? Affected policy conditions will be flagged for review.')) return;
+                            try {
+                                await Api.delete(`${_api()}/admin/scopes/conditions/${c.id}`);
+                                Utils.showToast('Scope condition deleted', 'success');
+                                refreshFn();
+                            } catch (err) {
+                                Utils.showToast('Delete failed: ' + err.message, 'error');
+                            }
+                        },
+                    }),
+                ]);
+                groupEl.appendChild(row);
+            }
+            list.appendChild(groupEl);
+        }
+        wrap.appendChild(list);
+        return wrap;
+    }
+
+    function _showAddScopeModal(fields, refreshFn) {
+        const holderTypeEl = Utils.el('select', { className: 'input-sm' });
+        ['user', 'role'].forEach(t => holderTypeEl.appendChild(Utils.el('option', { value: t, textContent: t })));
+        const holderIdEl = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'User UUID or role name' });
+        const fieldEl    = _buildFieldSelect(fields);
+        const opEl       = _buildOperatorSelect();
+        const valueEl    = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Condition value' });
+        const errorEl    = Utils.el('p', { className: 'text-error', style: 'display:none' });
+
+        const addBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Add',
+            onClick: async () => {
+                addBtn.disabled = true;
+                errorEl.style.display = 'none';
+                try {
+                    await Api.post(`${_api()}/admin/scopes`, {
+                        holder_type: holderTypeEl.value,
+                        holder_id:   holderIdEl.value.trim(),
+                        field:       fieldEl.value,
+                        operator:    opEl.value,
+                        value:       valueEl.value.trim(),
+                    });
+                    Utils.showToast('Scope condition added', 'success');
+                    Utils.closeModal();
+                    refreshFn();
+                } catch (err) {
+                    errorEl.textContent = 'Failed: ' + err.message;
+                    errorEl.style.display = '';
+                    addBtn.disabled = false;
+                }
+            },
+        });
+
+        Utils.showModal('Add Admin Scope Condition', Utils.el('div', { className: 'policy-modal-form' }, [
+            Utils.el('label', { textContent: 'Holder type' }), holderTypeEl,
+            Utils.el('label', { textContent: 'Holder ID (user UUID or role name)' }), holderIdEl,
+            Utils.el('label', { textContent: 'Field' }), fieldEl,
+            Utils.el('label', { textContent: 'Operator' }), opEl,
+            Utils.el('label', { textContent: 'Value' }), valueEl,
+            errorEl,
+            Utils.el('div', { className: 'modal-actions' }, [
+                addBtn,
+                Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', onClick: () => Utils.closeModal() }),
+            ]),
+        ]));
+    }
+
+    // ── (c) Policies ────────────────────────────────────────────────────
+
+    function _buildPoliciesPanel(policies, fields, refreshFn) {
+        const wrap = Utils.el('div', { className: 'policy-subsection' });
+
+        const header = Utils.el('div', { className: 'policy-sub-header' }, [
+            Utils.el('h4', { textContent: 'Policies' }),
+            Utils.el('p', { className: 'text-muted policy-sub-hint', textContent: 'Policies grant folder access based on user attributes. All conditions on a policy must match (AND semantics).' }),
+            Utils.el('button', {
+                className: 'btn btn-primary btn-xs',
+                textContent: 'New Policy',
+                onClick: () => _showCreatePolicyModal(refreshFn),
+            }),
+        ]);
+        wrap.appendChild(header);
+
+        if (!policies.length) {
+            wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No policies defined.' }));
+            return wrap;
+        }
+
+        const list = Utils.el('div', { className: 'policy-list' });
+        for (const policy of policies) {
+            list.appendChild(_buildPolicyCard(policy, fields, refreshFn));
+        }
+        wrap.appendChild(list);
+        return wrap;
+    }
+
+    function _buildPolicyCard(policy, fields, refreshFn) {
+        const detached = policy.conditions.some(c => c.scope_detached);
+
+        const body = Utils.el('div', { className: 'policy-card-body', style: 'display:none' });
+        let bodyLoaded = false;
+
+        const scopeBadge = policy.scope_type === 'team'
+            ? Utils.el('span', { className: 'badge badge-team', textContent: 'team' })
+            : Utils.el('span', { className: 'badge badge-org', textContent: 'org' });
+
+        const detachBanner = detached
+            ? Utils.el('div', { className: 'scope-detach-banner', textContent: 'One or more inherited restrictions have been removed from a parent scope. Review and confirm this policy\'s conditions.' })
+            : null;
+
+        const toggleBtn = Utils.el('button', {
+            className: 'policy-card-toggle collapsed',
+            onClick: () => {
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : '';
+                toggleBtn.classList.toggle('collapsed', open);
+                if (!open && !bodyLoaded) {
+                    bodyLoaded = true;
+                    _populatePolicyBody(body, policy, fields, refreshFn);
+                }
+            },
+        });
+        toggleBtn.appendChild(Utils.el('span', { textContent: policy.name }));
+        toggleBtn.appendChild(scopeBadge);
+
+        const deleteBtn = Utils.el('button', {
+            className: 'btn btn-danger btn-xs policy-card-delete',
+            textContent: 'Delete',
+            onClick: async (e) => {
+                e.stopPropagation();
+                if (!confirm(`Delete policy "${policy.name}" and all its conditions?`)) return;
+                try {
+                    await Api.delete(`${_api()}/admin/policies/${policy.id}`);
+                    Utils.showToast('Policy deleted', 'success');
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Delete failed: ' + err.message, 'error');
+                }
+            },
+        });
+
+        const card = Utils.el('div', { className: `policy-card${detached ? ' policy-card-detached' : ''}` }, [
+            Utils.el('div', { className: 'policy-card-header' }, [toggleBtn, deleteBtn]),
+            detachBanner,
+            body,
+        ].filter(Boolean));
+
+        return card;
+    }
+
+    function _populatePolicyBody(container, policy, fields, refreshFn) {
+        container.innerHTML = '';
+
+        // ── Conditions ──────────────────────────────────────────────────
+        const condHeader = Utils.el('h5', { className: 'policy-body-section-title', textContent: 'Conditions' });
+        container.appendChild(condHeader);
+
+        if (!policy.conditions.length) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No conditions yet. Add at least one condition for this policy to match users.' }));
+        } else {
+            const table = Utils.el('table', { className: 'policy-table' });
+            table.innerHTML = `<thead><tr>
+                <th>Field</th><th>Operator</th><th>Value</th><th>Strict</th><th>Inherited</th><th></th>
+            </tr></thead>`;
+            const tbody = Utils.el('tbody');
+            for (const cond of policy.conditions) {
+                const isInherited = cond.inherited_scope_id !== null;
+                const isDetached  = cond.scope_detached;
+                const deleteCondBtn = isInherited ? null : Utils.el('button', {
+                    className: 'btn btn-danger btn-xs',
+                    textContent: 'Remove',
+                    onClick: async () => {
+                        try {
+                            await Api.delete(`${_api()}/admin/policies/${policy.id}/conditions/${cond.id}`);
+                            Utils.showToast('Condition removed', 'success');
+                            refreshFn();
+                        } catch (err) {
+                            Utils.showToast('Failed: ' + err.message, 'error');
+                        }
+                    },
+                });
+
+                const inheritedCell = isInherited
+                    ? (isDetached
+                        ? Utils.el('span', { className: 'text-warn', textContent: 'detached' })
+                        : Utils.el('span', { className: 'text-muted', textContent: 'locked' }))
+                    : Utils.el('span', { textContent: '—' });
+
+                const tr = Utils.el('tr', { className: isDetached ? 'cond-row-detached' : '' });
+                tr.innerHTML = `
+                    <td><code>${cond.field}</code></td>
+                    <td>${cond.operator}</td>
+                    <td>${cond.value}</td>
+                    <td>${cond.strict ? 'yes' : 'no'}</td>
+                `;
+                const inheritedTd = Utils.el('td');
+                inheritedTd.appendChild(inheritedCell);
+                const actionTd = Utils.el('td');
+                if (deleteCondBtn) actionTd.appendChild(deleteCondBtn);
+                tr.appendChild(inheritedTd);
+                tr.appendChild(actionTd);
+                tbody.appendChild(tr);
+            }
+            table.appendChild(tbody);
+            container.appendChild(table);
+        }
+
+        container.appendChild(Utils.el('button', {
+            className: 'btn btn-primary btn-xs policy-add-cond-btn',
+            textContent: '+ Add Condition',
+            onClick: () => _showAddConditionModal(policy, fields, refreshFn),
+        }));
+
+        // ── Effects ─────────────────────────────────────────────────────
+        const effectsHeader = Utils.el('h5', {
+            className: 'policy-body-section-title policy-effects-title',
+            textContent: 'Effects',
+        });
+        container.appendChild(effectsHeader);
+
+        const effectsWrap = Utils.el('div', { className: 'policy-effects-wrap' });
+        container.appendChild(effectsWrap);
+
+        _loadAndRenderEffects(effectsWrap, policy, refreshFn);
+    }
+
+    async function _loadAndRenderEffects(wrap, policy, refreshFn) {
+        wrap.innerHTML = '<span class="text-muted">Loading…</span>';
+        try {
+            const data = await Api.get(`${_api()}/admin/policies/${policy.id}/effects`);
+            _renderEffects(wrap, policy, data.effects || [], refreshFn);
+        } catch (err) {
+            wrap.innerHTML = `<span class="text-error">Failed to load effects: ${err.message}</span>`;
+        }
+    }
+
+    function _renderEffects(wrap, policy, effects, refreshFn) {
+        wrap.innerHTML = '';
+
+        if (!effects.length) {
+            wrap.appendChild(Utils.el('p', { className: 'text-muted policy-effects-empty', textContent: 'No effects yet. Add an effect to define what this policy grants.' }));
+        } else {
+            const table = Utils.el('table', { className: 'policy-table' });
+            table.innerHTML = `<thead><tr>
+                <th>Type</th><th>Target ID</th><th>Details</th><th></th>
+            </tr></thead>`;
+            const tbody = Utils.el('tbody');
+            for (const eff of effects) {
+                const typeBadge = Utils.el('span', {
+                    className: `badge badge-effect-${eff.effect_type === 'team_member' ? 'team' : 'folder'}`,
+                    textContent: eff.effect_type,
+                });
+                const detailText = eff.effect_type === 'team_member'
+                    ? `role: ${eff.role_level}`
+                    : `${eff.permission}${eff.recursive ? ', recursive' : ''}`;
+
+                const deleteBtn = Utils.el('button', {
+                    className: 'btn btn-danger btn-xs',
+                    textContent: 'Remove',
+                    onClick: async () => {
+                        if (!confirm('Remove this effect? Policy-sourced grants for this effect will be revoked for all users.')) return;
+                        try {
+                            await Api.delete(`${_api()}/admin/policies/${policy.id}/effects/${eff.id}`);
+                            Utils.showToast('Effect removed', 'success');
+                            _loadAndRenderEffects(wrap, policy, refreshFn);
+                        } catch (err) {
+                            Utils.showToast('Failed: ' + err.message, 'error');
+                        }
+                    },
+                });
+
+                const tr = document.createElement('tr');
+                const typeTd = Utils.el('td');
+                typeTd.appendChild(typeBadge);
+                const targetTd = Utils.el('td');
+                targetTd.innerHTML = `<code class="policy-uuid-cell">${eff.target_id}</code>`;
+                const detailTd = Utils.el('td', { className: 'text-muted', textContent: detailText });
+                const actionTd = Utils.el('td');
+                actionTd.appendChild(deleteBtn);
+                tr.appendChild(typeTd);
+                tr.appendChild(targetTd);
+                tr.appendChild(detailTd);
+                tr.appendChild(actionTd);
+                tbody.appendChild(tr);
+            }
+            table.appendChild(tbody);
+            wrap.appendChild(table);
+        }
+
+        wrap.appendChild(Utils.el('button', {
+            className: 'btn btn-primary btn-xs policy-add-cond-btn',
+            textContent: '+ Add Effect',
+            onClick: () => _showAddEffectModal(policy, wrap, refreshFn),
+        }));
+    }
+
+    function _showAddEffectModal(policy, effectsWrap, refreshFn) {
+        const typeEl = Utils.el('select', { className: 'input-sm' });
+        ['team_member', 'folder_acl'].forEach(t => typeEl.appendChild(Utils.el('option', { value: t, textContent: t })));
+
+        const targetEl = Utils.el('input', {
+            type: 'text', className: 'input-sm',
+            placeholder: 'Team UUID or Folder UUID',
+        });
+
+        // team_member fields
+        const roleLevelEl = Utils.el('select', { className: 'input-sm' });
+        ['team_member', 'team_manager', 'team_admin'].forEach(r =>
+            roleLevelEl.appendChild(Utils.el('option', { value: r, textContent: r })));
+        const teamMemberWrap = Utils.el('div', {}, [
+            Utils.el('label', { textContent: 'Role level' }), roleLevelEl,
+        ]);
+
+        // folder_acl fields
+        const permEl = Utils.el('select', { className: 'input-sm' });
+        ['read', 'write', 'admin'].forEach(p => permEl.appendChild(Utils.el('option', { value: p, textContent: p })));
+        const recursiveEl = Utils.el('input', { type: 'checkbox' });
+        recursiveEl.checked = true;
+        const folderAclWrap = Utils.el('div', {}, [
+            Utils.el('label', { textContent: 'Permission' }), permEl,
+            Utils.el('div', { className: 'policy-strict-row' }, [
+                recursiveEl, Utils.el('label', { textContent: ' Recursive (inherit to subfolders)' }),
+            ]),
+        ]);
+
+        function _syncFields() {
+            const isTeam = typeEl.value === 'team_member';
+            teamMemberWrap.style.display = isTeam ? '' : 'none';
+            folderAclWrap.style.display  = isTeam ? 'none' : '';
+        }
+        typeEl.addEventListener('change', _syncFields);
+        _syncFields();
+
+        const errorEl = Utils.el('p', { className: 'text-error', style: 'display:none' });
+
+        const addBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Add',
+            onClick: async () => {
+                addBtn.disabled = true;
+                errorEl.style.display = 'none';
+                const payload = {
+                    effect_type: typeEl.value,
+                    target_id:   targetEl.value.trim(),
+                };
+                if (typeEl.value === 'team_member') {
+                    payload.role_level = roleLevelEl.value;
+                } else {
+                    payload.permission = permEl.value;
+                    payload.recursive  = recursiveEl.checked;
+                }
+                try {
+                    await Api.post(`${_api()}/admin/policies/${policy.id}/effects`, payload);
+                    Utils.showToast('Effect added', 'success');
+                    Utils.closeModal();
+                    _loadAndRenderEffects(effectsWrap, policy, refreshFn);
+                } catch (err) {
+                    errorEl.textContent = 'Failed: ' + err.message;
+                    errorEl.style.display = '';
+                    addBtn.disabled = false;
+                }
+            },
+        });
+
+        Utils.showModal(`Add Effect — ${policy.name}`, Utils.el('div', { className: 'policy-modal-form' }, [
+            Utils.el('label', { textContent: 'Effect type' }), typeEl,
+            Utils.el('label', { textContent: 'Target ID (team or folder UUID)' }), targetEl,
+            teamMemberWrap,
+            folderAclWrap,
+            errorEl,
+            Utils.el('div', { className: 'modal-actions' }, [
+                addBtn,
+                Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', onClick: () => Utils.closeModal() }),
+            ]),
+        ]));
+    }
+
+    function _showCreatePolicyModal(refreshFn) {
+        const nameEl      = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'e.g. Finance Team Access' });
+        const scopeTypeEl = Utils.el('select', { className: 'input-sm' });
+        ['org', 'team'].forEach(t => scopeTypeEl.appendChild(Utils.el('option', { value: t, textContent: t })));
+        const scopeIdWrap = Utils.el('div', { style: 'display:none' }, [
+            Utils.el('label', { textContent: 'Team ID' }),
+            Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Team UUID', id: 'new-policy-scope-id' }),
+        ]);
+        scopeTypeEl.addEventListener('change', () => {
+            scopeIdWrap.style.display = scopeTypeEl.value === 'team' ? '' : 'none';
+        });
+        const errorEl = Utils.el('p', { className: 'text-error', style: 'display:none' });
+
+        const createBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Create',
+            onClick: async () => {
+                createBtn.disabled = true;
+                errorEl.style.display = 'none';
+                const scopeIdInput = scopeIdWrap.querySelector('#new-policy-scope-id');
+                try {
+                    await Api.post(`${_api()}/admin/policies`, {
+                        name:       nameEl.value.trim(),
+                        scope_type: scopeTypeEl.value,
+                        scope_id:   scopeTypeEl.value === 'team' ? (scopeIdInput ? scopeIdInput.value.trim() : null) : null,
+                    });
+                    Utils.showToast('Policy created', 'success');
+                    Utils.closeModal();
+                    refreshFn();
+                } catch (err) {
+                    errorEl.textContent = 'Failed: ' + err.message;
+                    errorEl.style.display = '';
+                    createBtn.disabled = false;
+                }
+            },
+        });
+
+        Utils.showModal('Create Policy', Utils.el('div', { className: 'policy-modal-form' }, [
+            Utils.el('label', { textContent: 'Policy name' }), nameEl,
+            Utils.el('label', { textContent: 'Scope' }), scopeTypeEl,
+            scopeIdWrap,
+            errorEl,
+            Utils.el('div', { className: 'modal-actions' }, [
+                createBtn,
+                Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', onClick: () => Utils.closeModal() }),
+            ]),
+        ]));
+    }
+
+    function _showAddConditionModal(policy, fields, refreshFn) {
+        const fieldEl = _buildFieldSelect(fields);
+        const opEl    = _buildOperatorSelect();
+        const valueEl = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Condition value' });
+        const strictEl = Utils.el('input', { type: 'checkbox' });
+        const errorEl  = Utils.el('p', { className: 'text-error', style: 'display:none' });
+
+        const addBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Add',
+            onClick: async () => {
+                addBtn.disabled = true;
+                errorEl.style.display = 'none';
+                try {
+                    await Api.post(`${_api()}/admin/policies/${policy.id}/conditions`, {
+                        field:    fieldEl.value,
+                        operator: opEl.value,
+                        value:    valueEl.value.trim(),
+                        strict:   strictEl.checked,
+                    });
+                    Utils.showToast('Condition added', 'success');
+                    Utils.closeModal();
+                    refreshFn();
+                } catch (err) {
+                    errorEl.textContent = 'Failed: ' + err.message;
+                    errorEl.style.display = '';
+                    addBtn.disabled = false;
+                }
+            },
+        });
+
+        Utils.showModal(`Add Condition — ${policy.name}`, Utils.el('div', { className: 'policy-modal-form' }, [
+            Utils.el('label', { textContent: 'Field' }), fieldEl,
+            Utils.el('label', { textContent: 'Operator' }), opEl,
+            Utils.el('label', { textContent: 'Value' }), valueEl,
+            Utils.el('div', { className: 'policy-strict-row' }, [
+                strictEl,
+                Utils.el('label', { textContent: ' Case-sensitive match' }),
+            ]),
+            errorEl,
+            Utils.el('div', { className: 'modal-actions' }, [
+                addBtn,
+                Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', onClick: () => Utils.closeModal() }),
+            ]),
+        ]));
+    }
+
+    // ── Shared UI helpers ────────────────────────────────────────────────
+
+    function _buildFieldSelect(fields) {
+        const sel = Utils.el('select', { className: 'input-sm' });
+        for (const f of fields) {
+            sel.appendChild(Utils.el('option', {
+                value:       f.name,
+                textContent: `${f.display_label} (${f.name})`,
+            }));
+        }
+        return sel;
+    }
+
+    function _buildOperatorSelect() {
+        const sel = Utils.el('select', { className: 'input-sm' });
+        for (const op of _POLICY_OPERATORS) {
+            sel.appendChild(Utils.el('option', { value: op, textContent: op }));
+        }
+        return sel;
     }
 
     // ------------------------------------------------------------------

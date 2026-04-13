@@ -3,6 +3,7 @@
 Registration and login are handled by the OPAQUE routes in opaque_auth.py.
 """
 
+import asyncio
 import hashlib
 import logging
 import uuid
@@ -48,6 +49,7 @@ def _user_response_dict(user) -> dict:
         "is_admin_only": user.is_admin_only,
         "is_public_device": getattr(user, "is_public_device", False),
         "roles": sorted(user.roles),
+        "flags": user.flags,
         "wrapped_master_key": user.wrapped_master_key,
         "wrapped_master_key_iv": user.wrapped_master_key_iv,
         "recovery_key_wrapped": user.recovery_key_wrapped,
@@ -218,7 +220,7 @@ async def refresh(
         await db.rollback()
         raise
 
-    access_token = create_access_token(user.id, user.is_admin, session_id=new_token_id, is_public_device=is_public_device)
+    access_token = create_access_token(user.id, session_id=new_token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
     rt_max_age = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES * 60 if is_public_device else None
     _set_auth_cookies(response, access_token, new_raw_refresh, csrf_token, max_age=rt_max_age)
@@ -525,5 +527,14 @@ async def step_up(
         "Step-up granted: user=%s action=%s ip=%s window=%ds",
         user.id, body.action_key, client_ip, settings.STEP_UP_WINDOW_SECONDS,
     )
+
+    # Trigger 1 — fire-and-forget policy evaluation on step-up (E3).
+    # Step-up confirms the user knows their password; treat it the same as login
+    # for policy freshness.  Do not await — step-up response returns immediately.
+    try:
+        from app.models.policy import evaluate_user_policies as _eval_policies
+        asyncio.create_task(_eval_policies(db, user.id))
+    except Exception:
+        pass  # policy engine must not block step-up
 
     return {"step_up_token": token}

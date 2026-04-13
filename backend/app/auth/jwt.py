@@ -18,11 +18,13 @@ logger = logging.getLogger(__name__)
 
 def create_access_token(
     user_id: str,
-    is_admin: bool,
     session_id: str | None = None,
     is_public_device: bool = False,
 ) -> str:
     """Create a short-lived JWT access token.
+
+    The token carries only identity and session metadata — no role or permission
+    claims.  All authorization decisions are made server-side from the DB.
 
     session_id (sid claim) is the refresh_tokens.id for this session.  When
     present, get_current_user uses it to touch last_active_at on each request
@@ -35,7 +37,6 @@ def create_access_token(
     now = datetime.now(timezone.utc)
     payload: dict = {
         "sub": user_id,
-        "admin": is_admin,
         "iat": now,
         "exp": now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
         "type": "access",

@@ -22,7 +22,8 @@ class AuthenticatedUser:
     id: str
     username: str
     auth_method: str  # 'opaque'
-    roles: set[str] = None  # set of global role IDs (e.g. {"role_admin", "role_user"})
+    roles: set[str] = None   # set of global role IDs
+    flags: dict[str, str] = None  # effective permission flags from global roles {flag: value}
     wrapped_master_key: str | None = None
     wrapped_master_key_iv: str | None = None
     recovery_key_wrapped: str | None = None
@@ -40,11 +41,17 @@ class AuthenticatedUser:
     def __post_init__(self):
         if self.roles is None:
             self.roles = set()
+        if self.flags is None:
+            self.flags = {}
+
+    def has_flag(self, flag: str) -> bool:
+        """Return True if this user's effective permissions include the given flag."""
+        return self.flags.get(flag, "0") not in ("0", "", "false", "False", "no")
 
     @property
     def is_admin(self) -> bool:
-        from app.models.role import ROLE_ADMIN
-        return ROLE_ADMIN in self.roles
+        from app.models.role import ADMIN_ROLE_IDS
+        return bool(self.roles & ADMIN_ROLE_IDS)
 
     @property
     def is_user(self) -> bool:
@@ -53,7 +60,7 @@ class AuthenticatedUser:
 
     @property
     def is_admin_only(self) -> bool:
-        """True if this account has admin role but NOT user role — management-only account."""
+        """True if this account has an admin role but NOT the user role — management-only account."""
         return self.is_admin and not self.is_user
 
 

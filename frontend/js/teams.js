@@ -470,6 +470,331 @@ const Teams = (() => {
             }));
             container.appendChild(actionsSection);
         }
+
+        // ---- Custom Roles section (visible to team owners and global admins) ----
+        if (isOwner || user.is_admin) {
+            const rolesSection = Utils.el('section', { className: 'team-section' });
+            rolesSection.appendChild(Utils.el('h3', { textContent: 'Custom Roles' }));
+            container.appendChild(rolesSection);
+            _renderTeamRolesSection(rolesSection, teamId, members, isOwner || user.is_admin);
+        }
+    }
+
+    // =========================================================================
+    // Custom team roles management
+    // =========================================================================
+
+    async function _renderTeamRolesSection(container, teamId, members, canManage) {
+        const statusEl = Utils.el('p', { className: 'text-muted', textContent: 'Loading…' });
+        container.appendChild(statusEl);
+
+        let rolesData;
+        try {
+            rolesData = await Api.get(`${_api}/teams/${teamId}/custom-roles`);
+        } catch (err) {
+            statusEl.textContent = 'Failed to load custom roles: ' + err.message;
+            return;
+        }
+
+        statusEl.remove();
+
+        const { roles, flags } = rolesData;
+
+        if (canManage) {
+            container.appendChild(Utils.el('button', {
+                className: 'btn btn-secondary btn-sm team-roles-add-btn',
+                textContent: '+ Create Custom Role',
+                onClick: () => _showCreateTeamRoleModal(teamId, flags, () => {
+                    container.innerHTML = '';
+                    container.appendChild(Utils.el('h3', { textContent: 'Custom Roles' }));
+                    _renderTeamRolesSection(container, teamId, members, canManage);
+                }),
+            }));
+        }
+
+        if (roles.length === 0) {
+            container.appendChild(Utils.el('p', {
+                className: 'text-muted',
+                textContent: 'No custom roles defined for this team.',
+            }));
+            return;
+        }
+
+        const list = Utils.el('div', { className: 'team-roles-list' });
+        for (const role of roles) {
+            list.appendChild(
+                _buildTeamRoleCard(role, flags, members, teamId, canManage, () => {
+                    container.innerHTML = '';
+                    container.appendChild(Utils.el('h3', { textContent: 'Custom Roles' }));
+                    _renderTeamRolesSection(container, teamId, members, canManage);
+                })
+            );
+        }
+        container.appendChild(list);
+    }
+
+    function _buildTeamRoleCard(role, flags, members, teamId, canManage, refreshFn) {
+        let bodyLoaded = false;
+        const body = Utils.el('div', { className: 'role-card-body' });
+        body.style.display = 'none';
+
+        const toggle = Utils.el('button', {
+            className: 'role-card-toggle collapsed',
+            onClick: () => {
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : '';
+                toggle.classList.toggle('collapsed', open);
+                if (!open && !bodyLoaded) {
+                    bodyLoaded = true;
+                    _populateTeamRoleCardBody(body, role, flags, members, teamId, canManage, refreshFn);
+                }
+            },
+        });
+
+        const badge = Utils.el('span', { className: 'role-card-badge badge-custom', textContent: 'custom' });
+        const nameEl = Utils.el('span', { className: 'role-card-name', textContent: role.name });
+        const header = Utils.el('div', { className: 'role-card-header' }, [toggle, nameEl, badge]);
+        return Utils.el('div', { className: 'role-card' }, [header, body]);
+    }
+
+    function _populateTeamRoleCardBody(container, role, flags, members, teamId, canManage, refreshFn) {
+        const content = Utils.el('div', { className: 'role-card-content' });
+
+        // --- Name / Description form ---
+        if (canManage) {
+            const nameInput = Utils.el('input', { type: 'text', className: 'form-input', value: role.name });
+            const descInput = Utils.el('input', { type: 'text', className: 'form-input', value: role.description });
+            const saveBtn = Utils.el('button', {
+                className: 'btn btn-primary btn-sm',
+                textContent: 'Save Name/Desc',
+                onClick: async () => {
+                    try {
+                        await Api.patch(`${_api}/teams/${teamId}/custom-roles/${role.id}`, {
+                            name: nameInput.value.trim(),
+                            description: descInput.value.trim(),
+                        });
+                        Utils.showToast('Role updated', 'success');
+                        refreshFn();
+                    } catch (e) {
+                        Utils.showToast('Update failed: ' + e.message, 'error');
+                    }
+                },
+            });
+            const deleteBtn = Utils.el('button', {
+                className: 'btn btn-danger btn-sm',
+                textContent: 'Delete Role',
+                onClick: async () => {
+                    if (!confirm(`Delete role "${role.name}"? All assignments will be removed.`)) return;
+                    try {
+                        await Api.del(`${_api}/teams/${teamId}/custom-roles/${role.id}`);
+                        Utils.showToast('Role deleted', 'success');
+                        refreshFn();
+                    } catch (e) {
+                        Utils.showToast('Delete failed: ' + e.message, 'error');
+                    }
+                },
+            });
+
+            content.appendChild(Utils.el('div', { className: 'role-meta-form' }, [
+                Utils.el('div', { className: 'role-meta-fields' }, [
+                    Utils.el('label', { textContent: 'Name' }), nameInput,
+                    Utils.el('label', { textContent: 'Description' }), descInput,
+                ]),
+                Utils.el('div', { className: 'role-meta-actions' }, [saveBtn, deleteBtn]),
+            ]));
+        }
+
+        // --- Permission flags ---
+        const flagChecks = {};
+        const flagsDiv = Utils.el('div', { className: 'flag-category' }, [
+            Utils.el('div', { className: 'flag-category-label', textContent: 'Move Permissions' }),
+        ]);
+
+        for (const flagMeta of flags) {
+            const granted = role.permissions[flagMeta.flag] === '1';
+            const cb = Utils.el('input', { type: 'checkbox' });
+            cb.checked = granted;
+            if (!canManage) cb.disabled = true;
+            flagChecks[flagMeta.flag] = cb;
+
+            flagsDiv.appendChild(Utils.el('div', { className: 'flag-row' }, [
+                cb,
+                Utils.el('div', { className: 'flag-label' }, [
+                    Utils.el('span', { className: 'flag-name', textContent: flagMeta.flag }),
+                    Utils.el('span', { className: 'flag-desc', textContent: flagMeta.description }),
+                ]),
+            ]));
+        }
+        content.appendChild(flagsDiv);
+
+        if (canManage) {
+            const savePermsBtn = Utils.el('button', {
+                className: 'btn btn-primary btn-sm',
+                textContent: 'Save Permissions',
+                onClick: async () => {
+                    const permissions = {};
+                    for (const [f, cb] of Object.entries(flagChecks)) {
+                        permissions[f] = cb.checked ? '1' : '0';
+                    }
+                    try {
+                        await Api.put(`${_api}/teams/${teamId}/custom-roles/${role.id}/permissions`, { permissions });
+                        Utils.showToast('Permissions saved', 'success');
+                    } catch (e) {
+                        Utils.showToast('Save failed: ' + e.message, 'error');
+                    }
+                },
+            });
+            content.appendChild(Utils.el('div', { className: 'role-flags-actions' }, [savePermsBtn]));
+        }
+
+        // --- Assignments ---
+        const assignSection = Utils.el('div', { className: 'team-role-assignments' });
+        content.appendChild(assignSection);
+        _loadTeamRoleAssignments(assignSection, role, teamId, members, canManage);
+
+        container.appendChild(content);
+    }
+
+    async function _loadTeamRoleAssignments(container, role, teamId, members, canManage) {
+        container.appendChild(Utils.el('h4', { textContent: 'Members with this role' }));
+        let data;
+        try {
+            data = await Api.get(`${_api}/teams/${teamId}/custom-roles/${role.id}/assignments`);
+        } catch (err) {
+            container.appendChild(Utils.el('p', { textContent: 'Failed to load assignments.' }));
+            return;
+        }
+
+        const refresh = () => {
+            container.innerHTML = '';
+            _loadTeamRoleAssignments(container, role, teamId, members, canManage);
+        };
+
+        const { assignments } = data;
+
+        if (assignments.length === 0) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No members assigned.' }));
+        } else {
+            const list = Utils.el('ul', { className: 'team-role-assignment-list' });
+            for (const a of assignments) {
+                const li = Utils.el('li', { textContent: a.username });
+                if (canManage) {
+                    li.appendChild(Utils.el('button', {
+                        className: 'btn btn-danger btn-xs',
+                        textContent: 'Revoke',
+                        onClick: async () => {
+                            try {
+                                await Api.del(`${_api}/teams/${teamId}/custom-roles/${role.id}/assignments/${a.user_id}`);
+                                refresh();
+                            } catch (e) {
+                                Utils.showToast('Revoke failed: ' + e.message, 'error');
+                            }
+                        },
+                    }));
+                }
+                list.appendChild(li);
+            }
+            container.appendChild(list);
+        }
+
+        if (canManage) {
+            // Members not yet assigned this role
+            const assigned = new Set(assignments.map(a => a.user_id));
+            const eligible = members.filter(m => !assigned.has(m.user_id));
+
+            if (eligible.length > 0) {
+                const select = Utils.el('select', { className: 'form-select' });
+                for (const m of eligible) {
+                    select.appendChild(Utils.el('option', { value: m.user_id, textContent: m.username }));
+                }
+                const assignBtn = Utils.el('button', {
+                    className: 'btn btn-secondary btn-sm',
+                    textContent: 'Assign',
+                    onClick: async () => {
+                        try {
+                            await Api.post(`${_api}/teams/${teamId}/custom-roles/${role.id}/assignments`, {
+                                user_id: select.value,
+                            });
+                            refresh();
+                        } catch (e) {
+                            Utils.showToast('Assign failed: ' + e.message, 'error');
+                        }
+                    },
+                });
+                container.appendChild(Utils.el('div', { className: 'team-role-assign-row' }, [select, assignBtn]));
+            }
+        }
+    }
+
+    function _showCreateTeamRoleModal(teamId, flags, refreshFn) {
+        const nameInput = Utils.el('input', { type: 'text', className: 'form-input', placeholder: 'Role name' });
+        const descInput = Utils.el('input', { type: 'text', className: 'form-input', placeholder: 'Description (optional)' });
+        const errorEl = Utils.el('p', { className: 'form-error', textContent: '' });
+        errorEl.style.display = 'none';
+
+        const flagChecks = {};
+        const flagsDiv = Utils.el('div', { className: 'flag-category' }, [
+            Utils.el('div', { className: 'flag-category-label', textContent: 'Move Permissions' }),
+        ]);
+        for (const flagMeta of flags) {
+            const cb = Utils.el('input', { type: 'checkbox' });
+            flagChecks[flagMeta.flag] = cb;
+            flagsDiv.appendChild(Utils.el('div', { className: 'flag-row' }, [
+                cb,
+                Utils.el('div', { className: 'flag-label' }, [
+                    Utils.el('span', { className: 'flag-name', textContent: flagMeta.flag }),
+                    Utils.el('span', { className: 'flag-desc', textContent: flagMeta.description }),
+                ]),
+            ]));
+        }
+
+        let closeModal;
+        const createBtn = Utils.el('button', {
+            className: 'btn btn-primary',
+            textContent: 'Create Role',
+            onClick: async () => {
+                errorEl.style.display = 'none';
+                const name = nameInput.value.trim();
+                if (!name) {
+                    errorEl.textContent = 'Name is required.';
+                    errorEl.style.display = '';
+                    return;
+                }
+                const permissions = {};
+                for (const [f, cb] of Object.entries(flagChecks)) {
+                    permissions[f] = cb.checked ? '1' : '0';
+                }
+                try {
+                    await Api.post(`${_api}/teams/${teamId}/custom-roles`, {
+                        name,
+                        description: descInput.value.trim(),
+                        permissions,
+                    });
+                    closeModal();
+                    refreshFn();
+                } catch (e) {
+                    errorEl.textContent = e.message || 'Failed to create role.';
+                    errorEl.style.display = '';
+                }
+            },
+        });
+
+        const formContent = Utils.el('div', { className: 'create-role-form' }, [
+            Utils.el('label', { textContent: 'Name' }), nameInput,
+            Utils.el('label', { textContent: 'Description' }), descInput,
+            flagsDiv,
+            errorEl,
+            Utils.el('div', { className: 'modal-actions' }, [
+                createBtn,
+                Utils.el('button', {
+                    className: 'btn btn-secondary',
+                    textContent: 'Cancel',
+                    onClick: () => closeModal(),
+                }),
+            ]),
+        ]);
+
+        closeModal = Utils.showModal('Create Custom Role', formContent);
     }
 
     function _buildMemberTable(team, members, myRole, teamId, container) {

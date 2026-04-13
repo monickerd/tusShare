@@ -215,22 +215,32 @@ def create_app() -> FastAPI:
     from app.routes.shares import router as shares_router
     from app.routes.teams import router as teams_router
     from app.routes.admin import router as admin_router
+    from app.routes.admin_roles import router as admin_roles_router
+    from app.routes.team_roles import router as team_roles_router
     from app.routes.access_logs import router as access_logs_router
     from app.routes.events import router as events_router
     from app.routes.theme import router as theme_router
+    from app.routes.policy_fields import router as policy_fields_router
+    from app.routes.admin_scopes import router as admin_scopes_router
+    from app.routes.policies import router as policies_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
     app.include_router(users_router, prefix="/api/v1/admin/users", tags=["admin-users"])
     app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
+    app.include_router(admin_roles_router, prefix="/api/v1/admin/roles", tags=["admin-roles"])
     app.include_router(folders_router, prefix="/api/v1/folders", tags=["folders"])
     app.include_router(files_router, prefix="/api/v1/files", tags=["files"])
     app.include_router(uploads_router, prefix="/api/v1/uploads", tags=["uploads"])
     app.include_router(shares_router, tags=["shares"])
     app.include_router(teams_router, tags=["teams"])
+    app.include_router(team_roles_router, prefix="/api/v1/teams", tags=["team-roles"])
     app.include_router(access_logs_router, prefix="/api/v1/access-logs", tags=["logs"])
     app.include_router(events_router, prefix="/api/v1", tags=["events"])
     app.include_router(theme_router, prefix="/api/v1", tags=["theme"])
+    app.include_router(policy_fields_router, prefix="/api/v1/admin/policy-fields", tags=["policy"])
+    app.include_router(admin_scopes_router,  prefix="/api/v1/admin/scopes",         tags=["policy"])
+    app.include_router(policies_router,      prefix="/api/v1/admin/policies",       tags=["policy"])
 
     # --- Health check ---
     @app.get("/api/v1/health")

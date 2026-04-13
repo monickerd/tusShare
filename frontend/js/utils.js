@@ -185,6 +185,49 @@ const Utils = (() => {
     }
 
     /**
+     * Generic content modal — displays arbitrary DOM content in an overlay.
+     * Returns a close function.  Also exposed as Utils.closeModal() for callers
+     * that don't have a reference to the returned close function.
+     */
+    let _activeModal = null;
+
+    function showModal(title, contentEl) {
+        closeModal();  // Dismiss any existing modal first
+
+        let overlay = el('div', { className: 'modal-overlay' });
+        const close = () => {
+            if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            overlay = null;
+            _activeModal = null;
+        };
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) close();
+        });
+        const dialog = el('div', { className: 'modal content-modal' }, [
+            el('div', { className: 'modal-header' }, [
+                el('h3', { textContent: title }),
+                el('button', {
+                    className: 'modal-close-btn',
+                    textContent: '✕',
+                    onClick: close,
+                }),
+            ]),
+            el('div', { className: 'modal-body' }, [contentEl]),
+        ]);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+        _activeModal = close;
+        return close;
+    }
+
+    function closeModal() {
+        if (_activeModal) {
+            _activeModal();
+            _activeModal = null;
+        }
+    }
+
+    /**
      * Read a cookie by name.
      */
     function parseCookie(name) {
@@ -211,6 +254,8 @@ const Utils = (() => {
         showToast,
         showConfirm,
         showPrompt,
+        showModal,
+        closeModal,
         parseCookie,
         debounce,
     };

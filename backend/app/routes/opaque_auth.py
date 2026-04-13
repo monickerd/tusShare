@@ -90,6 +90,7 @@ def _user_response_dict(user: AuthenticatedUser) -> dict:
         "is_admin": user.is_admin,
         "is_admin_only": user.is_admin_only,
         "roles": sorted(user.roles),
+        "flags": user.flags,
         "wrapped_master_key": user.wrapped_master_key,
         "wrapped_master_key_iv": user.wrapped_master_key_iv,
         "recovery_key_wrapped": user.recovery_key_wrapped,
@@ -476,7 +477,7 @@ async def opaque_register_finish(
         asymmetric_key_iv=body.asymmetric_key_iv,
     )
 
-    access_token = create_access_token(user.id, user.is_admin)
+    access_token = create_access_token(user.id)
     raw_refresh, rt_hash = create_refresh_token()
     await store_refresh_token(db, user.id, rt_hash)
     csrf_token = generate_csrf_token()
@@ -600,7 +601,7 @@ async def opaque_login_finish(
         expire_minutes=rt_expire_minutes,
         is_public_device=is_public_device,
     )
-    access_token = create_access_token(user.id, user.is_admin, session_id=token_id, is_public_device=is_public_device)
+    access_token = create_access_token(user.id, session_id=token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
     _set_auth_cookies(response, access_token, raw_refresh, csrf_token, refresh_max_age=rt_max_age)
 
@@ -608,6 +609,17 @@ async def opaque_login_finish(
         "OPAQUE login: user=%s (id=%s) public_device=%s",
         user.username, user.id, is_public_device,
     )
+
+    # Trigger 1 — evaluate policies on every password-entry event (E3).
+    # Runs fire-and-forget so login latency is unaffected.  Debounce inside
+    # evaluate_user_policies prevents redundant LDAP queries on rapid
+    # login → step-up sequences.
+    try:
+        from app.models.policy import evaluate_user_policies as _eval_policies
+        asyncio.create_task(_eval_policies(db, user.id))
+    except Exception:
+        pass  # policy engine must not block authentication
+
     return {"user": _user_response_dict(user)}
 
 
@@ -1305,7 +1317,7 @@ async def opaque_bootstrap_finish(
         asymmetric_key_iv=body.asymmetric_key_iv,
     )
 
-    access_token = create_access_token(user.id, user.is_admin)
+    access_token = create_access_token(user.id)
     raw_refresh, rt_hash = create_refresh_token()
     await store_refresh_token(db, user.id, rt_hash)
     csrf_token = generate_csrf_token()

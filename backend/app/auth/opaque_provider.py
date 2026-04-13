@@ -14,7 +14,7 @@ import uuid
 
 from app.auth.interface import AuthCredentials, AuthenticatedUser, AuthProvider
 from app.database import DuplicateError
-from app.models.role import ROLE_ADMIN, ROLE_USER, get_user_global_role_ids, grant_role
+from app.models.role import ROLE_ADMIN, ROLE_USER, get_user_global_flags, get_user_global_role_ids, grant_role
 from app.validation.sanitizers import sanitize_username
 
 # Columns shared between all OPAQUE queries
@@ -26,12 +26,13 @@ _USER_COLUMNS = (
 )
 
 
-def _row_to_user(row, roles: set[str]) -> AuthenticatedUser:
+def _row_to_user(row, roles: set[str], flags: dict[str, str]) -> AuthenticatedUser:
     return AuthenticatedUser(
         id=row["id"],
         username=row["username"],
         auth_method=row["auth_method"],
         roles=roles,
+        flags=flags,
         wrapped_master_key=row["wrapped_master_key"],
         wrapped_master_key_iv=row["wrapped_master_key_iv"],
         recovery_key_wrapped=row["recovery_key_wrapped"],
@@ -121,11 +122,13 @@ class OPAQUEAuthProvider(AuthProvider):
             await self._db.rollback()
             raise
 
+        flags = await get_user_global_flags(self._db, user_id)
         return AuthenticatedUser(
             id=user_id,
             username=username,
             auth_method="opaque",
             roles={role},
+            flags=flags,
             wrapped_master_key=wrapped_master_key,
             wrapped_master_key_iv=wrapped_master_key_iv,
             recovery_key_wrapped=recovery_key_wrapped,
@@ -145,8 +148,11 @@ class OPAQUEAuthProvider(AuthProvider):
         row = await cursor.fetchone()
         if row is None or not row["is_active"]:
             return None
-        roles = await get_user_global_role_ids(self._db, user_id)
-        return _row_to_user(row, roles)
+        roles, flags = await asyncio.gather(
+            get_user_global_role_ids(self._db, user_id),
+            get_user_global_flags(self._db, user_id),
+        )
+        return _row_to_user(row, roles, flags)
 
     async def get_user_by_username(self, username: str) -> AuthenticatedUser | None:
         try:
@@ -160,8 +166,11 @@ class OPAQUEAuthProvider(AuthProvider):
         row = await cursor.fetchone()
         if row is None or not row["is_active"]:
             return None
-        roles = await get_user_global_role_ids(self._db, row["id"])
-        return _row_to_user(row, roles)
+        roles, flags = await asyncio.gather(
+            get_user_global_role_ids(self._db, row["id"]),
+            get_user_global_flags(self._db, row["id"]),
+        )
+        return _row_to_user(row, roles, flags)
 
     # ------------------------------------------------------------------
     # OPAQUE-specific helpers (called directly by opaque_auth routes)

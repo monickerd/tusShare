@@ -31,7 +31,8 @@ async def get_file_access_logs(
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
-    if row["owner_id"] != user.id and not user.is_admin:
+    from app.models.role import FLAG_ACCESS_ALL_FILES
+    if row["owner_id"] != user.id and not user.has_flag(FLAG_ACCESS_ALL_FILES):
         raise HTTPException(status_code=403, detail="Access denied")
 
     cursor = await db.execute(

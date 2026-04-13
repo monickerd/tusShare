@@ -2,17 +2,20 @@
 
 import re
 
+from app.models.role import ROLE_TEAM_ADMIN, ROLE_TEAM_MANAGER, ROLE_TEAM_MEMBER
+
 # --- Team roles (scoped via user_roles scope_type='team') ---
-TEAM_ROLE_OWNER      = "team_owner"
-TEAM_ROLE_SUPERVISOR = "team_supervisor"
-TEAM_ROLE_MEMBER     = "team_member"
+# Aliases onto the canonical role IDs defined in models/role.py.
+TEAM_ROLE_OWNER      = ROLE_TEAM_ADMIN    # "team_admin"
+TEAM_ROLE_SUPERVISOR = ROLE_TEAM_MANAGER  # "team_manager"
+TEAM_ROLE_MEMBER     = ROLE_TEAM_MEMBER   # "team_member"
 
 # Ordered from highest to lowest privilege — used for minimum-role checks.
 TEAM_ROLE_HIERARCHY = (TEAM_ROLE_OWNER, TEAM_ROLE_SUPERVISOR, TEAM_ROLE_MEMBER)
 
 VALID_TEAM_ROLES = frozenset(TEAM_ROLE_HIERARCHY)
 
-# Roles a supervisor or owner may assign to invited members
+# Roles a manager or admin may assign to invited members
 ASSIGNABLE_ROLES = frozenset({TEAM_ROLE_SUPERVISOR, TEAM_ROLE_MEMBER})
 
 # --- Team field limits ---

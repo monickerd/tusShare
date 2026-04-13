@@ -18,7 +18,7 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.database import get_db
-from app.models.role import ROLE_ADMIN, ROLE_USER, grant_role, revoke_role
+from app.models.role import ADMIN_ROLE_IDS, ROLE_ADMIN, ROLE_USER, grant_role, revoke_role
 from app.models.user import User
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 from app.validation.validators import validate_pagination
@@ -230,6 +230,46 @@ async def update_user(
     return {"message": "User updated"}
 
 
+@router.get("/{user_id}/roles")
+async def list_user_roles(
+    user_id: str,
+    admin: AuthenticatedUser = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """List all role assignments for a user (global + scoped)."""
+    user_id = validate_uuid(user_id)
+
+    cursor = await db.execute("SELECT id FROM users WHERE id = ?", (user_id,))
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    cursor = await db.execute(
+        "SELECT ur.id, ur.role_id, ur.scope_type, ur.scope_id, ur.granted_by, "
+        "       r.name AS role_name, r.is_system "
+        "FROM user_roles ur "
+        "JOIN roles r ON r.id = ur.role_id "
+        "WHERE ur.user_id = ? "
+        "ORDER BY ur.scope_type NULLS FIRST, ur.role_id",
+        (user_id,),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "user_id": user_id,
+        "roles": [
+            {
+                "assignment_id": r["id"],
+                "role_id":       r["role_id"],
+                "role_name":     r["role_name"],
+                "is_system":     bool(r["is_system"]),
+                "scope_type":    r["scope_type"],
+                "scope_id":      r["scope_id"],
+                "granted_by":    r["granted_by"],
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.post("/{user_id}/roles/{role_id}")
 async def add_role_to_user(
     user_id: str,
@@ -252,8 +292,8 @@ async def add_role_to_user(
 
     await grant_role(db, user_id, role_id, granted_by=admin.id)
 
-    # Keep is_admin column in sync
-    if role_id == ROLE_ADMIN:
+    # Keep legacy is_admin column in sync until it is retired.
+    if role_id in ADMIN_ROLE_IDS:
         await db.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (user_id,))
 
     await db.commit()
@@ -271,16 +311,24 @@ async def remove_role_from_user(
     user_id = validate_uuid(user_id)
 
     # Cannot remove your own admin role
-    if user_id == admin.id and role_id == ROLE_ADMIN:
+    if user_id == admin.id and role_id in ADMIN_ROLE_IDS:
         raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
 
     removed = await revoke_role(db, user_id, role_id)
     if not removed:
         raise HTTPException(status_code=404, detail="User does not have this role")
 
-    # Keep is_admin column in sync
-    if role_id == ROLE_ADMIN:
-        await db.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (user_id,))
+    # Keep legacy is_admin column in sync until it is retired.
+    # After revoke, clear is_admin only if the user no longer holds any admin role.
+    if role_id in ADMIN_ROLE_IDS:
+        cursor = await db.execute(
+            "SELECT 1 FROM user_roles WHERE user_id = ? AND role_id IN ({}) AND scope_type IS NULL LIMIT 1".format(
+                ",".join("?" * len(ADMIN_ROLE_IDS))
+            ),
+            (user_id, *ADMIN_ROLE_IDS),
+        )
+        if await cursor.fetchone() is None:
+            await db.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (user_id,))
 
     await db.commit()
     return {"message": f"Role {role_id} revoked from user {user_id}"}

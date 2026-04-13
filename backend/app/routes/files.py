@@ -32,7 +32,8 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
     Shared helper used by get_file_metadata, get_file_chunks, etc.
     Full permission-tree check will replace this in Phase 6.
     """
-    if file_row["owner_id"] == user.id or user.is_admin:
+    from app.models.role import FLAG_ACCESS_ALL_FILES
+    if file_row["owner_id"] == user.id or user.has_flag(FLAG_ACCESS_ALL_FILES):
         return
     if file_row["folder_id"] and await is_in_shared_tree(db, file_row["folder_id"]):
         return
@@ -160,12 +161,33 @@ async def batch_move_files(
                 "SELECT id, folder_id, owner_id FROM files WHERE id = ?", (item.id,)
             )
             file_row = await cursor.fetchone()
-            if file_row is None or file_row["owner_id"] != user.id:
+            if file_row is None:
                 failed.append(item.id)
                 continue
 
             src_folder_id = file_row["folder_id"]
             src_team_id = await get_folder_team_id(db, src_folder_id) if src_folder_id else None
+            is_owner = file_row["owner_id"] == user.id
+
+            # --- Move permission checks ---
+            if not is_owner:
+                # Non-owner: allowed only when moving others' files out of a team folder
+                # and the user holds move_others_files_out_of_team for that team.
+                if not src_team_id:
+                    failed.append(item.id)
+                    continue
+                from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OTHERS_OUT
+                move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
+                if not move_flags[TEAM_FLAG_MOVE_OTHERS_OUT]:
+                    failed.append(item.id)
+                    continue
+            elif src_team_id and src_team_id != dest_team_id:
+                # Owner moving their file OUT of a team (to personal space or a different team)
+                from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OWN_OUT
+                move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
+                if not move_flags[TEAM_FLAG_MOVE_OWN_OUT]:
+                    failed.append(item.id)
+                    continue
 
             await db.execute("BEGIN")
             try:
