@@ -100,15 +100,49 @@ async def require_admin(
 
 async def require_user_role(
     user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
 ) -> AuthenticatedUser:
     """Require the current user to hold the 'user' role.
 
     Admin-only accounts are blocked from file/folder/upload operations.
-    This enforces the separation between management and user activities.
+    Also enforces MFA enrollment when mfa_enforcement='required'.
+
+    Uses get_current_user for a shared DB connection within the same request.
     """
     if not user.is_user:
         raise HTTPException(
             status_code=403,
             detail="This operation requires a user account. Admin-only accounts cannot perform file operations.",
         )
+
+    # MFA enforcement — check whether the user must enroll before accessing resources.
+    # Only fires when enforcement is not 'off' so the overhead is zero in the default config.
+    from app.auth.mfa import load_mfa_settings, get_active_methods
+    mfa_settings = await load_mfa_settings(db)
+    enforcement = mfa_settings["mfa_enforcement"]
+
+    if enforcement != "off":
+        cursor = await db.execute(
+            "SELECT mfa_reset_required FROM users WHERE id = ?", (user.id,)
+        )
+        mfa_row = await cursor.fetchone()
+        mfa_reset_required = bool(mfa_row["mfa_reset_required"]) if mfa_row else False
+
+        if mfa_reset_required:
+            # Admin forced re-enrollment: block regardless of enforcement mode
+            raise HTTPException(
+                status_code=403,
+                detail={"error": "mfa_enrollment_required"},
+            )
+
+        if enforcement == "required":
+            active = await get_active_methods(db, user.id)
+            allowed = mfa_settings["mfa_allowed_methods"]
+            satisfying = (active & set(allowed)) if allowed else active
+            if not satisfying:
+                raise HTTPException(
+                    status_code=403,
+                    detail={"error": "mfa_enrollment_required"},
+                )
+
     return user

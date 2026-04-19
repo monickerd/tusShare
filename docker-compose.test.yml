@@ -1,0 +1,133 @@
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tusshare_test_postgres
+    environment:
+      POSTGRES_DB: tusshare_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: test_superpass
+      TUSSHARE_PG_PASSWORD: test_apppass
+      TUSSHARE_APP_USER: tusshare_app
+    volumes:
+      # Reuse the same init script that creates the limited app user
+      - ./backend/sql/init-app-user.sh:/docker-entrypoint-initdb.d/init-app-user.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tusshare_test"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  ldap:
+    image: osixia/openldap:1.5.0
+    container_name: tusshare_test_ldap
+    command: ["--copy-service", "--loglevel", "warning"]
+    environment:
+      LDAP_ORGANISATION: "Test Corp"
+      LDAP_DOMAIN: "test.local"
+      LDAP_ADMIN_PASSWORD: "ldap_admin_secret"
+      LDAP_CONFIG_PASSWORD: "ldap_config_secret"
+      LDAP_TLS: "false"
+    ports:
+      - "127.0.0.1:389:389"
+    volumes:
+      - ./tests/fixtures/ldap/seed.ldif:/container/service/slapd/assets/config/bootstrap/ldif/custom/50-seed.ldif:ro
+    healthcheck:
+      test: ["CMD", "ldapsearch", "-x", "-H", "ldap://localhost", "-b", "dc=test,dc=local", "-D", "cn=admin,dc=test,dc=local", "-w", "ldap_admin_secret"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+
+  dex:
+    image: dexidp/dex:v2.41.1
+    container_name: tusshare_test_dex
+    ports:
+      - "127.0.0.1:5556:5556"
+    volumes:
+      - ./tests/fixtures/dex/config.yaml:/etc/dex/config.yaml:ro
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    depends_on:
+      ldap:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:5556/dex/.well-known/openid-configuration"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
+
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    container_name: tusshare_test_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "127.0.0.1:9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-11-21T17-21-54Z
+    container_name: tusshare_test_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin123 &&
+      mc mb --ignore-existing local/tusshare-test &&
+      mc mb --ignore-existing local/tusshare-warm &&
+      echo 'MinIO buckets ready'
+      "
+    restart: "no"
+
+  app:
+    build: .
+    container_name: tusshare_test_app
+    ports:
+      - "127.0.0.1:8001:8080"
+    environment:
+      TUSSHARE_DATABASE_URL: "postgresql://tusshare_app:test_apppass@postgres/tusshare_test"
+      TUSSHARE_SUPERUSER_URL: "postgresql://postgres:test_superpass@postgres/tusshare_test"
+      TUSSHARE_PG_PASSWORD: "test_apppass"
+      TUSSHARE_JWT_SECRET: "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+      # Shorten TTLs so expiry-related tests don't need to sleep long
+      TUSSHARE_ACCESS_TOKEN_EXPIRE_MINUTES: "1"
+      TUSSHARE_REFRESH_TOKEN_EXPIRE_DAYS: "1"
+      TUSSHARE_PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES: "2"
+      TUSSHARE_STEP_UP_WINDOW_SECONDS: "30"
+      TUSSHARE_SESSION_IDLE_TIMEOUT_MINUTES: "5"
+      # Relax rate limits so tests don't self-throttle
+      TUSSHARE_RATE_LIMIT_LOGIN: "100"
+      TUSSHARE_RATE_LIMIT_API: "500"
+      TUSSHARE_RATE_LIMIT_UPLOAD: "100"
+      TUSSHARE_RATE_LIMIT_MANAGEMENT: "500"
+      TUSSHARE_RATE_LIMIT_SHARE_CREATE: "100"
+      TUSSHARE_FORCE_HTTPS: "false"
+      TUSSHARE_DEBUG: "false"
+      # Dex runs over HTTP in the test environment — allow HTTP OIDC issuer URLs.
+      TUSSHARE_ALLOW_HTTP_IDP: "true"
+    volumes:
+      - tusshare_test_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  tusshare_test_data:

@@ -10,7 +10,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
-from app.routes._access import copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
+from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
 
@@ -157,10 +157,11 @@ async def get_folder_contents(
 
     folder = Folder.from_row(folder_row)
 
-    # Access check: owner, admin, shared tree, or team member
+    # Access check: owner, admin, shared tree, team member, or explicit permission
     if folder.owner_id != user.id and not user.is_admin:
         if not await is_in_shared_tree(db, folder_id) and \
-           not await is_team_folder_member(db, folder_id, user.id):
+           not await is_team_folder_member(db, folder_id, user.id) and \
+           not await has_folder_permission(db, folder_id, user.id):
             raise HTTPException(status_code=403, detail="Access denied")
 
     # Child folders
@@ -390,7 +391,9 @@ async def update_folder(
     if body.parent_id and body.parent_id != old_parent:
         sse_broker.publish(body.parent_id, {"type": "change"})
 
-    return {"message": "Folder updated"}
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    updated_row = await cursor.fetchone()
+    return {"folder": Folder.from_row(updated_row).to_dict()}
 
 
 @router.delete("/{folder_id}")

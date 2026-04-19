@@ -96,7 +96,7 @@ class _Result:
 
 
 class Database:
-    """Thin adapter wrapping an asyncpg connection to match the aiosqlite-style API.
+    """Thin adapter wrapping an asyncpg connection with a cursor-style API.
 
     Translates:
       - ? placeholders  → $1, $2, ...
@@ -123,13 +123,15 @@ class Database:
             raise DuplicateError(str(exc)) from exc
 
     async def commit(self) -> None:
-        await self._conn.execute('COMMIT')
+        if self._conn.is_in_transaction():
+            await self._conn.execute('COMMIT')
 
     async def rollback(self) -> None:
-        try:
-            await self._conn.execute('ROLLBACK')
-        except Exception:
-            pass
+        if self._conn.is_in_transaction():
+            try:
+                await self._conn.execute('ROLLBACK')
+            except Exception:
+                pass
 
 
 async def get_db():
@@ -261,8 +263,13 @@ async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
 
         try:
             async with conn.transaction():
-                for stmt in statements:
-                    await conn.execute(stmt)
+                if statements:
+                    # Join into one simple-query call.  Sending a batch avoids
+                    # the asyncpg bug where executing a single CREATE FUNCTION
+                    # with a $$ body returns a None command tag, and also skips
+                    # conn.execute() entirely for tombstone/comment-only files
+                    # (which would trigger an EmptyQueryResponse from postgres).
+                    await conn.execute('\n'.join(statements))
                 await conn.execute(
                     "INSERT INTO _migrations (name) VALUES ($1)", name
                 )

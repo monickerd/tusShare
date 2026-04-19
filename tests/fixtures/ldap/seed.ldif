@@ -1,0 +1,96 @@
+# LDAP seed data for E2E tests
+# Loaded by osixia/openldap on container startup via the
+# /container/service/slapd/assets/config/bootstrap/ldif/custom/ volume mount.
+#
+# Structure:
+#   dc=test,dc=local
+#     ou=users          — test user accounts
+#     ou=groups         — test groups
+#
+# Users
+#   ldap_alice    department=engineering  (used for policy tests)
+#   ldap_bob      department=marketing   (excluded from engineering policy)
+#   ldap_carol    department=engineering, memberOf=admins
+#   ldap_admin    memberOf=admins (used for group membership tests)
+
+# ---- Organisational Units ----
+
+dn: ou=users,dc=test,dc=local
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=test,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+# ---- Groups ----
+
+dn: cn=engineering,ou=groups,dc=test,dc=local
+objectClass: groupOfNames
+cn: engineering
+member: cn=ldap_alice,ou=users,dc=test,dc=local
+member: cn=ldap_carol,ou=users,dc=test,dc=local
+
+dn: cn=marketing,ou=groups,dc=test,dc=local
+objectClass: groupOfNames
+cn: marketing
+member: cn=ldap_bob,ou=users,dc=test,dc=local
+
+dn: cn=admins,ou=groups,dc=test,dc=local
+objectClass: groupOfNames
+cn: admins
+member: cn=ldap_admin,ou=users,dc=test,dc=local
+member: cn=ldap_carol,ou=users,dc=test,dc=local
+
+# ---- Users ----
+
+dn: cn=ldap_alice,ou=users,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+cn: ldap_alice
+sn: Alice
+givenName: Alice
+uid: ldap_alice
+mail: ldap_alice@test.local
+userPassword: Alice!Ldap99
+# Custom attribute used in policy tests
+departmentNumber: engineering
+# osixia/openldap may not have 'department' in its schema by default;
+# departmentNumber is part of inetOrgPerson and serves the same purpose.
+
+dn: cn=ldap_bob,ou=users,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+cn: ldap_bob
+sn: Bob
+givenName: Bob
+uid: ldap_bob
+mail: ldap_bob@test.local
+userPassword: Bob!Ldap99
+departmentNumber: marketing
+
+dn: cn=ldap_carol,ou=users,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+cn: ldap_carol
+sn: Carol
+givenName: Carol
+uid: ldap_carol
+mail: ldap_carol@test.local
+userPassword: Carol!Ldap99
+departmentNumber: engineering
+
+dn: cn=ldap_admin,ou=users,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: organizationalPerson
+objectClass: person
+cn: ldap_admin
+sn: Admin
+givenName: LDAP
+uid: ldap_admin
+mail: ldap_admin@test.local
+userPassword: Admin!Ldap99
+departmentNumber: operations

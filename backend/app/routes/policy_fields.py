@@ -146,7 +146,8 @@ async def create_policy_field(
     except Exception:
         raise HTTPException(status_code=409, detail="A field with that name already exists")
 
-    return {"message": "Policy field registered", "name": body.name}
+    field = await _load_field(db, body.name)
+    return field.to_dict()
 
 
 # ---------------------------------------------------------------------------

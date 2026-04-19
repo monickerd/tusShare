@@ -100,9 +100,39 @@ async def copy_folder_permissions(db, source_folder_id: str, dest_resource_type:
     for row in rows:
         new_id = str(uuid.uuid4())
         await db.execute(
-            "INSERT OR IGNORE INTO permissions "
+            "INSERT INTO permissions "
             "(id, resource_type, resource_id, user_id, permission, recursive, granted_by) "
-            "VALUES (?, ?, ?, ?, ?, 1, ?)",
+            "VALUES (?, ?, ?, ?, ?, 1, ?) "
+            "ON CONFLICT DO NOTHING",
             (new_id, dest_resource_type, dest_resource_id,
              row["user_id"], row["permission"], row["granted_by"]),
         )
+
+
+async def has_folder_permission(db, folder_id: str, user_id: str) -> bool:
+    """Return True if user has an explicit permission entry for this folder.
+
+    Checks the folder itself and walks up through ancestors for recursive grants.
+    Used to honour policy-engine folder_acl effects and manual user-share grants.
+    """
+    visited: set[str] = set()
+    current_id: str | None = folder_id
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        cursor = await db.execute(
+            "SELECT recursive FROM permissions "
+            "WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
+            (current_id, user_id),
+        )
+        row = await cursor.fetchone()
+        if row:
+            if current_id == folder_id or row["recursive"]:
+                return True
+        cursor = await db.execute(
+            "SELECT parent_id FROM folders WHERE id = ?", (current_id,)
+        )
+        prow = await cursor.fetchone()
+        if not prow:
+            return False
+        current_id = prow["parent_id"]
+    return False

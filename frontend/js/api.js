@@ -57,6 +57,14 @@ const Api = (() => {
             let data;
             try { data = await resp.json(); } catch { data = null; }
 
+            if (data?.detail?.error === 'mfa_enrollment_required') {
+                window.location.hash = '#/mfa';
+                const err = new Error('MFA enrollment required');
+                err.status = 403;
+                err.mfaEnrollmentRequired = true;
+                throw err;
+            }
+
             if (data?.detail?.error === 'step_up_required') {
                 const actionKey    = data.detail.action;
                 const challengeType = data.detail.challenge_type || 'password';

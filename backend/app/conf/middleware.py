@@ -43,6 +43,11 @@ CSRF_EXEMPT_PREFIXES = (
     "/api/v1/auth/opaque/bootstrap/",
     "/api/v1/auth/opaque/migrate/",
     "/api/v1/auth/opaque/recover/",
+    # LDAP login is an unauthenticated pre-session endpoint — no CSRF cookie
+    # exists before the first login completes, so the double-submit pattern
+    # cannot be applied.  Login-CSRF risk is low: credentials must be valid
+    # and the attacker gains no access to the victim's data.
+    "/api/v1/auth/ldap/login",
     "/s/",
     "/l/",
 )

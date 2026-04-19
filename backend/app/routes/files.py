@@ -15,12 +15,12 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import get_current_user, get_optional_user, require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.config import settings
-from app.database import get_db
+from app.database import db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.models.file import File, FileChunk
 from app.routes._access import copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
+import app.storage.manager as storage
 from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,35 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
     raise HTTPException(status_code=403, detail="Access denied")
 
 router = APIRouter()
+
+
+async def _av_gate_active(db) -> bool:
+    """Return True when av_require_clean is enabled AND av_scan_endpoint is configured."""
+    cursor = await db.execute(
+        "SELECT key, value FROM admin_settings "
+        "WHERE key IN ('av_require_clean', 'av_scan_endpoint')"
+    )
+    rows = {r["key"]: r["value"] for r in await cursor.fetchall()}
+    return (
+        rows.get("av_require_clean", "false").lower() == "true"
+        and bool(rows.get("av_scan_endpoint", "").strip())
+    )
+
+
+async def _check_av_gate(db, file_row) -> None:
+    """Raise 451 if av_require_clean is active and file is not clean."""
+    if file_row.get("av_scan_status") == "clean":
+        return
+    if not await _av_gate_active(db):
+        return
+    status = file_row.get("av_scan_status") or "null"
+    raise HTTPException(
+        status_code=451,
+        detail={
+            "detail":    "File pending antivirus scan",
+            "av_status": status,
+        },
+    )
 
 
 class UpdateFileRequest(BaseModel):
@@ -153,16 +182,22 @@ async def batch_move_files(
             )
 
     succeeded: list[str] = []
-    failed: list[str] = []
+    failed: list[dict] = []
+
+    gate_active = await _av_gate_active(db)
 
     for item in body.files:
         try:
             cursor = await db.execute(
-                "SELECT id, folder_id, owner_id FROM files WHERE id = ?", (item.id,)
+                "SELECT id, folder_id, owner_id, av_scan_status FROM files WHERE id = ?", (item.id,)
             )
             file_row = await cursor.fetchone()
             if file_row is None:
-                failed.append(item.id)
+                failed.append({"id": item.id, "reason": "not_found"})
+                continue
+
+            if gate_active and file_row.get("av_scan_status") != "clean":
+                failed.append({"id": item.id, "reason": "av_not_clean"})
                 continue
 
             src_folder_id = file_row["folder_id"]
@@ -174,19 +209,19 @@ async def batch_move_files(
                 # Non-owner: allowed only when moving others' files out of a team folder
                 # and the user holds move_others_files_out_of_team for that team.
                 if not src_team_id:
-                    failed.append(item.id)
+                    failed.append({"id": item.id, "reason": "permission_denied"})
                     continue
                 from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OTHERS_OUT
                 move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
                 if not move_flags[TEAM_FLAG_MOVE_OTHERS_OUT]:
-                    failed.append(item.id)
+                    failed.append({"id": item.id, "reason": "permission_denied"})
                     continue
             elif src_team_id and src_team_id != dest_team_id:
                 # Owner moving their file OUT of a team (to personal space or a different team)
                 from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OWN_OUT
                 move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
                 if not move_flags[TEAM_FLAG_MOVE_OWN_OUT]:
-                    failed.append(item.id)
+                    failed.append({"id": item.id, "reason": "permission_denied"})
                     continue
 
             await db.execute("BEGIN")
@@ -241,10 +276,10 @@ async def batch_move_files(
 
             except Exception:
                 await db.rollback()
-                failed.append(item.id)
+                failed.append({"id": item.id, "reason": "error"})
 
         except Exception:
-            failed.append(item.id)
+            failed.append({"id": item.id, "reason": "error"})
 
     return {"succeeded": succeeded, "failed": failed}
 
@@ -382,12 +417,11 @@ async def delete_file(
         raise HTTPException(status_code=403, detail="Access denied")
 
     storage_key = row["storage_key"]
-    # Defense-in-depth: validate storage_key is a UUID before using in path
-    validate_uuid(storage_key)
     encrypted_size = row["encrypted_size"]
     owner_id = row["owner_id"]
 
-    # Atomic: update quota + delete record in one transaction
+    # Atomic: update quota + delete record in one transaction.
+    # file_storage_locations cascades on files DELETE.
     await db.execute("BEGIN")
     try:
         await db.execute(
@@ -403,18 +437,31 @@ async def delete_file(
     # Notify any SSE subscribers watching this folder
     sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
 
-    # Disk cleanup after commit — non-blocking, best-effort
-    blob_path = settings.FILES_DIR / storage_key
-
-    def _unlink_blob():
+    # Blob cleanup after commit — non-blocking, best-effort.
+    # file_storage_locations rows were already cascade-deleted with the files row.
+    async def _bg_delete(fid: str, key: str) -> None:
         try:
-            blob_path.unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning("Failed to delete blob %s: %s", storage_key, exc)
+            async with db_session() as _db:
+                await storage.get_manager().delete_blob(_db, fid, key)
+        except Exception:
+            pass
 
-    await asyncio.to_thread(_unlink_blob)
+    asyncio.create_task(_bg_delete(file_id, storage_key))
 
     return {"message": "File deleted"}
+
+
+async def _update_last_accessed(file_id: str) -> None:
+    try:
+        from datetime import datetime, timezone
+        async with db_session() as _db:
+            await _db.execute(
+                "UPDATE files SET last_accessed_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), file_id),
+            )
+            await _db.commit()
+    except Exception:
+        pass
 
 
 async def _log_download(
@@ -470,7 +517,7 @@ async def get_file_content(
 
     cursor = await db.execute(
         "SELECT id, storage_key, owner_id, folder_id, sanitized_name, "
-        "encrypted_size, upload_complete FROM files WHERE id = ?",
+        "encrypted_size, upload_complete, transfer_locked_at, av_scan_status FROM files WHERE id = ?",
         (file_id,),
     )
     row = await cursor.fetchone()
@@ -480,22 +527,24 @@ async def get_file_content(
     if not row["upload_complete"]:
         raise HTTPException(status_code=409, detail="File upload is not complete")
 
+    if row["transfer_locked_at"] is not None:
+        raise HTTPException(status_code=423, detail="File is transfer-locked by an administrator")
+
     await check_file_access(db, row, user)
 
+    # AV gate: block download when av_require_clean is enabled and file is not confirmed clean
+    await _check_av_gate(db, row)
+
     storage_key = row["storage_key"]
-    validate_uuid(storage_key)  # defense-in-depth: must be a UUID before path join
-    blob_path = settings.FILES_DIR / storage_key
     encrypted_size: int = row["encrypted_size"]
 
     if encrypted_size <= 0:
         raise HTTPException(status_code=422, detail="File has no content")
 
-    # Verify blob exists on disk before committing to stream
-    blob_exists = await asyncio.to_thread(blob_path.exists)
+    # Verify blob is reachable before committing to stream
+    blob_exists = await storage.get_manager().exists(db, file_id, storage_key)
     if not blob_exists:
-        logger.error(
-            "Blob missing for file %s (storage_key=%s)", file_id, storage_key
-        )
+        logger.error("Blob missing for file %s (storage_key=%s)", file_id, storage_key)
         raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
 
     # --- Parse Range header ---
@@ -533,9 +582,10 @@ async def get_file_content(
     # --- Bandwidth enforcement (checked before streaming begins) ---
     await check_bandwidth(db, user.id, content_length)
 
-    # --- Access log (once per file download, not once per chunk request) ---
+    # --- Access log + last_accessed_at update (on first chunk request) ---
     if not range_header or start == 0:
         await _log_download(db, request, user, file_id)
+        asyncio.create_task(_update_last_accessed(file_id))
 
     # --- Content-Disposition: RFC 5987 UTF-8 encoded filename ---
     safe_name = row["sanitized_name"] or "download"
@@ -551,28 +601,9 @@ async def get_file_content(
     if status_code == 206:
         resp_headers["Content-Range"] = f"bytes {start}-{end}/{encrypted_size}"
 
-    # --- Stream the requested byte range ---
-    async def _stream():
-        READ_SIZE = 256 * 1024  # 256 KB read buffer
-
-        def _read_slice(pos: int, size: int) -> bytes:
-            with open(blob_path, "rb") as f:
-                f.seek(pos)
-                return f.read(size)
-
-        pos = start
-        remaining = content_length
-        while remaining > 0:
-            to_read = min(READ_SIZE, remaining)
-            data = await asyncio.to_thread(_read_slice, pos, to_read)
-            if not data:
-                break
-            yield data
-            pos += len(data)
-            remaining -= len(data)
-
+    stream = await storage.get_manager().read_stream(db, file_id, storage_key, start, end)
     return StreamingResponse(
-        _stream(),
+        stream,
         status_code=status_code,
         media_type="application/octet-stream",
         headers=resp_headers,

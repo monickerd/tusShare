@@ -61,6 +61,7 @@ const App = (() => {
         { pattern: /^#\/teams$/,                                                              handler: _routeTeams },
         { pattern: /^#\/admin$/,                                                              handler: _routeAdmin },
         { pattern: /^#\/join\/([0-9a-f-]+)\/([0-9a-f-]+)\/([A-Za-z0-9_-]+)$/,               handler: _routeEphemeralJoin },
+        { pattern: /^#\/mfa$/,                                                                handler: _routeMfa },
         { pattern: /^#\/s\/(.+)$/,                                                            handler: _routePublicShare },
         { pattern: /^#\/l\/(.+)$/,                                                            handler: _routeShortLink },
     ];
@@ -70,6 +71,39 @@ const App = (() => {
         // Errors are swallowed — falls back to Config.app.name gracefully.
         await _loadTheme();
         _applyThemeFlags();
+
+        // OIDC callback detection — check query params set by the server after the
+        // IdP redirect.  Must run before the normal auth check so we handle the
+        // callback URL before it is stripped by the SPA router.
+        const _qs = new URLSearchParams(window.location.search);
+        if (_qs.has('oidc_error')) {
+            // Clean the query string and show login with an error banner
+            history.replaceState(null, '', '/');
+            window.location.hash = '#/login';
+            await _routeLogin(_appEl());
+            Utils.showToast('Sign-in via identity provider failed. Please try again.', 'error');
+            return;
+        }
+        if (_qs.has('mfa_pending')) {
+            const pendingToken = _qs.get('mfa_pending');
+            history.replaceState(null, '', '/');
+            window.location.hash = '#/login';
+            // Fetch available MFA methods from the pending token context
+            // by attempting a TOTP verify with an empty code — actually, we call
+            // a dedicated endpoint to list the methods for a pending token.
+            try {
+                const mfaInfo = await Api.post(
+                    `${Config.app.apiPrefix}/auth/mfa/pending-info`,
+                    { pending_token: pendingToken },
+                );
+                Auth.renderOidcMfaChallenge(_appEl(), pendingToken, mfaInfo.methods || []);
+            } catch {
+                // If we can't determine methods, show an empty challenge — the MFA
+                // verify endpoints will reject the token if it's expired.
+                Auth.renderOidcMfaChallenge(_appEl(), pendingToken, []);
+            }
+            return;
+        }
 
         // Path-based public routes — handled before auth check so unauthenticated
         // users land on the correct page rather than being bounced to login.
@@ -132,6 +166,25 @@ const App = (() => {
             const container = _appEl();
             Auth.renderKeyPrompt(container);
             return;
+        }
+
+        // MFA enforcement gate: if required mode and user has no credentials,
+        // redirect to #/mfa enrollment before allowing any file access.
+        if (!Auth.getCurrentUser()?.is_admin) {
+            try {
+                const mfaStatus = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
+                if (mfaStatus.enforcement === 'required' && mfaStatus.active_count === 0) {
+                    window.location.hash = '#/mfa';
+                    _onHashChange();
+                    return;
+                }
+                // Show nudge banner in optional mode (non-blocking)
+                if (mfaStatus.enforcement === 'optional') {
+                    Auth.checkMfaBanner(_appEl());
+                }
+            } catch {
+                // Non-critical — proceed without enforcement
+            }
         }
 
         // Navigate to current hash or default
@@ -294,6 +347,12 @@ const App = (() => {
         Admin.renderAdminPage(document.getElementById('main-content'));
     }
 
+    function _routeMfa(container) {
+        _renderShell(container);
+        const main = document.getElementById('main-content');
+        Auth.renderMfaSettings(main);
+    }
+
     function _routePublicShare(container, token) {
         // Public share pages are now served via path-based routing in init().
         // This hash-based fallback handles direct #/s/ navigation within the SPA.
@@ -342,6 +401,7 @@ const App = (() => {
             ]),
 
             Utils.el('a', { href: '#/teams', className: 'sidebar-link', id: 'nav-teams', textContent: 'Manage Teams' }),
+            Utils.el('a', { href: '#/mfa',   className: 'sidebar-link', id: 'nav-mfa',   textContent: 'Security' }),
         ]);
         if (user && user.is_admin) {
             nav.appendChild(Utils.el('a', {
@@ -386,6 +446,31 @@ const App = (() => {
             shellChildren.push(banner);
         }
 
+        // E5: Admin transparency banner — shown when key escrow is active for one or more
+        // of the user's teams. Suppressible via theme.json ui.admin_transparency_banner=false.
+        // Dismissed per-session; will reappear on next login if escrow is still active.
+        const _ESCROW_DISMISSED_KEY = 'escrow_banner_dismissed';
+        if (
+            user && user.escrow_active &&
+            !sessionStorage.getItem(_ESCROW_DISMISSED_KEY)
+        ) {
+            const escrowBanner = Utils.el('div', { className: 'admin-transparency-banner' }, [
+                Utils.el('span', {
+                    textContent: 'Admin key escrow is active: designated escrow agents may access the encryption keys for one or more teams you belong to.',
+                }),
+                Utils.el('button', {
+                    className: 'admin-transparency-banner-dismiss',
+                    title: 'Dismiss',
+                    textContent: '\u00d7',   // ×
+                    onClick: () => {
+                        sessionStorage.setItem(_ESCROW_DISMISSED_KEY, '1');
+                        if (escrowBanner.parentNode) escrowBanner.parentNode.removeChild(escrowBanner);
+                    },
+                }),
+            ]);
+            shellChildren.push(escrowBanner);
+        }
+
         shellChildren.push(
             Utils.el('div', { className: 'app-body' }, [
                 Utils.el('aside', { className: 'sidebar', id: 'folder-sidebar' }, [
@@ -410,6 +495,7 @@ const App = (() => {
             { id: 'nav-team-folders', test: h => /^#\/team-folders(\/.*)?$/.test(h) },
             { id: 'nav-teams',        test: h => /^#\/teams(\/.*)?$/.test(h) },
             { id: 'nav-admin',        test: h => h === '#/admin' },
+            { id: 'nav-mfa',          test: h => h === '#/mfa' },
         ];
         rules.forEach(({ id, test }) => {
             const el = document.getElementById(id);

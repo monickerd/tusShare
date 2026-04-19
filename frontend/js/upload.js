@@ -65,6 +65,9 @@ const Upload = (() => {
         const fileKeyBytes = new Uint8Array(await crypto.subtle.exportKey('raw', fileKey));
         const { encryptedKeyB64, ivB64: keyIvB64 } = await Crypto.encryptFileKey(fileKey, masterKey);
 
+        // Optionally wrap the file key with the server's escrow public key (for server-side AV)
+        const escrowMeta = await _tryEscrowWrap(fileKeyBytes);
+
         // Build tus Upload-Metadata header
         const meta = _buildMetadata({
             filename:           file.name,
@@ -74,6 +77,7 @@ const Upload = (() => {
             key_iv:             keyIvB64,
             chunk_size:         String(chunkSize),
             original_size:      String(file.size),
+            ...escrowMeta,
         });
 
         // POST — create the upload (retry once on 401 to handle expired access tokens)
@@ -336,6 +340,92 @@ const Upload = (() => {
 
     function _csrf() {
         return Utils.parseCookie(Config.auth.cookieCsrfName) || '';
+    }
+
+    // Cached escrow public key (CryptoKey) — fetched once per session, null if unavailable
+    let _escrowPublicKey = undefined; // undefined = not yet fetched; null = server has none
+
+    /**
+     * Try to fetch and cache the server's escrow public key (P-256 ECDH).
+     * Returns the CryptoKey on success, or null if not configured / on any error.
+     */
+    async function _getEscrowPublicKey() {
+        if (_escrowPublicKey !== undefined) return _escrowPublicKey;
+        try {
+            const data = await Api.get(`${_prefix()}/uploads/escrow-key`);
+            const spkiBytes = Uint8Array.from(atob(data.escrow_public_key), c => c.charCodeAt(0));
+            _escrowPublicKey = await crypto.subtle.importKey(
+                'spki', spkiBytes,
+                { name: 'ECDH', namedCurve: 'P-256' },
+                false,
+                [],
+            );
+        } catch {
+            _escrowPublicKey = null;
+        }
+        return _escrowPublicKey;
+    }
+
+    /**
+     * Encrypt fileKeyBytes with the server's escrow public key via ECDH/P-256 + HKDF + AES-GCM.
+     * Returns an object with escrow metadata fields, or {} if escrow is not configured.
+     *
+     * Key derivation mirrors av_scanner.py: HKDF-SHA256, salt=32×0, info="av-escrow".
+     */
+    async function _tryEscrowWrap(fileKeyBytes) {
+        const serverPub = await _getEscrowPublicKey();
+        if (!serverPub) return {};
+        try {
+            // Ephemeral ECDH keypair for this file
+            const ephemeral = await crypto.subtle.generateKey(
+                { name: 'ECDH', namedCurve: 'P-256' },
+                true,
+                ['deriveBits'],
+            );
+
+            // ECDH shared secret
+            const sharedBits = await crypto.subtle.deriveBits(
+                { name: 'ECDH', public: serverPub },
+                ephemeral.privateKey,
+                256,
+            );
+
+            // HKDF-SHA256 → 256-bit AES wrap key
+            const hkdfKey = await crypto.subtle.importKey('raw', sharedBits, 'HKDF', false, ['deriveKey']);
+            const wrapKey = await crypto.subtle.deriveKey(
+                {
+                    name: 'HKDF',
+                    hash: 'SHA-256',
+                    salt: new Uint8Array(32),
+                    info: new TextEncoder().encode('av-escrow'),
+                },
+                hkdfKey,
+                { name: 'AES-GCM', length: 256 },
+                false,
+                ['encrypt'],
+            );
+
+            // AES-GCM encrypt the file key
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const encryptedKey = await crypto.subtle.encrypt(
+                { name: 'AES-GCM', iv },
+                wrapKey,
+                fileKeyBytes,
+            );
+
+            // Export ephemeral public key as SPKI
+            const spkiBytes = await crypto.subtle.exportKey('spki', ephemeral.publicKey);
+
+            const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+            return {
+                escrow_ephemeral_pk:  toB64(spkiBytes),
+                escrow_encrypted_key: toB64(encryptedKey),
+                escrow_key_iv:        toB64(iv.buffer),
+            };
+        } catch {
+            // Non-fatal: escrow wrap failure must never block the upload
+            return {};
+        }
     }
 
     /**

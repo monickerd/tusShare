@@ -229,9 +229,42 @@ async def refresh(
 
 
 @router.get("/me")
-async def me(user: AuthenticatedUser = Depends(get_current_user)):
+async def me(
+    user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
     """Return the current user's profile including key wrapping blobs."""
-    return {"user": _user_response_dict(user)}
+    # E5: check whether any team the user belongs to is covered by an active
+    # escrow policy. Returns true when either:
+    #   (a) a policy with escrow_enabled=1 has a team_member effect on that team, OR
+    #   (b) a team_escrow effect with escrow_override=1 targets that team.
+    cursor = await db.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1 FROM user_team_keys utk
+            WHERE utk.user_id = ?
+            AND (
+                EXISTS (
+                    SELECT 1 FROM policy_effects pe
+                    JOIN policies p ON p.id = pe.policy_id
+                    WHERE pe.effect_type = 'team_member'
+                    AND pe.target_id = utk.team_id
+                    AND p.escrow_enabled = 1
+                )
+                OR EXISTS (
+                    SELECT 1 FROM policy_effects pe2
+                    WHERE pe2.effect_type = 'team_escrow'
+                    AND pe2.target_id = utk.team_id
+                    AND pe2.escrow_override = 1
+                )
+            )
+        ) AS escrow_active
+        """,
+        (user.id,),
+    )
+    row = await cursor.fetchone()
+    escrow_active = bool(row["escrow_active"]) if row else False
+    return {"user": {**_user_response_dict(user), "escrow_active": escrow_active}}
 
 
 # ---------------------------------------------------------------------------
@@ -531,9 +564,18 @@ async def step_up(
     # Trigger 1 — fire-and-forget policy evaluation on step-up (E3).
     # Step-up confirms the user knows their password; treat it the same as login
     # for policy freshness.  Do not await — step-up response returns immediately.
+    # Uses its own db_session() connection (see opaque_auth.py Trigger 1 note).
     try:
         from app.models.policy import evaluate_user_policies as _eval_policies
-        asyncio.create_task(_eval_policies(db, user.id))
+        from app.database import db_session as _db_session
+        _uid = user.id
+        async def _bg_step_up_eval() -> None:
+            try:
+                async with _db_session() as _bg_db:
+                    await _eval_policies(_bg_db, _uid)
+            except Exception:
+                pass
+        asyncio.create_task(_bg_step_up_eval())
     except Exception:
         pass  # policy engine must not block step-up
 

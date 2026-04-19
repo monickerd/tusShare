@@ -484,7 +484,14 @@ async def opaque_register_finish(
     _set_auth_cookies(response, access_token, raw_refresh, csrf_token)
 
     logger.info("New OPAQUE user registered: %s (id=%s)", user.username, user.id)
-    return {"user": _user_response_dict(user)}
+
+    # Tell the client if they need to enroll MFA before accessing resources.
+    # New users never have credentials, so only the enforcement mode matters.
+    from app.auth.mfa import load_mfa_settings as _load_mfa
+    mfa_settings = await _load_mfa(db)
+    mfa_enrollment_required = mfa_settings["mfa_enforcement"] == "required"
+
+    return {"user": _user_response_dict(user), "mfa_enrollment_required": mfa_enrollment_required}
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +591,59 @@ async def opaque_login_finish(
         # both succeeded, but guard anyway
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    # MFA gate (F7) — check for active MFA credentials and enforcement policy.
+    # If MFA is required, return a pending_token instead of session cookies so
+    # the client can complete the MFA challenge.  mfa_reset_required bypasses
+    # the "no credentials → skip" path and forces the user to enrollment.
+    from app.auth.mfa import (
+        get_active_methods,
+        issue_pending_token,
+        store_pending_token,
+        extract_pending_jti,
+    )
+    cursor = await db.execute(
+        "SELECT mfa_reset_required FROM users WHERE id = ?", (user.id,)
+    )
+    mfa_row = await cursor.fetchone()
+    mfa_reset_required = bool(mfa_row["mfa_reset_required"]) if mfa_row else False
+
+    active_methods = await get_active_methods(db, user.id)
+
+    if active_methods or mfa_reset_required:
+        # User has MFA enrolled (or admin forced re-enrollment) — issue pending token
+        pending_token = issue_pending_token(user.id)
+        jti = extract_pending_jti(pending_token)
+        is_public_device = body.is_public_device
+        await store_pending_token(db, jti, user.id, is_public_device)
+        await db.commit()
+
+        logger.info(
+            "OPAQUE login: user=%s (id=%s) — MFA required (methods=%s reset=%s)",
+            user.username, user.id, sorted(active_methods), mfa_reset_required,
+        )
+
+        # Fire-and-forget policy eval (same as normal login path)
+        try:
+            from app.models.policy import evaluate_user_policies as _eval_mfa_policies
+            from app.database import db_session as _db_session_mfa
+            _mfa_uid = user.id
+            async def _bg_mfa_eval() -> None:
+                try:
+                    async with _db_session_mfa() as _bg_db:
+                        await _eval_mfa_policies(_bg_db, _mfa_uid)
+                except Exception:
+                    pass
+            asyncio.create_task(_bg_mfa_eval())
+        except Exception:
+            pass
+
+        return {
+            "mfa_required": True,
+            "methods": sorted(active_methods),
+            "reset_required": mfa_reset_required,
+            "pending_token": pending_token,
+        }
+
     # Public device sessions get a shorter-lived refresh token to limit exposure
     # if the user forgets to log out.  Key material stays in sessionStorage only
     # (cleared on tab close) — enforced on the client side.
@@ -610,17 +670,41 @@ async def opaque_login_finish(
         user.username, user.id, is_public_device,
     )
 
+    # Tell the client if MFA enrollment is required (enforcement=required, no credentials).
+    # active_methods is already loaded above and is empty at this point.
+    mfa_enrollment_required = False
+    if not active_methods:
+        from app.auth.mfa import load_mfa_settings as _load_mfa_login
+        _login_mfa_settings = await _load_mfa_login(db)
+        mfa_enrollment_required = _login_mfa_settings["mfa_enforcement"] == "required"
+
     # Trigger 1 — evaluate policies on every password-entry event (E3).
     # Runs fire-and-forget so login latency is unaffected.  Debounce inside
     # evaluate_user_policies prevents redundant LDAP queries on rapid
     # login → step-up sequences.
+    #
+    # IMPORTANT: uses its own db_session() connection, NOT the request's `db`
+    # connection.  Passing the request connection to a background task is unsafe:
+    # get_db() releases it to the pool when this handler returns, and another
+    # request could acquire the same connection while the task is still using it.
     try:
         from app.models.policy import evaluate_user_policies as _eval_policies
-        asyncio.create_task(_eval_policies(db, user.id))
+        from app.database import db_session as _db_session
+        _uid = user.id
+        async def _bg_eval() -> None:
+            try:
+                async with _db_session() as _bg_db:
+                    await _eval_policies(_bg_db, _uid)
+            except Exception:
+                pass
+        asyncio.create_task(_bg_eval())
     except Exception:
         pass  # policy engine must not block authentication
 
-    return {"user": _user_response_dict(user)}
+    resp_body = {"user": _user_response_dict(user)}
+    if mfa_enrollment_required:
+        resp_body["mfa_enrollment_required"] = True
+    return resp_body
 
 
 # ---------------------------------------------------------------------------

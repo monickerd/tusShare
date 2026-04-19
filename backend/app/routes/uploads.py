@@ -10,10 +10,9 @@ X-Chunk-IV header. The server stores bytes verbatim — it never decrypts.
 import asyncio
 import base64
 import hashlib
+import json
 import logging
-import os
 import re
-import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +25,7 @@ from app.config import settings
 from app.database import get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.services import sse_broker
+import app.storage.manager as storage
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -36,27 +36,6 @@ _TUS_VERSION = "1.0.0"
 _CONTENT_TYPE_PATCH = "application/offset+octet-stream"
 # Maximum single-chunk body: chunkSize (default 5 MB) + AES-GCM tag (16 B) + headroom
 _MAX_CHUNK_BYTES = 21 * 1024 * 1024  # 21 MB
-
-# ---------------------------------------------------------------------------
-# Page-cache eviction — stride-based
-# ---------------------------------------------------------------------------
-# On every completed chunk the PATCH handler checks whether the upload has
-# crossed another _EVICT_STRIDE boundary.  When it has, the staging blob is
-# fdatasync'd (flushing dirty pages to storage so they become evictable) and
-# posix_fadvise(DONTNEED) is called for all bytes written so far.  This caps
-# page-cache consumption to roughly _EVICT_STRIDE per concurrent upload
-# regardless of file size — important on network volumes where fdatasync per
-# chunk would add one storage round-trip per 5 MB instead of one per 32 MB.
-#
-# _evict_offsets tracks {upload_id → bytes evicted so far} in process memory.
-# The dict is intentionally process-local: if the server restarts mid-upload
-# the worst case is one stride's worth of stale pages that the kernel reclaims
-# naturally under memory pressure.  Redis is the right home for this state once
-# the server goes multi-worker (Phase F).
-#
-# The stride itself is read from settings at first use so that the configured
-# value is always current (including test overrides).  0 = disabled.
-_evict_offsets: dict[str, int] = {}
 
 
 def _tus_headers(extra: dict | None = None) -> dict:
@@ -88,38 +67,6 @@ def _parse_upload_metadata(raw: str) -> dict[str, str]:
             val = ""
         result[key] = val
     return result
-
-
-def _write_chunk_at(path, offset: int, data: bytes) -> None:
-    """Write *data* at *offset*, truncating any stale bytes beyond the new end.
-
-    Idempotent: re-sending the same chunk at the same offset overwrites
-    identically, so a DB-rollback-then-retry scenario is safe.
-
-    Page-cache eviction is handled separately by _stride_evict, called by
-    the PATCH handler after every _EVICT_STRIDE bytes written.
-    """
-    mode = "r+b" if path.exists() else "wb"
-    with open(path, mode) as f:
-        f.seek(offset)
-        f.write(data)
-        f.truncate()
-
-
-def _stride_evict(path, up_to: int) -> None:
-    """fdatasync the staging blob then advise the OS to evict pages [0, up_to).
-
-    fdatasync first: POSIX_FADV_DONTNEED only evicts *clean* pages.  Calling
-    it on dirty pages is a no-op on Linux, so without the sync step the hint
-    would be silently ignored and cache would keep growing.  Opening r+b is
-    required because fdatasync needs a writable file descriptor.
-    """
-    try:
-        with open(path, "r+b") as f:
-            os.fdatasync(f.fileno())
-            os.posix_fadvise(f.fileno(), 0, up_to, os.POSIX_FADV_DONTNEED)
-    except (AttributeError, OSError):
-        pass  # not available (Windows/macOS/some BSDs) or unsupported filesystem
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +105,19 @@ async def create_upload(
                   "chunk_size", "original_size"):
         if field not in meta:
             raise HTTPException(status_code=400, detail=f"Missing metadata field: {field}")
+
+    # Optional escrow fields — present only when TUSSHARE_ESCROW_PRIVATE_KEY is configured
+    # and the client has fetched the server's escrow public key.
+    escrow_ephemeral_pk: str | None = meta.get("escrow_ephemeral_pk") or None
+    escrow_encrypted_key: str | None = meta.get("escrow_encrypted_key") or None
+    escrow_key_iv: str | None = meta.get("escrow_key_iv") or None
+    if escrow_ephemeral_pk and escrow_encrypted_key and escrow_key_iv:
+        try:
+            validate_base64(escrow_ephemeral_pk)
+            validate_base64(escrow_encrypted_key)
+            validate_base64(escrow_key_iv)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid escrow key field encoding")
 
     try:
         sanitized = sanitize_filename(meta["filename"])
@@ -224,6 +184,41 @@ async def create_upload(
         if user_row["disk_used"] + total_encrypted_size > user_row["disk_quota"]:
             raise HTTPException(status_code=413, detail="Storage quota exceeded")
 
+        # Emit quota warning event when usage is at or above the warn threshold.
+        # Fires on every upload attempt in that range — the deduplication gate in
+        # op_bus suppresses repeat notifications until the user drops below the threshold.
+        try:
+            quota_cursor = await db.execute(
+                "SELECT value FROM admin_settings WHERE key = 'upload_quota_warn_pct'"
+            )
+            quota_row = await quota_cursor.fetchone()
+            warn_pct = int(quota_row["value"]) if quota_row and quota_row["value"] else 90
+            used_pct = user_row["disk_used"] / user_row["disk_quota"] * 100
+            if used_pct >= warn_pct:
+                from app.services import op_bus
+                from app.schemas.op_event import OperationalEvent
+                op_bus.emit(OperationalEvent(
+                    event_type="upload.quota.warning",
+                    severity="warning", source="upload",
+                    data={
+                        "user_id":     user.id,
+                        "used_bytes":  user_row["disk_used"],
+                        "quota_bytes": user_row["disk_quota"],
+                        "used_pct":    round(used_pct, 1),
+                        "catch_up":    False,
+                    },
+                ))
+            else:
+                from app.services import op_bus
+                from app.schemas.op_event import OperationalEvent
+                op_bus.emit(OperationalEvent(
+                    event_type="upload.quota.ok",
+                    severity="info", source="upload",
+                    data={"user_id": user.id},
+                ))
+        except Exception:
+            pass
+
     total_chunks = (original_size + chunk_size - 1) // chunk_size
 
     # --- Create file + tus_upload records atomically ---
@@ -241,13 +236,15 @@ async def create_upload(
             INSERT INTO files (
                 id, original_name, sanitized_name, storage_key, folder_id, owner_id,
                 mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
-                encrypted_file_key, key_iv, upload_complete
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                encrypted_file_key, key_iv, upload_complete,
+                escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
             """,
             (
                 file_id, original_name, sanitized_name, storage_key, folder_id, user.id,
                 mime_type, original_size, total_encrypted_size, chunk_size, total_chunks,
                 encrypted_file_key, key_iv,
+                escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
             ),
         )
         # Inherit recursive permissions from the parent folder (personal root = no-inherit)
@@ -256,8 +253,9 @@ async def create_upload(
         await db.execute(
             """
             INSERT INTO tus_uploads
-                (id, file_id, user_id, total_size, current_offset, next_chunk, expires_at)
-            VALUES (?, ?, ?, ?, 0, 0, ?)
+                (id, file_id, user_id, total_size, current_offset, next_chunk,
+                 expires_at, part_tags)
+            VALUES (?, ?, ?, ?, 0, 0, ?, '[]')
             """,
             (upload_id, file_id, user.id, total_encrypted_size, expires_at),
         )
@@ -265,6 +263,8 @@ async def create_upload(
     except Exception:
         await db.rollback()
         raise
+
+    await storage.get_manager().begin_upload(upload_id)
 
     return Response(
         status_code=201,
@@ -406,45 +406,38 @@ async def patch_upload(
     # --- Bandwidth enforcement (checked before disk write) ---
     await check_bandwidth(db, user.id, chunk_size)
 
-    # --- Fetch storage_key from file record ---
+    # --- Fetch file record (storage_key, transfer lock) ---
     cursor = await db.execute(
-        "SELECT id, storage_key, folder_id, owner_id FROM files WHERE id = ?",
+        "SELECT id, storage_key, folder_id, owner_id, transfer_locked_at FROM files WHERE id = ?",
         (row["file_id"],),
     )
     file_row = await cursor.fetchone()
     if file_row is None:
         raise HTTPException(status_code=500, detail="File record missing for upload")
 
+    if file_row["transfer_locked_at"] is not None:
+        raise HTTPException(status_code=423, detail="File is transfer-locked by an administrator")
+
     storage_key = file_row["storage_key"]
-    validate_uuid(storage_key)  # defense-in-depth before path join (matches files.py)
     chunk_index = row["next_chunk"]
     is_complete = new_offset == row["total_size"]
 
-    # --- Write chunk to staging blob (seek+write+truncate = idempotent) ---
-    upload_blob = settings.UPLOADS_DIR / upload_id
+    # --- Write chunk via storage manager (provider handles seek/multipart internally) ---
     try:
-        await asyncio.to_thread(_write_chunk_at, upload_blob, client_offset, chunk_data)
-    except OSError as exc:
+        etag = await storage.get_manager().write_chunk(
+            upload_id, chunk_index + 1, client_offset, chunk_data
+        )
+    except Exception as exc:
         logger.error("Failed to write chunk for upload %s: %s", upload_id, exc)
         raise HTTPException(status_code=500, detail="Chunk write failed")
 
-    # --- Stride-based page-cache eviction ---
-    # Every UPLOAD_EVICT_STRIDE_MB bytes, fdatasync the staging blob and advise
-    # the OS to evict all pages written so far.  This caps page-cache consumption
-    # to ~stride per concurrent upload, avoiding a climb proportional to file size
-    # that would otherwise appear in container memory metrics.  0 = disabled.
-    evict_stride = settings.UPLOAD_EVICT_STRIDE_MB * 1024 * 1024
-    last_evicted = _evict_offsets.get(upload_id, 0)
-    if evict_stride > 0 and new_offset - last_evicted >= evict_stride:
-        try:
-            await asyncio.to_thread(_stride_evict, upload_blob, new_offset)
-            _evict_offsets[upload_id] = new_offset
-        except Exception:
-            pass  # eviction is best-effort; never fail a chunk write over it
-
     # --- Phase 1 DB update: record this chunk and advance the tus offset ---
-    # Committed regardless of whether this is the final chunk.
     chunk_id = str(uuid.uuid4())
+    new_expires_at = (
+        datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    chunk_now = datetime.now(timezone.utc).isoformat()
+
     await db.execute("BEGIN")
     try:
         await db.execute(
@@ -454,94 +447,63 @@ async def patch_upload(
             """,
             (chunk_id, row["file_id"], chunk_index, chunk_iv_b64, chunk_size, client_offset),
         )
-        new_expires_at = (
-            datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
-        chunk_now = datetime.now(timezone.utc).isoformat()
-        await db.execute(
-            "UPDATE tus_uploads "
-            "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ? "
-            "WHERE id = ?",
-            (new_offset, chunk_index + 1, new_expires_at, chunk_now, upload_id),
-        )
+        # Accumulate S3 ETags in part_tags JSON array (NULL for local uploads)
+        if etag is not None:
+            await db.execute(
+                "UPDATE tus_uploads "
+                "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ?, "
+                "    part_tags = (COALESCE(part_tags::jsonb, '[]'::jsonb) || jsonb_build_array(?::text))::text "
+                "WHERE id = ?",
+                (new_offset, chunk_index + 1, new_expires_at, chunk_now, etag, upload_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE tus_uploads "
+                "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ? "
+                "WHERE id = ?",
+                (new_offset, chunk_index + 1, new_expires_at, chunk_now, upload_id),
+            )
         await db.commit()
-    except Exception:
+    except Exception as _phase1_exc:
+        logger.error("Phase 1 DB update failed for upload %s: %s", upload_id, _phase1_exc)
         await db.rollback()
         raise
 
-    # --- If complete, verify blob integrity then finalize in a second DB transaction ---
+    # --- If complete, finalize via storage manager then commit Phase 2 ---
     if is_complete:
-        final_path = settings.FILES_DIR / storage_key
-
-        # Move staging blob to permanent storage, then evict its pages from the
-        # page cache.  Page cache entries follow the inode on rename, so the
-        # pages accumulated during the chunked write are still resident under
-        # the new path.  DONTNEED after the move signals the OS to drop them;
-        # they will be faulted back in on demand when users download the file.
-        def _finalize():
-            try:
-                upload_blob.rename(final_path)
-            except OSError:
-                # Cross-device link (UPLOADS_DIR and FILES_DIR on different mounts)
-                shutil.move(str(upload_blob), str(final_path))
-            # Evict any remaining dirty pages from the tail of the last stride.
-            # Page cache entries follow the inode on rename, so we open the
-            # final path.  After this the file is fully on disk and out of cache.
-            try:
-                with open(final_path, "r+b") as f:
-                    os.fdatasync(f.fileno())
-                    os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
-            except (AttributeError, OSError):
-                pass  # not available (Windows/macOS) or unsupported filesystem
+        # Fetch accumulated part_tags from DB (needed for S3 CompleteMultipartUpload)
+        tags_cursor = await db.execute(
+            "SELECT part_tags FROM tus_uploads WHERE id = ?", (upload_id,)
+        )
+        tags_row = await tags_cursor.fetchone()
+        part_tags: list[str] = json.loads(tags_row["part_tags"] or "[]") if tags_row else []
 
         try:
-            await asyncio.to_thread(_finalize)
-        except OSError as exc:
-            logger.error(
-                "Failed to move upload blob %s -> %s: %s", upload_id, storage_key, exc
+            actual_size = await storage.get_manager().finalize_upload(
+                db, upload_id, row["file_id"], storage_key, part_tags
             )
-            raise HTTPException(status_code=500, detail="Upload finalization failed: move error")
-        finally:
-            _evict_offsets.pop(upload_id, None)
-
-        # Verify the blob landed at the expected size.
-        # A cross-device copy that got interrupted would produce a truncated file.
-        def _stat_size() -> int:
-            return final_path.stat().st_size
-
-        try:
-            actual_size = await asyncio.to_thread(_stat_size)
-        except OSError as exc:
-            logger.error(
-                "Failed to stat finalized blob for upload %s (storage_key=%s): %s",
-                upload_id, storage_key, exc,
-            )
-            raise HTTPException(status_code=500, detail="Upload finalization failed: stat error")
+        except Exception as exc:
+            logger.error("Upload finalization failed for %s: %s", upload_id, exc)
+            raise HTTPException(status_code=500, detail="Upload finalization failed")
 
         if actual_size != new_offset:
-            # Blob is corrupt — delete it so downstream reads don't serve garbage.
-            def _remove_corrupt():
-                final_path.unlink(missing_ok=True)
-            await asyncio.to_thread(_remove_corrupt)
             logger.error(
-                "Blob size mismatch for file %s: expected %d bytes, got %d — blob deleted",
+                "Blob size mismatch for file %s: expected %d bytes, got %d",
                 row["file_id"], new_offset, actual_size,
             )
+            await storage.get_manager().abort_upload(upload_id)
             raise HTTPException(status_code=500, detail="Upload finalization failed: size mismatch")
 
         # Phase 2 DB update: mark file complete, update quota, remove tus record.
-        # Runs only after the blob is confirmed on disk.
+        # file_storage_locations row was inserted by finalize_upload above (same DB session).
         await db.execute("BEGIN")
         try:
-            # Belt-and-suspenders: verify chunk count matches what we expect.
-            # Under normal operation this is always true (SQLite atomicity); this
-            # catches any future code path that could corrupt next_chunk.
             count_cursor = await db.execute(
                 "SELECT COUNT(*) FROM file_chunks WHERE file_id = ?",
                 (row["file_id"],),
             )
             count_row = await count_cursor.fetchone()
-            expected_chunks = chunk_index + 1  # chunk_index is 0-based
+            expected_chunks = chunk_index + 1
             if count_row[0] != expected_chunks:
                 await db.rollback()
                 logger.error(
@@ -554,13 +516,8 @@ async def patch_upload(
                 )
 
             await db.execute(
-                """
-                UPDATE files
-                SET upload_complete = 1,
-                    encrypted_size   = ?,
-                    updated_at       = NOW()
-                WHERE id = ?
-                """,
+                "UPDATE files SET upload_complete = 1, encrypted_size = ?, updated_at = NOW() "
+                "WHERE id = ?",
                 (new_offset, row["file_id"]),
             )
             await db.execute(
@@ -578,6 +535,10 @@ async def patch_upload(
         # Notify any SSE subscribers watching this folder
         _topic = file_row["folder_id"] or f"root:{file_row['owner_id']}"
         sse_broker.publish(_topic, {"type": "change"})
+
+        # Trigger async AV scan if escrow + endpoint are configured.
+        # Runs in a background task so it never blocks the upload response.
+        asyncio.create_task(_maybe_scan_file(row["file_id"]))
 
     extra_headers: dict = {"Upload-Offset": str(new_offset)}
     if is_complete:
@@ -627,18 +588,43 @@ async def abort_upload(
         await db.rollback()
         raise
 
-    upload_blob = settings.UPLOADS_DIR / upload_id
-
-    def _cleanup():
-        try:
-            upload_blob.unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning("Failed to delete upload blob %s: %s", upload_id, exc)
-
-    await asyncio.to_thread(_cleanup)
-    _evict_offsets.pop(upload_id, None)
-
+    await storage.get_manager().abort_upload(upload_id)
     return Response(status_code=204, headers=_tus_headers())
+
+
+# ---------------------------------------------------------------------------
+# Escrow public key endpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/escrow-key")
+async def get_escrow_public_key(
+    user: AuthenticatedUser = Depends(require_user_role),
+):
+    """Return the server's escrow ECDH public key (SPKI, base64).
+
+    Returns 404 when TUSSHARE_ESCROW_PRIVATE_KEY is not configured.
+    Clients use this to decide whether to include escrow key fields on upload.
+    """
+    from app.services.av_scanner import get_escrow_public_key_b64
+    pub_b64 = get_escrow_public_key_b64()
+    if pub_b64 is None:
+        raise HTTPException(status_code=404, detail="Escrow key not configured")
+    return {"escrow_public_key": pub_b64}
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+async def _maybe_scan_file(file_id: str) -> None:
+    """Background task: run AV scan if configured. Errors are logged, not raised."""
+    try:
+        from app.database import db_session
+        from app.services.av_scanner import scan_file
+        async with db_session() as _db:
+            await scan_file(_db, file_id)
+    except Exception as exc:
+        logger.warning("Background AV scan failed for file %s: %s", file_id, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -675,12 +661,10 @@ async def _cleanup_expired_uploads(db) -> int:
             logger.exception("Failed to clean up expired upload %s", upload_id)
             continue
 
-        blob = settings.UPLOADS_DIR / upload_id
         try:
-            blob.unlink(missing_ok=True)
-        except OSError as exc:
+            await storage.get_manager().abort_upload(upload_id)
+        except Exception as exc:
             logger.warning("Could not delete staging blob for upload %s: %s", upload_id, exc)
-        _evict_offsets.pop(upload_id, None)
 
         count += 1
 

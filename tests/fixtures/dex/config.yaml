@@ -1,0 +1,86 @@
+# Dex OIDC provider configuration for E2E tests.
+#
+# Dex acts as an OIDC identity broker. In this configuration it uses the
+# test LDAP server as its upstream identity source, which means:
+#   - OIDC claims are sourced from LDAP attributes
+#   - Tests can verify the OIDC→LDAP claim chain
+#   - Changing LDAP attributes changes OIDC claims without reconfiguring Dex
+#
+# To test Dex in isolation (without LDAP), add a 'passwords' connector instead.
+
+issuer: http://dex:5556/dex
+
+storage:
+  type: memory
+
+web:
+  http: 0.0.0.0:5556
+
+# Log level: debug is useful during test development
+logger:
+  level: info
+
+# OIDC client registered for the app
+oauth2:
+  skipApprovalScreen: true   # Don't show consent screen in tests
+  responseTypes:
+    - code
+
+staticClients:
+  - id: tusshare-test
+    secret: tusshare-test-secret
+    name: TusShare E2E Test
+    redirectURIs:
+      - http://localhost:8001/api/v1/auth/oidc/callback
+
+connectors:
+  - type: ldap
+    id: ldap
+    name: LDAP
+    config:
+      host: ldap:389
+      insecureNoSSL: true
+      insecureSkipVerify: true
+
+      # Bind credentials for the LDAP search user
+      bindDN: cn=admin,dc=test,dc=local
+      bindPW: ldap_admin_secret
+
+      # User search
+      userSearch:
+        baseDN: ou=users,dc=test,dc=local
+        filter: "(objectClass=inetOrgPerson)"
+        username: uid
+        idAttr: uid
+        emailAttr: mail
+        nameAttr: cn
+
+      # Group search — maps LDAP groups to OIDC 'groups' claim
+      groupSearch:
+        baseDN: ou=groups,dc=test,dc=local
+        filter: "(objectClass=groupOfNames)"
+        userMatchers:
+          - userAttr: DN
+            groupAttr: member
+        nameAttr: cn
+
+# Expose extra LDAP attributes as OIDC claims
+# These become available in the ID token under the 'federated_claims' or
+# custom claim paths that the app can map to policy field definitions.
+#
+# NOTE: Dex's LDAP connector doesn't natively forward arbitrary attributes
+# as custom claims — the standard approach is to use Dex's 'scopes' with
+# custom LDAP attribute mappings. The exact mechanism depends on the Dex
+# version. For the tests, we rely on the 'groups' claim (from groupSearch)
+# which IS supported natively. Custom attribute forwarding (e.g., department)
+# may require a Dex plugin or a different OIDC provider.
+#
+# For now, tests use the 'groups' claim for department-based policies:
+#   engineering group → engineering department
+#   marketing group   → marketing department
+
+expiry:
+  idTokens: 1h
+  refreshTokens:
+    validIfNotUsedFor: 24h
+    absoluteLifetime: 168h

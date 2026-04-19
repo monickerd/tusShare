@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import db_session, get_db
 from app.models.policy import (
     Policy,
     PolicyCondition,
@@ -55,6 +55,20 @@ _MAX_VALUE_LEN       = 500
 def _check_can_manage(user: AuthenticatedUser):
     if not user.has_flag(FLAG_MANAGE_POLICIES):
         raise HTTPException(status_code=403, detail="can_manage_policies required")
+
+
+async def _bg_sweep(policy_id: str) -> None:
+    """Run sweep_policy_for_all_users in a background task with its own DB connection.
+
+    IMPORTANT: never pass the request's `db` to asyncio.create_task — the
+    connection is released to the pool when the request handler returns, and
+    another request could acquire it while the task is still using it.
+    """
+    try:
+        async with db_session() as _db:
+            await sweep_policy_for_all_users(_db, policy_id)
+    except Exception:
+        pass
 
 
 async def _load_policy(db, policy_id: str) -> Policy:
@@ -265,7 +279,7 @@ async def update_policy(
 
     # If escrow_enabled changed, re-sweep so escrow grants are written / cleared
     if body.escrow_enabled is not None:
-        asyncio.create_task(sweep_policy_for_all_users(db, policy_id))
+        asyncio.create_task(_bg_sweep(policy_id))
 
     return {"message": "Policy updated"}
 
@@ -353,9 +367,10 @@ async def create_condition(
     await db.commit()
 
     # Trigger 2 — fire-and-forget sweep
-    asyncio.create_task(sweep_policy_for_all_users(db, policy_id))
+    asyncio.create_task(_bg_sweep(policy_id))
 
-    return {"message": "Condition added", "id": cond_id}
+    new_cond = await _load_condition(db, policy_id, cond_id)
+    return new_cond.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -439,9 +454,10 @@ async def update_condition(
     await db.commit()
 
     # Trigger 2
-    asyncio.create_task(sweep_policy_for_all_users(db, policy_id))
+    asyncio.create_task(_bg_sweep(policy_id))
 
-    return {"message": "Condition updated"}
+    updated_cond = await _load_condition(db, policy_id, cond_id)
+    return updated_cond.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +494,7 @@ async def delete_condition(
     await db.commit()
 
     # Trigger 2
-    asyncio.create_task(sweep_policy_for_all_users(db, policy_id))
+    asyncio.create_task(_bg_sweep(policy_id))
 
     return {"message": "Condition deleted"}
 
@@ -631,7 +647,7 @@ async def create_effect(
 
     # Trigger 2 — immediately apply new effect to all currently matching users.
     # For team_escrow effects this re-writes or suppresses escrow grants for the target team.
-    asyncio.create_task(sweep_policy_for_all_users(db, policy_id))
+    asyncio.create_task(_bg_sweep(policy_id))
 
     return {"message": "Effect added", "id": effect_id}
 

@@ -9,7 +9,6 @@ fail if the wheel is absent in a non-Docker dev environment (it will fail loudly
 at the first actual OPAQUE operation instead).
 """
 
-import asyncio
 import uuid
 
 from app.auth.interface import AuthCredentials, AuthenticatedUser, AuthProvider
@@ -148,10 +147,8 @@ class OPAQUEAuthProvider(AuthProvider):
         row = await cursor.fetchone()
         if row is None or not row["is_active"]:
             return None
-        roles, flags = await asyncio.gather(
-            get_user_global_role_ids(self._db, user_id),
-            get_user_global_flags(self._db, user_id),
-        )
+        roles = await get_user_global_role_ids(self._db, user_id)
+        flags = await get_user_global_flags(self._db, user_id)
         return _row_to_user(row, roles, flags)
 
     async def get_user_by_username(self, username: str) -> AuthenticatedUser | None:
@@ -166,10 +163,8 @@ class OPAQUEAuthProvider(AuthProvider):
         row = await cursor.fetchone()
         if row is None or not row["is_active"]:
             return None
-        roles, flags = await asyncio.gather(
-            get_user_global_role_ids(self._db, row["id"]),
-            get_user_global_flags(self._db, row["id"]),
-        )
+        roles = await get_user_global_role_ids(self._db, row["id"])
+        flags = await get_user_global_flags(self._db, row["id"])
         return _row_to_user(row, roles, flags)
 
     # ------------------------------------------------------------------

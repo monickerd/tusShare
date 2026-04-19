@@ -22,8 +22,8 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import get_optional_user, require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_share_session_token, verify_share_session_token
-from app.config import settings
-from app.database import get_db
+from app.database import db_session, get_db
+import app.storage.manager as storage
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import FileChunk
 from app.validation.sanitizers import (
@@ -34,6 +34,8 @@ from app.validation.sanitizers import (
     validate_short_slug,
     validate_uuid,
 )
+from app.config import settings
+from app.routes._access import is_in_shared_tree, is_team_folder_member
 from app.wordlist import insert_short_link_with_unique_slug
 
 logger = logging.getLogger(__name__)
@@ -275,6 +277,51 @@ async def _verify_file_in_share(db, share_id: str, file_id: str) -> None:
     )
     if await cursor.fetchone() is None:
         raise HTTPException(status_code=403, detail="File not in share")
+
+
+async def _verify_creator_still_has_access(
+    db,
+    share_id: str,
+    creator_id: str,
+) -> None:
+    """Raise 404 if the share creator no longer has access to any file in the share.
+
+    Called at every share resolution. This enforces that moving a file out of a
+    team folder invalidates share links created by team members who no longer have
+    access — e.g., if a file is moved from a shared folder to a private location,
+    existing share links from non-owner team members stop resolving immediately.
+
+    File owners always retain access to their own files regardless of location.
+    """
+    cursor = await db.execute(
+        "SELECT resource_id FROM share_items "
+        "WHERE share_id = ? AND resource_type = 'file'",
+        (share_id,),
+    )
+    file_ids = [r["resource_id"] for r in await cursor.fetchall()]
+
+    for file_id in file_ids:
+        cursor = await db.execute(
+            "SELECT owner_id, folder_id FROM files WHERE id = ? AND upload_complete = 1",
+            (file_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Shared file no longer exists")
+        if row["owner_id"] == creator_id:
+            continue  # Owner always has access to their own file
+        # Non-owner creator: check whether they still have team/shared access
+        has_access = False
+        if row["folder_id"]:
+            has_access = (
+                await is_in_shared_tree(db, row["folder_id"])
+                or await is_team_folder_member(db, row["folder_id"], creator_id)
+            )
+        if not has_access:
+            raise HTTPException(
+                status_code=404,
+                detail="Share is no longer available",
+            )
 
 
 async def _log_share_access(
@@ -546,17 +593,33 @@ async def create_share(
     else:
         recipient_user_id = None
 
-    # Verify every referenced file exists, is complete, and belongs to the user.
+    # Verify every referenced file exists, is complete, and the requester has access.
+    # Owners and admins can always share their files. Team members may share any file
+    # currently in a team folder they belong to (the file key was distributed to them
+    # via the team key exchange at upload time).
     for item in body.items:
         cursor = await db.execute(
-            "SELECT id FROM files WHERE id = ? AND owner_id = ? AND upload_complete = 1",
-            (item.resource_id, user.id),
+            "SELECT id, folder_id, owner_id FROM files WHERE id = ? AND upload_complete = 1",
+            (item.resource_id,),
         )
-        if await cursor.fetchone() is None:
+        file_row = await cursor.fetchone()
+        if file_row is None:
             raise HTTPException(
                 status_code=404,
                 detail=f"File not found or upload incomplete: {item.resource_id}",
             )
+        if file_row["owner_id"] != user.id and not user.is_admin:
+            has_access = False
+            if file_row["folder_id"]:
+                has_access = (
+                    await is_in_shared_tree(db, file_row["folder_id"])
+                    or await is_team_folder_member(db, file_row["folder_id"], user.id)
+                )
+            if not has_access:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"File not found or access denied: {item.resource_id}",
+                )
 
     share_id = str(uuid.uuid4())
     # token = 43-char base64url of 32 random bytes (128-bit entropy in path component)
@@ -637,8 +700,10 @@ async def create_share(
     cursor = await db.execute("SELECT created_at FROM shares WHERE id = ?", (share_id,))
     row = await cursor.fetchone()
     return {
-        "share_id": share_id,
-        "token": token,
+        "share_id":   share_id,
+        "id":         share_id,
+        "share_type": body.share_type,
+        "token":      token,
         "created_at": row["created_at"],
     }
 
@@ -794,25 +859,32 @@ async def resolve_share(
     except ValueError:
         raise HTTPException(status_code=404, detail="Share not found or expired")
 
-    share = await _get_active_share_by_token(db, token)
-    items = await _get_items_with_files(db, share["id"])
+    try:
+        share = await _get_active_share_by_token(db, token)
+        await _verify_creator_still_has_access(db, share["id"], share["created_by"])
+        items = await _get_items_with_files(db, share["id"])
 
-    client_ip = _get_share_client_ip(request)
-    user_agent = (request.headers.get("User-Agent") or "")[:512]
-    session_token = create_share_session_token(share["id"], client_ip, user_agent)
+        client_ip = _get_share_client_ip(request)
+        user_agent = (request.headers.get("User-Agent") or "")[:512]
+        session_token = create_share_session_token(share["id"], client_ip, user_agent)
 
-    return {
-        "share_id": share["id"],
-        "share_type": share["share_type"],
-        "expires_at": share["expires_at"],
-        "has_password": share["password_hash"] is not None,
-        "max_downloads": share["max_downloads"],
-        "download_count": share["download_count"],
-        "allow_upload": bool(share["allow_upload"]),
-        "target_folder_id": share["target_folder_id"],
-        "files": items,
-        "share_session_token": session_token,
-    }
+        return {
+            "share_id": share["id"],
+            "share_type": share["share_type"],
+            "expires_at": share["expires_at"],
+            "has_password": share["password_hash"] is not None,
+            "max_downloads": share["max_downloads"],
+            "download_count": share["download_count"],
+            "allow_upload": bool(share["allow_upload"]),
+            "target_folder_id": share["target_folder_id"],
+            "files": items,
+            "share_session_token": session_token,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("resolve_share internal error for token %s: %s", token[:8], exc)
+        raise
 
 
 @router.get("/s/{token}/files/{file_id}/chunks")
@@ -841,6 +913,7 @@ async def get_shared_file_chunks(
         raise HTTPException(status_code=400, detail=str(exc))
 
     share = await _get_active_share_by_token(db, token)
+    await _verify_creator_still_has_access(db, share["id"], share["created_by"])
     await _require_share_access(request, share["id"], user)
     await _verify_file_in_share(db, share["id"], file_id)
 
@@ -895,6 +968,7 @@ async def download_shared_file(
         raise HTTPException(status_code=400, detail=str(exc))
 
     share = await _get_active_share_by_token(db, token)
+    await _verify_creator_still_has_access(db, share["id"], share["created_by"])
     await _require_share_access(request, share["id"], user)
     await _verify_file_in_share(db, share["id"], file_id)
 
@@ -911,18 +985,14 @@ async def download_shared_file(
         raise HTTPException(status_code=409, detail="File upload is not complete")
 
     storage_key = row["storage_key"]
-    validate_uuid(storage_key)  # defense-in-depth before path join
-    blob_path = settings.FILES_DIR / storage_key
     encrypted_size: int = row["encrypted_size"]
 
     if encrypted_size <= 0:
         raise HTTPException(status_code=422, detail="File has no content")
 
-    blob_exists = await asyncio.to_thread(blob_path.exists)
+    blob_exists = await storage.get_manager().exists(db, file_id, storage_key)
     if not blob_exists:
-        logger.error(
-            "Blob missing for shared file %s (storage_key=%s)", file_id, storage_key
-        )
+        logger.error("Blob missing for shared file %s (storage_key=%s)", file_id, storage_key)
         raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
 
     # --- Parse Range header ---
@@ -994,27 +1064,9 @@ async def download_shared_file(
     if status_code == 206:
         resp_headers["Content-Range"] = f"bytes {start}-{end}/{encrypted_size}"
 
-    async def _stream():
-        READ_SIZE = 256 * 1024
-
-        def _read_slice(pos: int, size: int) -> bytes:
-            with open(blob_path, "rb") as f:
-                f.seek(pos)
-                return f.read(size)
-
-        pos = start
-        remaining = content_length
-        while remaining > 0:
-            to_read = min(READ_SIZE, remaining)
-            data = await asyncio.to_thread(_read_slice, pos, to_read)
-            if not data:
-                break
-            yield data
-            pos += len(data)
-            remaining -= len(data)
-
+    stream = await storage.get_manager().read_stream(db, file_id, storage_key, start, end)
     return StreamingResponse(
-        _stream(),
+        stream,
         status_code=status_code,
         media_type="application/octet-stream",
         headers=resp_headers,
@@ -1162,9 +1214,9 @@ async def upload_to_share(
 
     file_id = str(uuid.uuid4())
     storage_key = secrets.token_urlsafe(32)
-    file_path = settings.FILES_DIR / storage_key
 
-    await asyncio.to_thread(file_path.write_bytes, content)
+    # Write blob first so we can roll back on DB failure
+    await storage.get_manager().write_blob(db, file_id, storage_key, content)
 
     chunk_id = str(uuid.uuid4())
     await db.execute("BEGIN")
@@ -1209,7 +1261,13 @@ async def upload_to_share(
         await db.commit()
     except Exception:
         await db.rollback()
-        await asyncio.to_thread(lambda: file_path.unlink(missing_ok=True))
+        async def _bg_delete(fid: str, key: str) -> None:
+            try:
+                async with db_session() as _db:
+                    await storage.get_manager().delete_blob(_db, fid, key)
+            except Exception:
+                pass
+        asyncio.create_task(_bg_delete(file_id, storage_key))
         raise
 
     return {"file_id": file_id, "file_name": safe_name, "size_bytes": size_bytes}

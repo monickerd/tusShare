@@ -294,7 +294,7 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
         # identity_providers table arrives in E6; gracefully degrade until then
         try:
             cursor = await db.execute(
-                "SELECT ip.source, ip.name "
+                "SELECT ip.provider_type, ip.name "
                 "FROM users u "
                 "LEFT JOIN identity_provider_users ipu ON ipu.user_id = u.id "
                 "LEFT JOIN identity_providers ip ON ip.id = ipu.provider_id "
@@ -302,14 +302,14 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
                 (user_id,),
             )
             row = await cursor.fetchone()
-            if row is None or row["source"] is None:
+            if row is None or row["provider_type"] is None:
                 if "auth_provider" in fields:
                     result["auth_provider"] = "opaque"
                 if "identity_provider" in fields:
                     result["identity_provider"] = ""
             else:
                 if "auth_provider" in fields:
-                    result["auth_provider"] = row["source"]   # 'ldap' or 'oidc'
+                    result["auth_provider"] = row["provider_type"]   # 'ldap' or 'oidc'
                 if "identity_provider" in fields:
                     result["identity_provider"] = row["name"] or ""
         except Exception:
@@ -452,7 +452,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
       5. Resolve internal fields from the local DB
       6. Resolve ldap fields via a single LDAP query per provider (if configured)
       7. Evaluate all conditions — AND semantics; any false → policy does not match
-      8. Write grants for matching policies (INSERT OR IGNORE into policy_folder_grants)
+      8. Write grants for matching policies (ON CONFLICT DO NOTHING into policy_folder_grants)
       9. Remove grants for policies that no longer match
      10. Update policy_last_evaluated_at
 
@@ -588,7 +588,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
             matching_policy_ids.add(policy.id)
 
     # 8. Write grants for matching policies
-    #    INSERT OR IGNORE semantics: manual row (policy_effect_id IS NULL) wins on conflict.
+    #    ON CONFLICT DO NOTHING: manual row (policy_effect_id IS NULL) wins on conflict.
     if matching_policy_ids:
         match_ph = ",".join("?" * len(matching_policy_ids))
         cursor = await db.execute(
@@ -632,12 +632,13 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                     logger.warning("policy: team_member effect %s has no role_level — skipping", effect_id)
                     continue
 
-                # Write user_roles row (INSERT OR IGNORE — manual row wins)
+                # Write user_roles row (ON CONFLICT DO NOTHING — manual row wins)
                 ur_id = str(_uuid.uuid4())
                 await db.execute(
-                    "INSERT OR IGNORE INTO user_roles "
+                    "INSERT INTO user_roles "
                     "(id, user_id, role_id, scope_type, scope_id, granted_by, policy_effect_id) "
-                    "VALUES (?, ?, ?, 'team', ?, NULL, ?)",
+                    "VALUES (?, ?, ?, 'team', ?, NULL, ?) "
+                    "ON CONFLICT DO NOTHING",
                     (ur_id, user_id, role_level, target_id, effect_id),
                 )
 
@@ -648,11 +649,12 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                 )
                 has_key = await cursor.fetchone() is not None
 
-                # Write policy_team_grants tracking row (INSERT OR IGNORE)
+                # Write policy_team_grants tracking row (ON CONFLICT DO NOTHING)
                 tg_id = str(_uuid.uuid4())
                 await db.execute(
-                    "INSERT OR IGNORE INTO policy_team_grants "
-                    "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO policy_team_grants "
+                    "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT DO NOTHING",
                     (tg_id, effect_id, user_id, 1 if has_key else 0),
                 )
                 # If row already existed and user now has the key, sync key_wrapped=1
@@ -665,7 +667,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
 
                 # E4b: write pending escrow grants for this team if effective escrow is ON.
                 # Escrow grants are written as a side effect of any matching team_member
-                # evaluation — INSERT OR IGNORE makes this idempotent across evaluations.
+                # evaluation — ON CONFLICT DO NOTHING makes this idempotent across evaluations.
                 if escrow_agent_ids:
                     policy_escrow = policy_escrow_map.get(eff["policy_id"], False)
                     team_override = escrow_overrides.get(eff["policy_id"], {}).get(target_id)
@@ -677,9 +679,10 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                             # Grant team_member role to escrow agent for this team
                             ea_ur_id = str(_uuid.uuid4())
                             await db.execute(
-                                "INSERT OR IGNORE INTO user_roles "
+                                "INSERT INTO user_roles "
                                 "(id, user_id, role_id, scope_type, scope_id, granted_by, policy_effect_id) "
-                                "VALUES (?, ?, 'team_member', 'team', ?, NULL, ?)",
+                                "VALUES (?, ?, 'team_member', 'team', ?, NULL, ?) "
+                                "ON CONFLICT DO NOTHING",
                                 (ea_ur_id, ea_id, target_id, effect_id),
                             )
                             # Check if escrow agent already has a key for this team
@@ -691,8 +694,9 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                             # Write pending grant (key_wrapped=0 until E4a fulfillment loop delivers it)
                             ea_tg_id = str(_uuid.uuid4())
                             await db.execute(
-                                "INSERT OR IGNORE INTO policy_team_grants "
-                                "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?)",
+                                "INSERT INTO policy_team_grants "
+                                "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?) "
+                                "ON CONFLICT DO NOTHING",
                                 (ea_tg_id, effect_id, ea_id, 1 if ea_has_key else 0),
                             )
                             if ea_has_key:
@@ -709,16 +713,17 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                     logger.warning("policy: folder_acl effect %s has no permission — skipping", effect_id)
                     continue
 
-                # Write permissions row (INSERT OR IGNORE — manual row wins)
+                # Write permissions row (ON CONFLICT DO NOTHING — manual row wins)
                 perm_id = str(_uuid.uuid4())
                 await db.execute(
-                    "INSERT OR IGNORE INTO permissions "
+                    "INSERT INTO permissions "
                     "(id, resource_type, resource_id, user_id, permission, recursive, "
                     " granted_by, policy_effect_id) "
-                    "VALUES (?, 'folder', ?, ?, ?, ?, NULL, ?)",
+                    "VALUES (?, 'folder', ?, ?, ?, ?, NULL, ?) "
+                    "ON CONFLICT DO NOTHING",
                     (perm_id, target_id, user_id, permission, recursive, effect_id),
                 )
-                # Determine if WE wrote the row (vs. INSERT OR IGNORE was skipped)
+                # Determine if WE wrote the row (vs. ON CONFLICT DO NOTHING was triggered)
                 cursor = await db.execute(
                     "SELECT policy_effect_id FROM permissions "
                     "WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
@@ -741,12 +746,13 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                 else:
                     key_wrapped = 1  # No team subtree — no key wrapping needed
 
-                # Write policy_folder_grants tracking row (INSERT OR IGNORE)
+                # Write policy_folder_grants tracking row (ON CONFLICT DO NOTHING)
                 fg_id = str(_uuid.uuid4())
                 await db.execute(
-                    "INSERT OR IGNORE INTO policy_folder_grants "
+                    "INSERT INTO policy_folder_grants "
                     "(id, effect_id, user_id, folder_id, acl_written, key_wrapped) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT DO NOTHING",
                     (fg_id, effect_id, user_id, target_id, 1 if acl_written else 0, key_wrapped),
                 )
                 # Sync key_wrapped if user now has the key
@@ -826,10 +832,9 @@ async def _get_folder_team_id(db, folder_id: str) -> str | None:
 
 
 async def _stamp_evaluated(db, user_id: str) -> None:
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     await db.execute(
-        "UPDATE users SET policy_last_evaluated_at = ? WHERE id = ?",
-        (now, user_id),
+        "UPDATE users SET policy_last_evaluated_at = NOW()::text WHERE id = ?",
+        (user_id,),
     )
 
 
@@ -848,73 +853,27 @@ async def _resolve_ldap_fields(
     query per LDAP provider associated with this user.
     """
     try:
-        # Look up this user's LDAP provider (E6 table)
         cursor = await db.execute(
             """
-            SELECT ip.id, ip.host, ip.port, ip.bind_dn, ip.bind_password,
-                   ip.base_dn, ip.user_dn_template, ipu.external_id
+            SELECT ip.config_enc, ipu.external_id
             FROM identity_provider_users ipu
             JOIN identity_providers ip ON ip.id = ipu.provider_id
-            WHERE ipu.user_id = ? AND ip.source = 'ldap'
+            WHERE ipu.user_id = ? AND ip.provider_type = 'ldap'
             LIMIT 1
             """,
             (user_id,),
         )
         row = await cursor.fetchone()
         if row is None:
-            # User has no LDAP provider — all ldap conditions → no-match (return empty)
             return {}
     except Exception:
-        # E6 tables not yet present
-        return {}
-
-    ldap_filter = build_ldap_filter(conditions, field_defs)
-    if not ldap_filter:
-        return {}
-
-    # Determine which attributes we need to fetch
-    attrs_needed = list({
-        fdef.claim_path
-        for c in conditions
-        if (fdef := field_defs.get(c.field)) and fdef.claim_path
-    })
-    if not attrs_needed:
         return {}
 
     try:
-        import asyncio
-        import ldap3  # type: ignore
-
-        def _ldap_search():
-            server = ldap3.Server(row["host"], port=row["port"], use_ssl=(row["port"] == 636))
-            conn   = ldap3.Connection(
-                server,
-                user=row["bind_dn"],
-                password=row["bind_password"],
-                auto_bind=True,
-            )
-            # Build the user's DN or use a search filter
-            user_dn = row["user_dn_template"].replace("{external_id}", row["external_id"])
-            conn.search(
-                search_base=user_dn,
-                search_filter=ldap_filter,
-                search_scope=ldap3.BASE,
-                attributes=attrs_needed,
-            )
-            if not conn.entries:
-                return {}
-            entry = conn.entries[0]
-            result = {}
-            for attr in attrs_needed:
-                try:
-                    values = entry[attr].values
-                    result[attr] = str(values[0]) if values else ""
-                except Exception:
-                    result[attr] = ""
-            conn.unbind()
-            return result
-
-        raw = await asyncio.to_thread(_ldap_search)
+        from app.auth.ldap_provider import ldap_fetch_attributes
+        raw = await ldap_fetch_attributes(row["config_enc"], row["external_id"])
+        if raw is None:
+            return {}
     except Exception as exc:
         logger.warning("policy: LDAP resolution error for user %s: %s", user_id, exc)
         return {}
@@ -944,11 +903,11 @@ async def _resolve_oidc_fields(
     try:
         cursor = await db.execute(
             """
-            SELECT ip.id, ip.issuer_url, ip.client_id, ip.client_secret,
-                   ip.claim_mode, ipu.claims_cache, ipu.access_token
+            SELECT ip.config_enc, ip.claim_mode, u.oidc_claims_cache, u.oidc_refresh_token_enc
             FROM identity_provider_users ipu
             JOIN identity_providers ip ON ip.id = ipu.provider_id
-            WHERE ipu.user_id = ? AND ip.source = 'oidc'
+            JOIN users u ON u.id = ipu.user_id
+            WHERE ipu.user_id = ? AND ip.provider_type = 'oidc'
             LIMIT 1
             """,
             (user_id,),
@@ -961,16 +920,15 @@ async def _resolve_oidc_fields(
 
     import json
 
-    claim_mode = row["claim_mode"] if row else "at_login"
+    claim_mode = row["claim_mode"] or "at_login"
 
     if claim_mode == "at_login":
-        # Use cached claims stored at login time
         try:
-            claims = json.loads(row["claims_cache"] or "{}")
+            claims = json.loads(row["oidc_claims_cache"] or "{}")
         except (json.JSONDecodeError, TypeError):
             claims = {}
     else:
-        # live_refetch: call UserInfo endpoint
+        # live_refetch: exchange the stored refresh token for fresh claims
         claims = await _fetch_oidc_userinfo(row)
 
     result: dict[str, str] = {}
@@ -984,27 +942,56 @@ async def _resolve_oidc_fields(
     return result
 
 
-async def _fetch_oidc_userinfo(provider_row) -> dict:
-    """Fetch fresh claims from the OIDC UserInfo endpoint."""
+async def _fetch_oidc_userinfo(row) -> dict:
+    """Fetch fresh OIDC claims for live_refetch mode.
+
+    Decrypts the stored refresh token, exchanges it for an access token,
+    then calls the UserInfo endpoint.  Returns {} on any error.
+    """
     try:
         import asyncio
         import urllib.request
+        import urllib.parse
         import json
 
-        issuer_url  = provider_row["issuer_url"].rstrip("/")
-        access_token = provider_row["access_token"]
-        if not access_token:
+        refresh_token_enc = row["oidc_refresh_token_enc"]
+        if not refresh_token_enc:
             return {}
 
-        def _fetch():
+        from app.auth.idp_crypto import decrypt_idp_config, decrypt_token
+        cfg = decrypt_idp_config(row["config_enc"])
+        refresh_token = decrypt_token(refresh_token_enc)
+        issuer_url = cfg["issuer_url"].rstrip("/")
+        client_id = cfg["client_id"]
+        client_secret = cfg["client_secret"]
+
+        def _exchange_and_fetch():
+            # Exchange refresh token for access token
+            token_data = urllib.parse.urlencode({
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            }).encode()
             req = urllib.request.Request(
+                f"{issuer_url}/token",
+                data=token_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                token_resp = json.loads(resp.read())
+            access_token = token_resp.get("access_token")
+            if not access_token:
+                return {}
+
+            ui_req = urllib.request.Request(
                 f"{issuer_url}/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(ui_req, timeout=5) as resp:
                 return json.loads(resp.read())
 
-        return await asyncio.to_thread(_fetch)
+        return await asyncio.to_thread(_exchange_and_fetch)
     except Exception as exc:
         logger.warning("policy: OIDC UserInfo fetch error: %s", exc)
         return {}

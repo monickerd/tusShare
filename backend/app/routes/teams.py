@@ -505,7 +505,7 @@ async def create_team(
     # Grant team_owner role (scoped)
     await db.execute(
         "INSERT INTO user_roles (id, user_id, role_id, scope_type, scope_id, granted_by) "
-        "VALUES (?, ?, 'team_owner', 'team', ?, ?)",
+        "VALUES (?, ?, 'team_admin', 'team', ?, ?)",
         (ur_id, user.id, team_id, user.id),
     )
     # Store owner's wrapped team key
@@ -522,16 +522,18 @@ async def create_team(
         ea_utk_id = str(uuid.uuid4())
         # Grant team_member role to escrow agent
         await db.execute(
-            "INSERT OR IGNORE INTO user_roles "
+            "INSERT INTO user_roles "
             "(id, user_id, role_id, scope_type, scope_id, granted_by) "
-            "VALUES (?, ?, 'team_member', 'team', ?, ?)",
+            "VALUES (?, ?, 'team_member', 'team', ?, ?) "
+            "ON CONFLICT DO NOTHING",
             (ea_ur_id, em.user_id, team_id, user.id),
         )
         # Write escrow agent's wrapped key slot (key_confirmed starts at 0)
         await db.execute(
-            "INSERT OR IGNORE INTO user_team_keys "
+            "INSERT INTO user_team_keys "
             "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv, key_confirmed) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
+            "ON CONFLICT DO NOTHING",
             (ea_utk_id, team_id, em.user_id,
              em.ephemeral_x25519_pub, em.kem_ciphertext, em.encrypted_sk, em.sk_iv),
         )
@@ -977,7 +979,7 @@ async def add_file_keys(
     """Add or replace PRE-encrypted file keys for the team.
 
     The caller must be a team member and must own the files (i.e., have uploaded
-    them). Each file key is an INSERT OR REPLACE so this is idempotent.
+    them). Each file key upserts via ON CONFLICT DO UPDATE so this is idempotent.
     """
     team_id = validate_uuid(team_id)
     await _get_team_or_404(db, team_id)

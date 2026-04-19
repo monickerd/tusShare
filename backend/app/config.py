@@ -99,12 +99,66 @@ class Settings(BaseSettings):
     # Trusted proxy header (set to X-Real-IP or X-Forwarded-For if behind nginx)
     TRUSTED_IP_HEADER: str = "X-Real-IP"
 
+    # Storage abstraction (F3)
+    # STORAGE_ENCRYPTION_KEY: 32-byte base64url key for AES-GCM encryption of
+    # storage volume credentials (endpoint URLs, bucket names, access keys).
+    # If not set, derived from JWT_SECRET via HKDF with a dedicated context.
+    # Independently rotatable from IDP and MFA keys.
+    STORAGE_ENCRYPTION_KEY: str = ""
+
+    # Operational notifications (G1)
+    # NOTIF_ENCRYPTION_KEY: 32-byte base64url key for AES-GCM encryption of
+    # notification channel signing secrets.  If not set, derived from JWT_SECRET
+    # via HKDF with a dedicated context.  Independently rotatable.
+    NOTIF_ENCRYPTION_KEY: str = ""
+
+    # Identity providers (E6 — LDAP / OIDC)
+    # IDP_ENCRYPTION_KEY: 32-byte base64url-encoded key used to AES-GCM-encrypt
+    # provider config blobs (bind_password, client_secret, OIDC refresh tokens).
+    # If not set, derived from JWT_SECRET via HKDF (same pattern as MFA key).
+    # Independently rotatable from MFA_ENCRYPTION_KEY.
+    IDP_ENCRYPTION_KEY: str = ""
+
+    # ALLOW_HTTP_IDP: when True, permits OIDC issuer_url values that use plain
+    # HTTP (e.g. internal IdPs without TLS).  Default False enforces HTTPS to
+    # protect IdP discovery and JWKS fetches from MITM attacks.  Only enable
+    # this if your OIDC provider is on a trusted internal network without TLS.
+    ALLOW_HTTP_IDP: bool = False
+
+    # MFA (F7 — TOTP + WebAuthn)
+    # MFA_ENCRYPTION_KEY: 32-byte base64url-encoded key used to AES-GCM-encrypt
+    # credential blobs in user_mfa_credentials.  If not set, derived from
+    # JWT_SECRET via HKDF so existing deployments work without a new env var.
+    # Rotate this (and re-encrypt existing credentials) if JWT_SECRET changes.
+    MFA_ENCRYPTION_KEY: str = ""
+
+    # WebAuthn relying-party config.
+    # WEBAUTHN_RP_ID:   registrable domain suffix of the page origin.
+    #                   e.g. "files.example.com" for production; "localhost" for dev.
+    # WEBAUTHN_RP_NAME: human-readable display name shown in authenticator dialogs.
+    WEBAUTHN_RP_ID:   str = "localhost"
+    WEBAUTHN_RP_NAME: str = "tusShare"
+
+    # MFA pending-token TTL (seconds) — window between OPAQUE login/finish and
+    # MFA challenge completion.  90 s is generous; reduce for tighter security.
+    MFA_PENDING_TOKEN_TTL: int = 90
+
     # HTTPS enforcement
     # When True, requests with X-Forwarded-Proto: http are redirected to https.
     # Only enable this when the app port is NOT directly internet-accessible —
     # traffic must route exclusively through a TLS-terminating proxy (nginx, etc.)
     # so that X-Forwarded-Proto cannot be spoofed by external clients.
     FORCE_HTTPS: bool = False
+
+    # Antivirus / server-side scanning (F5)
+    # ESCROW_PRIVATE_KEY: DER-encoded ECDH P-256 private key (base64) used to decrypt
+    # escrow-wrapped file keys for server-side AV scanning.  When absent the webhook
+    # fields in the admin panel are hidden and no scan tasks are triggered.
+    # Generate with: openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64
+    ESCROW_PRIVATE_KEY: str = ""
+    # AV_REQUIRE_CLEAN: seeds the admin_settings row on first run.  Overridable via admin UI.
+    AV_REQUIRE_CLEAN: bool = False
+    AV_SCAN_RETRY_ATTEMPTS: int = 3
 
     model_config = {"env_prefix": "TUSSHARE_", "env_file": ".env", "extra": "ignore"}
 

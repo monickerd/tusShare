@@ -376,17 +376,36 @@ const Files = (() => {
             Utils.el('td', { textContent: Utils.formatBytes(file.size_bytes) }),
             Utils.el('td', { textContent: Utils.timeAgo(file.created_at) }),
             Utils.el('td', { className: 'row-actions' }, [
-                _createContextButton([
-                    { label: 'Download', action: () => _downloadFile(file) },
-                    { label: 'Share (link)', action: () => Shares.openShareDialog([file]) },
-                    { label: 'Share with user', action: () => Shares.openUserShareDialog([file]) },
-                    { label: 'Add to Team', action: () => Teams.openAddToTeamDialog([file]) },
-                    { label: 'Move', action: () => _openMoveModal([{ type: 'file', id: file.id, name: file.original_name }]) },
-                    { label: 'Rename', action: () => _renameFile(file) },
-                    { label: 'Delete', action: () => _deleteFile(file), danger: true },
-                ]),
+                _createContextButton(() => _fileContextItems(file)),
             ]),
         ]);
+    }
+
+    async function _fileContextItems(file) {
+        const items = [
+            { label: 'Download', action: () => _downloadFile(file) },
+            { label: 'Share (link)', action: () => Shares.openShareDialog([file]) },
+            { label: 'Share with user', action: () => Shares.openUserShareDialog([file]) },
+            { label: 'Add to Team', action: () => Teams.openAddToTeamDialog([file]) },
+            { label: 'Move', action: () => _openMoveModal([{ type: 'file', id: file.id, name: file.original_name }]) },
+            { label: 'Rename', action: () => _renameFile(file) },
+            { label: 'Delete', action: () => _deleteFile(file), danger: true },
+        ];
+
+        const partials = await Download.listPartialDownloads().catch(() => []);
+        const partial  = partials.find(p => p.fileId === file.id);
+        if (partial && partial.doneCount > 0) {
+            const pct = Math.round((partial.doneCount / partial.totalChunks) * 100);
+            items[0] = { label: `Resume download (${pct}%)`, action: () => _downloadFile(file) };
+            items.push({ label: 'Discard partial download', action: () => _discardPartialDownload(file), danger: true });
+        }
+
+        return items;
+    }
+
+    async function _discardPartialDownload(file) {
+        await Download.clearPartialDownload(file.id);
+        Utils.showToast(`Partial download for "${file.original_name}" discarded.`, 'info');
     }
 
     async function _downloadFile(file) {
@@ -396,10 +415,20 @@ const Files = (() => {
             return;
         }
 
-        const abortCtrl   = new AbortController();
+        // Notify user when resuming an interrupted download
+        try {
+            const partials = await Download.listPartialDownloads();
+            const partial  = partials.find(p => p.fileId === file.id);
+            if (partial && partial.doneCount > 0) {
+                const pct = Math.round((partial.doneCount / partial.totalChunks) * 100);
+                Utils.showToast(`Resuming download — ${pct}% already done`, 'info');
+            }
+        } catch { /* non-critical */ }
+
+        const abortCtrl    = new AbortController();
         const abortDownload = () => abortCtrl.abort();
-        const overlay     = _showUploadOverlay(file.original_name);
-        const transfer    = TransferManager.start(file.original_name, 'download', {
+        const overlay      = _showUploadOverlay(file.original_name);
+        const transfer     = TransferManager.start(file.original_name, 'download', {
             onStop:   abortDownload,
             onLogout: abortDownload,
         });
@@ -533,12 +562,16 @@ const Files = (() => {
         _reloadCurrentView();
     }
 
-    function _createContextButton(items) {
+    // itemsOrFn may be a plain array or an async function returning an array.
+    // The async form is used for context menus that need to query IndexedDB
+    // before showing (e.g. to add a "Resume download" item conditionally).
+    function _createContextButton(itemsOrFn) {
         const btn = Utils.el('button', {
             className: 'btn-context',
             textContent: '\u22EE',
-            onClick: (e) => {
+            onClick: async (e) => {
                 e.stopPropagation();
+                const items = typeof itemsOrFn === 'function' ? await itemsOrFn() : itemsOrFn;
                 _showContextMenu(btn, items);
             },
         });
@@ -713,6 +746,11 @@ const Files = (() => {
         }));
         bar.appendChild(Utils.el('button', {
             className: 'btn btn-secondary btn-sm',
+            textContent: 'Download selected',
+            onClick: () => _bulkDownload(selected),
+        }));
+        bar.appendChild(Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
             textContent: 'Share selected',
             onClick: () => _bulkShare(selected),
         }));
@@ -731,6 +769,65 @@ const Files = (() => {
             textContent: 'Delete selected',
             onClick: () => _bulkDelete(selected),
         }));
+    }
+
+    async function _bulkDownload(items) {
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey) {
+            Utils.showToast('Session expired — please log in again', 'error');
+            return;
+        }
+
+        // Annotate each item with the current folder as parentFolderId
+        const annotated = items.map(item => ({
+            ...item,
+            parentFolderId: _currentFolderId,
+        }));
+
+        // Deselect checkboxes so the user can make a new selection while download runs
+        document.querySelectorAll('#file-list input[type="checkbox"]:checked').forEach(cb => {
+            cb.checked = false;
+        });
+        _updateBulkActions();
+
+        if (annotated.length === 1 && annotated[0].type === 'file') {
+            // Single file — use regular single-file download (no ZIP)
+            const file = { id: annotated[0].id, original_name: annotated[0].name };
+            return _downloadFile(file);
+        }
+
+        const abortCtrl = new AbortController();
+        const abortDownload = () => abortCtrl.abort();
+
+        const label = annotated.length === 1
+            ? `${annotated[0].name} (ZIP)`
+            : `${annotated.length} items (ZIP)`;
+
+        let totalFiles = 0;
+        const transfer = TransferManager.start(label, 'download', {
+            onStop:   abortDownload,
+            onLogout: abortDownload,
+        });
+
+        try {
+            await Download.downloadBatch(
+                annotated,
+                masterKey,
+                (done, total) => {
+                    totalFiles = total;
+                    transfer.update(Math.round(done / total * 100));
+                },
+                abortCtrl.signal,
+            );
+            transfer.complete();
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                transfer.cancelled();
+            } else {
+                transfer.fail();
+                Utils.showToast(`Batch download failed: ${err.message}`, 'error');
+            }
+        }
     }
 
     async function _bulkDelete(items) {

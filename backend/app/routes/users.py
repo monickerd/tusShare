@@ -16,9 +16,10 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.config import settings
-from app.database import get_db
+from app.models.role import FLAG_MANAGE_USERS
+from app.database import db_session, get_db
 from app.models.role import ADMIN_ROLE_IDS, ROLE_ADMIN, ROLE_USER, grant_role, revoke_role
+import app.storage.manager as storage
 from app.models.user import User
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 from app.validation.validators import validate_pagination
@@ -96,6 +97,8 @@ async def list_users(
     db=Depends(get_db),
 ):
     """List all users with pagination."""
+    if not admin.has_flag(FLAG_MANAGE_USERS):
+        raise HTTPException(status_code=403, detail="can_manage_users permission required")
     pagination = validate_pagination(page, limit)
     cursor = await db.execute(
         "SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -106,8 +109,24 @@ async def list_users(
     count_cursor = await db.execute("SELECT COUNT(*) FROM users")
     total = (await count_cursor.fetchone())[0]
 
+    def _user_dict(r) -> dict:
+        return {
+            "id":                       r["id"],
+            "username":                 r["username"],
+            "is_admin":                 bool(r["is_admin"]),
+            "is_active":                bool(r["is_active"]),
+            "auth_method":              r["auth_method"],
+            "identity_provider_id":     r["identity_provider_id"],
+            "wrapped_master_key":       r["wrapped_master_key"],
+            "max_file_size":            r["max_file_size"],
+            "disk_quota":               r["disk_quota"],
+            "bandwidth_limit":          r["bandwidth_limit"],
+            "disk_used":                r["disk_used"],
+            "created_at":               str(r["created_at"]) if r["created_at"] else None,
+        }
+
     return {
-        "users": [User.from_row(r).to_public_dict() for r in rows],
+        "users": [_user_dict(r) for r in rows],
         "total": total,
         "page": pagination.page,
         "limit": pagination.limit,
@@ -180,7 +199,17 @@ async def get_user(
     )
     roles = [r["role_id"] for r in await role_cursor.fetchall()]
 
-    user_dict = User.from_row(row).to_public_dict()
+    user_dict = {
+        "id":              row["id"],
+        "username":        row["username"],
+        "is_admin":        bool(row["is_admin"]),
+        "is_active":       bool(row["is_active"]),
+        "max_file_size":   row["max_file_size"],
+        "disk_quota":      row["disk_quota"],
+        "bandwidth_limit": row["bandwidth_limit"],
+        "disk_used":       row["disk_used"],
+        "created_at":      str(row["created_at"]) if row["created_at"] else None,
+    }
     user_dict["roles"] = sorted(roles)
     return {"user": user_dict}
 
@@ -350,11 +379,11 @@ async def delete_user(
     if user_id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
 
-    # Collect blob keys before CASCADE deletes the file rows
+    # Collect file id+key pairs before CASCADE deletes the file rows
     cursor = await db.execute(
-        "SELECT storage_key FROM files WHERE owner_id = ?", (user_id,)
+        "SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,)
     )
-    blob_keys = [row["storage_key"] for row in await cursor.fetchall()]
+    file_rows = await cursor.fetchall()
 
     result = await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
     await db.commit()
@@ -362,20 +391,23 @@ async def delete_user(
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Best-effort blob cleanup in background thread
-    if blob_keys:
-        def _cleanup_blobs():
-            cleaned = 0
-            for key in blob_keys:
-                path = settings.FILES_DIR / key
-                try:
-                    path.unlink(missing_ok=True)
-                    cleaned += 1
-                except OSError as exc:
-                    logger.warning("Failed to delete blob %s: %s", key, exc)
-            if cleaned:
-                logger.info("Cleaned up %d file blobs for deleted user %s", cleaned, user_id)
+    # Best-effort blob cleanup via storage manager (handles all volumes)
+    rows_snapshot = list(file_rows)
+    uid_snapshot = user_id
 
-        await asyncio.to_thread(_cleanup_blobs)
+    async def _cleanup_blobs():
+        mgr = storage.get_manager()
+        cleaned = 0
+        async with db_session() as _db:
+            for row in rows_snapshot:
+                try:
+                    await mgr.delete_blob(_db, row["id"], row["storage_key"])
+                    cleaned += 1
+                except Exception as exc:
+                    logger.warning("Failed to delete blob %s: %s", row["storage_key"], exc)
+        if cleaned:
+            logger.info("Cleaned up %d file blobs for deleted user %s", cleaned, uid_snapshot)
+
+    asyncio.create_task(_cleanup_blobs())
 
     return {"message": "User deleted"}

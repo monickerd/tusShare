@@ -144,6 +144,7 @@ async def list_roles(
     Also returns the full flag registry so the UI can render toggles without
     a second round-trip.
     """
+    _check_manage_roles(admin)
     cursor = await db.execute(
         "SELECT * FROM roles ORDER BY is_system DESC, id"
     )

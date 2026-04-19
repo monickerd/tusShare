@@ -8,11 +8,15 @@
 # citext is a trusted extension in PostgreSQL 13+ so the app user can install it.
 set -e
 
+APP_USER="${TUSSHARE_APP_USER:-tusshare}"
+
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
+    -v app_user="$APP_USER" \
+    -v app_db="$POSTGRES_DB" \
     -v app_password="$TUSSHARE_PG_PASSWORD" <<-'EOSQL'
-    CREATE USER tusshare WITH PASSWORD :'app_password';
-    GRANT ALL PRIVILEGES ON DATABASE tusshare TO tusshare;
-    GRANT ALL ON SCHEMA public TO tusshare;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO tusshare;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO tusshare;
+    CREATE USER :"app_user" WITH PASSWORD :'app_password';
+    GRANT ALL PRIVILEGES ON DATABASE :"app_db" TO :"app_user";
+    GRANT ALL ON SCHEMA public TO :"app_user";
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO :"app_user";
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO :"app_user";
 EOSQL

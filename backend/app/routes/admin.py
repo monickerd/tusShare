@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import secrets
-import shutil
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -12,8 +11,9 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.config import settings
+from app.models.role import FLAG_MANAGE_INVITES
 from app.database import get_db
+import app.storage.manager as storage
 from app.validation.sanitizers import validate_uuid
 from app.wordlist import insert_invite_short_link_with_unique_slug
 
@@ -24,12 +24,39 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 # Allowed admin setting keys and their validators
+def _valid_mfa_allowed_methods(v: str) -> bool:
+    """Validate mfa_allowed_methods — must be a JSON array of known method strings."""
+    import json as _json
+    try:
+        methods = _json.loads(v)
+        if not isinstance(methods, list):
+            return False
+        allowed = {"totp", "webauthn", "email_otp"}
+        return all(isinstance(m, str) and m in allowed for m in methods)
+    except Exception:
+        return False
+
+
 _SETTINGS_VALIDATORS = {
     "open_registration":      lambda v: v in ("true", "false"),
     "global_max_file_size":   lambda v: v.isdigit() and int(v) >= 0,
     "global_bandwidth_limit": lambda v: v.isdigit() and int(v) >= 0,
     "disk_warning_threshold": lambda v: v.isdigit() and 0 <= int(v) <= 100,
     "default_chunk_size":     lambda v: v.isdigit() and int(v) >= 1_048_576,
+    # MFA enforcement policy (F7)
+    "mfa_enforcement":        lambda v: v in ("off", "optional", "required"),
+    "mfa_allowed_methods":    _valid_mfa_allowed_methods,
+    "mfa_oidc_exempt":        lambda v: v in ("0", "1"),
+    # Emergency revocation (F2)
+    "notify_escrow_on_revocation": lambda v: v in ("0", "1"),
+    # Audit retention (E7)
+    "audit_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
+    # Antivirus / server-side scanning (F5)
+    # av_scan_endpoint and av_scan_secret: allow any non-empty or empty string
+    "av_scan_endpoint":       lambda v: len(v) <= 2048,
+    "av_scan_secret":         lambda v: len(v) <= 512,
+    "av_require_clean":       lambda v: v in ("true", "false"),
+    "av_scan_retry_attempts": lambda v: v.isdigit() and 1 <= int(v) <= 10,
 }
 
 
@@ -103,10 +130,10 @@ async def get_disk_usage(
     total_used = (await cursor.fetchone())["total"] or 0
 
     try:
-        disk = await asyncio.to_thread(shutil.disk_usage, str(settings.DATA_DIR))
-        fs_total = disk.total
-        fs_free  = disk.free
-    except OSError:
+        usage = await storage.get_manager().get_usage_summary()
+        fs_total = usage.get("total_capacity_bytes") or 0
+        fs_free  = max(0, fs_total - (usage.get("total_used_bytes") or 0))
+    except Exception:
         fs_total = 0
         fs_free  = 0
 
@@ -131,6 +158,26 @@ async def get_disk_usage(
 
 
 # ---------------------------------------------------------------------------
+# Hardware capability scan (F1)
+# ---------------------------------------------------------------------------
+
+@router.get("/hw-scan")
+async def get_hw_scan(
+    admin: AuthenticatedUser = Depends(require_admin),
+):
+    """Run a hardware capability scan and return tuning recommendations.
+
+    Probes PBKDF2 throughput, CPU/RAM, and local-volume disk space.
+    The scan takes 1–3 s and runs in a thread to avoid blocking the event loop.
+    """
+    from app.util import hw_scan
+
+    local_volumes = storage.get_manager().local_volumes()
+    result = await asyncio.to_thread(hw_scan.run_scan, local_volumes)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Invites
 # ---------------------------------------------------------------------------
 
@@ -147,6 +194,8 @@ async def create_invite(
 
     The raw token is returned once. The server stores only its SHA-256 hash.
     """
+    if not admin.has_flag(FLAG_MANAGE_INVITES):
+        raise HTTPException(status_code=403, detail="can_manage_invites permission required")
     raw_token  = secrets.token_urlsafe(_INVITE_TOKEN_BYTES)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     invite_id  = str(uuid.uuid4())
@@ -286,3 +335,76 @@ async def create_invite_short_link(
         raise HTTPException(status_code=503, detail=str(exc))
 
     return {"slug": slug, "link_id": link_id, "expires_at": body.expires_at}
+
+
+# ---------------------------------------------------------------------------
+# Antivirus / server-side scanning (F5)
+# ---------------------------------------------------------------------------
+
+@router.get("/files/av-status")
+async def get_av_status(
+    admin: AuthenticatedUser = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """Return per-status counts of files for the AV status dashboard."""
+    cursor = await db.execute(
+        """
+        SELECT
+            COUNT(*) FILTER (WHERE av_scan_status IS NULL)         AS null_count,
+            COUNT(*) FILTER (WHERE av_scan_status = 'pending')     AS pending_count,
+            COUNT(*) FILTER (WHERE av_scan_status = 'clean')       AS clean_count,
+            COUNT(*) FILTER (WHERE av_scan_status = 'infected')    AS infected_count,
+            COUNT(*) FILTER (WHERE av_scan_status = 'error')       AS error_count
+        FROM files WHERE upload_complete = 1
+        """
+    )
+    row = await cursor.fetchone()
+    return {
+        "null":     row["null_count"]     or 0,
+        "pending":  row["pending_count"]  or 0,
+        "clean":    row["clean_count"]    or 0,
+        "infected": row["infected_count"] or 0,
+        "error":    row["error_count"]    or 0,
+    }
+
+
+@router.post("/files/av-rescan")
+async def bulk_av_rescan(
+    admin: AuthenticatedUser = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """Queue background AV scan tasks for all null/error-status files.
+
+    Returns 501 when TUSSHARE_ESCROW_PRIVATE_KEY is not configured (no-op
+    would silently do nothing, which is worse than a clear error).
+    """
+    from app.services.av_scanner import get_escrow_public_key_b64, scan_file
+    if get_escrow_public_key_b64() is None:
+        raise HTTPException(
+            status_code=501,
+            detail="TUSSHARE_ESCROW_PRIVATE_KEY is not configured; server-side AV scanning is unavailable",
+        )
+
+    cursor = await db.execute(
+        "SELECT id FROM files "
+        "WHERE upload_complete = 1 "
+        "  AND (av_scan_status IS NULL OR av_scan_status = 'error')"
+    )
+    rows = await cursor.fetchall()
+    queued = 0
+    for row in rows:
+        asyncio.create_task(_bg_scan(row["id"]))
+        queued += 1
+
+    return {"queued": queued}
+
+
+async def _bg_scan(file_id: str) -> None:
+    from app.database import db_session
+    from app.services.av_scanner import scan_file
+    try:
+        async with db_session() as _db:
+            await scan_file(_db, file_id)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Bulk rescan failed for file %s: %s", file_id, exc)

@@ -58,6 +58,11 @@ _SENSITIVE_DEFAULTS = [
     ("admin.user.freeze",          "password", "Freeze a user account"),
     ("admin.user.delete",          "password", "Delete a user account"),
     ("integration.ldap.configure", "password", "Configure LDAP / identity provider"),
+    ("admin.storage.configure",         "password", "Add, edit, or delete storage volumes and credentials"),
+    ("admin.notifications.configure",  "password", "Add, edit, or delete notification channels and channel secrets"),
+    ("admin.api_keys.manage",           "password", "Create or revoke API keys for pull event consumers"),
+    ("auth.mfa.admin_remove",           "password", "Admin removes MFA credential(s) from a user account"),
+    ("auth.mfa.admin_reset",       "password", "Admin forces MFA re-enrollment for a user"),
 ]
 
 # is_sensitive=False — common operations (step-up can be enabled later by

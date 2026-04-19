@@ -14,6 +14,8 @@ from fastapi.staticfiles import StaticFiles
 from app.auth.jwt import run_token_cleanup
 from app.routes.uploads import run_upload_cleanup
 from app.config import settings
+from app.services import event_bus, op_bus, notification_emitter, siem_syslog, siem_webhook
+import app.storage.manager as storage
 from app.database import db_session, get_db, init_db, close_db
 import app.sensitive_config as sensitive_config
 from app.middleware.csrf import CSRFMiddleware
@@ -54,6 +56,38 @@ async def _run_opaque_session_cleanup(db_session_factory, interval: int = 120) -
             logger.exception("Error in OPAQUE session cleanup task")
 
 
+async def _run_oidc_state_cleanup(db_session_factory, interval: int = 300) -> None:
+    """Sweep expired OIDC state nonces every 5 minutes."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with db_session_factory() as db:
+                from app.auth.oidc_provider import sweep_expired_oidc_states
+                removed = await sweep_expired_oidc_states(db)
+                if removed:
+                    logger.debug("Swept %d expired OIDC state nonce(s)", removed)
+        except Exception:
+            logger.exception("Error in OIDC state cleanup task")
+
+
+async def _run_mfa_cleanup(db_session_factory, interval: int = 120) -> None:
+    """Sweep expired MFA pending tokens and stale WebAuthn challenges every 2 minutes."""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with db_session_factory() as db:
+                from app.auth.mfa import sweep_expired_pending_tokens, sweep_expired_webauthn_challenges
+                removed_pt = await sweep_expired_pending_tokens(db)
+                removed_wc = await sweep_expired_webauthn_challenges(db)
+                if removed_pt or removed_wc:
+                    logger.debug(
+                        "MFA cleanup: %d pending token(s), %d WebAuthn challenge(s) swept",
+                        removed_pt, removed_wc,
+                    )
+        except Exception:
+            logger.exception("Error in MFA cleanup task")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application startup and shutdown lifecycle."""
@@ -64,7 +98,7 @@ async def lifespan(app: FastAPI):
             "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
         )
 
-    # Ensure data directories exist
+    # Ensure data directories exist (used by the default local storage volume)
     settings.FILES_DIR.mkdir(parents=True, exist_ok=True)
     settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -75,6 +109,10 @@ async def lifespan(app: FastAPI):
     async with db_session() as db:
         await sensitive_config.load(db, settings.DATA_DIR, settings.SUPERUSER_URL)
 
+    # Initialize storage manager (loads volume configs from DB)
+    async with db_session() as db:
+        storage_manager = await storage.init(db, db_session)
+
     # Bootstrap admin user on first run
     async with db_session() as db:
         await _bootstrap_admin(db)
@@ -84,6 +122,28 @@ async def lifespan(app: FastAPI):
     token_cleanup_task      = asyncio.create_task(run_token_cleanup(db_session))
     upload_cleanup_task     = asyncio.create_task(run_upload_cleanup(db_session))
     opaque_session_cleanup  = asyncio.create_task(_run_opaque_session_cleanup(db_session))
+    mfa_cleanup_task        = asyncio.create_task(_run_mfa_cleanup(db_session))
+    oidc_state_cleanup_task = asyncio.create_task(_run_oidc_state_cleanup(db_session))
+    storage_tiering_task    = asyncio.create_task(storage_manager.run_tiering_task())
+    storage_reconcile_task  = asyncio.create_task(storage_manager.run_reconciliation_task())
+
+    event_bus.init(db_session)
+    event_bus_task = await event_bus.start()
+
+    op_bus.init(db_session)
+    op_bus_task = await op_bus.start()
+
+    notification_emitter.init(db_session)
+    notif_task = await notification_emitter.start()
+
+    siem_syslog.init(db_session)
+    siem_syslog_task = await siem_syslog.start()
+
+    siem_webhook.init(db_session)
+    siem_webhook_task = await siem_webhook.start()
+
+    from app.schemas.op_event import OperationalEvent as _OpEvent
+    op_bus.emit(_OpEvent(event_type="system.startup", severity="info", source="system"))
 
     if settings.FORCE_HTTPS:
         logger.info("HTTPS enforcement active — HTTP requests will be redirected (X-Forwarded-Proto)")
@@ -119,7 +179,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown — cancel background tasks
-    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, opaque_session_cleanup):
+    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, opaque_session_cleanup, mfa_cleanup_task, oidc_state_cleanup_task, event_bus_task, op_bus_task, notif_task, siem_syslog_task, siem_webhook_task, storage_tiering_task, storage_reconcile_task):
         task.cancel()
         try:
             await task
@@ -223,6 +283,16 @@ def create_app() -> FastAPI:
     from app.routes.policy_fields import router as policy_fields_router
     from app.routes.admin_scopes import router as admin_scopes_router
     from app.routes.policies import router as policies_router
+    from app.routes.mfa import router as mfa_router
+    from app.routes.admin_mfa import router as admin_mfa_router
+    from app.routes.idp_auth import router as idp_auth_router
+    from app.routes.idp_admin import router as idp_admin_router
+    from app.routes.admin_emergency import router as admin_emergency_router
+    from app.routes.admin_audit import router as admin_audit_router
+    from app.routes.admin_storage import router as admin_storage_router
+    from app.routes.admin_notifications import router as admin_notifications_router
+    from app.routes.admin_notifications import api_keys_router as admin_api_keys_router
+    from app.routes.op_events import router as op_events_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
@@ -241,6 +311,16 @@ def create_app() -> FastAPI:
     app.include_router(policy_fields_router, prefix="/api/v1/admin/policy-fields", tags=["policy"])
     app.include_router(admin_scopes_router,  prefix="/api/v1/admin/scopes",         tags=["policy"])
     app.include_router(policies_router,      prefix="/api/v1/admin/policies",       tags=["policy"])
+    app.include_router(mfa_router,           prefix="/api/v1/auth",                 tags=["mfa"])
+    app.include_router(admin_mfa_router,     prefix="/api/v1/admin",                tags=["admin-mfa"])
+    app.include_router(idp_auth_router,      prefix="/api/v1/auth",                 tags=["idp-auth"])
+    app.include_router(idp_admin_router,     prefix="/api/v1/admin/identity-providers", tags=["idp-admin"])
+    app.include_router(admin_emergency_router, prefix="/api/v1/admin",               tags=["admin-emergency"])
+    app.include_router(admin_audit_router,    prefix="/api/v1/admin/audit",          tags=["admin-audit"])
+    app.include_router(admin_storage_router,       prefix="/api/v1/admin/storage",      tags=["admin-storage"])
+    app.include_router(admin_notifications_router, prefix="/api/v1/admin/notifications", tags=["admin-notifications"])
+    app.include_router(admin_api_keys_router,      prefix="/api/v1/admin",               tags=["admin-api-keys"])
+    app.include_router(op_events_router,           prefix="/api/v1/op-events",           tags=["op-events"])
 
     # --- Health check ---
     @app.get("/api/v1/health")
