@@ -50,6 +50,7 @@ FLAG_MANAGE_INTEGRATIONS     = "can_manage_integrations"
 FLAG_MANAGE_POLICIES         = "can_manage_policies"
 FLAG_ACCESS_ALL_FILES        = "can_access_all_files"
 FLAG_MANAGE_USER_MFA         = "can_manage_user_mfa"
+FLAG_MANAGE_ESCROW           = "can_manage_escrow"
 
 # Flags that may only be activated by server_admin or org_admin, regardless
 # of other role permissions.  Enforced server-side at flag-update endpoints.

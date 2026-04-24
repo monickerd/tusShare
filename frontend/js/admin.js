@@ -45,6 +45,7 @@ const Admin = (() => {
             _buildSection('notifications', 'Notification Channels', _renderNotificationsSection),
             _buildSection('api-keys',      'API Keys',              _renderApiKeysSection),
             _buildSection('antivirus',     'Antivirus',             _renderAntivirusSection),
+            _buildSection('escrow',        'Escrow by Default',     _renderEscrowSection),
         ];
         sections.forEach(s => page.appendChild(s));
         container.appendChild(page);
@@ -3644,6 +3645,192 @@ const Admin = (() => {
 
         await _refreshStatus();
         container.appendChild(statusCard);
+    }
+
+    // -----------------------------------------------------------------------
+    // Escrow by Default (E5)
+    // -----------------------------------------------------------------------
+
+    async function _renderEscrowSection(container) {
+        container.innerHTML = '';
+
+        // --- Org-level settings card ---
+        const settingsCard = Utils.el('div', { className: 'card mb-3' });
+        settingsCard.innerHTML = '<div class="card-body"><h5 class="card-title">Org-Level Escrow Defaults</h5></div>';
+        const sb = settingsCard.querySelector('.card-body');
+        container.appendChild(settingsCard);
+
+        let esData;
+        try {
+            esData = await Api.get(`${Config.app.apiPrefix}/admin/escrow/settings`);
+        } catch (err) {
+            sb.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Failed to load escrow settings: ' + err.message }));
+            _renderEscrowFolderPolicies(container);
+            _renderEscrowCoverageReport(container);
+            return;
+        }
+
+        // require_coverage toggle
+        const reqRow = Utils.el('div', { className: 'form-check mb-3' });
+        const reqCheck = Utils.el('input', { type: 'checkbox', className: 'form-check-input', id: 'escrow-require-coverage' });
+        reqCheck.checked = !!esData.escrow_require_coverage;
+        reqRow.appendChild(reqCheck);
+        reqRow.appendChild(Utils.el('label', {
+            htmlFor: 'escrow-require-coverage', className: 'form-check-label',
+            textContent: 'Require escrow coverage — block team creation when no escrow agents are resolved',
+        }));
+        sb.appendChild(reqRow);
+
+        // Lock status badge
+        if (esData.is_locked) {
+            const badge = Utils.el('span', {
+                className: 'badge bg-warning text-dark mb-2',
+                textContent: `Locked (min tier ${esData.locked_min_tier})`,
+            });
+            sb.appendChild(badge);
+        }
+
+        // Default role IDs
+        sb.appendChild(Utils.el('label', { className: 'form-label mt-2', textContent: 'Default escrow role IDs (one per line)' }));
+        const roleIdsInput = Utils.el('textarea', {
+            className: 'form-control mb-2', rows: 3,
+            value: (esData.escrow_default_role_ids || []).join('\n'),
+        });
+        sb.appendChild(roleIdsInput);
+
+        // Default user IDs
+        sb.appendChild(Utils.el('label', { className: 'form-label', textContent: 'Default escrow user IDs (one per line)' }));
+        const userIdsInput = Utils.el('textarea', {
+            className: 'form-control mb-2', rows: 3,
+            value: (esData.escrow_default_user_ids || []).join('\n'),
+        });
+        sb.appendChild(userIdsInput);
+
+        const saveBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Save Escrow Settings' });
+        saveBtn.addEventListener('click', async () => {
+            saveBtn.disabled = true;
+            const roleIds = roleIdsInput.value.split('\n').map(s => s.trim()).filter(Boolean);
+            const userIds = userIdsInput.value.split('\n').map(s => s.trim()).filter(Boolean);
+            try {
+                await Api.put(`${Config.app.apiPrefix}/admin/escrow/settings`, {
+                    escrow_require_coverage: reqCheck.checked,
+                    escrow_default_role_ids: roleIds,
+                    escrow_default_user_ids: userIds,
+                });
+                Utils.showToast('Escrow settings saved', 'success');
+                _renderEscrowSection(container);
+            } catch (err) {
+                Utils.showToast('Save failed: ' + err.message, 'error');
+            } finally {
+                saveBtn.disabled = false;
+            }
+        });
+        sb.appendChild(saveBtn);
+
+        await _renderEscrowFolderPolicies(container);
+        await _renderEscrowCoverageReport(container);
+    }
+
+    async function _renderEscrowFolderPolicies(container) {
+        const card = Utils.el('div', { className: 'card mb-3' });
+        card.innerHTML = '<div class="card-body"><h5 class="card-title">Folder Escrow Overrides</h5></div>';
+        const body = card.querySelector('.card-body');
+        container.appendChild(card);
+
+        let data;
+        try {
+            data = await Api.get(`${Config.app.apiPrefix}/admin/escrow/folder-policies`);
+        } catch (err) {
+            body.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Failed to load policies: ' + err.message }));
+            return;
+        }
+
+        const policies = data.policies || [];
+        if (policies.length === 0) {
+            body.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folder-level overrides configured.' }));
+        } else {
+            const table = Utils.el('table', { className: 'table table-sm' });
+            table.innerHTML = `<thead><tr>
+                <th>Folder</th><th>Mode</th><th>Agents</th><th>Locked</th><th></th>
+            </tr></thead>`;
+            const tbody = Utils.el('tbody');
+            for (const p of policies) {
+                const tr = Utils.el('tr');
+                tr.appendChild(Utils.el('td', { textContent: p.folder_name || p.folder_id }));
+                tr.appendChild(Utils.el('td', { textContent: p.override_mode }));
+                tr.appendChild(Utils.el('td', { textContent: String(p.agent_count) }));
+                tr.appendChild(Utils.el('td', { textContent: p.policy_locked ? `Yes (tier ≤${p.locked_min_tier})` : 'No' }));
+                const delBtn = Utils.el('button', { className: 'btn btn-danger btn-xs', textContent: 'Delete' });
+                delBtn.addEventListener('click', async () => {
+                    if (!confirm(`Delete escrow override for folder "${p.folder_name}"?`)) return;
+                    delBtn.disabled = true;
+                    try {
+                        await Api.del(`${Config.app.apiPrefix}/admin/escrow/folder-policies/${p.folder_id}`);
+                        Utils.showToast('Policy deleted', 'success');
+                        tr.remove();
+                    } catch (err) {
+                        Utils.showToast('Delete failed: ' + err.message, 'error');
+                        delBtn.disabled = false;
+                    }
+                });
+                const td = Utils.el('td');
+                td.appendChild(delBtn);
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+            }
+            table.appendChild(tbody);
+            body.appendChild(table);
+        }
+    }
+
+    async function _renderEscrowCoverageReport(container) {
+        const card = Utils.el('div', { className: 'card mb-3' });
+        card.innerHTML = '<div class="card-body"><h5 class="card-title">Coverage Report — Teams Without Escrow</h5></div>';
+        const body = card.querySelector('.card-body');
+        container.appendChild(card);
+
+        let data;
+        try {
+            data = await Api.get(`${Config.app.apiPrefix}/admin/escrow/coverage-report`);
+        } catch (err) {
+            body.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Failed to load coverage report: ' + err.message }));
+            return;
+        }
+
+        const teams = data.teams || [];
+        if (teams.length === 0) {
+            body.appendChild(Utils.el('p', { className: 'text-success', textContent: 'All teams have at least one escrow agent.' }));
+            return;
+        }
+
+        body.appendChild(Utils.el('p', {
+            className: 'text-warning',
+            textContent: `${data.total} team(s) have no escrow agent key slot filled.`,
+        }));
+
+        const table = Utils.el('table', { className: 'table table-sm' });
+        table.innerHTML = `<thead><tr>
+            <th>Team</th><th>Owner</th><th>Created</th><th>Action</th>
+        </tr></thead>`;
+        const tbody = Utils.el('tbody');
+        for (const t of teams) {
+            const tr = Utils.el('tr');
+            tr.appendChild(Utils.el('td', { textContent: t.team_name }));
+            tr.appendChild(Utils.el('td', { textContent: t.owner_username }));
+            tr.appendChild(Utils.el('td', { textContent: new Date(t.created_at).toLocaleDateString() }));
+            // Placeholder — actual key grant request goes through the pending-grants flow
+            const grantBtn = Utils.el('button', {
+                className: 'btn btn-secondary btn-xs',
+                textContent: 'View team',
+                onClick: () => window.location.hash = `#/teams/${t.team_id}`,
+            });
+            const td = Utils.el('td');
+            td.appendChild(grantBtn);
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        body.appendChild(table);
     }
 
     return { renderAdminPage };

@@ -12,6 +12,7 @@ from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
 from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
+from app.services.escrow import resolve_effective_escrow_agents
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
 
 router = APIRouter(dependencies=[Depends(check_management_rate_limit)])
@@ -429,3 +430,41 @@ async def delete_folder(
     )
 
     return {"message": "Folder deleted"}
+
+
+@router.get("/{folder_id}/effective-escrow-agents")
+async def get_effective_escrow_agents(
+    folder_id: str,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Return the resolved escrow agent list for the given folder.
+
+    Used by the team-creation flow: the client calls this before POST /teams
+    to know which agents to wrap sk_team for.  The result reflects the closest
+    folder-level policy override (replace/merge/none) or the org default when
+    no override exists.
+
+    Does not require can_manage_escrow — any user with a user role can call
+    this so that team creation works without an admin account.
+    """
+    folder_id = validate_uuid(folder_id)
+
+    # Verify the folder exists and the caller has access to it
+    cursor = await db.execute(
+        "SELECT id, owner_id FROM folders WHERE id = ?", (folder_id,)
+    )
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    has_access = (
+        folder_row["owner_id"] == user.id
+        or user.is_admin
+        or await has_folder_permission(db, folder_id, user.id)
+        or await is_team_folder_member(db, folder_id, user.id)
+    )
+    if not has_access:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return await resolve_effective_escrow_agents(db, folder_id)

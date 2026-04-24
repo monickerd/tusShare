@@ -494,6 +494,21 @@ async def create_team(
                 detail=f"User {em.user_id} does not have can_act_as_escrow permission",
             )
 
+    # E5: enforce escrow_require_coverage
+    cov_cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'escrow_require_coverage'"
+    )
+    cov_row = await cov_cursor.fetchone()
+    if cov_row and cov_row["value"] == "1" and not body.escrow_members:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "escrow_require_coverage is enabled for this organisation. "
+                "Call GET /folders/{id}/effective-escrow-agents, wrap sk_team for "
+                "each returned agent, and include them in escrow_members."
+            ),
+        )
+
     team_id = str(uuid.uuid4())
     ur_id   = str(uuid.uuid4())
     utk_id  = str(uuid.uuid4())
