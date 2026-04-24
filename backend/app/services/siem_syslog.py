@@ -55,7 +55,7 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
     from app.services import event_bus
 
     destinations: list[dict] = []
-    reload_countdown = 0
+    reload_countdown = _RELOAD_INTERVAL_SECS
 
     try:
         while True:
@@ -74,6 +74,9 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
                 reload_countdown = _RELOAD_INTERVAL_SECS
 
             for dest in destinations:
+                from app.services.siem_filters import matches_destination_filter
+                if not matches_destination_filter(dest, event):
+                    continue
                 try:
                     await send_one(dest, event)
                 except Exception:

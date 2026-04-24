@@ -842,6 +842,7 @@ async def create_short_link(
 async def resolve_share(
     token: str,
     request: Request,
+    user: AuthenticatedUser | None = Depends(get_optional_user),
     db=Depends(get_db),
 ):
     """Resolve a share token.
@@ -861,12 +862,21 @@ async def resolve_share(
 
     try:
         share = await _get_active_share_by_token(db, token)
+
+        # User-type shares are gated on the intended recipient being authenticated.
+        if share["share_type"] == "user" and share["target_user_id"] is not None:
+            if user is None or user.id != share["target_user_id"]:
+                raise HTTPException(status_code=404, detail="Share not found or expired")
+
         await _verify_creator_still_has_access(db, share["id"], share["created_by"])
         items = await _get_items_with_files(db, share["id"])
 
         client_ip = _get_share_client_ip(request)
         user_agent = (request.headers.get("User-Agent") or "")[:512]
-        session_token = create_share_session_token(share["id"], client_ip, user_agent)
+        # Authenticated recipients don't need a share_session_token — their session cookie
+        # passes _require_share_access. Unauthenticated link shares still get one.
+        session_token = None if (share["share_type"] == "user" and user is not None) else \
+            create_share_session_token(share["id"], client_ip, user_agent)
 
         return {
             "share_id": share["id"],

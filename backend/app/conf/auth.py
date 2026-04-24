@@ -16,8 +16,10 @@ SHARE_SESSION_EXPIRE_HOURS = 2   # short-lived IP-bound token for public share a
 # __Secure- prefix: browser enforces Secure only — used for refresh_token which has a narrow path.
 COOKIE_ACCESS  = "__Host-access_token"
 COOKIE_CSRF    = "__Host-csrf_token"
-COOKIE_REFRESH = "__Secure-refresh_token"
-REFRESH_TOKEN_COOKIE_PATH = "/api/v1/auth/refresh"
+# __Host- prefix: enforces Secure + no Domain + Path=/ at the browser level — prevents subdomain injection.
+# Path narrowing for the refresh cookie is application-layer only (only /auth/refresh reads it).
+COOKIE_REFRESH = "__Host-refresh_token"
+REFRESH_TOKEN_COOKIE_PATH = "/"
 
 # --- Step-up authentication ---
 # Maximum clock skew (seconds) tolerated between client and server timestamps

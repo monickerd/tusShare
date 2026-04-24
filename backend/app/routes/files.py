@@ -18,7 +18,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.models.file import File, FileChunk
-from app.routes._access import copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
+from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
 import app.storage.manager as storage
 from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
@@ -38,6 +38,8 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
     if file_row["folder_id"] and await is_in_shared_tree(db, file_row["folder_id"]):
         return
     if file_row["folder_id"] and await is_team_folder_member(db, file_row["folder_id"], user.id):
+        return
+    if file_row["folder_id"] and await has_folder_permission(db, file_row["folder_id"], user.id):
         return
     raise HTTPException(status_code=403, detail="Access denied")
 
@@ -376,6 +378,15 @@ async def update_file(
         if new_folder_id:
             await copy_folder_permissions(db, new_folder_id, "file", file_id)
 
+        # Clean up stale file_team_keys if the file is leaving a team's scope.
+        old_team_id = await get_folder_team_id(db, row["folder_id"]) if row["folder_id"] else None
+        new_team_id = await get_folder_team_id(db, new_folder_id) if new_folder_id else None
+        if old_team_id and old_team_id != new_team_id:
+            await db.execute(
+                "DELETE FROM file_team_keys WHERE team_id = ? AND file_id = ?",
+                (old_team_id, file_id),
+            )
+
     await db.commit()
 
     # Notify the folder the file was in (and the destination if it was moved)
@@ -637,13 +648,14 @@ async def get_file_chunks(
     )
     chunks = [FileChunk.from_row(r).to_dict() for r in await cursor.fetchall()]
 
+    is_owner = row["owner_id"] == user.id
     return {
         "file_id": file_id,
         "original_name": row["original_name"],
         "mime_type": row["mime_type"],
         "size_bytes": row["size_bytes"],          # plaintext file size for integrity check
-        "encrypted_file_key": row["encrypted_file_key"],
-        "key_iv": row["key_iv"],
+        "encrypted_file_key": row["encrypted_file_key"] if is_owner else None,
+        "key_iv": row["key_iv"] if is_owner else None,
         "chunk_size": row["chunk_size"],
         "total_chunks": row["total_chunks"],
         "chunks": chunks,

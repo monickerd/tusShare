@@ -177,6 +177,10 @@ async def emergency_revoke(
         )
         result["teams_flagged"] = len(team_ids)
 
+    # Delete wrapped key material so the revoked user's slot cannot be used
+    # even if is_active is later restored without re-invitation.
+    await db.execute("DELETE FROM user_team_keys WHERE user_id = ?", (user_id,))
+
     # ------------------------------------------------------------------
     # 5b. Strip team-scoped admin roles (team_owner, team_supervisor)
     # ------------------------------------------------------------------

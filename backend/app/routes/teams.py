@@ -71,6 +71,7 @@ from app.models.team import (
     get_team_members,
     get_user_teams,
 )
+from app.routes._access import get_folder_team_id
 from app.validation.sanitizers import (
     sanitize_team_name,
     sanitize_username,
@@ -987,20 +988,33 @@ async def add_file_keys(
 
     file_ids = [fk.file_id for fk in body.file_keys]
 
-    # Verify all file_ids exist and belong to the caller
-    # Build a parameterized IN clause
+    # Verify all file_ids exist, belong to the caller, and are in this team's folder tree
     placeholders = ",".join("?" for _ in file_ids)
     cursor = await db.execute(
-        f"SELECT id FROM files WHERE id IN ({placeholders}) AND owner_id = ?",
+        f"SELECT id, folder_id FROM files WHERE id IN ({placeholders}) AND owner_id = ?",
         (*file_ids, user.id),
     )
-    owned = {row["id"] for row in await cursor.fetchall()}
-    missing = [fid for fid in file_ids if fid not in owned]
+    owned_map = {row["id"]: row["folder_id"] for row in await cursor.fetchall()}
+    missing = [fid for fid in file_ids if fid not in owned_map]
     if missing:
         raise HTTPException(
             status_code=404,
             detail=f"Files not found or not owned by you: {missing[:5]}"
         )
+
+    for fk in body.file_keys:
+        file_folder_id = owned_map.get(fk.file_id)
+        if not file_folder_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File {fk.file_id} is not in a team folder",
+            )
+        actual_team = await get_folder_team_id(db, file_folder_id)
+        if actual_team != team_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File {fk.file_id} is not in this team's folder",
+            )
 
     for fk in body.file_keys:
         fk_id = str(uuid.uuid4())

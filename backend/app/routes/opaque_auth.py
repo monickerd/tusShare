@@ -20,6 +20,7 @@ Endpoints:
 import asyncio
 import base64
 import hashlib
+import hmac as _hmac
 import logging
 import secrets
 import uuid
@@ -984,6 +985,27 @@ class OpaqueRecoverFinishRequest(BaseModel):
         return v
 
 
+def _fake_recovery_blob(username: str) -> str:
+    """Deterministic fake recovery_key_wrapped for non-existent users.
+
+    Prevents the oracle where recovery_key_wrapped=null unambiguously reveals
+    that the username does not exist. The fake blob is 48 bytes (matches the
+    real AES-GCM ciphertext length: 32-byte key + 16-byte auth tag).
+    """
+    secret = settings.JWT_SECRET.encode()
+    uname = username.lower().encode()
+    ciphertext = _hmac.new(secret, b"fake-rk-v1:" + uname, hashlib.sha256).digest()
+    tag = _hmac.new(secret, b"fake-rk-tag:" + uname, hashlib.sha256).digest()[:16]
+    return base64.urlsafe_b64encode(ciphertext + tag).rstrip(b"=").decode()
+
+
+def _fake_recovery_iv(username: str) -> str:
+    """Deterministic fake recovery_key_iv for non-existent users (12 bytes)."""
+    secret = settings.JWT_SECRET.encode()
+    iv = _hmac.new(secret, b"fake-iv-v1:" + username.lower().encode(), hashlib.sha256).digest()[:12]
+    return base64.urlsafe_b64encode(iv).rstrip(b"=").decode()
+
+
 @router.post("/recover/start")
 async def opaque_recover_start(
     body: OpaqueRecoverStartRequest,
@@ -1024,8 +1046,8 @@ async def opaque_recover_start(
     return {
         "registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("="),
         "session_id": session_id,
-        "recovery_key_wrapped": user_fields["recovery_key_wrapped"] if user_fields else None,
-        "recovery_key_iv": user_fields["recovery_key_iv"] if user_fields else None,
+        "recovery_key_wrapped": user_fields["recovery_key_wrapped"] if user_fields else _fake_recovery_blob(body.username),
+        "recovery_key_iv": user_fields["recovery_key_iv"] if user_fields else _fake_recovery_iv(body.username),
     }
 
 

@@ -37,7 +37,7 @@ const TransferManager = (() => {
         const minBtn = Utils.el('button', {
             className: 'transfer-panel-min',
             title: 'Minimize',
-            innerHTML: '&#x2212;',
+            textContent: '−',
             onClick: _toggleMinimize,
         });
 
@@ -57,7 +57,7 @@ const TransferManager = (() => {
         _minimized = !_minimized;
         _panel.classList.toggle('transfer-panel--minimized', _minimized);
         const btn = _panel.querySelector('.transfer-panel-min');
-        if (btn) btn.innerHTML = _minimized ? '&#x25B4;' : '&#x2212;';
+        if (btn) btn.textContent = _minimized ? '▴' : '−';
     }
 
     function _refreshVisibility() {

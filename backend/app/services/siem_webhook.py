@@ -65,7 +65,7 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
     secrets_cache: dict[str, str] = {}    # dest_id → plaintext secret
     # Per-destination overflow queues for retry buffering
     overflow: dict[str, list[SecurityEvent]] = {}
-    reload_countdown = 0
+    reload_countdown = _RELOAD_INTERVAL_SECS
 
     try:
         while True:
@@ -84,6 +84,9 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
                 reload_countdown = _RELOAD_INTERVAL_SECS
 
             for dest in destinations:
+                from app.services.siem_filters import matches_destination_filter
+                if not matches_destination_filter(dest, event):
+                    continue
                 did = dest["id"]
                 if did not in overflow:
                     overflow[did] = []

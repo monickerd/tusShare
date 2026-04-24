@@ -57,6 +57,31 @@ SENSITIVE_FLAGS: frozenset[str] = frozenset({FLAG_ACCESS_ALL_FILES})
 
 
 # ---------------------------------------------------------------------------
+# Role tier hierarchy — used to prevent privilege escalation in role grants.
+# Lower number = higher authority.  Roles absent from this map are custom or
+# non-tiered (e.g. role_user) and have no escalation restriction.
+# ---------------------------------------------------------------------------
+ROLE_TIER: dict[str, int] = {
+    ROLE_SERVER_ADMIN:      1,
+    ROLE_ADMIN:             1,  # legacy — same full authority as server_admin
+    ROLE_ORG_ADMIN:         2,
+    ROLE_OPERATIONAL_ADMIN: 3,
+    ROLE_TEAM_ADMIN:        4,
+    ROLE_TEAM_MANAGER:      5,
+    ROLE_TEAM_MEMBER:       6,
+}
+
+
+def admin_best_tier(roles: set[str]) -> int:
+    """Return the lowest (most privileged) tier among the role set.
+
+    Returns 99 when the set contains no tiered roles (e.g. custom-role-only
+    or role_user accounts), ensuring they can never grant tiered roles.
+    """
+    return min((ROLE_TIER.get(r, 99) for r in roles), default=99)
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 

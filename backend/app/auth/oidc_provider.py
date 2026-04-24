@@ -127,13 +127,14 @@ async def begin_oidc_flow(
     validate_oidc_config(cfg)
 
     state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
     now = int(time.time())
     expires_at = now + _OIDC_STATE_TTL
 
     await db.execute(
-        "INSERT INTO oidc_states (id, provider_id, redirect_to, created_at, expires_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (state, provider_id, redirect_to, now, expires_at),
+        "INSERT INTO oidc_states (id, provider_id, redirect_to, nonce, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (state, provider_id, redirect_to, nonce, now, expires_at),
     )
     await db.commit()
 
@@ -141,6 +142,7 @@ async def begin_oidc_flow(
     uri, _ = client.create_authorization_url(
         client.server_metadata["authorization_endpoint"],
         state=state,
+        nonce=nonce,
     )
     await client.aclose()
     return uri
@@ -170,16 +172,18 @@ async def handle_oidc_callback(
     """
     now = int(time.time())
 
-    # Consume the state nonce atomically
+    # Consume the state nonce atomically; retrieve nonce for ID token binding.
     cursor = await db.execute(
         "DELETE FROM oidc_states WHERE id = ? AND provider_id = ? AND expires_at > ? "
-        "RETURNING redirect_to",
+        "RETURNING redirect_to, nonce",
         (state, provider_id, now),
     )
     row = await cursor.fetchone()
     if row is None:
         logger.warning("OIDC callback: unknown/expired state=%s provider=%s", state, provider_id)
         return None
+
+    expected_nonce = row["nonce"]  # may be None for pre-014 rows
 
     cfg = decrypt_idp_config(config_enc)
 
@@ -204,9 +208,9 @@ async def handle_oidc_callback(
     if not id_token_str:
         raise ValueError("OIDC token response missing id_token")
 
-    # Validate ID token against IdP's JWKS
+    # Validate ID token against IdP's JWKS, including nonce binding.
     claims = await asyncio.to_thread(
-        _validate_id_token, id_token_str, cfg, client.server_metadata
+        _validate_id_token, id_token_str, cfg, client.server_metadata, expected_nonce
     )
 
     # Optionally call UserInfo to get additional claims
@@ -240,6 +244,7 @@ def _validate_id_token(
     id_token_str: str,
     cfg: dict[str, Any],
     server_metadata: dict[str, Any],
+    expected_nonce: str | None = None,
 ) -> dict[str, Any]:
     """Validate an ID token JWT against the IdP's JWKS.  Returns claims dict."""
     from authlib.jose import JsonWebToken, JsonWebKey
@@ -254,11 +259,17 @@ def _validate_id_token(
     resp.raise_for_status()
     jwks = resp.json()
 
-    # In authlib 1.3.x, pass claims_options so validate_aud() can check the audience,
-    # then call claims.validate() which passes (now, leeway) to validate_exp/nbf internally.
-    claims_options = {
+    # Validate iss against the issuer in the discovery document (the exact string the
+    # IdP embeds in tokens). Fall back to cfg["issuer_url"] if metadata omits it.
+    expected_issuer = server_metadata.get("issuer") or cfg["issuer_url"].rstrip("/")
+    claims_options: dict[str, Any] = {
+        "iss": {"essential": True, "value": expected_issuer},
         "aud": {"essential": True, "value": cfg["client_id"]},
     }
+    # Bind nonce to prevent ID token replay across separate authorization flows.
+    if expected_nonce is not None:
+        claims_options["nonce"] = {"essential": True, "value": expected_nonce}
+
     jwt = JsonWebToken(["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"])
     claims = jwt.decode(id_token_str, JsonWebKey.import_key_set(jwks), claims_options=claims_options)
     claims.validate()

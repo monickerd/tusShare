@@ -99,6 +99,15 @@ def validate_ldap_config(cfg: dict[str, Any]) -> None:
     if tls not in ("verify", "starttls", "skip_verify"):
         raise ValueError("tls must be 'verify', 'starttls', or 'skip_verify'")
 
+    # tls='verify' and tls='skip_verify' only activate on an ldaps:// socket — they
+    # have no effect on a plaintext ldap:// connection and would silently transmit
+    # credentials unencrypted.  Require starttls for plaintext-scheme URIs.
+    if uri.startswith("ldap://") and tls != "starttls":
+        raise ValueError(
+            "Plaintext LDAP (ldap://) requires tls='starttls' to encrypt credentials in transit. "
+            "Use ldaps:// for implicit TLS, or set tls='starttls' for a STARTTLS upgrade."
+        )
+
 
 # ---------------------------------------------------------------------------
 # LDAP authentication
@@ -142,7 +151,10 @@ def _ldap_authenticate_sync(
 ) -> dict[str, Any] | None:
     """Synchronous LDAP auth — runs in a thread pool via asyncio.to_thread."""
     try:
-        from ldap3 import Server, Connection, AUTO_BIND_NO_TLS, SYNC, Tls, SUBTREE, NONE as GET_INFO_NONE
+        from ldap3 import (
+            Server, Connection, AUTO_BIND_NO_TLS, AUTO_BIND_TLS_BEFORE_BIND,
+            SYNC, Tls, SUBTREE, NONE as GET_INFO_NONE,
+        )
         from ldap3.utils.conv import escape_filter_chars
         import ssl
     except ImportError as exc:
@@ -158,8 +170,6 @@ def _ldap_authenticate_sync(
     # Build Tls object
     if tls_mode == "skip_verify":
         tls_obj = Tls(validate=ssl.CERT_NONE)
-    elif tls_mode == "starttls":
-        tls_obj = Tls(validate=ssl.CERT_REQUIRED)
     else:
         tls_obj = Tls(validate=ssl.CERT_REQUIRED)
 
@@ -168,19 +178,22 @@ def _ldap_authenticate_sync(
     # which eliminates two extra LDAP ops and the associated log noise.
     server = Server(server_uri, use_ssl=use_ssl, tls=tls_obj, connect_timeout=5, get_info=GET_INFO_NONE)
 
+    # AUTO_BIND_TLS_BEFORE_BIND: negotiates STARTTLS *before* sending credentials.
+    # AUTO_BIND_NO_TLS: used for ldaps:// (TLS is implicit in the socket layer).
+    # Sending the bind before TLS is established would expose credentials in cleartext.
+    svc_auto_bind = AUTO_BIND_TLS_BEFORE_BIND if tls_mode == "starttls" else AUTO_BIND_NO_TLS
+
     # --- Service-account bind ---
     try:
         svc_conn = Connection(
             server,
             user=bind_dn,
             password=bind_password,
-            auto_bind=AUTO_BIND_NO_TLS,
+            auto_bind=svc_auto_bind,
             client_strategy=SYNC,
             read_only=True,
             receive_timeout=10,
         )
-        if tls_mode == "starttls":
-            svc_conn.start_tls()
         # auto_bind already bound the connection; just verify it succeeded
         if not svc_conn.bound:
             logger.error(
@@ -236,17 +249,16 @@ def _ldap_authenticate_sync(
             pass
 
     # --- User-DN re-bind: verify the password ---
+    user_auto_bind = AUTO_BIND_TLS_BEFORE_BIND if tls_mode == "starttls" else AUTO_BIND_NO_TLS
     try:
         user_conn = Connection(
             server,
             user=user_dn,
             password=password,
-            auto_bind=AUTO_BIND_NO_TLS,
+            auto_bind=user_auto_bind,
             client_strategy=SYNC,
             receive_timeout=10,
         )
-        if tls_mode == "starttls":
-            user_conn.start_tls()
         if not user_conn.bound:
             logger.info("LDAP password verify failed — user=%s dn=%s", username, user_dn)
             return None
@@ -281,7 +293,10 @@ async def ldap_fetch_attributes(
 def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | None:
     """Synchronous attribute fetch — runs in thread pool."""
     try:
-        from ldap3 import Server, Connection, AUTO_BIND_NO_TLS, SYNC, Tls, SUBTREE, NONE as GET_INFO_NONE
+        from ldap3 import (
+            Server, Connection, AUTO_BIND_NO_TLS, AUTO_BIND_TLS_BEFORE_BIND,
+            SYNC, Tls, SUBTREE, NONE as GET_INFO_NONE,
+        )
         from ldap3.utils.conv import escape_filter_chars
         import ssl
     except ImportError as exc:
@@ -298,18 +313,17 @@ def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | Non
     tls_obj = Tls(validate=ssl.CERT_NONE if tls_mode == "skip_verify" else ssl.CERT_REQUIRED)
     server = Server(server_uri, use_ssl=use_ssl, tls=tls_obj, connect_timeout=5, get_info=GET_INFO_NONE)
 
+    auto_bind = AUTO_BIND_TLS_BEFORE_BIND if tls_mode == "starttls" else AUTO_BIND_NO_TLS
     try:
         conn = Connection(
             server,
             user=bind_dn,
             password=bind_password,
-            auto_bind=AUTO_BIND_NO_TLS,
+            auto_bind=auto_bind,
             client_strategy=SYNC,
             read_only=True,
             receive_timeout=10,
         )
-        if tls_mode == "starttls":
-            conn.start_tls()
         if not conn.bound:
             logger.warning("LDAP fetch: service-account bind failed — server=%s dn=%s", server_uri, bind_dn)
             return None
@@ -364,7 +378,10 @@ async def ldap_test_connection(config_enc: str) -> dict[str, Any]:
 
 def _ldap_test_sync(cfg: dict[str, Any]) -> dict[str, Any]:
     try:
-        from ldap3 import Server, Connection, AUTO_BIND_NO_TLS, SYNC, Tls, NONE as GET_INFO_NONE
+        from ldap3 import (
+            Server, Connection, AUTO_BIND_NO_TLS, AUTO_BIND_TLS_BEFORE_BIND,
+            SYNC, Tls, NONE as GET_INFO_NONE,
+        )
         import ssl
     except ImportError as exc:
         return {"ok": False, "error": "ldap3 not installed"}
@@ -374,17 +391,16 @@ def _ldap_test_sync(cfg: dict[str, Any]) -> dict[str, Any]:
     tls_obj = Tls(validate=ssl.CERT_NONE if tls_mode == "skip_verify" else ssl.CERT_REQUIRED)
     server = Server(cfg["server_uri"], use_ssl=use_ssl, tls=tls_obj, connect_timeout=5, get_info=GET_INFO_NONE)
 
+    auto_bind = AUTO_BIND_TLS_BEFORE_BIND if tls_mode == "starttls" else AUTO_BIND_NO_TLS
     try:
         conn = Connection(
             server,
             user=cfg["bind_dn"],
             password=cfg["bind_password"],
-            auto_bind=AUTO_BIND_NO_TLS,
+            auto_bind=auto_bind,
             client_strategy=SYNC,
             receive_timeout=10,
         )
-        if tls_mode == "starttls":
-            conn.start_tls()
         bound = conn.bound
         conn.unbind()
         if bound:

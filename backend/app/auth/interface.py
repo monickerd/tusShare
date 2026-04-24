@@ -34,9 +34,10 @@ class AuthenticatedUser:
     x25519_private_wrapped: str | None = None
     mlkem768_private_wrapped: str | None = None
     asymmetric_key_iv: str | None = None
-    # Session-level flag — populated from the JWT "pub" claim, not from the DB.
-    # True only when the access token was issued for a public/shared device session.
+    # Session-level flags — populated from JWT claims, not from the DB.
     is_public_device: bool = False
+    # sid from the access token's JWT "sid" claim — used to bind step-up tokens to a specific session.
+    session_id: str | None = None
 
     def __post_init__(self):
         if self.roles is None:

@@ -1987,7 +1987,7 @@ const StepUp = (() => {
                         Please enter your password to continue.
                     </p>
                     <div class="stepup-action-label">
-                        Action: <code class="stepup-action-key">${actionKey}</code>
+                        Action: <code class="stepup-action-key"></code>
                     </div>
                     <label for="stepup-password">Password</label>
                     <input type="password" id="stepup-password" class="stepup-password-input"
@@ -2000,6 +2000,7 @@ const StepUp = (() => {
                 </div>
             </div>
         `;
+        overlay.querySelector('.stepup-action-key').textContent = actionKey;
         document.body.appendChild(overlay);
 
         const passwordInput = overlay.querySelector('#stepup-password');

@@ -45,8 +45,6 @@ const Utils = (() => {
                 elem.className = val;
             } else if (key === 'textContent') {
                 elem.textContent = val;
-            } else if (key === 'innerHTML') {
-                elem.innerHTML = val;
             } else if (key.startsWith('on') && typeof val === 'function') {
                 elem.addEventListener(key.slice(2).toLowerCase(), val);
             } else if (key === 'dataset') {

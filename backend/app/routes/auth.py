@@ -23,7 +23,6 @@ from app.auth.jwt import (
 from app.auth.stepup import (
     StepUpContext,
     create_step_up_token,
-    failure_tracker,
     get_verifier,
     log_security_event,
 )
@@ -184,9 +183,21 @@ async def refresh(
             (token_id,),
         )
         if await revoke_result.fetchone() is None:
-            await db.rollback()
+            # A non-revoked token was found in the SELECT but was already revoked
+            # by the time we tried to claim it — concurrent consumption detected.
+            # Treat as a theft signal: revoke every session for this user and
+            # commit so the revocations persist even though the rotation failed.
+            await db.execute(
+                "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
+                (user_id,),
+            )
+            await db.commit()
             _clear_auth_cookies(response)
-            raise HTTPException(status_code=401, detail="Token already used")
+            logger.warning(
+                "Refresh token reuse detected for user %s — all sessions revoked (possible theft)",
+                user_id,
+            )
+            raise HTTPException(status_code=401, detail="Session invalidated. Please log in again.")
 
         # Look up user (still inside transaction)
         user = await auth_provider.get_user_by_id(user_id)
@@ -473,6 +484,22 @@ class StepUpRequest(BaseModel):
         return v
 
 
+async def _count_step_up_failures(db, user_id: str) -> int:
+    """Count step-up failures since the last granted/lockout event (persists across restarts)."""
+    cursor = await db.execute(
+        "SELECT COUNT(*) AS cnt FROM security_events "
+        "WHERE user_id = ? AND event_type = 'step_up_failed' "
+        "AND timestamp > COALESCE("
+        "  (SELECT MAX(timestamp) FROM security_events "
+        "   WHERE user_id = ? AND event_type IN ('step_up_granted', 'step_up_lockout')), "
+        "  '1970-01-01'::timestamptz"
+        ")",
+        (user_id, user_id),
+    )
+    row = await cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
 @router.post("/step-up")
 async def step_up(
     body: StepUpRequest,
@@ -512,15 +539,16 @@ async def step_up(
     verified = await verifier.verify(credential, context, user, db)
 
     if not verified:
-        count = await failure_tracker.record_failure(user.id)
-        logger.warning(
-            "Step-up failed: user=%s action=%s ip=%s (failure %d/%d)",
-            user.id, body.action_key, client_ip, count, settings.STEP_UP_MAX_FAILURES,
-        )
+        # Log the failure first so the DB count includes it, then query for persistence.
         await log_security_event(
             db, "step_up_failed", user.id, client_ip, user_agent,
             action_key=body.action_key,
-            detail={"failure_count": count, "max_failures": settings.STEP_UP_MAX_FAILURES},
+            detail={"max_failures": settings.STEP_UP_MAX_FAILURES},
+        )
+        count = await _count_step_up_failures(db, user.id)
+        logger.warning(
+            "Step-up failed: user=%s action=%s ip=%s (failure %d/%d)",
+            user.id, body.action_key, client_ip, count, settings.STEP_UP_MAX_FAILURES,
         )
 
         if count >= settings.STEP_UP_MAX_FAILURES:
@@ -545,8 +573,7 @@ async def step_up(
 
         raise HTTPException(status_code=403, detail="Step-up verification failed")
 
-    await failure_tracker.reset(user.id)
-    token = create_step_up_token(user.id, body.action_key, body.payload_hash)
+    token = create_step_up_token(user.id, body.action_key, body.payload_hash, session_id=user.session_id)
 
     await log_security_event(
         db, "step_up_granted", user.id, client_ip, user_agent,

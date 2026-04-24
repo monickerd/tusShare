@@ -31,6 +31,7 @@ from app.auth.interface import AuthenticatedUser
 from app.auth.idp_crypto import encrypt_token, decrypt_token
 from app.database import get_db
 from app.models.role import FLAG_MANAGE_USERS
+from app.services.siem_filters import PROFILE_META
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
@@ -303,19 +304,25 @@ async def stream_audit_logs(
 # ---------------------------------------------------------------------------
 
 class SiemDestinationRequest(BaseModel):
-    name:          str
-    type:          str   # "syslog" | "webhook"
-    is_active:     bool = True
+    name:               str
+    type:               str   # "syslog" | "webhook"
+    is_active:          bool = True
     # syslog
-    host:          str | None = None
-    port:          int | None = None
-    protocol:      str | None = None   # udp | tcp | tls
-    syslog_format: str | None = None   # rfc5424 | cef | leef
-    facility:      int = 16            # LOCAL0
+    host:               str | None = None
+    port:               int | None = None
+    protocol:           str | None = None   # udp | tcp | tls
+    syslog_format:      str | None = None   # rfc5424 | cef | leef
+    facility:           int = 16            # LOCAL0
     # webhook
-    url:           str | None = None
-    secret:        str | None = None   # plaintext; stored encrypted; omit to keep existing
-    batch_size:    int = 1
+    url:                str | None = None
+    secret:             str | None = None   # plaintext; stored encrypted; omit to keep existing
+    batch_size:         int = 1
+    # event filter
+    filter_profile:     str = "recommended"  # high_security | recommended | relaxed | custom
+    filter_custom_json: str | None = None    # JSON for custom profile
+
+
+_VALID_PROFILES = frozenset({"high_security", "recommended", "relaxed", "custom"})
 
 
 def _validate_destination(body: SiemDestinationRequest) -> None:
@@ -335,24 +342,38 @@ def _validate_destination(body: SiemDestinationRequest) -> None:
             raise HTTPException(status_code=400, detail="webhook url must use HTTPS")
         if body.batch_size < 1 or body.batch_size > 100:
             raise HTTPException(status_code=400, detail="batch_size must be 1–100")
+    if body.filter_profile not in _VALID_PROFILES:
+        raise HTTPException(status_code=400, detail="filter_profile must be high_security, recommended, relaxed, or custom")
+    if body.filter_profile == "custom":
+        try:
+            parsed = json.loads(body.filter_custom_json or "")
+            if not isinstance(parsed.get("event_type_globs"), list):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=400,
+                detail='custom filter_custom_json must be valid JSON with {"event_type_globs": [...], "min_severity": "info|warning|critical"}',
+            )
 
 
 def _dest_row_to_dict(r, redact_secret: bool = True) -> dict:
     return {
-        "id":            r["id"],
-        "name":          r["name"],
-        "type":          r["type"],
-        "is_active":     bool(r["is_active"]),
-        "host":          r["host"],
-        "port":          r["port"],
-        "protocol":      r["protocol"],
-        "syslog_format": r["syslog_format"],
-        "facility":      r["facility"],
-        "url":           r["url"],
-        "has_secret":    bool(r["secret_enc"]),   # never expose the raw secret
-        "batch_size":    r["batch_size"],
-        "created_at":    str(r["created_at"]),
-        "updated_at":    str(r["updated_at"]),
+        "id":                 r["id"],
+        "name":               r["name"],
+        "type":               r["type"],
+        "is_active":          bool(r["is_active"]),
+        "host":               r["host"],
+        "port":               r["port"],
+        "protocol":           r["protocol"],
+        "syslog_format":      r["syslog_format"],
+        "facility":           r["facility"],
+        "url":                r["url"],
+        "has_secret":         bool(r["secret_enc"]),   # never expose the raw secret
+        "batch_size":         r["batch_size"],
+        "filter_profile":     r["filter_profile"] or "recommended",
+        "filter_custom_json": r["filter_custom_json"],
+        "created_at":         str(r["created_at"]),
+        "updated_at":         str(r["updated_at"]),
     }
 
 
@@ -365,7 +386,10 @@ async def list_siem_destinations(
         "SELECT * FROM siem_destinations ORDER BY created_at ASC"
     )
     rows = await cursor.fetchall()
-    return {"destinations": [_dest_row_to_dict(r) for r in rows]}
+    return {
+        "destinations": [_dest_row_to_dict(r) for r in rows],
+        "filter_profiles": PROFILE_META,
+    }
 
 
 @router.post("/siem")
@@ -383,12 +407,14 @@ async def create_siem_destination(
         INSERT INTO siem_destinations
             (id, name, type, is_active,
              host, port, protocol, syslog_format, facility,
-             url, secret_enc, batch_size)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             url, secret_enc, batch_size,
+             filter_profile, filter_custom_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (dest_id, body.name, body.type, int(body.is_active),
          body.host, body.port, body.protocol, body.syslog_format, body.facility,
-         body.url, secret_enc, body.batch_size),
+         body.url, secret_enc, body.batch_size,
+         body.filter_profile, body.filter_custom_json),
     )
     await db.commit()
 
@@ -427,12 +453,14 @@ async def update_siem_destination(
         SET name=?, type=?, is_active=?,
             host=?, port=?, protocol=?, syslog_format=?, facility=?,
             url=?, secret_enc=?, batch_size=?,
+            filter_profile=?, filter_custom_json=?,
             updated_at=NOW()
         WHERE id=?
         """,
         (body.name, body.type, int(body.is_active),
          body.host, body.port, body.protocol, body.syslog_format, body.facility,
          body.url, secret_enc, body.batch_size,
+         body.filter_profile, body.filter_custom_json,
          dest_id),
     )
     await db.commit()

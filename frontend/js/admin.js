@@ -986,16 +986,16 @@ const Admin = (() => {
                 },
             });
             const tr = Utils.el('tr');
-            tr.innerHTML = `
-                <td><code>${f.name}</code></td>
-                <td>${f.display_label}</td>
-                <td><span class="badge badge-${f.source}">${f.source}</span></td>
-                <td>${f.data_type}</td>
-                <td>${f.claim_path || '—'}</td>
-            `;
+            const nameTd = Utils.el('td');
+            nameTd.appendChild(Utils.el('code', { textContent: f.name }));
+            const labelTd = Utils.el('td', { textContent: f.display_label });
+            const sourceTd = Utils.el('td');
+            sourceTd.appendChild(Utils.el('span', { className: `badge badge-${f.source}`, textContent: f.source }));
+            const typeTd = Utils.el('td', { textContent: f.data_type });
+            const claimTd = Utils.el('td', { textContent: f.claim_path || '—' });
             const actionTd = Utils.el('td');
             if (deleteBtn) actionTd.appendChild(deleteBtn);
-            tr.appendChild(actionTd);
+            tr.append(nameTd, labelTd, sourceTd, typeTd, claimTd, actionTd);
             tbody.appendChild(tr);
         }
         table.appendChild(tbody);
@@ -1317,16 +1317,16 @@ const Admin = (() => {
                     : Utils.el('span', { textContent: '—' });
 
                 const tr = Utils.el('tr', { className: isDetached ? 'cond-row-detached' : '' });
-                tr.innerHTML = `
-                    <td><code>${cond.field}</code></td>
-                    <td>${cond.operator}</td>
-                    <td>${cond.value}</td>
-                    <td>${cond.strict ? 'yes' : 'no'}</td>
-                `;
+                const condFieldTd = Utils.el('td');
+                condFieldTd.appendChild(Utils.el('code', { textContent: cond.field }));
+                const condOpTd = Utils.el('td', { textContent: cond.operator });
+                const condValueTd = Utils.el('td', { textContent: cond.value });
+                const condStrictTd = Utils.el('td', { textContent: cond.strict ? 'yes' : 'no' });
                 const inheritedTd = Utils.el('td');
                 inheritedTd.appendChild(inheritedCell);
                 const actionTd = Utils.el('td');
                 if (deleteCondBtn) actionTd.appendChild(deleteCondBtn);
+                tr.append(condFieldTd, condOpTd, condValueTd, condStrictTd, inheritedTd, actionTd);
                 tr.appendChild(inheritedTd);
                 tr.appendChild(actionTd);
                 tbody.appendChild(tr);
@@ -1360,7 +1360,10 @@ const Admin = (() => {
             const data = await Api.get(`${_api()}/admin/policies/${policy.id}/effects`);
             _renderEffects(wrap, policy, data.effects || [], refreshFn);
         } catch (err) {
-            wrap.innerHTML = `<span class="text-error">Failed to load effects: ${err.message}</span>`;
+            wrap.innerHTML = '';
+            const _effErrSpan = Utils.el('span', { className: 'text-error' });
+            _effErrSpan.textContent = `Failed to load effects: ${err.message}`;
+            wrap.appendChild(_effErrSpan);
         }
     }
 
@@ -1413,7 +1416,7 @@ const Admin = (() => {
                 const typeTd = Utils.el('td');
                 typeTd.appendChild(typeBadge);
                 const targetTd = Utils.el('td');
-                targetTd.innerHTML = `<code class="policy-uuid-cell">${eff.target_id}</code>`;
+                targetTd.appendChild(Utils.el('code', { className: 'policy-uuid-cell', textContent: eff.target_id }));
                 const detailTd = Utils.el('td', { className: 'text-muted', textContent: detailText });
                 const actionTd = Utils.el('td');
                 actionTd.appendChild(deleteBtn);
@@ -1850,7 +1853,7 @@ const Admin = (() => {
             const data = await Api.get(`${_api()}/admin/identity-providers`);
             _renderIdpList(container, data.providers || []);
         } catch (err) {
-            container.innerHTML = `<p class="error-text" style="padding:16px">Failed to load: ${err.message}</p>`;
+            _showError(container, `Failed to load: ${err.message}`);
         }
     }
 
@@ -2239,7 +2242,7 @@ const Admin = (() => {
 
             body.appendChild(Utils.el('button', { className: 'btn btn-secondary', textContent: 'Close', onClick: close }));
         } catch (err) {
-            body.innerHTML = `<p class="error-text">Failed to load wizard: ${err.message}</p>`;
+            _showError(body, `Failed to load wizard: ${err.message}`);
         }
     }
 
@@ -2255,13 +2258,13 @@ const Admin = (() => {
                 Api.get(`${_api()}/admin/audit/siem`),
                 Api.get(`${_api()}/admin/settings`),
             ]);
-            _renderAudit(container, logsData.events || [], siemData.destinations || [], settingsData.settings || {});
+            _renderAudit(container, logsData.events || [], siemData.destinations || [], settingsData.settings || {}, siemData.filter_profiles || []);
         } catch (err) {
-            container.innerHTML = `<p class="error-text" style="padding:16px">Failed to load: ${err.message}</p>`;
+            _showError(container, `Failed to load: ${err.message}`);
         }
     }
 
-    function _renderAudit(container, events, destinations, settings) {
+    function _renderAudit(container, events, destinations, settings, filterProfiles) {
         container.innerHTML = '';
         const wrap = Utils.el('div', { style: 'padding:16px' });
         container.appendChild(wrap);
@@ -2401,7 +2404,7 @@ const Admin = (() => {
 
         const siemWrap = Utils.el('div');
         wrap.appendChild(siemWrap);
-        _renderSiemList(siemWrap, destinations);
+        _renderSiemList(siemWrap, destinations, filterProfiles);
     }
 
     // --- Audit table helpers ---
@@ -2461,12 +2464,12 @@ const Admin = (() => {
 
     // --- SIEM destination management ---
 
-    function _renderSiemList(container, destinations) {
+    function _renderSiemList(container, destinations, filterProfiles) {
         container.innerHTML = '';
         container.appendChild(Utils.el('button', {
             className: 'btn btn-primary', style: 'margin-bottom:16px',
             textContent: '+ Add Destination',
-            onClick: () => _showSiemModal(null, container),
+            onClick: () => _showSiemModal(null, container, filterProfiles),
         }));
 
         if (!destinations.length) {
@@ -2481,19 +2484,20 @@ const Admin = (() => {
                 Utils.el('th', { textContent: 'Type' }),
                 Utils.el('th', { textContent: 'Host / URL' }),
                 Utils.el('th', { textContent: 'Format' }),
+                Utils.el('th', { textContent: 'Filter Profile' }),
                 Utils.el('th', { textContent: 'Active' }),
                 Utils.el('th', { textContent: 'Actions' }),
             ]),
         ]));
         const tbody = Utils.el('tbody');
         for (const dest of destinations) {
-            tbody.appendChild(_buildSiemRow(dest, container));
+            tbody.appendChild(_buildSiemRow(dest, container, filterProfiles));
         }
         table.appendChild(tbody);
         container.appendChild(table);
     }
 
-    function _buildSiemRow(dest, container) {
+    function _buildSiemRow(dest, container, filterProfiles) {
         const activeBadge = Utils.el('span', {
             className: dest.is_active ? 'badge badge-success' : 'badge badge-neutral',
             textContent: dest.is_active ? 'Active' : 'Inactive',
@@ -2501,6 +2505,9 @@ const Admin = (() => {
         const hostOrUrl = dest.type === 'syslog'
             ? `${dest.host || ''}:${dest.port || 514}`
             : (dest.url || '');
+
+        const profileMeta = (filterProfiles || []).find(p => p.id === dest.filter_profile);
+        const profileLabel = profileMeta ? profileMeta.label : (dest.filter_profile || 'Recommended');
 
         const testBtn = Utils.el('button', {
             className: 'btn btn-sm', textContent: 'Test',
@@ -2524,11 +2531,12 @@ const Admin = (() => {
             Utils.el('td', { textContent: dest.type }),
             Utils.el('td', { textContent: hostOrUrl }),
             Utils.el('td', { textContent: dest.syslog_format || '—' }),
+            Utils.el('td', { textContent: profileLabel }),
             Utils.el('td', {}, [activeBadge]),
             Utils.el('td', { className: 'row-actions' }, [
                 Utils.el('button', {
                     className: 'btn btn-sm', textContent: 'Edit',
-                    onClick: () => _showSiemModal(dest, container),
+                    onClick: () => _showSiemModal(dest, container, filterProfiles),
                 }),
                 testBtn,
                 Utils.el('button', {
@@ -2540,7 +2548,7 @@ const Admin = (() => {
                             await Api.delete(`${_api()}/admin/audit/siem/${dest.id}`);
                             Utils.showToast('Destination deleted', 'success');
                             const data = await Api.get(`${_api()}/admin/audit/siem`);
-                            _renderSiemList(container, data.destinations || []);
+                            _renderSiemList(container, data.destinations || [], filterProfiles);
                         } catch (err) {
                             Utils.showToast('Delete failed: ' + err.message, 'error');
                             ev.target.disabled = false;
@@ -2551,7 +2559,7 @@ const Admin = (() => {
         ]);
     }
 
-    function _showSiemModal(dest, listContainer) {
+    function _showSiemModal(dest, listContainer, filterProfiles) {
         const isEdit = dest !== null;
         const title  = isEdit ? 'Edit SIEM Destination' : 'Add SIEM Destination';
         const { modal, body, close } = Utils.openModal(title);
@@ -2610,21 +2618,96 @@ const Admin = (() => {
         typeSel.onchange = _updateFields;
         _updateFields();
 
+        // --- Filter profile ---
+        const profiles = filterProfiles && filterProfiles.length
+            ? filterProfiles
+            : [
+                { id: 'high_security', label: 'High Security', description: 'All events including file downloads, uploads, and shares.' },
+                { id: 'recommended',   label: 'Recommended',   description: 'Auth, admin actions, policy/role changes, and destructive file ops.' },
+                { id: 'relaxed',       label: 'Relaxed',       description: 'Critical severity only — lockouts, emergency revocations, auth failures.' },
+                { id: 'custom',        label: 'Custom',        description: 'Define your own event type glob patterns and minimum severity.' },
+            ];
+        const currentProfile = dest?.filter_profile || 'recommended';
+
+        const profileSel = Utils.el('select', { className: 'input-sm', style: 'width:100%; margin-bottom:6px' });
+        profiles.forEach(p => {
+            const o = Utils.el('option', { value: p.id, textContent: p.label });
+            if (p.id === currentProfile) o.selected = true;
+            profileSel.appendChild(o);
+        });
+
+        const profileDesc = Utils.el('p', { className: 'text-muted', style: 'font-size:12px; margin:0 0 8px' });
+        const customWrap  = Utils.el('div', { style: 'display:none' });
+
+        const customGlobsIn = Utils.el('textarea', {
+            className: 'input-sm',
+            placeholder: 'One glob pattern per line, e.g.:\nauth.*\nadmin.*\nfile.delete',
+            style: 'width:100%; height:80px; margin-bottom:6px; font-family:monospace; font-size:12px',
+        });
+        const customSevSel = Utils.el('select', { className: 'input-sm', style: 'width:120px; margin-bottom:8px' });
+        ['info', 'warning', 'critical'].forEach(s => {
+            const o = Utils.el('option', { value: s, textContent: s.charAt(0).toUpperCase() + s.slice(1) });
+            customSevSel.appendChild(o);
+        });
+
+        // Populate custom fields from existing dest if editing
+        if (dest?.filter_custom_json) {
+            try {
+                const cfg = JSON.parse(dest.filter_custom_json);
+                customGlobsIn.value = (cfg.event_type_globs || []).join('\n');
+                customSevSel.value = cfg.min_severity || 'info';
+            } catch (_) {}
+        }
+
+        customWrap.appendChild(Utils.el('label', { className: 'settings-label', textContent: 'Event type glob patterns (one per line)' }));
+        customWrap.appendChild(customGlobsIn);
+        customWrap.appendChild(Utils.el('label', { className: 'settings-label', textContent: 'Minimum severity' }));
+        customWrap.appendChild(customSevSel);
+
+        const _updateProfile = () => {
+            const sel = profiles.find(p => p.id === profileSel.value);
+            profileDesc.textContent = sel ? sel.description : '';
+            customWrap.style.display = profileSel.value === 'custom' ? '' : 'none';
+        };
+        profileSel.onchange = _updateProfile;
+        _updateProfile();
+
+        const filterSection = Utils.el('div', { style: 'margin-top:16px' }, [
+            Utils.el('label', { className: 'settings-label', textContent: 'Filter Profile' }),
+            profileSel,
+            profileDesc,
+            customWrap,
+        ]);
+
         const saveBtn = Utils.el('button', {
             className: 'btn btn-primary', textContent: isEdit ? 'Save' : 'Add',
             onClick: async () => {
                 saveBtn.disabled = true;
+
+                let filterCustomJson = null;
+                if (profileSel.value === 'custom') {
+                    const globs = customGlobsIn.value.split('\n').map(s => s.trim()).filter(Boolean);
+                    if (!globs.length) {
+                        Utils.showToast('Custom profile requires at least one glob pattern', 'error');
+                        saveBtn.disabled = false;
+                        return;
+                    }
+                    filterCustomJson = JSON.stringify({ event_type_globs: globs, min_severity: customSevSel.value });
+                }
+
                 const payload = {
-                    name:          nameIn.value.trim(),
-                    type:          typeSel.value,
-                    is_active:     activeCb.checked,
-                    host:          typeSel.value === 'syslog' ? hostIn.value.trim() || null : null,
-                    port:          typeSel.value === 'syslog' ? parseInt(portIn.value, 10) || 514 : null,
-                    protocol:      typeSel.value === 'syslog' ? protoSel.value : null,
-                    syslog_format: typeSel.value === 'syslog' ? fmtSel.value : null,
-                    url:           typeSel.value === 'webhook' ? urlIn.value.trim() || null : null,
-                    secret:        typeSel.value === 'webhook' && secretIn.value ? secretIn.value : null,
-                    batch_size:    typeSel.value === 'webhook' ? parseInt(batchIn.value, 10) || 1 : 1,
+                    name:               nameIn.value.trim(),
+                    type:               typeSel.value,
+                    is_active:          activeCb.checked,
+                    host:               typeSel.value === 'syslog' ? hostIn.value.trim() || null : null,
+                    port:               typeSel.value === 'syslog' ? parseInt(portIn.value, 10) || 514 : null,
+                    protocol:           typeSel.value === 'syslog' ? protoSel.value : null,
+                    syslog_format:      typeSel.value === 'syslog' ? fmtSel.value : null,
+                    url:                typeSel.value === 'webhook' ? urlIn.value.trim() || null : null,
+                    secret:             typeSel.value === 'webhook' && secretIn.value ? secretIn.value : null,
+                    batch_size:         typeSel.value === 'webhook' ? parseInt(batchIn.value, 10) || 1 : 1,
+                    filter_profile:     profileSel.value,
+                    filter_custom_json: filterCustomJson,
                 };
                 try {
                     if (isEdit) {
@@ -2635,7 +2718,7 @@ const Admin = (() => {
                     close();
                     Utils.showToast(isEdit ? 'Destination updated' : 'Destination added', 'success');
                     const data = await Api.get(`${_api()}/admin/audit/siem`);
-                    _renderSiemList(listContainer, data.destinations || []);
+                    _renderSiemList(listContainer, data.destinations || [], filterProfiles);
                 } catch (err) {
                     Utils.showToast('Save failed: ' + err.message, 'error');
                     saveBtn.disabled = false;
@@ -2649,6 +2732,7 @@ const Admin = (() => {
         body.appendChild(typeSel);
         body.appendChild(activeRow);
         body.appendChild(fieldWrap);
+        body.appendChild(filterSection);
         body.appendChild(Utils.el('div', { style: 'margin-top:16px; display:flex; gap:8px' }, [
             saveBtn,
             Utils.el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: close }),
@@ -2669,7 +2753,7 @@ const Admin = (() => {
             ]);
             _renderStoragePanel(container, volumes, usage, tiers);
         } catch (err) {
-            container.innerHTML = `<p class="error-text" style="padding:16px">Failed to load: ${err.message}</p>`;
+            _showError(container, `Failed to load: ${err.message}`);
         }
     }
 
@@ -3004,7 +3088,7 @@ const Admin = (() => {
             ]);
             _renderNotificationsPanel(container, channelsData.channels || [], settingsData);
         } catch (err) {
-            container.innerHTML = `<p class="error-text" style="padding:16px">Failed to load: ${err.message}</p>`;
+            _showError(container, `Failed to load: ${err.message}`);
         }
     }
 
@@ -3158,7 +3242,7 @@ const Admin = (() => {
             container.innerHTML = '';
             container.appendChild(table);
         } catch (err) {
-            container.innerHTML = `<p class="error-text">Failed to load: ${err.message}</p>`;
+            _showError(container, `Failed to load: ${err.message}`);
         }
     }
 
@@ -3257,7 +3341,7 @@ const Admin = (() => {
             const data = await Api.get(`${_api()}/admin/api-keys`);
             _renderApiKeysPanel(container, data.keys || []);
         } catch (err) {
-            container.innerHTML = `<p class="error-text" style="padding:16px">Failed to load: ${err.message}</p>`;
+            _showError(container, `Failed to load: ${err.message}`);
         }
     }
 
@@ -3525,7 +3609,7 @@ const Admin = (() => {
                 const tbody = Utils.el('tbody');
                 for (const [k, v] of Object.entries(counts)) {
                     const tr = Utils.el('tr');
-                    tr.innerHTML = `<td>${k}</td><td>${v}</td>`;
+                    tr.append(Utils.el('td', { textContent: k }), Utils.el('td', { textContent: String(v) }));
                     tbody.appendChild(tr);
                 }
                 table.appendChild(thead);
@@ -3550,7 +3634,11 @@ const Admin = (() => {
                 });
                 statusBody.appendChild(rescanBtn);
             } catch (err) {
-                statusBody.innerHTML = `<h5 class="card-title">File AV status</h5><p class="text-danger">${err.message}</p>`;
+                statusBody.innerHTML = '';
+            statusBody.appendChild(Utils.el('h5', { className: 'card-title', textContent: 'File AV status' }));
+            const _avErrP = Utils.el('p', { className: 'text-danger' });
+            _avErrP.textContent = err.message;
+            statusBody.appendChild(_avErrP);
             }
         }
 

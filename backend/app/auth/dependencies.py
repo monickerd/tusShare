@@ -67,11 +67,11 @@ async def get_current_user(
     if payload.get("pub"):
         user.is_public_device = True
 
-    # Fire-and-forget: update last_active_at for idle-timeout tracking.
-    # Sessions without a sid claim (issued before last_active_at existed) are
-    # not tracked and will remain active until they expire normally.
     sid = payload.get("sid")
     if sid:
+        # Bind step-up tokens to this session (T1-M3).
+        user.session_id = sid
+        # Fire-and-forget: update last_active_at for idle-timeout tracking.
         asyncio.ensure_future(touch_session(sid))
 
     return user

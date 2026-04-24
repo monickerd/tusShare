@@ -512,8 +512,13 @@ async def oidc_callback(
     state nonce row) or to '/'.
     On failure: redirects to '/?oidc_error=1'.
     """
+    client_ip = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")[:512] if request else ""
+
     if error:
         logger.warning("OIDC callback error: %s — %s", error, error_description)
+        await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
+                                 f"IdP error: {error}")
         return RedirectResponse(url="/?oidc_error=1", status_code=302)
 
     if not code or not state:
@@ -532,6 +537,8 @@ async def oidc_callback(
     state_row = await cursor.fetchone()
     if state_row is None:
         logger.warning("OIDC callback: unknown/expired state")
+        await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
+                                 "unknown or expired state nonce")
         return RedirectResponse(url="/?oidc_error=1", status_code=302)
 
     provider_id = state_row["provider_id"]
@@ -553,6 +560,8 @@ async def oidc_callback(
         )
     except Exception as exc:
         logger.error("OIDC callback exchange error provider=%s: %s", provider_id, exc)
+        await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
+                                 f"token exchange error provider={provider_id}")
         return RedirectResponse(url="/?oidc_error=1", status_code=302)
 
     if identity is None:
@@ -570,9 +579,10 @@ async def oidc_callback(
         refresh_token=identity.get("refresh_token"),
     )
 
-    client_ip = _get_client_ip(request)
     logger.info("OIDC login: user_id=%s provider=%s sub=%s ip=%s",
                 user_id, provider_id, identity["sub"], client_ip)
+    await log_security_event(db, "oidc_login_success", user_id, client_ip, user_agent,
+                             provider_id)
 
     # Trigger policy evaluation (fire-and-forget)
     import asyncio as _asyncio

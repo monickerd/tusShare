@@ -24,6 +24,8 @@ from app.conf.middleware import (
     RATE_LIMIT_MANAGEMENT_WINDOW,
 )
 from app.config import settings
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +190,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     "Escalated rate limit enforced: ip=%s on %s %s",
                     client_ip, request.method, path,
                 )
+                event_bus.emit(SecurityEvent(
+                    event_type="auth.rate_limited",
+                    severity="warning",
+                    outcome="failure",
+                    actor=EventActor(ip=client_ip),
+                    detail={"path": path, "method": request.method, "reason": "escalated"},
+                ))
                 return JSONResponse(
                     status_code=429,
                     content={
@@ -207,6 +216,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     logger.warning(
                         "Rate limited: %s on %s (ip=%s)", request.method, path, client_ip
                     )
+                    event_bus.emit(SecurityEvent(
+                        event_type="auth.rate_limited",
+                        severity="warning",
+                        outcome="failure",
+                        actor=EventActor(ip=client_ip),
+                        detail={"path": path, "method": request.method, "reason": "route_limit"},
+                    ))
                     return JSONResponse(
                         status_code=429,
                         content={
@@ -232,6 +248,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     settings.RATE_LIMIT_ERROR_THRESHOLD,
                     settings.RATE_LIMIT_ERROR_WINDOW,
                 )
+                event_bus.emit(SecurityEvent(
+                    event_type="auth.rate_limit_escalated",
+                    severity="critical",
+                    outcome="failure",
+                    actor=EventActor(ip=client_ip),
+                    detail={
+                        "path": path,
+                        "method": request.method,
+                        "threshold": settings.RATE_LIMIT_ERROR_THRESHOLD,
+                        "window_seconds": settings.RATE_LIMIT_ERROR_WINDOW,
+                    },
+                ))
 
         return response
 

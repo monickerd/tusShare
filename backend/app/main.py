@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.auth.jwt import run_token_cleanup
@@ -23,6 +23,7 @@ from app.middleware.https_redirect import HttpsRedirectMiddleware
 from app.middleware.rate_limit import run_rate_limit_cleanup
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.sanitize import InputSanitizationMiddleware
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.util.integrity import check_integrity, get_result as get_integrity_result
 from app.util.sri import inject_sri
 from app.util.theme import inject_theme
@@ -32,6 +33,31 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _actor_from_request(request: Request) -> EventActor:
+    """Best-effort JWT extraction for SIEM event actor attribution.
+
+    Reads from the httpOnly access-token cookie or Authorization Bearer header,
+    falling back to IP-only if the token is absent or invalid.
+    """
+    import jwt as _pyjwt
+    from app.auth.jwt import verify_access_token
+    from app.conf.auth import COOKIE_ACCESS
+
+    ip = request.client.host if request.client else None
+    token = request.cookies.get(COOKIE_ACCESS)
+    if token is None:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+    if token is None:
+        return EventActor(ip=ip)
+    try:
+        payload = verify_access_token(token)
+        return EventActor(user_id=payload.get("sub"), session_id=payload.get("sid"), ip=ip)
+    except _pyjwt.PyJWTError:
+        return EventActor(ip=ip)
 
 
 async def _run_opaque_session_cleanup(db_session_factory, interval: int = 120) -> None:
@@ -321,6 +347,70 @@ def create_app() -> FastAPI:
     app.include_router(admin_notifications_router, prefix="/api/v1/admin/notifications", tags=["admin-notifications"])
     app.include_router(admin_api_keys_router,      prefix="/api/v1/admin",               tags=["admin-api-keys"])
     app.include_router(op_events_router,           prefix="/api/v1/op-events",           tags=["op-events"])
+
+    # --- SIEM HTTP error event handlers ---
+    # Legitimate users should not regularly encounter these codes, so each
+    # occurrence on an API path is worth recording as a security signal.
+
+    @app.exception_handler(401)
+    async def _on_401(request: Request, exc: HTTPException):
+        event_bus.emit(SecurityEvent(
+            event_type="auth.unauthorized",
+            severity="warning",
+            outcome="failure",
+            actor=_actor_from_request(request),
+            detail={"path": request.url.path, "method": request.method},
+        ))
+        return JSONResponse({"detail": exc.detail}, status_code=401)
+
+    @app.exception_handler(403)
+    async def _on_403(request: Request, exc: HTTPException):
+        event_bus.emit(SecurityEvent(
+            event_type="auth.forbidden",
+            severity="warning",
+            outcome="failure",
+            actor=_actor_from_request(request),
+            detail={"path": request.url.path, "method": request.method},
+        ))
+        return JSONResponse({"detail": exc.detail}, status_code=403)
+
+    @app.exception_handler(404)
+    async def _on_404(request: Request, exc: HTTPException):
+        if request.url.path.startswith("/api/"):
+            event_bus.emit(SecurityEvent(
+                event_type="auth.probe_404",
+                severity="info",
+                outcome="failure",
+                actor=_actor_from_request(request),
+                detail={"path": request.url.path, "method": request.method},
+            ))
+        return JSONResponse({"detail": exc.detail}, status_code=404)
+
+    @app.exception_handler(405)
+    async def _on_405(request: Request, exc: HTTPException):
+        if request.url.path.startswith("/api/"):
+            event_bus.emit(SecurityEvent(
+                event_type="auth.probe_405",
+                severity="info",
+                outcome="failure",
+                actor=_actor_from_request(request),
+                detail={"path": request.url.path, "method": request.method},
+            ))
+        return JSONResponse({"detail": exc.detail}, status_code=405)
+
+    @app.exception_handler(429)
+    async def _on_429(request: Request, exc: HTTPException):
+        # Catches HTTPException(429) only — middleware-returned 429 JSONResponses
+        # are instrumented directly in RateLimitMiddleware.
+        event_bus.emit(SecurityEvent(
+            event_type="auth.rate_limited",
+            severity="warning",
+            outcome="failure",
+            actor=_actor_from_request(request),
+            detail={"path": request.url.path, "method": request.method},
+        ))
+        headers = exc.headers or {}
+        return JSONResponse({"detail": exc.detail}, status_code=429, headers=headers)
 
     # --- Health check ---
     @app.get("/api/v1/health")

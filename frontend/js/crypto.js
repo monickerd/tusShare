@@ -50,6 +50,7 @@ const Crypto = (() => {
             wrappingKey,
             rawKey
         );
+        new Uint8Array(rawKey).fill(0);
         return {
             wrappedKeyB64: _arrayBufToBase64(wrapped),
             ivB64: _arrayBufToBase64(iv.buffer),
@@ -150,6 +151,7 @@ const Crypto = (() => {
             masterKey,
             rawKey
         );
+        new Uint8Array(rawKey).fill(0);
         return {
             encryptedKeyB64: _arrayBufToBase64(encrypted),
             ivB64: _arrayBufToBase64(iv.buffer),
@@ -235,6 +237,7 @@ const Crypto = (() => {
             shareKey,
             rawKey
         );
+        new Uint8Array(rawKey).fill(0);
         return {
             wrappedKeyB64: _arrayBufToBase64(wrapped),
             ivB64: _arrayBufToBase64(iv.buffer),
@@ -481,7 +484,7 @@ const Crypto = (() => {
             {
                 name: 'HKDF',
                 hash: 'SHA-256',
-                salt: new Uint8Array(32),  // all-zero salt (key material is already strong)
+                salt: new TextEncoder().encode("tusShare-filekey-v1-salt"),
                 info: _HKDF_INFO_FILEKEY,
             },
             hkdfKey,
@@ -540,6 +543,7 @@ const Crypto = (() => {
             wrappingKey,
             rawFileKey
         );
+        new Uint8Array(rawFileKey).fill(0);
 
         // Export ephemeral X25519 public key
         const ephemeralPubRaw = await crypto.subtle.exportKey('raw', ephemeralX25519.publicKey);
@@ -698,6 +702,7 @@ const Crypto = (() => {
         const keyMaterial = await crypto.subtle.importKey(
             'raw', keyBytes, 'HKDF', false, ['deriveKey']
         );
+        new Uint8Array(keyBytes).fill(0);
         const enc = new TextEncoder();
         return crypto.subtle.deriveKey(
             {

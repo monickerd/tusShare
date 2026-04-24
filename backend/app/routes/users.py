@@ -16,9 +16,11 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.models.role import FLAG_MANAGE_USERS
+from app.models.role import FLAG_MANAGE_USERS, FLAG_MANAGE_ROLES
 from app.database import db_session, get_db
-from app.models.role import ADMIN_ROLE_IDS, ROLE_ADMIN, ROLE_USER, grant_role, revoke_role
+from app.models.role import ADMIN_ROLE_IDS, ROLE_ADMIN, ROLE_USER, ROLE_TIER, admin_best_tier, grant_role, revoke_role
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+from app.services import event_bus
 import app.storage.manager as storage
 from app.models.user import User
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
@@ -222,6 +224,8 @@ async def update_user(
     db=Depends(get_db),
 ):
     """Update a user's settings (quotas, active status)."""
+    if not admin.has_flag(FLAG_MANAGE_USERS):
+        raise HTTPException(status_code=403, detail="can_manage_users permission required")
     user_id = validate_uuid(user_id)
 
     # Prevent admin from deactivating themselves
@@ -255,6 +259,37 @@ async def update_user(
 
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if body.is_active is not None:
+        event_bus.emit(SecurityEvent(
+            event_type="admin.user.deactivated" if not body.is_active else "admin.user.activated",
+            severity="warning" if not body.is_active else "info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username),
+            target=EventTarget(type="user", id=user_id),
+        ))
+
+    if body.is_active is False:
+        # Immediately revoke all active sessions — defence-in-depth on top of the
+        # is_active gate in get_user_by_id (which already blocks new requests).
+        await db.execute(
+            "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
+            (user_id,),
+        )
+        # Remove team key material so access is blocked even if the account is
+        # later re-activated without a deliberate re-invitation to each team.
+        await db.execute(
+            "DELETE FROM user_team_keys WHERE user_id = ?",
+            (user_id,),
+        )
+        # Immediately expire all link/user shares created by this account so
+        # recipients can no longer download via those links.
+        await db.execute(
+            "UPDATE shares SET expires_at = NOW() "
+            "WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
+            (user_id,),
+        )
+        await db.commit()
 
     return {"message": "User updated"}
 
@@ -306,8 +341,27 @@ async def add_role_to_user(
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
 ):
-    """Grant a global role to a user."""
+    """Grant a global role to a user.
+
+    Requires can_manage_roles.  For roles in the fixed tier hierarchy, the
+    granted role's tier must be >= the granting admin's own best tier so that
+    a lower-tier admin cannot promote anyone to a higher tier than themselves.
+    Custom (non-tiered) roles have no tier restriction.
+    """
+    if not admin.has_flag(FLAG_MANAGE_ROLES):
+        raise HTTPException(status_code=403, detail="can_manage_roles permission required")
+
     user_id = validate_uuid(user_id)
+
+    # Tier escalation guard for system roles
+    granted_tier = ROLE_TIER.get(role_id)
+    if granted_tier is not None:
+        my_tier = admin_best_tier(admin.roles)
+        if granted_tier < my_tier:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot grant a role with higher authority than your own tier",
+            )
 
     # Verify role exists
     cursor = await db.execute("SELECT id FROM roles WHERE id = ?", (role_id,))
@@ -315,8 +369,9 @@ async def add_role_to_user(
         raise HTTPException(status_code=404, detail="Role not found")
 
     # Verify user exists
-    cursor = await db.execute("SELECT id FROM users WHERE id = ?", (user_id,))
-    if await cursor.fetchone() is None:
+    cursor = await db.execute("SELECT id, username FROM users WHERE id = ?", (user_id,))
+    target_row = await cursor.fetchone()
+    if target_row is None:
         raise HTTPException(status_code=404, detail="User not found")
 
     await grant_role(db, user_id, role_id, granted_by=admin.id)
@@ -326,6 +381,16 @@ async def add_role_to_user(
         await db.execute("UPDATE users SET is_admin = 1 WHERE id = ?", (user_id,))
 
     await db.commit()
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.role.granted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=admin.id, username=admin.username),
+        target=EventTarget(type="user", id=user_id, name=target_row["username"]),
+        detail={"role_id": role_id},
+    ))
+
     return {"message": f"Role {role_id} granted to user {user_id}"}
 
 
@@ -336,12 +401,33 @@ async def remove_role_from_user(
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
 ):
-    """Revoke a global role from a user."""
+    """Revoke a global role from a user.
+
+    Requires can_manage_roles.  The same tier cap as grant applies: you cannot
+    revoke a role with higher authority than your own tier.
+    """
+    if not admin.has_flag(FLAG_MANAGE_ROLES):
+        raise HTTPException(status_code=403, detail="can_manage_roles permission required")
+
     user_id = validate_uuid(user_id)
 
     # Cannot remove your own admin role
     if user_id == admin.id and role_id in ADMIN_ROLE_IDS:
         raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
+
+    # Tier cap: cannot strip a role with higher authority than your own
+    revoked_tier = ROLE_TIER.get(role_id)
+    if revoked_tier is not None:
+        my_tier = admin_best_tier(admin.roles)
+        if revoked_tier < my_tier:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot revoke a role with higher authority than your own tier",
+            )
+
+    # Fetch target username for the audit event before deletion
+    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    target_row = await cursor.fetchone()
 
     removed = await revoke_role(db, user_id, role_id)
     if not removed:
@@ -360,6 +446,16 @@ async def remove_role_from_user(
             await db.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (user_id,))
 
     await db.commit()
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.role.revoked",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=admin.id, username=admin.username),
+        target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
+        detail={"role_id": role_id},
+    ))
+
     return {"message": f"Role {role_id} revoked from user {user_id}"}
 
 
@@ -374,10 +470,17 @@ async def delete_user(
     Collects file storage keys before deleting (CASCADE removes DB rows),
     then cleans up blobs from disk in a background thread.
     """
+    if not admin.has_flag(FLAG_MANAGE_USERS):
+        raise HTTPException(status_code=403, detail="can_manage_users permission required")
+
     user_id = validate_uuid(user_id)
 
     if user_id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
+
+    # Fetch username before deletion for the audit event
+    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    target_row = await cursor.fetchone()
 
     # Collect file id+key pairs before CASCADE deletes the file rows
     cursor = await db.execute(
@@ -390,6 +493,14 @@ async def delete_user(
 
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="User not found")
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.user.deleted",
+        severity="critical",
+        outcome="success",
+        actor=EventActor(user_id=admin.id, username=admin.username),
+        target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
+    ))
 
     # Best-effort blob cleanup via storage manager (handles all volumes)
     rows_snapshot = list(file_rows)

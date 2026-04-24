@@ -64,12 +64,15 @@ def hkdf_sha256(ikm: bytes, length: int, salt: bytes, info: bytes) -> bytes:
 # Step-up token (JWT)
 # ---------------------------------------------------------------------------
 
-def create_step_up_token(user_id: str, action_key: str, payload_hash: str) -> str:
+def create_step_up_token(user_id: str, action_key: str, payload_hash: str, session_id: str | None = None) -> str:
     """Issue a step-up JWT.
 
     scope is "*" when STEP_UP_WINDOW_SECONDS > 0 (sudo window — token covers
     any sensitive action until expiry).  When window == 0 the scope is the
     exact payload_hash, binding the token to a single specific request.
+
+    session_id (sid claim): when present, verify_step_up_token will reject the
+    token if it is presented from a different session (T1-M3).
     """
     now = datetime.now(timezone.utc)
     window = settings.STEP_UP_WINDOW_SECONDS
@@ -91,14 +94,25 @@ def create_step_up_token(user_id: str, action_key: str, payload_hash: str) -> st
         "iat": now,
         "exp": exp,
     }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def verify_step_up_token(token: str, user_id: str, action_key: str, payload_hash: str | None = None) -> bool:
+def verify_step_up_token(
+    token: str,
+    user_id: str,
+    action_key: str,
+    payload_hash: str | None = None,
+    session_id: str | None = None,
+) -> bool:
     """Verify a step-up token for a given user and action.
 
     For windowed tokens (scope="*"): checks user + action match and token not expired.
     For single-use tokens (scope=payload_hash): additionally checks scope == payload_hash.
+
+    session_id: when the token carries a sid claim, the caller's session_id must match.
+    Tokens without a sid claim pass this check unconditionally (backward compat).
     """
     try:
         payload = jwt.decode(
@@ -113,6 +127,11 @@ def verify_step_up_token(token: str, user_id: str, action_key: str, payload_hash
         return False
     if payload.get("action") != action_key:
         return False
+
+    token_sid = payload.get("sid")
+    if token_sid is not None:
+        if session_id is None or token_sid != session_id:
+            return False
 
     scope = payload.get("scope", "")
     if scope != "*":
