@@ -474,6 +474,46 @@ class AdminClient:
         r.raise_for_status()
         return r.json()
 
+    # ------------------------------------------------------------------ #
+    #  Escrow by default (E5)                                             #
+    # ------------------------------------------------------------------ #
+
+    async def get_escrow_settings(self) -> dict:
+        r = await self._client.get(f"{API}/admin/escrow/settings")
+        r.raise_for_status()
+        return r.json()
+
+    async def update_escrow_settings(self, **fields: Any) -> dict:
+        r = await self._client.put(f"{API}/admin/escrow/settings", json=fields)
+        r.raise_for_status()
+        return r.json()
+
+    async def list_folder_escrow_policies(self) -> list[dict]:
+        r = await self._client.get(f"{API}/admin/escrow/folder-policies")
+        r.raise_for_status()
+        return r.json()["policies"]
+
+    async def get_folder_escrow_policy(self, folder_id: str) -> dict:
+        r = await self._client.get(f"{API}/admin/escrow/folder-policies/{folder_id}")
+        r.raise_for_status()
+        return r.json()
+
+    async def upsert_folder_escrow_policy(self, folder_id: str, **fields: Any) -> dict:
+        r = await self._client.put(
+            f"{API}/admin/escrow/folder-policies/{folder_id}", json=fields
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def delete_folder_escrow_policy(self, folder_id: str) -> None:
+        r = await self._client.delete(f"{API}/admin/escrow/folder-policies/{folder_id}")
+        r.raise_for_status()
+
+    async def get_escrow_coverage_report(self, **params: Any) -> dict:
+        r = await self._client.get(f"{API}/admin/escrow/coverage-report", params=params)
+        r.raise_for_status()
+        return r.json()
+
 
 # ---------------------------------------------------------------------------
 # Generic authenticated API client (for non-admin users)
