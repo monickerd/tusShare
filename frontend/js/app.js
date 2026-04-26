@@ -72,6 +72,10 @@ const App = (() => {
         await _loadTheme();
         _applyThemeFlags();
 
+        // Fetch server-enforced chunk size so uploads use the correct value.
+        // Fire-and-forget: falls back to the Config default if the fetch fails.
+        Upload.fetchAndSetChunkSize();
+
         // OIDC callback detection — check query params set by the server after the
         // IdP redirect.  Must run before the normal auth check so we handle the
         // callback URL before it is stripped by the SPA router.

@@ -212,11 +212,15 @@ async def create_link_share(
     return r.json()
 
 
+_SERVER_DEFAULT_CHUNK_SIZE = 5_242_880  # must match settings.DEFAULT_CHUNK_SIZE
+
+
 async def upload_file_api(
     client:    ApiClient,
     filename:  str,
     content:   bytes,
     folder_id: Optional[str] = None,
+    chunk_size: int = _SERVER_DEFAULT_CHUNK_SIZE,
 ) -> dict:
     """Upload a file via TUS using stub AES-GCM metadata.
 
@@ -237,7 +241,7 @@ async def upload_file_api(
         f"filetype {_enc('application/octet-stream')}",
         f"encrypted_file_key {_enc(fake_aes256_key())}",
         f"key_iv {_enc(fake_iv_12())}",
-        f"chunk_size {_enc(str(len(content)))}",
+        f"chunk_size {_enc(str(chunk_size))}",
         f"original_size {_enc(str(len(content)))}",
     ]
     if folder_id:

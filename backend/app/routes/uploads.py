@@ -142,6 +142,21 @@ async def create_upload(
 
     if not (1 <= chunk_size <= _MAX_CHUNK_BYTES - 16):
         raise HTTPException(status_code=400, detail="chunk_size out of range")
+
+    # Enforce admin-configured chunk size.  Clients fetch the current value from
+    # /auth/public-settings on startup; a mismatch means the setting changed since
+    # the client last loaded — tell the client to refresh and retry.
+    cs_cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'default_chunk_size'"
+    )
+    cs_row = await cs_cursor.fetchone()
+    admin_chunk_size = int(cs_row["value"]) if cs_row else settings.DEFAULT_CHUNK_SIZE
+    if chunk_size != admin_chunk_size:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid chunk_size, please refresh and try again",
+        )
+
     if original_size <= 0:
         raise HTTPException(status_code=400, detail="original_size must be positive")
 
@@ -403,12 +418,10 @@ async def patch_upload(
     if new_offset > row["total_size"]:
         raise HTTPException(status_code=400, detail="Chunk extends beyond Upload-Length")
 
-    # --- Bandwidth enforcement (checked before disk write) ---
-    await check_bandwidth(db, user.id, chunk_size)
-
-    # --- Fetch file record (storage_key, transfer lock) ---
+    # --- Fetch file record (storage_key, transfer lock, chunk geometry) ---
     cursor = await db.execute(
-        "SELECT id, storage_key, folder_id, owner_id, transfer_locked_at FROM files WHERE id = ?",
+        "SELECT id, storage_key, folder_id, owner_id, transfer_locked_at, chunk_size "
+        "FROM files WHERE id = ?",
         (row["file_id"],),
     )
     file_row = await cursor.fetchone()
@@ -421,6 +434,19 @@ async def patch_upload(
     storage_key = file_row["storage_key"]
     chunk_index = row["next_chunk"]
     is_complete = new_offset == row["total_size"]
+
+    # Validate per-chunk body size against the chunk_size stored when the upload was
+    # created (not the current admin setting, which may change mid-upload).
+    # Each encrypted chunk = plaintext + 16-byte AES-GCM tag.
+    expected_enc_size = file_row["chunk_size"] + 16
+    if not is_complete and chunk_size != expected_enc_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unexpected chunk size: expected {expected_enc_size} bytes",
+        )
+
+    # --- Bandwidth enforcement (checked before disk write) ---
+    await check_bandwidth(db, user.id, chunk_size)
 
     # --- Write chunk via storage manager (provider handles seek/multipart internally) ---
     try:

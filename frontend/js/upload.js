@@ -31,6 +31,29 @@ const Upload = (() => {
     const _cfg = () => Config.upload;
     const _prefix = () => Config.app.apiPrefix;
 
+    // Server-enforced chunk size, fetched from /auth/public-settings on startup.
+    // Falls back to Config.upload.defaultChunkSize until the fetch completes.
+    let _serverChunkSize = null;
+
+    function _getChunkSize() {
+        return _serverChunkSize ?? _cfg().defaultChunkSize;
+    }
+
+    function setServerChunkSize(bytes) {
+        if (Number.isInteger(bytes) && bytes >= 1_048_576) {
+            _serverChunkSize = bytes;
+        }
+    }
+
+    async function fetchAndSetChunkSize() {
+        try {
+            const data = await Api.get(`${_prefix()}/auth/public-settings`);
+            setServerChunkSize(data.chunk_size);
+        } catch (_) {
+            // Non-fatal: keep Config fallback
+        }
+    }
+
     // ------------------------------------------------------------------
     // Public API
     // ------------------------------------------------------------------
@@ -50,7 +73,7 @@ const Upload = (() => {
      * @throws {UploadAbortedError}  When ctrl signals a stop.
      */
     async function uploadFile(file, folderId, masterKey, onProgress, ctrl = null) {
-        const chunkSize = _cfg().defaultChunkSize;
+        const chunkSize = _getChunkSize();
         const totalChunks = Math.ceil(file.size / chunkSize);
 
         // Total encrypted size = sum of (plainChunkSize + 16) for each chunk
@@ -227,7 +250,7 @@ const Upload = (() => {
      * @throws {UploadAbortedError}  When ctrl signals a stop.
      */
     async function resumeUpload(location, file, fileKey, onProgress, ctrl = null) {
-        const chunkSize = _cfg().defaultChunkSize;
+        const chunkSize = _getChunkSize();
         const totalChunks = Math.ceil(file.size / chunkSize);
 
         // Calculate total encrypted size
@@ -514,5 +537,11 @@ const Upload = (() => {
         return new Promise(r => setTimeout(r, ms));
     }
 
-    return { uploadFile, resumeUpload, AbortedError: UploadAbortedError };
+    return {
+        uploadFile,
+        resumeUpload,
+        fetchAndSetChunkSize,
+        setServerChunkSize,
+        AbortedError: UploadAbortedError,
+    };
 })();

@@ -1,10 +1,10 @@
 {
-  "generated": "2026-04-26T07:46:55.748384+00:00",
+  "generated": "2026-04-26T18:16:56.190898+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
-    "frontend/js/admin.js": "sha256-dr0JZk7zmmnxKfHvt7ARlTd3YEh3tfJUy9R6QDmb5a8=",
+    "frontend/js/admin.js": "sha256-vxRCF27S4SV+7x9pybO79y4B/JEywekiQpq3wiFD9Fw=",
     "frontend/js/api.js": "sha256-48CiuL7K4S9Zmpo75aq4OHaGCxjfxPMy4nkVzz3jlIA=",
-    "frontend/js/app.js": "sha256-w6FuMKPvCLIvhtN3HSplwQPfu5gJZ4pUcUwdSHso0qc=",
+    "frontend/js/app.js": "sha256-yWZqExaRBBN+dkxWz4eVyAOzdW67FmaLoY43lJkzCOo=",
     "frontend/js/auth.js": "sha256-C8kxobROe7DsMCADrDdvyQALH/BVjshpDgWQt3fwnbc=",
     "frontend/js/config.js": "sha256-kvBA0esQEryN7FkIPvKV4etKRoMDkgRIoBKelK9n4sA=",
     "frontend/js/crypto.js": "sha256-/nCbFoYIALlRIIZvHR/jyX+JGd0b3+nh5DISdKq0HCc=",
@@ -14,7 +14,7 @@
     "frontend/js/shares.js": "sha256-lA5UDYVt/LxI26rsPUNROeE+bxZuotVHkP+kIkAvxg0=",
     "frontend/js/teams.js": "sha256-ZdibBcztG6qtpxCWtQXULGmB5dNepl1ZYLZIJkWU98w=",
     "frontend/js/transfer-manager.js": "sha256-d4r3SCEKmnNaMdEm+/G2I1PeNI7K51F67cF4gvQ5x+s=",
-    "frontend/js/upload.js": "sha256-Ls47qZBDtUCvXtBwz+1yRheF5AzVMluQGdCIvRous/U=",
+    "frontend/js/upload.js": "sha256-uyrneo9bdDp74itYvdsDiyu0LHovUcb6Ki31Yiobfh8=",
     "frontend/js/utils.js": "sha256-WR+u1ToRQ3EHPwXORqLxgOppbrPh0H4UCxcxWZKWN0s=",
     "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",

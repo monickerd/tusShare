@@ -59,8 +59,9 @@ const Admin = (() => {
             id: 'security',
             label: 'Security & Privacy',
             sections: [
-                ['audit',     'Audit & SIEM',  _renderAuditSection],
-                ['antivirus', 'Antivirus',      _renderAntivirusSection],
+                ['audit',     'Audit & SIEM',        _renderAuditSection],
+                ['antivirus', 'Antivirus',            _renderAntivirusSection],
+                ['sharing',   'Sharing Restrictions', _renderSharingSection],
             ],
         },
     ];
@@ -457,7 +458,7 @@ const Admin = (() => {
             _row('Global max file size (MB)', '0 = no global limit', fldMaxFileSize),
             _row('Global bandwidth limit (MB/s)', '0 = no global limit (upload + download combined per user)', fldBandwidth),
             _row('Disk warning threshold (%)', 'Admin alert when filesystem usage reaches this %', fldDiskWarn),
-            _row('Default chunk size (MB)', 'Informational — clients use their own config value', fldChunkSize),
+            _row('Default chunk size (MB)', 'Enforced server-side; clients fetch this value on startup and use it for new uploads', fldChunkSize),
             _row('Open registration', 'Allow anyone to register without an invite', fldOpenReg),
             Utils.el('div', { className: 'settings-actions' }, [saveBtn]),
         ]));
@@ -914,6 +915,8 @@ const Admin = (() => {
         { key: 'integrations', label: 'Integrations' },
         { key: 'policy',       label: 'Policy Engine' },
         { key: 'files',        label: 'File Access' },
+        { key: 'security',     label: 'Security' },
+        { key: 'sharing',      label: 'Sharing' },
     ];
 
     async function _renderRoles(container) {
@@ -1258,7 +1261,7 @@ const Admin = (() => {
                 onClick: async () => {
                     if (!confirm(`Delete field "${f.name}"?`)) return;
                     try {
-                        await Api.delete(`${_api()}/admin/policy-fields/${f.name}`);
+                        await Api.del(`${_api()}/admin/policy-fields/${f.name}`);
                         Utils.showToast('Field deleted', 'success');
                         refreshFn();
                     } catch (err) {
@@ -1382,7 +1385,7 @@ const Admin = (() => {
                         onClick: async () => {
                             if (!confirm('Delete this scope condition? Affected policy conditions will be flagged for review.')) return;
                             try {
-                                await Api.delete(`${_api()}/admin/scopes/conditions/${c.id}`);
+                                await Api.del(`${_api()}/admin/scopes/conditions/${c.id}`);
                                 Utils.showToast('Scope condition deleted', 'success');
                                 refreshFn();
                             } catch (err) {
@@ -1541,7 +1544,7 @@ const Admin = (() => {
                 e.stopPropagation();
                 if (!confirm(`Delete policy "${policy.name}" and all its conditions?`)) return;
                 try {
-                    await Api.delete(`${_api()}/admin/policies/${policy.id}`);
+                    await Api.del(`${_api()}/admin/policies/${policy.id}`);
                     Utils.showToast('Policy deleted', 'success');
                     refreshFn();
                 } catch (err) {
@@ -1582,7 +1585,7 @@ const Admin = (() => {
                     textContent: 'Remove',
                     onClick: async () => {
                         try {
-                            await Api.delete(`${_api()}/admin/policies/${policy.id}/conditions/${cond.id}`);
+                            await Api.del(`${_api()}/admin/policies/${policy.id}/conditions/${cond.id}`);
                             Utils.showToast('Condition removed', 'success');
                             refreshFn();
                         } catch (err) {
@@ -1684,7 +1687,7 @@ const Admin = (() => {
                     onClick: async () => {
                         if (!confirm('Remove this effect? Policy-sourced grants for this effect will be revoked for all users.')) return;
                         try {
-                            await Api.delete(`${_api()}/admin/policies/${policy.id}/effects/${eff.id}`);
+                            await Api.del(`${_api()}/admin/policies/${policy.id}/effects/${eff.id}`);
                             Utils.showToast('Effect removed', 'success');
                             _loadAndRenderEffects(wrap, policy, refreshFn);
                         } catch (err) {
@@ -2212,7 +2215,7 @@ const Admin = (() => {
                     if (!confirm(`Delete provider "${prov.name}"? Users authenticated via this provider will lose IdP login.`)) return;
                     ev.target.disabled = true;
                     try {
-                        await Api.delete(`${_api()}/admin/identity-providers/${prov.id}`);
+                        await Api.del(`${_api()}/admin/identity-providers/${prov.id}`);
                         Utils.showToast('Provider deleted', 'success');
                         _renderIdpSection(container);
                     } catch (err) {
@@ -2826,7 +2829,7 @@ const Admin = (() => {
                         if (!confirm(`Delete SIEM destination "${dest.name}"?`)) return;
                         ev.target.disabled = true;
                         try {
-                            await Api.delete(`${_api()}/admin/audit/siem/${dest.id}`);
+                            await Api.del(`${_api()}/admin/audit/siem/${dest.id}`);
                             Utils.showToast('Destination deleted', 'success');
                             const data = await Api.get(`${_api()}/admin/audit/siem`);
                             _renderSiemList(container, data.destinations || [], filterProfiles);
@@ -3219,7 +3222,7 @@ const Admin = (() => {
                     if (!confirm(`Delete volume "${vol.name}"? This cannot be undone.`)) return;
                     ev.target.disabled = true;
                     try {
-                        await Api.delete(`${_api()}/admin/storage/volumes/${vol.id}`);
+                        await Api.del(`${_api()}/admin/storage/volumes/${vol.id}`);
                         Utils.showToast('Volume deleted', 'success');
                         await _renderStorageSection(container.closest('.admin-section-body') || container);
                     } catch (err) {
@@ -4111,6 +4114,442 @@ const Admin = (() => {
         }
         table.appendChild(tbody);
         body.appendChild(table);
+    }
+
+    // -----------------------------------------------------------------------
+    // Sharing Restrictions
+    // -----------------------------------------------------------------------
+
+    const _SHARING_OPERATORS = [
+        'eq', 'neq', 'contains', 'not_contains', 'starts_with', 'ends_with',
+        'in', 'not_in', 'matches_re', 'cross_eq', 'cross_neq',
+    ];
+
+    async function _renderSharingSection(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+        let data;
+        try {
+            data = await Api.get(`${_api()}/admin/sharing/rules`);
+        } catch (err) {
+            container.innerHTML = '';
+            _showError(container, 'Failed to load sharing rules: ' + err.message);
+            _renderSharingTestPanel(container);
+            return;
+        }
+        container.innerHTML = '';
+
+        // Header + create button
+        const createBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Create Rule',
+            onClick: () => _showSharingRuleModal(null, () => _renderSharingSection(container)),
+        });
+        container.appendChild(Utils.el('div', { className: 'policy-sub-header' }, [
+            Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+                Utils.el('h4', { textContent: 'Sharing Rules', style: 'margin:0' }),
+                createBtn,
+            ]),
+            Utils.el('p', {
+                className: 'text-muted policy-sub-hint',
+                textContent: 'Rules are evaluated in priority order (lowest number first). The first matching deny wins; an explicit allow overrides earlier denies.',
+            }),
+        ]));
+
+        const rules = data.rules || [];
+        if (rules.length === 0) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No sharing rules configured. By default all shares are permitted.' }));
+        } else {
+            const list = Utils.el('div', { className: 'policy-list' });
+            for (const rule of rules) {
+                list.appendChild(_buildSharingRuleCard(rule, () => _renderSharingSection(container)));
+            }
+            container.appendChild(list);
+        }
+
+        _renderSharingTestPanel(container);
+    }
+
+    function _buildSharingRuleCard(rule, refreshFn) {
+        const body = Utils.el('div', { className: 'policy-card-body', style: 'display:none' });
+        let loaded = false;
+
+        const effectBadge = Utils.el('span', {
+            className: `badge ${rule.effect === 'deny' ? 'bg-danger' : 'bg-success'} me-1`,
+            textContent: rule.effect,
+        });
+        const subjectBadge = Utils.el('span', {
+            className: 'badge bg-secondary me-1',
+            textContent: rule.subject,
+        });
+        const typeBadge = rule.applies_to_share_type ? Utils.el('span', {
+            className: 'badge bg-info text-dark me-1',
+            textContent: rule.applies_to_share_type,
+        }) : null;
+        const activeBadge = Utils.el('span', {
+            className: `badge ${rule.is_active ? 'bg-primary' : 'bg-light text-dark'} me-1`,
+            textContent: rule.is_active ? 'active' : 'inactive',
+        });
+        const lockedBadge = rule.is_locked ? Utils.el('span', {
+            className: 'badge bg-warning text-dark me-1',
+            textContent: `locked ≤tier${rule.locked_min_tier ?? '?'}`,
+        }) : null;
+        const priorityTag = Utils.el('span', {
+            className: 'text-muted',
+            textContent: `P${rule.priority}`,
+            style: 'font-size:0.8em;margin-right:6px',
+        });
+
+        const toggleBtn = Utils.el('button', {
+            className: 'policy-card-toggle collapsed',
+            onClick: () => {
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : '';
+                toggleBtn.classList.toggle('collapsed', open);
+                if (!open && !loaded) {
+                    loaded = true;
+                    _populateSharingRuleBody(body, rule, refreshFn);
+                }
+            },
+        });
+        const badgeRow = Utils.el('span', { style: 'display:flex;align-items:center;gap:2px;flex-wrap:wrap' }, [
+            priorityTag, effectBadge, subjectBadge,
+            ...(typeBadge ? [typeBadge] : []),
+            activeBadge,
+            ...(lockedBadge ? [lockedBadge] : []),
+        ]);
+        toggleBtn.appendChild(Utils.el('span', { textContent: rule.name, style: 'margin-right:8px' }));
+        toggleBtn.appendChild(badgeRow);
+
+        const deleteBtn = Utils.el('button', {
+            className: 'btn btn-danger btn-xs policy-card-delete',
+            textContent: 'Delete',
+            onClick: async (e) => {
+                e.stopPropagation();
+                if (!confirm(`Delete sharing rule "${rule.name}"?`)) return;
+                try {
+                    await Api.del(`${_api()}/admin/sharing/rules/${rule.id}`);
+                    Utils.showToast('Rule deleted', 'success');
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Delete failed: ' + err.message, 'error');
+                }
+            },
+        });
+
+        const editBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-xs me-1',
+            textContent: 'Edit',
+            onClick: (e) => {
+                e.stopPropagation();
+                _showSharingRuleModal(rule, refreshFn);
+            },
+        });
+
+        return Utils.el('div', { className: 'policy-card' }, [
+            Utils.el('div', { className: 'policy-card-header' }, [toggleBtn, editBtn, deleteBtn]),
+            body,
+        ]);
+    }
+
+    function _populateSharingRuleBody(container, rule, refreshFn) {
+        if (rule.description) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: rule.description }));
+        }
+
+        // Toggle active
+        const activeToggle = Utils.el('button', {
+            className: `btn btn-sm ${rule.is_active ? 'btn-outline-secondary' : 'btn-outline-primary'} mb-3`,
+            textContent: rule.is_active ? 'Deactivate rule' : 'Activate rule',
+            onClick: async () => {
+                activeToggle.disabled = true;
+                try {
+                    await Api.put(`${_api()}/admin/sharing/rules/${rule.id}`, {
+                        is_active: !rule.is_active,
+                    });
+                    Utils.showToast(rule.is_active ? 'Rule deactivated' : 'Rule activated', 'success');
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Update failed: ' + err.message, 'error');
+                    activeToggle.disabled = false;
+                }
+            },
+        });
+        container.appendChild(activeToggle);
+
+        // Conditions table
+        const condHeader = Utils.el('h5', { className: 'policy-body-section-title', textContent: 'Conditions' });
+        container.appendChild(condHeader);
+
+        if (!rule.conditions || rule.conditions.length === 0) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No conditions — rule matches all shares of the specified type.' }));
+        } else {
+            const table = Utils.el('table', { className: 'policy-table' });
+            table.innerHTML = `<thead><tr>
+                <th>Attribute</th><th>Operator</th><th>Value</th><th>Block if missing</th>
+            </tr></thead>`;
+            const tbody = Utils.el('tbody');
+            for (const cond of rule.conditions) {
+                const path = cond.attribute_path + (cond.attribute_path2 ? ` ↔ ${cond.attribute_path2}` : '');
+                const tr = Utils.el('tr', {}, [
+                    Utils.el('td', {}, [Utils.el('code', { textContent: path })]),
+                    Utils.el('td', { textContent: cond.operator }),
+                    Utils.el('td', { textContent: cond.value ?? '—' }),
+                    Utils.el('td', { textContent: cond.block_on_missing_attribute ? 'Yes' : 'No' }),
+                ]);
+                tbody.appendChild(tr);
+            }
+            table.appendChild(tbody);
+            container.appendChild(table);
+        }
+    }
+
+    function _showSharingRuleModal(existing, refreshFn) {
+        const isEdit = !!existing;
+
+        const nameEl = Utils.el('input', {
+            type: 'text', className: 'input-sm', maxlength: '200',
+            placeholder: 'Rule name',
+            value: existing?.name ?? '',
+        });
+        const descEl = Utils.el('input', {
+            type: 'text', className: 'input-sm',
+            placeholder: 'Description (optional)',
+            value: existing?.description ?? '',
+        });
+        const priorityEl = Utils.el('input', {
+            type: 'number', className: 'input-sm', min: '1', max: '10000',
+            value: String(existing?.priority ?? 100),
+        });
+
+        const subjectSel = Utils.el('select', { className: 'input-sm' });
+        ['sender', 'recipient', 'cross'].forEach(v => {
+            const opt = Utils.el('option', { value: v, textContent: v });
+            if (existing?.subject === v) opt.selected = true;
+            subjectSel.appendChild(opt);
+        });
+
+        const typeSel = Utils.el('select', { className: 'input-sm' });
+        [['', '(any share type)'], ['link', 'link'], ['user', 'user']].forEach(([v, label]) => {
+            const opt = Utils.el('option', { value: v, textContent: label });
+            if ((existing?.applies_to_share_type ?? '') === v) opt.selected = true;
+            typeSel.appendChild(opt);
+        });
+
+        const effectSel = Utils.el('select', { className: 'input-sm' });
+        ['deny', 'allow'].forEach(v => {
+            const opt = Utils.el('option', { value: v, textContent: v });
+            if ((existing?.effect ?? 'deny') === v) opt.selected = true;
+            effectSel.appendChild(opt);
+        });
+
+        const activeCheck = Utils.el('input', { type: 'checkbox' });
+        activeCheck.checked = existing?.is_active ?? true;
+
+        // Conditions editor
+        let conditions = (existing?.conditions ?? []).map(c => ({ ...c }));
+        const condTable = Utils.el('div');
+
+        function _renderCondTable() {
+            condTable.innerHTML = '';
+            if (conditions.length === 0) {
+                condTable.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No conditions yet — rule matches all shares.' }));
+            } else {
+                const table = Utils.el('table', { className: 'policy-table' });
+                table.innerHTML = '<thead><tr><th>Attribute</th><th>Operator</th><th>Value</th><th>Block if missing</th><th></th></tr></thead>';
+                const tbody = Utils.el('tbody');
+                conditions.forEach((cond, idx) => {
+                    const pathEl = Utils.el('input', {
+                        type: 'text', className: 'input-sm', value: cond.attribute_path ?? '',
+                        placeholder: 'source.attr',
+                        style: 'width:140px',
+                    });
+                    pathEl.addEventListener('input', () => { conditions[idx].attribute_path = pathEl.value; });
+
+                    const opSel = Utils.el('select', { className: 'input-sm' });
+                    _SHARING_OPERATORS.forEach(op => {
+                        const opt = Utils.el('option', { value: op, textContent: op });
+                        if (cond.operator === op) opt.selected = true;
+                        opSel.appendChild(opt);
+                    });
+                    opSel.addEventListener('change', () => { conditions[idx].operator = opSel.value; });
+
+                    const valEl = Utils.el('input', {
+                        type: 'text', className: 'input-sm', value: cond.value ?? '',
+                        placeholder: 'value',
+                        style: 'width:120px',
+                    });
+                    valEl.addEventListener('input', () => { conditions[idx].value = valEl.value || null; });
+
+                    const blockCheck = Utils.el('input', { type: 'checkbox', checked: cond.block_on_missing_attribute !== false });
+                    blockCheck.addEventListener('change', () => { conditions[idx].block_on_missing_attribute = blockCheck.checked; });
+
+                    const delBtn = Utils.el('button', {
+                        className: 'btn btn-danger btn-xs',
+                        textContent: '×',
+                        type: 'button',
+                        onClick: () => {
+                            conditions.splice(idx, 1);
+                            _renderCondTable();
+                        },
+                    });
+
+                    const tr = Utils.el('tr', {}, [
+                        Utils.el('td', {}, [pathEl]),
+                        Utils.el('td', {}, [opSel]),
+                        Utils.el('td', {}, [valEl]),
+                        Utils.el('td', {}, [blockCheck]),
+                        Utils.el('td', {}, [delBtn]),
+                    ]);
+                    tbody.appendChild(tr);
+                });
+                table.appendChild(tbody);
+                condTable.appendChild(table);
+            }
+            const addBtn = Utils.el('button', {
+                className: 'btn btn-sm btn-secondary mt-2',
+                textContent: '+ Add Condition',
+                type: 'button',
+                onClick: () => {
+                    conditions.push({
+                        attribute_path: '',
+                        attribute_path2: null,
+                        operator: 'eq',
+                        value: null,
+                        block_on_missing_attribute: true,
+                    });
+                    _renderCondTable();
+                },
+            });
+            condTable.appendChild(addBtn);
+        }
+        _renderCondTable();
+
+        const _row = (label, el) => Utils.el('div', { className: 'policy-strict-row' }, [
+            Utils.el('label', { textContent: label }),
+            el,
+        ]);
+
+        const saveBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm mt-3',
+            textContent: isEdit ? 'Save Changes' : 'Create Rule',
+            type: 'button',
+            onClick: async () => {
+                saveBtn.disabled = true;
+                const payload = {
+                    name: nameEl.value.trim(),
+                    description: descEl.value.trim() || null,
+                    priority: parseInt(priorityEl.value, 10) || 100,
+                    subject: subjectSel.value,
+                    applies_to_share_type: typeSel.value || null,
+                    effect: effectSel.value,
+                    is_active: activeCheck.checked,
+                    conditions: conditions.filter(c => c.attribute_path),
+                };
+                try {
+                    if (isEdit) {
+                        await Api.put(`${_api()}/admin/sharing/rules/${existing.id}`, payload);
+                        Utils.showToast('Rule updated', 'success');
+                    } else {
+                        await Api.post(`${_api()}/admin/sharing/rules`, payload);
+                        Utils.showToast('Rule created', 'success');
+                    }
+                    Utils.closeModal?.();
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast((isEdit ? 'Update' : 'Create') + ' failed: ' + err.message, 'error');
+                    saveBtn.disabled = false;
+                }
+            },
+        });
+
+        const form = Utils.el('div', { className: 'policy-modal-form' }, [
+            _row('Name', nameEl),
+            _row('Description', descEl),
+            _row('Priority (1–10000, lower = first)', priorityEl),
+            _row('Subject', subjectSel),
+            _row('Applies to share type', typeSel),
+            _row('Effect', effectSel),
+            Utils.el('div', { className: 'policy-strict-row' }, [
+                Utils.el('label', { textContent: 'Active' }),
+                activeCheck,
+            ]),
+            Utils.el('h5', { textContent: 'Conditions', style: 'margin-top:16px' }),
+            condTable,
+            saveBtn,
+        ]);
+
+        Utils.showModal(isEdit ? `Edit Rule — ${existing.name}` : 'Create Sharing Rule', form);
+    }
+
+    function _renderSharingTestPanel(container) {
+        const wrap = Utils.el('div', { className: 'policy-subsection', style: 'margin-top:24px' });
+        wrap.appendChild(Utils.el('h4', { textContent: 'Test Rules (dry run)' }));
+        wrap.appendChild(Utils.el('p', {
+            className: 'text-muted policy-sub-hint',
+            textContent: 'Evaluate sharing rules for a specific user pair without making any changes.',
+        }));
+
+        const senderEl = Utils.el('input', {
+            type: 'text', className: 'input-sm', placeholder: 'Sender user ID (UUID)',
+            style: 'width:300px',
+        });
+        const recipientEl = Utils.el('input', {
+            type: 'text', className: 'input-sm', placeholder: 'Recipient user ID (optional)',
+            style: 'width:300px',
+        });
+        const stypeSel = Utils.el('select', { className: 'input-sm' });
+        ['link', 'user'].forEach(v => stypeSel.appendChild(Utils.el('option', { value: v, textContent: v })));
+
+        const resultBox = Utils.el('div', { style: 'margin-top:12px' });
+
+        const testBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Test',
+            onClick: async () => {
+                testBtn.disabled = true;
+                resultBox.innerHTML = '';
+                try {
+                    const payload = {
+                        sender_user_id: senderEl.value.trim(),
+                        share_type: stypeSel.value,
+                    };
+                    if (recipientEl.value.trim()) payload.recipient_user_id = recipientEl.value.trim();
+                    const res = await Api.post(`${_api()}/admin/sharing/rules/test`, payload);
+                    const outcomeEl = Utils.el('p', {
+                        textContent: `Outcome: ${res.outcome.toUpperCase()}`,
+                        style: `font-weight:bold;color:${res.outcome === 'deny' ? 'var(--color-error)' : 'var(--color-ok, #2d7a36)'}`,
+                    });
+                    resultBox.appendChild(outcomeEl);
+                    if (res.matching_rules.length === 0) {
+                        resultBox.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No rules matched.' }));
+                    } else {
+                        const ul = Utils.el('ul');
+                        for (const r of res.matching_rules) {
+                            ul.appendChild(Utils.el('li', { textContent: `[${r.effect}] P${r.priority} "${r.name}"` }));
+                        }
+                        resultBox.appendChild(ul);
+                    }
+                } catch (err) {
+                    resultBox.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Test failed: ' + err.message }));
+                } finally {
+                    testBtn.disabled = false;
+                }
+            },
+        });
+
+        const _row2 = (label, el) => Utils.el('div', { style: 'margin-bottom:8px' }, [
+            Utils.el('label', { textContent: label, style: 'display:block;font-size:0.85em;margin-bottom:2px' }),
+            el,
+        ]);
+
+        wrap.appendChild(Utils.el('div', {}, [
+            _row2('Sender user ID', senderEl),
+            _row2('Recipient user ID (leave blank for link shares)', recipientEl),
+            _row2('Share type', stypeSel),
+            testBtn,
+            resultBox,
+        ]));
+        container.appendChild(wrap);
     }
 
     return { renderAdminPage };

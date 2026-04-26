@@ -424,6 +424,21 @@ async def validate_invite(token: str, db=Depends(get_db)):
     return {"valid": True}
 
 
+@router.get("/public-settings")
+async def get_public_settings(db=Depends(get_db)):
+    """Return public configuration that unauthenticated clients need before login.
+
+    Exposes the server-enforced upload chunk size so the client uses the correct
+    value when creating a new tus upload.  No auth required.
+    """
+    cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'default_chunk_size'"
+    )
+    row = await cursor.fetchone()
+    chunk_size = int(row["value"]) if row else settings.DEFAULT_CHUNK_SIZE
+    return {"chunk_size": chunk_size}
+
+
 @router.get("/users/{username}/public-keys")
 async def get_user_public_keys(
     username: str,
