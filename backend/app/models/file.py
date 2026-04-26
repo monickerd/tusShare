@@ -10,6 +10,7 @@ class Folder:
     parent_id: str | None
     owner_id: str
     is_shared: bool
+    restrict_permissions: bool
     created_at: str
     updated_at: str
 
@@ -21,6 +22,7 @@ class Folder:
             parent_id=row["parent_id"],
             owner_id=row["owner_id"],
             is_shared=bool(row["is_shared"]),
+            restrict_permissions=bool(row["restrict_permissions"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -32,6 +34,7 @@ class Folder:
             "parent_id": self.parent_id,
             "owner_id": self.owner_id,
             "is_shared": self.is_shared,
+            "restrict_permissions": self.restrict_permissions,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }

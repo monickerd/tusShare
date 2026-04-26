@@ -39,6 +39,7 @@ class UpdateFolderRequest(BaseModel):
     name: str | None = None
     parent_id: str | None = None
     move_to_root: bool = False
+    restrict_permissions: bool | None = None
 
     @field_validator("name")
     @classmethod
@@ -334,6 +335,9 @@ async def update_folder(
     if body.name is not None:
         updates.append("name = ?")
         params.append(body.name)
+    if body.restrict_permissions is not None:
+        updates.append("restrict_permissions = ?")
+        params.append(body.restrict_permissions)
     if body.move_to_root:
         if folder_row["parent_id"] is None:
             raise HTTPException(status_code=400, detail="Folder is already at root")

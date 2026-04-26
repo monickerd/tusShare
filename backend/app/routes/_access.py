@@ -7,6 +7,8 @@ async def is_team_folder_member(db, folder_id: str, user_id: str) -> bool:
     """Walk the folder ancestry to check if any ancestor (or self) is a team folder,
     and if so, whether user_id is a member of that team.
 
+    Stops at folders with restrict_permissions = TRUE: team membership in an
+    ancestor team folder does not grant access across a permission boundary.
     Returns True if the user has team-based access to this folder.
     """
     visited: set[str] = set()
@@ -25,12 +27,12 @@ async def is_team_folder_member(db, folder_id: str, user_id: str) -> bool:
                 (tf_row["team_id"], user_id),
             )
             return await cursor.fetchone() is not None
-        # Walk up the tree
+        # Walk up the tree; stop at permission boundaries
         cursor = await db.execute(
-            "SELECT parent_id FROM folders WHERE id = ?", (current_id,)
+            "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (current_id,)
         )
         row = await cursor.fetchone()
-        if not row:
+        if not row or row["restrict_permissions"]:
             return False
         current_id = row["parent_id"]
     return False
@@ -40,6 +42,8 @@ async def is_in_shared_tree(db, folder_id: str) -> bool:
     """Walk the folder ancestry to check if any ancestor (or self) is the shared folder.
 
     Returns True if the folder or any of its ancestors has is_shared=1.
+    Stops at folders with restrict_permissions = TRUE: a shared ancestor above a
+    permission boundary does not grant public access to the restricted subtree.
     Uses a visited set to guard against circular parent references.
     """
     visited: set[str] = set()
@@ -47,13 +51,15 @@ async def is_in_shared_tree(db, folder_id: str) -> bool:
     while current_id and current_id not in visited:
         visited.add(current_id)
         cursor = await db.execute(
-            "SELECT parent_id, is_shared FROM folders WHERE id = ?", (current_id,)
+            "SELECT parent_id, is_shared, restrict_permissions FROM folders WHERE id = ?", (current_id,)
         )
         row = await cursor.fetchone()
         if not row:
             return False
         if row["is_shared"]:
             return True
+        if row["restrict_permissions"]:
+            return False
         current_id = row["parent_id"]
     return False
 
@@ -113,6 +119,8 @@ async def has_folder_permission(db, folder_id: str, user_id: str) -> bool:
     """Return True if user has an explicit permission entry for this folder.
 
     Checks the folder itself and walks up through ancestors for recursive grants.
+    Stops at folders with restrict_permissions = TRUE: recursive grants from above
+    a permission boundary do not propagate into the restricted subtree.
     Used to honour policy-engine folder_acl effects and manual user-share grants.
     """
     visited: set[str] = set()
@@ -129,10 +137,10 @@ async def has_folder_permission(db, folder_id: str, user_id: str) -> bool:
             if current_id == folder_id or row["recursive"]:
                 return True
         cursor = await db.execute(
-            "SELECT parent_id FROM folders WHERE id = ?", (current_id,)
+            "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (current_id,)
         )
         prow = await cursor.fetchone()
-        if not prow:
+        if not prow or prow["restrict_permissions"]:
             return False
         current_id = prow["parent_id"]
     return False

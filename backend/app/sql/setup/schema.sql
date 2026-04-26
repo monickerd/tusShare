@@ -298,13 +298,14 @@ CREATE INDEX idx_role_permissions_flag ON role_permissions(flag);
 -- FOLDERS
 -------------------------------------------------
 CREATE TABLE folders (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 255),
-    parent_id  TEXT REFERENCES folders(id) ON DELETE CASCADE,
-    owner_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    is_shared  INTEGER NOT NULL DEFAULT 0,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                   TEXT PRIMARY KEY,
+    name                 TEXT NOT NULL CHECK(length(name) BETWEEN 1 AND 255),
+    parent_id            TEXT REFERENCES folders(id) ON DELETE CASCADE,
+    owner_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    is_shared            INTEGER NOT NULL DEFAULT 0,
+    restrict_permissions BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_folders_parent ON folders(parent_id);
