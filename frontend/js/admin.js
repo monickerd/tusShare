@@ -720,7 +720,7 @@ const Admin = (() => {
     }
 
     function _buildInviteRow(invite, refreshFn) {
-        const expiresDate = invite.expires_at ? invite.expires_at.slice(0, 16).replace('T', ' ') : '—';
+        const expiresDate = invite.expires_at ? new Date(invite.expires_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—';
         const createdDate = invite.created_at ? invite.created_at.slice(0, 10) : '—';
 
         const revokeBtn = Utils.el('button', {
@@ -739,7 +739,7 @@ const Admin = (() => {
         });
 
         return Utils.el('div', { className: 'invite-row' }, [
-            Utils.el('span', { className: 'invite-meta', textContent: `Created ${createdDate} · Expires ${expiresDate} UTC` }),
+            Utils.el('span', { className: 'invite-meta', textContent: `Created ${createdDate} · Expires ${expiresDate}` }),
             revokeBtn,
         ]);
     }
