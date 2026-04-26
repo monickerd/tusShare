@@ -131,9 +131,11 @@ async def setup(browser: Browser, admin_client: AdminClient):
     for u in (_e1, _e2, _e3):
         await admin_client.grant_role(u["id"], "escrow_agent")
 
-    # Keys for e1 and e2 only — e3 intentionally has no keys
+    # Register proper fake keys for e1 and e2 (overwrites browser-auto-registered keys)
     await _register_keys(_e1["api"])
     await _register_keys(_e2["api"])
+    # e3 intentionally has no keys — clear any auto-registered during browser signup
+    await admin_client.clear_user_asymmetric_keys(_e3["id"])
 
     # _mgr: can_view_admin_panel only (no can_manage_escrow)
     no_esc = await admin_client.create_role("no_escrow_adm_19")

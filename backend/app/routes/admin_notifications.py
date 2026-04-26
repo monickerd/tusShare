@@ -1,4 +1,4 @@
-"""Admin routes for notification channels and API keys (G1).
+"""Admin routes for notification channels and API keys.
 
 Endpoints
 ─────────

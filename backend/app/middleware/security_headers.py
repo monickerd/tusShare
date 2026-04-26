@@ -27,7 +27,13 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        if not path.startswith("/api/"):
+        if path.startswith("/api/"):
+            # API responses must never be cached — includes both authenticated and
+            # public endpoints (e.g. public settings). Authorization header prevents
+            # caching on authenticated routes, but explicit no-store is required for
+            # unauthenticated public API endpoints where that implicit guard is absent.
+            response.headers["Cache-Control"] = CACHE_CONTROL_NO_STORE
+        else:
             response.headers["Content-Security-Policy"] = CONTENT_SECURITY_POLICY
 
             # Strip query string for extension matching (e.g. file.js?v=3)

@@ -401,6 +401,7 @@ const App = (() => {
             ]),
 
             Utils.el('a', { href: '#/teams', className: 'sidebar-link', id: 'nav-teams', textContent: 'Manage Teams' }),
+            // CLEANUP: move this under User Account settings menu when that's implemented (Tier 5)
             Utils.el('a', { href: '#/mfa',   className: 'sidebar-link', id: 'nav-mfa',   textContent: 'Security' }),
         ]);
         if (user && user.is_admin) {
@@ -446,7 +447,7 @@ const App = (() => {
             shellChildren.push(banner);
         }
 
-        // E5: Admin transparency banner — shown when key escrow is active for one or more
+        // Admin transparency banner — shown when key escrow is active for one or more
         // of the user's teams. Suppressible via theme.json ui.admin_transparency_banner=false.
         // Dismissed per-session; will reappear on next login if escrow is still active.
         const _ESCROW_DISMISSED_KEY = 'escrow_banner_dismissed';

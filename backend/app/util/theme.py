@@ -1,4 +1,4 @@
-"""Theme configuration loader and HTML injector (D1 + D2).
+"""Theme configuration loader and HTML injector.
 
 Reads DATA_DIR/theme.json at startup and on hot-reload.  Validated color
 variable overrides are injected as an inline <style> block into
@@ -90,7 +90,7 @@ _BRAND_NAME_MAX = 64
 _UI_FLAG_RE = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
 
 # Recognised UI flags and their defaults (used when theme.json omits the key).
-# Add new flags here as Phase E+ items are introduced.
+# Add new UI flags here as features are introduced.
 _UI_FLAG_DEFAULTS: dict[str, bool] = {
     "admin_transparency_banner": True,
 }

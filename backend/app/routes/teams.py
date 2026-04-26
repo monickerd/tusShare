@@ -94,7 +94,8 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 
 class _MemberKeyIn(BaseModel):
-    """KEM-wrapped team key fields for a single member."""
+    """KEM-wrapped team key fields for a single escrow member."""
+    user_id: str
     ephemeral_x25519_pub: str
     kem_ciphertext: str
     encrypted_sk: str
@@ -295,7 +296,7 @@ class _RotatedFileKeyIn(BaseModel):
 
     dleq_s / dleq_R1 / dleq_R2 carry the Chaum-Pedersen DLEQ proof that the
     same scalar rk was used for rk_point = rk×G1 and C1_new = rk×C1_old.
-    All three proof fields are required (E4 verification active).
+    All three proof fields are required (DLEQ verification is active).
     """
     file_id: str
     pre_c1: str
@@ -360,15 +361,15 @@ class RotateKeysRequest(BaseModel):
     Any team member performs all BLS12-381 scalar multiplications in the browser
     (using @noble/curves) and submits:
       - New G2 public key (sk_new * G2)
-      - rk_point = rk × G1 (for server-side pairing consistency check, E4)
+      - rk_point = rk × G1 (server-side pairing consistency check)
       - Every file_team_keys row with its updated C1 (= rk * C1_old) + DLEQ proof
       - New user_team_keys entries wrapping sk_new for each remaining member
 
     rk_point and per-file DLEQ proofs are optional in this prereq phase
-    (accept-without-verify); required once E4 verification is enabled.
+    (accept-without-verify); DLEQ verification is active.
     """
     pre_public_key_new: str              # G2 point, base64 — pk_new
-    rk_point: str                        # G1 point, base64 — rk × G1 (required, E4 active)
+    rk_point: str                        # G1 point, base64 — rk × G1 (required)
     file_keys: list[_RotatedFileKeyIn]
     members: list[_RotatedMemberIn]
 
@@ -494,7 +495,7 @@ async def create_team(
                 detail=f"User {em.user_id} does not have can_act_as_escrow permission",
             )
 
-    # E5: enforce escrow_require_coverage
+    # enforce escrow_require_coverage
     cov_cursor = await db.execute(
         "SELECT value FROM admin_settings WHERE key = 'escrow_require_coverage'"
     )
@@ -1062,7 +1063,7 @@ async def rotate_team_keys(
     """Apply a client-computed PRE key rotation.
 
     Any team member may execute the rotation (permission dropped from owner-only
-    to member with E4 DLEQ verification — the math is the safety gate, not the role).
+    to member — DLEQ verification is the safety gate, not the role).
 
       1. Fetch their user_team_keys entry (GET /my-key) and unwrap sk_old.
       2. Generate sk_new, pk_new = sk_new * G2; compute rk = sk_old * inv(sk_new).
@@ -1200,7 +1201,7 @@ async def rotate_team_keys(
 
 
 # ---------------------------------------------------------------------------
-# Key confirmation (Schnorr PoK — E4 prereq scaffold)
+# Key confirmation (Schnorr PoK)
 # ---------------------------------------------------------------------------
 
 class KeyConfirmationRequest(BaseModel):

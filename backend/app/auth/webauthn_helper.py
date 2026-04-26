@@ -1,4 +1,4 @@
-"""WebAuthn registration and authentication helpers (F7).
+"""WebAuthn registration and authentication helpers.
 
 Uses py-webauthn (import `webauthn`) for CBOR parsing, signature verification,
 and options generation.

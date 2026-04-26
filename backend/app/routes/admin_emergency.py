@@ -1,4 +1,5 @@
-"""Emergency revocation routes — F2.
+"""
+Emergency revocation routes.
 
 POST /admin/users/{user_id}/emergency-revoke
     Atomically suspend an account and apply all containment actions defined in

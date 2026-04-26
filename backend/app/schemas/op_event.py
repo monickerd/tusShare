@@ -1,4 +1,4 @@
-"""OperationalEvent — wire schema for the G1 operational notification system."""
+"""OperationalEvent — wire schema for the operational notification system."""
 from __future__ import annotations
 
 import uuid

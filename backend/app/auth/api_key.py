@@ -1,4 +1,4 @@
-"""API key authentication dependency for the G1 pull events endpoint.
+"""API key authentication dependency for the pull events endpoint.
 
 Usage:
     @router.get("/events/stream")

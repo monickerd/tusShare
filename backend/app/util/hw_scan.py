@@ -1,9 +1,10 @@
-"""Hardware capability scan (F1).
+"""
+Hardware capability scan.
 
 Probes PBKDF2 throughput, CPU core count, available RAM, and local-volume
 disk space, then emits recommended configuration values.
 
-All probes run synchronously — callers must use asyncio.to_thread.
+All probes run synchronously -- callers must use asyncio.to_thread.
 """
 
 from __future__ import annotations

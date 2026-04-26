@@ -1,4 +1,4 @@
-"""Admin routes for identity provider management (E6).
+"""Admin routes for identity provider management.
 
 Endpoints
 ─────────

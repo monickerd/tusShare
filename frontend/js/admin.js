@@ -23,32 +23,315 @@ const Admin = (() => {
     // Entry point
     // ------------------------------------------------------------------
 
+    const _ADMIN_TABS = [
+        {
+            id: 'system',
+            label: 'System',
+            sections: [
+                ['settings',       'System Settings',        _renderSettings],
+                ['storage',        'Storage',                _renderStorageSection],
+                ['disk',           'Disk Usage',             _renderDiskUsage],
+                ['theme',          'Theme & Branding',       _renderTheme],
+                ['notifications',  'Notification Channels',  _renderNotificationsSection],
+                ['api-keys',       'API Keys',               _renderApiKeysSection],
+            ],
+        },
+        {
+            id: 'users',
+            label: 'Users',
+            sections: [
+                ['users',   'User Management',    _renderUsers],
+                ['invites', 'Invites',             _renderInvites],
+                ['idp',     'Identity Providers',  _renderIdpSection],
+            ],
+        },
+        {
+            id: 'roles',
+            label: 'Roles & Policies',
+            sections: [
+                ['roles',  'Roles & Permissions',  _renderRoles],
+                ['mfa',    'MFA Policy',            _renderMfaAdmin],
+                ['policy', 'Policy Engine',         _renderPolicySection],
+                ['escrow', 'Escrow by Default',     _renderEscrowSection],
+            ],
+        },
+        {
+            id: 'security',
+            label: 'Security & Privacy',
+            sections: [
+                ['audit',     'Audit & SIEM',  _renderAuditSection],
+                ['antivirus', 'Antivirus',      _renderAntivirusSection],
+            ],
+        },
+    ];
+
+    // ------------------------------------------------------------------
+    // Layout prefs — load / save / apply
+    // ------------------------------------------------------------------
+
+    async function _loadAdminPrefs() {
+        try {
+            const data = await Api.get(`${_api()}/auth/me/prefs`);
+            return data.ui_prefs || {};
+        } catch {
+            return {};
+        }
+    }
+
+    async function _saveAdminPrefs(layout) {
+        try {
+            await Api.patch(`${_api()}/auth/me/prefs`, { admin_layout: layout });
+        } catch { /* non-critical — layout just reverts on next load */ }
+    }
+
+    function _applyLayoutPrefs(prefs) {
+        const layout = prefs?.admin_layout;
+        if (!layout) return _ADMIN_TABS.map(t => ({ ...t, sections: [...t.sections] }));
+
+        const byId = Object.fromEntries(
+            _ADMIN_TABS.map(t => [t.id, { ...t, sections: [...t.sections] }])
+        );
+        const tabOrder = (layout.tabOrder || []).filter(id => byId[id]);
+        const seen = new Set(tabOrder);
+        _ADMIN_TABS.forEach(t => { if (!seen.has(t.id)) tabOrder.push(t.id); });
+
+        return tabOrder.map(tabId => {
+            const tab = byId[tabId];
+            const savedOrder = layout.sectionOrder?.[tabId];
+            if (!savedOrder) return tab;
+            const bySection = Object.fromEntries(tab.sections.map(s => [s[0], s]));
+            const ordered = savedOrder.filter(sid => bySection[sid]);
+            const seenS = new Set(ordered);
+            tab.sections.forEach(s => { if (!seenS.has(s[0])) ordered.push(s[0]); });
+            tab.sections = ordered.map(sid => bySection[sid]);
+            return tab;
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Entry point
+    // ------------------------------------------------------------------
+
     function renderAdminPage(container) {
+        container.innerHTML = '<p class="text-muted" style="padding:var(--space-4)">Loading…</p>';
+        _loadAdminPrefs().then(prefs => {
+            const liveTabs = _applyLayoutPrefs(prefs);
+            _renderAdmin(container, liveTabs);
+        });
+    }
+
+    function _renderAdmin(container, liveTabs) {
         container.innerHTML = '';
 
-        const page = Utils.el('div', { className: 'admin-page' }, [
+        let rearranging   = false;
+        let activeTabId   = liveTabs[0]?.id ?? 'system';
+        const visitedTabs = new Set();
+        const paneEls     = {};   // tabId → pane element
+        const expanders   = {};   // sectionId → expand()
+        let   dragListeners = [];
+
+        // -- header --
+        const rearrangeBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm admin-rearrange-btn',
+            textContent: '⠿ Rearrange',
+            onClick: _toggleRearrange,
+        });
+        const header = Utils.el('div', { className: 'admin-header' }, [
             Utils.el('h2', { className: 'admin-title', textContent: 'Admin Dashboard' }),
+            rearrangeBtn,
         ]);
 
-        const sections = [
-            _buildSection('settings',  'System Settings',   _renderSettings),
-            _buildSection('disk',      'Disk Usage',         _renderDiskUsage),
-            _buildSection('users',     'User Management',    _renderUsers),
-            _buildSection('invites',   'Invites',            _renderInvites),
-            _buildSection('mfa',       'MFA Policy',         _renderMfaAdmin),
-            _buildSection('idp',       'Identity Providers', _renderIdpSection),
-            _buildSection('theme',     'Theme & Branding',   _renderTheme),
-            _buildSection('roles',     'Roles & Permissions',_renderRoles),
-            _buildSection('policy',    'Policy Engine',      _renderPolicySection),
-            _buildSection('audit',         'Audit & SIEM',          _renderAuditSection),
-            _buildSection('storage',       'Storage',               _renderStorageSection),
-            _buildSection('notifications', 'Notification Channels', _renderNotificationsSection),
-            _buildSection('api-keys',      'API Keys',              _renderApiKeysSection),
-            _buildSection('antivirus',     'Antivirus',             _renderAntivirusSection),
-            _buildSection('escrow',        'Escrow by Default',     _renderEscrowSection),
-        ];
-        sections.forEach(s => page.appendChild(s));
+        // -- ribbon --
+        const ribbon = Utils.el('div', { className: 'admin-ribbon' });
+
+        // -- page shell --
+        const page = Utils.el('div', { className: 'admin-page' }, [header, ribbon]);
+
+        // -- build tabs + panes --
+        liveTabs.forEach(tab => {
+            const pane = Utils.el('div', { className: 'admin-tab-pane', id: `admin-tab-${tab.id}` });
+            pane.dataset.tabId = tab.id;
+            pane.style.display = 'none';
+
+            tab.sections.forEach(([id, title, renderFn]) => {
+                const { el, expand } = _buildSection(id, title, renderFn);
+                el.dataset.sectionId = id;
+                el.dataset.tabId     = tab.id;
+                expanders[id]        = expand;
+                pane.appendChild(el);
+            });
+
+            paneEls[tab.id] = pane;
+            page.appendChild(pane);
+
+            const btn = Utils.el('button', { className: 'admin-ribbon-tab', onClick: () => !rearranging && _activateTab(tab.id) });
+            btn.dataset.tabId = tab.id;
+            btn.appendChild(Utils.el('span', { className: 'drag-handle', textContent: '⠿' }));
+            btn.appendChild(Utils.el('span', { textContent: tab.label }));
+            ribbon.appendChild(btn);
+        });
+
         container.appendChild(page);
+        _activateTab(activeTabId);
+
+        // -- tab activation --
+        function _activateTab(id) {
+            activeTabId = id;
+            Object.entries(paneEls).forEach(([k, p]) => { p.style.display = k === id ? '' : 'none'; });
+            ribbon.querySelectorAll('.admin-ribbon-tab').forEach(b => b.classList.toggle('active', b.dataset.tabId === id));
+            if (!visitedTabs.has(id)) {
+                visitedTabs.add(id);
+                const first = paneEls[id]?.querySelector(':scope > .admin-section');
+                if (first) expanders[first.dataset.sectionId]?.();
+            }
+            if (rearranging) _setupSectionDrag(id);
+        }
+
+        // -- rearrange toggle --
+        function _toggleRearrange() {
+            rearranging = !rearranging;
+            rearrangeBtn.textContent = rearranging ? '✓ Done' : '⠿ Rearrange';
+            rearrangeBtn.classList.toggle('btn-primary',   rearranging);
+            rearrangeBtn.classList.toggle('btn-secondary', !rearranging);
+            page.classList.toggle('admin-rearranging', rearranging);
+            if (rearranging) {
+                _setupTabDrag();
+                _setupSectionDrag(activeTabId);
+            } else {
+                _teardownDrag();
+                const tabOrder = [...ribbon.querySelectorAll('.admin-ribbon-tab')].map(b => b.dataset.tabId);
+                const sectionOrder = {};
+                tabOrder.forEach(tid => {
+                    const pane = paneEls[tid];
+                    if (pane) sectionOrder[tid] = [...pane.querySelectorAll(':scope > .admin-section')].map(el => el.dataset.sectionId);
+                });
+                _saveAdminPrefs({ tabOrder, sectionOrder });
+            }
+        }
+
+        // Shared insertion-line indicators — moved into place in the DOM during drag
+        const _tabIndicator = Utils.el('div', { className: 'drop-indicator-h' });
+        const _secIndicator  = Utils.el('div', { className: 'drop-indicator-v' });
+
+        // Returns the element *before* which to insert, or null to append.
+        function _insertionTarget(elements, clientPos, axis) {
+            for (const el of elements) {
+                const rect = el.getBoundingClientRect();
+                const mid  = axis === 'h' ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+                if (clientPos < mid) return el;
+            }
+            return null;
+        }
+
+        function _on(el, event, fn) {
+            el.addEventListener(event, fn);
+            dragListeners.push({ el, event, fn });
+        }
+
+        let sectionDragListeners = [];
+        function _sOn(el, event, fn) {
+            el.addEventListener(event, fn);
+            sectionDragListeners.push({ el, event, fn });
+        }
+
+        // -- tab drag (horizontal) --
+        function _setupTabDrag() {
+            let draggedId = null;
+            [...ribbon.querySelectorAll('.admin-ribbon-tab')].forEach(btn => {
+                btn.setAttribute('draggable', 'true');
+                _on(btn, 'dragstart', e => {
+                    draggedId = btn.dataset.tabId;
+                    e.dataTransfer.effectAllowed = 'move';
+                    requestAnimationFrame(() => btn.classList.add('dragging'));
+                });
+                _on(btn, 'dragend', () => {
+                    btn.classList.remove('dragging');
+                    _tabIndicator.remove();
+                    draggedId = null;
+                });
+            });
+            _on(ribbon, 'dragover', e => {
+                if (!draggedId) return;
+                e.preventDefault();
+                const siblings = [...ribbon.querySelectorAll('.admin-ribbon-tab:not(.dragging)')];
+                const before   = _insertionTarget(siblings, e.clientX, 'h');
+                if (before) ribbon.insertBefore(_tabIndicator, before);
+                else         ribbon.appendChild(_tabIndicator);
+            });
+            _on(ribbon, 'dragleave', e => {
+                if (!ribbon.contains(e.relatedTarget)) _tabIndicator.remove();
+            });
+            _on(ribbon, 'drop', e => {
+                e.preventDefault();
+                if (!draggedId || !_tabIndicator.parentNode) return;
+                const dragged = ribbon.querySelector(`[data-tab-id="${draggedId}"]`);
+                if (dragged) ribbon.insertBefore(dragged, _tabIndicator);
+                _tabIndicator.remove();
+            });
+        }
+
+        // -- section drag (vertical) --
+        function _setupSectionDrag(tabId) {
+            // Tear down previous section bindings before re-binding for new tab
+            sectionDragListeners.forEach(({ el, event, fn }) => el.removeEventListener(event, fn));
+            sectionDragListeners = [];
+            _secIndicator.remove();
+
+            const pane = paneEls[tabId];
+            if (!pane) return;
+            let draggedId = null;
+
+            [...pane.querySelectorAll(':scope > .admin-section')].forEach(sec => {
+                sec.setAttribute('draggable', 'true');
+                _sOn(sec, 'dragstart', e => {
+                    draggedId = sec.dataset.sectionId;
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.stopPropagation();
+                    requestAnimationFrame(() => sec.classList.add('dragging'));
+                });
+                _sOn(sec, 'dragend', e => {
+                    e.stopPropagation();
+                    sec.classList.remove('dragging');
+                    _secIndicator.remove();
+                    draggedId = null;
+                });
+            });
+            _sOn(pane, 'dragover', e => {
+                if (!draggedId) return;
+                e.preventDefault();
+                const siblings = [...pane.querySelectorAll(':scope > .admin-section:not(.dragging)')];
+                const before   = _insertionTarget(siblings, e.clientY, 'v');
+                if (before) pane.insertBefore(_secIndicator, before);
+                else         pane.appendChild(_secIndicator);
+            });
+            _sOn(pane, 'dragleave', e => {
+                if (!pane.contains(e.relatedTarget)) _secIndicator.remove();
+            });
+            _sOn(pane, 'drop', e => {
+                e.preventDefault(); e.stopPropagation();
+                if (!draggedId || !_secIndicator.parentNode) return;
+                const dragged = pane.querySelector(`[data-section-id="${draggedId}"]`);
+                if (dragged) pane.insertBefore(dragged, _secIndicator);
+                _secIndicator.remove();
+            });
+        }
+
+        function _teardownDrag() {
+            sectionDragListeners.forEach(({ el, event, fn }) => el.removeEventListener(event, fn));
+            sectionDragListeners = [];
+            dragListeners.forEach(({ el, event, fn }) => el.removeEventListener(event, fn));
+            dragListeners = [];
+            _tabIndicator.remove();
+            _secIndicator.remove();
+            ribbon.querySelectorAll('.admin-ribbon-tab').forEach(el => {
+                el.removeAttribute('draggable');
+                el.classList.remove('dragging');
+            });
+            Object.values(paneEls).forEach(p => p.querySelectorAll(':scope > .admin-section').forEach(el => {
+                el.removeAttribute('draggable');
+                el.classList.remove('dragging');
+            }));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -58,38 +341,35 @@ const Admin = (() => {
     function _buildSection(id, title, renderFn) {
         let loaded = false;
         const body = Utils.el('div', { className: 'admin-section-body' });
+        body.style.display = 'none';
 
         const toggle = Utils.el('button', {
-            className: 'admin-section-toggle',
+            className: 'admin-section-toggle collapsed',
             textContent: title,
             onClick: () => {
                 const open = body.style.display !== 'none';
                 body.style.display = open ? 'none' : '';
                 toggle.classList.toggle('collapsed', open);
-                if (!open && !loaded) {
-                    loaded = true;
-                    renderFn(body);
-                }
+                if (!open && !loaded) { loaded = true; renderFn(body); }
             },
         });
 
-        const section = Utils.el('div', { className: 'admin-section', id: `admin-${id}` }, [
-            Utils.el('div', { className: 'admin-section-header' }, [toggle]),
+        const el = Utils.el('div', { className: 'admin-section', id: `admin-${id}` }, [
+            Utils.el('div', { className: 'admin-section-header' }, [
+                Utils.el('span', { className: 'drag-handle section-drag-handle', textContent: '⠿' }),
+                toggle,
+            ]),
             body,
         ]);
 
-        // Open the first section by default
-        if (id === 'settings') {
+        function expand() {
+            if (body.style.display !== 'none') return;
             body.style.display = '';
             toggle.classList.remove('collapsed');
-            renderFn(body);
-            loaded = true;
-        } else {
-            body.style.display = 'none';
-            toggle.classList.add('collapsed');
+            if (!loaded) { loaded = true; renderFn(body); }
         }
 
-        return section;
+        return { el, expand };
     }
 
     // ------------------------------------------------------------------
@@ -409,7 +689,7 @@ const Admin = (() => {
                 tbody.appendChild(Utils.el('tr', { className: 'row-used' }, [
                     Utils.el('td', { textContent: i.created_at ? i.created_at.slice(0, 10) : '—' }),
                     Utils.el('td', { textContent: i.expires_at ? i.expires_at.slice(0, 10) : '—' }),
-                    Utils.el('td', { textContent: i.used_at    ? i.used_at.slice(0, 16).replace('T', ' ') : '—' }),
+                    Utils.el('td', { textContent: i.used_at    ? new Date(i.used_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—' }),
                     Utils.el('td', { textContent: i.used_by_ip || '—' }),
                 ]));
             });
@@ -1845,7 +2125,7 @@ const Admin = (() => {
     }
 
     // ------------------------------------------------------------------
-    // Identity Providers section (E6)
+    // Identity Providers section
     // ------------------------------------------------------------------
 
     async function _renderIdpSection(container) {
@@ -3077,7 +3357,7 @@ const Admin = (() => {
     }
 
     // ------------------------------------------------------------------
-    // Section: Notification Channels (G1)
+    // Section: Notification Channels
     // ------------------------------------------------------------------
 
     async function _renderNotificationsSection(container) {
@@ -3333,7 +3613,7 @@ const Admin = (() => {
     }
 
     // ------------------------------------------------------------------
-    // Section: API Keys (G1)
+    // Section: API Keys
     // ------------------------------------------------------------------
 
     async function _renderApiKeysSection(container) {
@@ -3477,7 +3757,7 @@ const Admin = (() => {
     }
 
     // ------------------------------------------------------------------
-    // Antivirus section (F5)
+    // Antivirus section
     // ------------------------------------------------------------------
 
     async function _renderAntivirusSection(container) {
@@ -3648,7 +3928,7 @@ const Admin = (() => {
     }
 
     // -----------------------------------------------------------------------
-    // Escrow by Default (E5)
+    // Escrow by Default
     // -----------------------------------------------------------------------
 
     async function _renderEscrowSection(container) {

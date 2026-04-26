@@ -17,7 +17,7 @@ ROLE_TEAM_MEMBER       = "team_member"
 # Basic user role — grants file storage access; separate from admin tiers
 ROLE_USER = "role_user"
 
-# Legacy: predates E1; superseded by ROLE_SERVER_ADMIN.  Kept for backward
+# Legacy: superseded by ROLE_SERVER_ADMIN.  Kept for backward
 # compat during transition; will be retired in a follow-up migration.
 ROLE_ADMIN = "role_admin"
 
@@ -51,6 +51,13 @@ FLAG_MANAGE_POLICIES         = "can_manage_policies"
 FLAG_ACCESS_ALL_FILES        = "can_access_all_files"
 FLAG_MANAGE_USER_MFA         = "can_manage_user_mfa"
 FLAG_MANAGE_ESCROW           = "can_manage_escrow"
+FLAG_MANAGE_SHARING          = "can_manage_sharing"
+
+# Sharing capability flags — default ON for role_user; admins remove to restrict
+FLAG_CREATE_LINK_SHARES      = "can_create_link_shares"
+FLAG_CREATE_USER_SHARES      = "can_create_user_shares"
+FLAG_CREATE_UPLOAD_GRANTS    = "can_create_upload_grants"
+FLAG_SHARE_FOLDERS           = "can_share_folders"
 
 # Flags that may only be activated by server_admin or org_admin, regardless
 # of other role permissions.  Enforced server-side at flag-update endpoints.

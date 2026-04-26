@@ -1,4 +1,4 @@
-"""BLS12-381 server-side verification helpers for E4 DLEQ proof checking.
+"""BLS12-381 server-side verification helpers for DLEQ proof checking.
 
 Implements three families of checks:
 

@@ -1,4 +1,4 @@
-"""Policy field definition management routes (Phase E3).
+"""Policy field definition management routes.
 
 Mounted at /api/v1/admin/policy-fields.
 

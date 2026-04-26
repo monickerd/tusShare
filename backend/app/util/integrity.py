@@ -1,4 +1,5 @@
-"""Artifact integrity checking (C2).
+"""
+Artifact integrity checking.
 
 Loads manifest.json (written by backend/scripts/build_manifest.py) at server
 startup and verifies that every tracked file's SHA-256 hash matches the
@@ -10,7 +11,7 @@ image by the existing `COPY backend/app ./app` step.  Tracked paths in the
 manifest are relative to the app root (/app/ in Docker), which is the parent
 directory of the app/ package.
 
-Gate: only runs when settings.DEBUG is False — callers are responsible for
+Gate: only runs when settings.DEBUG is False -- callers are responsible for
 checking this before invoking check_integrity().
 """
 

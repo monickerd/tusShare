@@ -1,4 +1,4 @@
-"""Audit trail + SIEM management routes — E7.
+"""Audit trail and SIEM management routes.
 
 Endpoints
 ---------

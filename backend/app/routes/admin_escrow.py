@@ -1,4 +1,4 @@
-"""Admin routes for E5 escrow-by-default configuration.
+"""Admin routes for escrow-by-default configuration.
 
 Endpoints
 ─────────
@@ -154,11 +154,11 @@ async def update_escrow_settings(
     sample = next(iter(rows.values()), None)
     _check_setting_lock(sample, my_tier)
 
-    # Validate lock change doesn't lower the tier below the caller's own
+    # Validate lock change doesn't set a tier the caller can't access
     new_is_locked = body.is_locked
     new_locked_tier = body.locked_min_tier
-    if new_is_locked and new_locked_tier is not None and new_locked_tier > my_tier:
-        raise HTTPException(status_code=400, detail="Cannot lock at a tier lower than your own")
+    if new_is_locked and new_locked_tier is not None and new_locked_tier < my_tier:
+        raise HTTPException(status_code=400, detail="Cannot lock at a tier higher than your own")
 
     updates: list[tuple] = []
 
@@ -363,8 +363,8 @@ async def upsert_folder_policy(
     my_tier = _admin_tier(admin)
     _validate_policy_body(body)
 
-    if body.policy_locked and body.locked_min_tier is not None and body.locked_min_tier > my_tier:
-        raise HTTPException(status_code=400, detail="Cannot lock at a tier lower than your own")
+    if body.policy_locked and body.locked_min_tier is not None and body.locked_min_tier < my_tier:
+        raise HTTPException(status_code=400, detail="Cannot lock at a tier higher than your own")
 
     # Verify folder exists
     c = await db.execute("SELECT id FROM folders WHERE id = ?", (folder_id,))
@@ -477,21 +477,28 @@ async def get_coverage_report(
     """
     _require_escrow_flag(admin)
 
+    # A team is "unprotected" if no explicitly-added escrow member (team_member scoped
+    # role, not the owner's team_admin) currently holds can_act_as_escrow.
+    _COVERAGE_WHERE = """
+        NOT EXISTS (
+            SELECT 1
+            FROM user_team_keys utk
+            JOIN user_roles ur_team ON ur_team.user_id = utk.user_id
+                AND ur_team.scope_type = 'team' AND ur_team.scope_id = t.id
+                AND ur_team.role_id = 'team_member'
+            JOIN user_roles ur ON ur.user_id = utk.user_id AND ur.scope_type IS NULL
+            JOIN role_permissions rp ON rp.role_id = ur.role_id
+            WHERE utk.team_id = t.id
+              AND rp.flag = 'can_act_as_escrow' AND rp.value = '1'
+        )
+    """
     cursor = await db.execute(
-        """
+        f"""
         SELECT t.id, t.name, t.created_at,
                u.username AS owner_username
         FROM teams t
         JOIN users u ON u.id = t.owner_id
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM user_team_keys utk
-            JOIN user_roles ur  ON ur.user_id = utk.user_id
-            JOIN role_permissions rp ON rp.role_id = ur.role_id
-            WHERE utk.team_id = t.id
-              AND ur.scope_type IS NULL
-              AND rp.flag = 'can_act_as_escrow' AND rp.value = '1'
-        )
+        WHERE {_COVERAGE_WHERE}
         ORDER BY t.name
         LIMIT ? OFFSET ?
         """,
@@ -509,17 +516,9 @@ async def get_coverage_report(
 
     # Total count for pagination
     count_cursor = await db.execute(
-        """
+        f"""
         SELECT COUNT(*) AS n FROM teams t
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM user_team_keys utk
-            JOIN user_roles ur  ON ur.user_id = utk.user_id
-            JOIN role_permissions rp ON rp.role_id = ur.role_id
-            WHERE utk.team_id = t.id
-              AND ur.scope_type IS NULL
-              AND rp.flag = 'can_act_as_escrow' AND rp.value = '1'
-        )
+        WHERE {_COVERAGE_WHERE}
         """
     )
     total = (await count_cursor.fetchone())["n"]

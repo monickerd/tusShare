@@ -101,12 +101,15 @@ def validate_ldap_config(cfg: dict[str, Any]) -> None:
 
     # tls='verify' and tls='skip_verify' only activate on an ldaps:// socket — they
     # have no effect on a plaintext ldap:// connection and would silently transmit
-    # credentials unencrypted.  Require starttls for plaintext-scheme URIs.
+    # credentials unencrypted.  Require starttls for plaintext-scheme URIs unless
+    # TUSSHARE_ALLOW_HTTP_IDP=true (test environments where the LDAP server has no TLS).
+    import os
     if uri.startswith("ldap://") and tls != "starttls":
-        raise ValueError(
-            "Plaintext LDAP (ldap://) requires tls='starttls' to encrypt credentials in transit. "
-            "Use ldaps:// for implicit TLS, or set tls='starttls' for a STARTTLS upgrade."
-        )
+        if os.environ.get("TUSSHARE_ALLOW_HTTP_IDP", "").lower() not in ("1", "true", "yes"):
+            raise ValueError(
+                "Plaintext LDAP (ldap://) requires tls='starttls' to encrypt credentials in transit. "
+                "Use ldaps:// for implicit TLS, or set tls='starttls' for a STARTTLS upgrade."
+            )
 
 
 # ---------------------------------------------------------------------------

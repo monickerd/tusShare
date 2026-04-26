@@ -1,4 +1,4 @@
-"""Policy and policy condition management routes (Phase E3).
+"""Policy and policy condition management routes.
 
 Mounted at /api/v1/admin/policies.
 
@@ -15,12 +15,12 @@ Trigger 2 (policy-change sweep): whenever conditions are created, updated, or
 deleted on a policy, `sweep_policy_for_all_users` is called to immediately
 re-evaluate the changed policy across all applicable users.  This is synchronous
 and may be slow for large deployments — a background-task variant is planned for
-Phase F infrastructure work.
+future infrastructure work.
 
 Access control:
   All endpoints require can_manage_policies.
   Team-scoped policies: admins with can_manage_policies may manage any policy;
-  future work (E4) may further scope this to the admin's effective scope.
+  future work may further scope this to the admin's effective scope.
 """
 
 import asyncio

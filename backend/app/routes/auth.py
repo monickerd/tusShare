@@ -5,6 +5,7 @@ Registration and login are handled by the OPAQUE routes in opaque_auth.py.
 
 import asyncio
 import hashlib
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -245,7 +246,7 @@ async def me(
     db=Depends(get_db),
 ):
     """Return the current user's profile including key wrapping blobs."""
-    # E5: check whether any team the user belongs to is covered by an active
+    # check whether any team the user belongs to is covered by an active
     # escrow policy. Returns true when either:
     #   (a) a policy with escrow_enabled=1 has a team_member effect on that team, OR
     #   (b) a team_escrow effect with escrow_override=1 targets that team.
@@ -276,6 +277,48 @@ async def me(
     row = await cursor.fetchone()
     escrow_active = bool(row["escrow_active"]) if row else False
     return {"user": {**_user_response_dict(user), "escrow_active": escrow_active}}
+
+
+# ---------------------------------------------------------------------------
+# User preferences (UI layout etc.)
+# ---------------------------------------------------------------------------
+
+@router.get("/me/prefs")
+async def get_my_prefs(
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Return the current user's UI preferences blob."""
+    cursor = await db.execute("SELECT ui_prefs FROM users WHERE id = ?", (user.id,))
+    row = await cursor.fetchone()
+    prefs = json.loads(row["ui_prefs"]) if row and row["ui_prefs"] else {}
+    return {"ui_prefs": prefs}
+
+
+class UpdatePrefsRequest(BaseModel):
+    admin_layout: dict | None = None
+
+
+@router.patch("/me/prefs")
+async def update_my_prefs(
+    body: UpdatePrefsRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Merge the supplied preference keys into the user's ui_prefs blob."""
+    cursor = await db.execute("SELECT ui_prefs FROM users WHERE id = ?", (user.id,))
+    row = await cursor.fetchone()
+    prefs = json.loads(row["ui_prefs"]) if row and row["ui_prefs"] else {}
+
+    if body.admin_layout is not None:
+        prefs["admin_layout"] = body.admin_layout
+
+    await db.execute(
+        "UPDATE users SET ui_prefs = ? WHERE id = ?",
+        (json.dumps(prefs), user.id),
+    )
+    await db.commit()
+    return {"ui_prefs": prefs}
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +631,7 @@ async def step_up(
         user.id, body.action_key, client_ip, settings.STEP_UP_WINDOW_SECONDS,
     )
 
-    # Trigger 1 — fire-and-forget policy evaluation on step-up (E3).
+    # Trigger 1 — fire-and-forget policy evaluation on step-up.
     # Step-up confirms the user knows their password; treat it the same as login
     # for policy freshness.  Do not await — step-up response returns immediately.
     # Uses its own db_session() connection (see opaque_auth.py Trigger 1 note).

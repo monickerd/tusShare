@@ -43,15 +43,15 @@ _SETTINGS_VALIDATORS = {
     "global_bandwidth_limit": lambda v: v.isdigit() and int(v) >= 0,
     "disk_warning_threshold": lambda v: v.isdigit() and 0 <= int(v) <= 100,
     "default_chunk_size":     lambda v: v.isdigit() and int(v) >= 1_048_576,
-    # MFA enforcement policy (F7)
+    # MFA enforcement policy
     "mfa_enforcement":        lambda v: v in ("off", "optional", "required"),
     "mfa_allowed_methods":    _valid_mfa_allowed_methods,
     "mfa_oidc_exempt":        lambda v: v in ("0", "1"),
-    # Emergency revocation (F2)
+    # Emergency revocation
     "notify_escrow_on_revocation": lambda v: v in ("0", "1"),
-    # Audit retention (E7)
+    # Audit retention
     "audit_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
-    # Antivirus / server-side scanning (F5)
+    # Antivirus / server-side scanning
     # av_scan_endpoint and av_scan_secret: allow any non-empty or empty string
     "av_scan_endpoint":       lambda v: len(v) <= 2048,
     "av_scan_secret":         lambda v: len(v) <= 512,
@@ -158,7 +158,7 @@ async def get_disk_usage(
 
 
 # ---------------------------------------------------------------------------
-# Hardware capability scan (F1)
+# Hardware capability scan
 # ---------------------------------------------------------------------------
 
 @router.get("/hw-scan")
@@ -338,7 +338,7 @@ async def create_invite_short_link(
 
 
 # ---------------------------------------------------------------------------
-# Antivirus / server-side scanning (F5)
+# Antivirus / server-side scanning
 # ---------------------------------------------------------------------------
 
 @router.get("/files/av-status")

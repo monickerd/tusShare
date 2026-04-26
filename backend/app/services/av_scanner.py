@@ -1,4 +1,4 @@
-"""Server-side antivirus webhook service (F5).
+"""Server-side antivirus webhook service.
 
 Only active when TUSSHARE_ESCROW_PRIVATE_KEY is set and av_scan_endpoint is
 configured in admin_settings.  Requires files to have been uploaded with
@@ -280,7 +280,7 @@ async def _write_status(db, file_id: str, status: str) -> None:
 
 
 async def _handle_infected(db, file_id: str, original_name: str) -> None:
-    """Lock file and emit op_bus event — mirrors F2 emergency lock pathway."""
+    """Lock file and emit op_bus event — mirrors emergency lock pathway."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         await db.execute(

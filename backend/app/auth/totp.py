@@ -1,4 +1,4 @@
-"""TOTP enrollment, verification, and recovery code helpers (F7).
+"""TOTP enrollment, verification, and recovery code helpers.
 
 Enrollment flow
 ───────────────

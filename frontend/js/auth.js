@@ -360,7 +360,7 @@ const Auth = (() => {
             status.textContent = 'Running zero-knowledge auth…';
             const { data, exportKey } = await _runOpaqueLogin(username, password, isPublicDevice);
 
-            // MFA gate (F7) — server returns pending_token instead of user+cookies
+            // MFA gate — server returns pending_token instead of user+cookies
             if (data.mfa_required) {
                 status.textContent = '';
                 btn.disabled = false;
@@ -692,13 +692,43 @@ const Auth = (() => {
 
         if (user.x25519_private_wrapped && user.mlkem768_private_wrapped && user.asymmetric_key_iv) {
             // Keys already registered — unwrap private keys into memory
-            _asymmetricKeys = await Crypto.unwrapAsymmetricPrivateKeys(
+            const unwrapped = await Crypto.unwrapAsymmetricPrivateKeys(
                 user.x25519_private_wrapped,
                 user.mlkem768_private_wrapped,
                 user.asymmetric_key_iv,
                 masterKey,
                 user.x25519_public_key
             );
+            _asymmetricKeys = unwrapped;
+
+            // T1-L3: silently re-wrap with fresh per-key IVs if legacy single-IV format detected.
+            // Legacy format reused the same (masterKey, IV) pair for both private keys — catastrophic
+            // under AES-GCM (reveals plaintext XOR). Re-upload is done once on next login.
+            if (unwrapped.isLegacyIv) {
+                try {
+                    const { x25519PrivWrappedB64, mlkem768PrivWrappedB64, asymKeyIvB64 } =
+                        await Crypto.wrapAsymmetricPrivateKeys(
+                            { privateKey: unwrapped.x25519PrivateKey },
+                            { secretKey: unwrapped.mlkem768SecretKey },
+                            masterKey
+                        );
+                    await Api.post(`${Config.app.apiPrefix}/auth/me/asymmetric-keys`, {
+                        x25519_public_key:        user.x25519_public_key,
+                        mlkem768_public_key:      user.mlkem768_public_key,
+                        x25519_private_wrapped:   x25519PrivWrappedB64,
+                        mlkem768_private_wrapped: mlkem768PrivWrappedB64,
+                        asymmetric_key_iv:        asymKeyIvB64,
+                    });
+                    _currentUser = Object.assign({}, _currentUser, {
+                        x25519_private_wrapped:   x25519PrivWrappedB64,
+                        mlkem768_private_wrapped: mlkem768PrivWrappedB64,
+                        asymmetric_key_iv:        asymKeyIvB64,
+                    });
+                } catch (e) {
+                    console.warn('Legacy IV re-wrap failed (will retry next login):', e);
+                }
+            }
+
             await _verifyAsymmetricKeyConsistency(user);
             return;
         }

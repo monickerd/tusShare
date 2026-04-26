@@ -522,3 +522,40 @@ async def delete_user(
     asyncio.create_task(_cleanup_blobs())
 
     return {"message": "User deleted"}
+
+
+@router.delete("/{user_id}/asymmetric-keys")
+async def clear_user_asymmetric_keys(
+    user_id: str,
+    admin: AuthenticatedUser = Depends(require_admin),
+    db=Depends(get_db),
+):
+    """Admin: clear a user's asymmetric public/private key material.
+
+    Sets x25519_public_key, mlkem768_public_key, x25519_private_wrapped,
+    mlkem768_private_wrapped, and asymmetric_key_iv to NULL. The user will be
+    excluded from escrow-agent resolution and team-key wrapping until they
+    re-register their keys via POST /auth/me/asymmetric-keys.
+
+    Requires can_manage_users. Typical use: key revocation after suspected
+    compromise, or resetting a test user's key state.
+    """
+    if not admin.has_flag(FLAG_MANAGE_USERS):
+        raise HTTPException(status_code=403, detail="can_manage_users permission required")
+
+    user_id = validate_uuid(user_id)
+
+    result = await db.execute(
+        "UPDATE users SET "
+        "x25519_public_key = NULL, mlkem768_public_key = NULL, "
+        "x25519_private_wrapped = NULL, mlkem768_private_wrapped = NULL, "
+        "asymmetric_key_iv = NULL, updated_at = NOW() "
+        "WHERE id = ?",
+        (user_id,),
+    )
+    await db.commit()
+
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"message": "Asymmetric keys cleared"}

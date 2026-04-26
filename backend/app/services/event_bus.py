@@ -9,11 +9,11 @@ asyncio.Queue  (write queue, unbounded — emitters never block)
 background drainer task  (one task, owns its own DB connection)
    ├── persists event to security_events table
    └── fans out to subscriber queues (bounded, slow consumers are dropped)
-              ├── E7: SSE audit stream    subscribe()/unsubscribe()
-              ├── E7: syslog dispatcher  subscribe()/unsubscribe()
-              └── E7: webhook dispatcher subscribe()/unsubscribe()
+              ├── SSE audit stream    subscribe()/unsubscribe()
+              ├── syslog dispatcher  subscribe()/unsubscribe()
+              └── webhook dispatcher subscribe()/unsubscribe()
 
-E7 output paths are coroutines that call subscribe() at startup and
+SIEM output paths are coroutines that call subscribe() at startup and
 ``await q.get()`` in a loop. No changes to this module are required
 to add new output paths.
 

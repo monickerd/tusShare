@@ -1,4 +1,4 @@
-"""Admin scope condition management routes (Phase E3).
+"""Admin scope condition management routes.
 
 Mounted at /api/v1/admin/scopes.
 

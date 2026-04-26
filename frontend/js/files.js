@@ -507,7 +507,7 @@ const Files = (() => {
             try {
                 fileKey = await Crypto.decryptFileKey(upload.encrypted_file_key, upload.key_iv, masterKey);
             } catch {
-                Utils.showToast('Failed to decrypt file key — cannot resume upload.', 'error');
+                Utils.showToast('Upload cannot be resumed — the folder\'s encryption keys were rotated (likely due to a membership change). Please re-upload the file.', 'error');
                 return;
             }
 

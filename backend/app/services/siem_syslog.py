@@ -1,12 +1,13 @@
-"""Syslog SIEM dispatcher — E7.
+"""
+Syslog SIEM dispatcher.
 
 Subscribes to the internal event bus and forwards every security event to all
 active syslog-type SIEM destinations.
 
 Supported output formats:
-  • RFC 5424 — structured syslog with STRUCTURED-DATA block
-  • CEF       — ArcSight Common Event Format
-  • LEEF      — IBM QRadar Log Event Extended Format
+  - RFC 5424 -- structured syslog with STRUCTURED-DATA block
+  - CEF       -- ArcSight Common Event Format
+  - LEEF      -- IBM QRadar Log Event Extended Format
 
 Transport: UDP (default), TCP, or TLS (wraps TCP with ssl.SSLContext).
 

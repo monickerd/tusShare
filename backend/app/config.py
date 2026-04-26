@@ -79,11 +79,11 @@ class Settings(BaseSettings):
     RATE_LIMIT_ESCALATED_WINDOW: int = 1   # seconds per escalated request slot (1 req/s)
     RATE_LIMIT_ESCALATED_DURATION: int = 300  # seconds the IP stays in escalated mode (5 min)
 
-    # Public / shared device sessions (B4)
+    # Public / shared device sessions
     # Refresh token TTL for sessions where the user checked "Public Device" at login.
     # Intentionally much shorter than the normal REFRESH_TOKEN_EXPIRE_DAYS to limit
     # the exposure window if the user forgets to log out.
-    # TODO (Phase D): expose this in theme.json so admins can tune it without a restart.
+    # TODO: expose this in theme.json so admins can tune it without a restart.
     PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES: int = 60  # 1 hour
 
     # Share session tokens
@@ -99,20 +99,20 @@ class Settings(BaseSettings):
     # Trusted proxy header (set to X-Real-IP or X-Forwarded-For if behind nginx)
     TRUSTED_IP_HEADER: str = "X-Real-IP"
 
-    # Storage abstraction (F3)
+    # Storage abstraction
     # STORAGE_ENCRYPTION_KEY: 32-byte base64url key for AES-GCM encryption of
     # storage volume credentials (endpoint URLs, bucket names, access keys).
     # If not set, derived from JWT_SECRET via HKDF with a dedicated context.
     # Independently rotatable from IDP and MFA keys.
     STORAGE_ENCRYPTION_KEY: str = ""
 
-    # Operational notifications (G1)
+    # Operational notifications
     # NOTIF_ENCRYPTION_KEY: 32-byte base64url key for AES-GCM encryption of
     # notification channel signing secrets.  If not set, derived from JWT_SECRET
     # via HKDF with a dedicated context.  Independently rotatable.
     NOTIF_ENCRYPTION_KEY: str = ""
 
-    # Identity providers (E6 — LDAP / OIDC)
+    # Identity providers (LDAP / OIDC)
     # IDP_ENCRYPTION_KEY: 32-byte base64url-encoded key used to AES-GCM-encrypt
     # provider config blobs (bind_password, client_secret, OIDC refresh tokens).
     # If not set, derived from JWT_SECRET via HKDF (same pattern as MFA key).
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     # this if your OIDC provider is on a trusted internal network without TLS.
     ALLOW_HTTP_IDP: bool = False
 
-    # MFA (F7 — TOTP + WebAuthn)
+    # MFA (TOTP + WebAuthn)
     # MFA_ENCRYPTION_KEY: 32-byte base64url-encoded key used to AES-GCM-encrypt
     # credential blobs in user_mfa_credentials.  If not set, derived from
     # JWT_SECRET via HKDF so existing deployments work without a new env var.
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
     # so that X-Forwarded-Proto cannot be spoofed by external clients.
     FORCE_HTTPS: bool = False
 
-    # Antivirus / server-side scanning (F5)
+    # Antivirus / server-side scanning
     # ESCROW_PRIVATE_KEY: DER-encoded ECDH P-256 private key (base64) used to decrypt
     # escrow-wrapped file keys for server-side AV scanning.  When absent the webhook
     # fields in the admin panel are hidden and no scan tasks are triggered.

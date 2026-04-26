@@ -36,6 +36,7 @@ from app.validation.sanitizers import (
 )
 from app.config import settings
 from app.routes._access import is_in_shared_tree, is_team_folder_member
+from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
 from app.wordlist import insert_short_link_with_unique_slug
 
 logger = logging.getLogger(__name__)
@@ -553,6 +554,15 @@ async def create_share(
     and ML-KEM-768 ciphertext are stored so the recipient can re-derive the
     wrapping key to decrypt the file key.
     """
+    # Layer 1: behavioral flag check (fast, synchronous)
+    check_sharing_flags(
+        actor=user,
+        share_type=body.share_type,
+        allow_upload=body.allow_upload,
+        has_items=bool(body.items),
+        target_folder_id=body.target_folder_id,
+    )
+
     # Empty item list is only valid for upload-only folder shares
     if not body.items:
         if not (body.allow_upload and body.target_folder_id):
@@ -592,6 +602,9 @@ async def create_share(
         recipient_user_id = recipient_row["id"]
     else:
         recipient_user_id = None
+
+    # Layer 2: identity-scoped sharing rules (evaluated after recipient is resolved)
+    await evaluate_sharing_rules(db, user, recipient_user_id, body.share_type)
 
     # Verify every referenced file exists, is complete, and the requester has access.
     # Owners and admins can always share their files. Team members may share any file

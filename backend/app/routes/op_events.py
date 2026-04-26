@@ -1,4 +1,4 @@
-"""Operational events pull endpoints (G1).
+"""Operational events pull endpoints.
 
 GET /api/v1/op-events/stream  — SSE stream authenticated by X-API-Key
 GET /api/v1/op-events/log     — JSON log polling with cursor pagination

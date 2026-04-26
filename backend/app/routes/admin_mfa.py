@@ -1,4 +1,4 @@
-"""Admin MFA management routes (F7).
+"""Admin MFA management routes.
 
 Requires can_manage_user_mfa permission flag (Tier 2+).
 Admin actions that modify a user's MFA state also require step-up authentication

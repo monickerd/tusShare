@@ -1,15 +1,16 @@
-"""Webhook SIEM dispatcher — E7.
+"""
+Webhook SIEM dispatcher.
 
 Subscribes to the internal event bus and POSTs batches of security events to
 all active webhook-type SIEM destinations.
 
 Features
 --------
-• HMAC-SHA256 request signing (X-TusShare-Signature header)
-• Configurable batch size (1 = real-time, up to 100 for throughput)
-• Exponential backoff retry (3 attempts: 1s, 4s, 16s)
-• In-memory overflow queue per destination (up to 2000 events before drop)
-• Destination list reloaded from DB every 60 seconds
+- HMAC-SHA256 request signing (X-TusShare-Signature header)
+- Configurable batch size (1 = real-time, up to 100 for throughput)
+- Exponential backoff retry (3 attempts: 1s, 4s, 16s)
+- In-memory overflow queue per destination (up to 2000 events before drop)
+- Destination list reloaded from DB every 60 seconds
 
 The signing format matches GitHub/Stripe webhooks:
   X-TusShare-Signature: sha256=<hex(hmac-sha256(secret, body))>

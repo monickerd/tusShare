@@ -131,7 +131,7 @@ class StorageManager:
         return result
 
     def local_volumes(self) -> list[VolumeConfig]:
-        """Return configs for all local-filesystem volumes (used by F1 hardware scan)."""
+        """Return configs for all local-filesystem volumes (used by hardware scan)."""
         return [v for v in self._volumes.values() if v.provider == "local"]
 
     # ------------------------------------------------------------------
@@ -251,7 +251,7 @@ class StorageManager:
         rows = await cursor.fetchall()
 
         if not rows:
-            # Pre-F3 file with no location row — delete from default volume
+            # File with no location row — delete from default volume
             await self._soft_delete(self._default_provider(), storage_key)
             return
 
@@ -476,7 +476,7 @@ class StorageManager:
         row = await cursor.fetchone()
         if row and row["volume_id"] in self._providers:
             return self._providers[row["volume_id"]]
-        # Pre-F3 file with no location row — use default
+        # File with no location row — use default
         return self._default_provider()
 
     async def _get_read_provider(self, db, file_id: str, storage_key: str) -> StorageProvider:

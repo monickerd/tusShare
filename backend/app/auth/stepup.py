@@ -26,7 +26,6 @@ import logging
 import time
 import uuid
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -278,41 +277,6 @@ _VERIFIERS: dict[str, StepUpVerifier] = {
 def get_verifier(challenge_type: str) -> StepUpVerifier:
     """Return the verifier for the given challenge type."""
     return _VERIFIERS.get(challenge_type, _VERIFIERS["opaque"])
-
-
-# ---------------------------------------------------------------------------
-# Failure tracker (in-memory, resets on restart)
-# ---------------------------------------------------------------------------
-
-class _StepUpFailureTracker:
-    """Tracks per-user step-up failure counts.
-
-    On lockout (count >= STEP_UP_MAX_FAILURES), the caller is responsible for
-    revoking the user's sessions and logging the lockout event.
-    Counts reset on a successful step-up.
-    """
-
-    def __init__(self):
-        self._counts: dict[str, int] = defaultdict(int)
-        self._lock = asyncio.Lock()
-
-    async def record_failure(self, user_id: str) -> int:
-        """Increment and return the new failure count."""
-        async with self._lock:
-            self._counts[user_id] += 1
-            return self._counts[user_id]
-
-    async def reset(self, user_id: str) -> None:
-        """Reset count after a successful step-up."""
-        async with self._lock:
-            self._counts.pop(user_id, None)
-
-    async def get_count(self, user_id: str) -> int:
-        async with self._lock:
-            return self._counts.get(user_id, 0)
-
-
-failure_tracker = _StepUpFailureTracker()
 
 
 # ---------------------------------------------------------------------------

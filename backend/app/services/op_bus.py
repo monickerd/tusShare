@@ -1,4 +1,4 @@
-"""Operational event bus (G1).
+"""Operational event bus.
 
 Architecture mirrors event_bus.py. Extra features:
   - State-transition deduplication gate for stateful event types

@@ -69,12 +69,14 @@ const Crypto = (() => {
             wrappingKey,
             wrapped
         );
-        return crypto.subtle.importKey(
+        const key = await crypto.subtle.importKey(
             'raw', rawKey,
             { name: _cfg().algorithm, length: _cfg().aesKeyLength },
             true,
             ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
         );
+        new Uint8Array(rawKey).fill(0);
+        return key;
     }
 
     // ===================================================================
@@ -169,11 +171,13 @@ const Crypto = (() => {
             masterKey,
             encrypted
         );
-        return crypto.subtle.importKey(
+        const key = await crypto.subtle.importKey(
             'raw', rawKey,
             { name: _cfg().algorithm, length: _cfg().aesKeyLength },
             true, ['encrypt', 'decrypt']
         );
+        new Uint8Array(rawKey).fill(0);
+        return key;
     }
 
     // ===================================================================
@@ -252,11 +256,13 @@ const Crypto = (() => {
             shareKey,
             wrapped
         );
-        return crypto.subtle.importKey(
+        const key = await crypto.subtle.importKey(
             'raw', rawKey,
             { name: _cfg().algorithm, length: _cfg().aesKeyLength },
             true, ['encrypt', 'decrypt']
         );
+        new Uint8Array(rawKey).fill(0);
+        return key;
     }
 
     // ===================================================================
@@ -447,6 +453,7 @@ const Crypto = (() => {
         // 'd' = base64url of the raw 32-byte private scalar (same bytes stored by wrapAsymmetricPrivateKeys).
         // 'x' = public key, required by spec for OKP JWK private key import.
         const dB64url = _arrayBufToBase64url(x25519RawBuf);
+        new Uint8Array(x25519RawBuf).fill(0);
         const xB64url = x25519PublicKeyB64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         const x25519PrivateKey = await crypto.subtle.importKey(
             'jwk',
@@ -462,8 +469,11 @@ const Crypto = (() => {
             _base64ToArrayBuf(mlkem768PrivWrappedB64)
         );
         const mlkem768SecretKey = new Uint8Array(mlkem768RawBuf);
+        new Uint8Array(mlkem768RawBuf).fill(0);
 
-        return { x25519PrivateKey, mlkem768SecretKey };
+        // Signal legacy IV format so the caller can silently re-upload with separate IVs (T1-L3).
+        const isLegacyIv = ivBytes.length < ivLen * 2;
+        return { x25519PrivateKey, mlkem768SecretKey, isLegacyIv };
     }
 
     const _HKDF_INFO_FILEKEY = new TextEncoder().encode('tusShare-filekey-v1');
@@ -638,11 +648,13 @@ const Crypto = (() => {
             );
         }
 
-        return crypto.subtle.importKey(
+        const fileKey = await crypto.subtle.importKey(
             'raw', rawFileKey,
             { name: _cfg().algorithm, length: _cfg().aesKeyLength },
             true, ['encrypt', 'decrypt']
         );
+        new Uint8Array(rawFileKey).fill(0);
+        return fileKey;
     }
 
     // ===================================================================

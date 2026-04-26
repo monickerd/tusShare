@@ -1,6 +1,6 @@
 """AES-256-GCM encryption helpers for identity provider secrets.
 
-All secrets stored by the E6 identity provider subsystem — LDAP bind_password,
+All secrets stored by the identity provider subsystem — LDAP bind_password,
 OIDC client_secret, OIDC refresh tokens — are encrypted with this module before
 being written to the database, so a plaintext DB dump does not expose credentials.
 

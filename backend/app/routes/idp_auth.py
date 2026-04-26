@@ -1,4 +1,4 @@
-"""LDAP and OIDC authentication routes (E6).
+"""LDAP and OIDC authentication routes.
 
 Endpoints
 ─────────
@@ -7,7 +7,7 @@ POST /auth/ldap/login           — authenticate with LDAP username + password
 GET  /auth/oidc/{id}/begin      — begin OIDC flow (returns redirect URL)
 GET  /auth/oidc/callback        — handle IdP redirect (code exchange → session)
 
-MFA wiring (F7 checklist)
+MFA wiring
 ──────────────────────────
 After successful LDAP or OIDC authentication, both paths check for active MFA
 credentials and apply the same pending_token gate used by OPAQUE login:

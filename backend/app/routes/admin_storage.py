@@ -1,4 +1,4 @@
-"""Admin routes for storage volume management (F3).
+"""Admin routes for storage volume management.
 
 Endpoints
 ─────────

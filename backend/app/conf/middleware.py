@@ -93,7 +93,7 @@ CACHE_CONTROL_NO_STORE = "no-store"
 CACHE_CONTROL_REVALIDATE = "no-cache"
 
 # --- CSP applied to non-API responses ---
-# Phase C (SRI+CSP): SRI integrity hashes are injected into index.html at startup
+# SRI integrity hashes are injected into index.html at startup
 # (see app/util/sri.py), so every <script> and <link> tag is covered.
 #
 # 'unsafe-inline' in style-src remains intentional: several JS modules set

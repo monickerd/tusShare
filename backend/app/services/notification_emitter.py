@@ -1,4 +1,4 @@
-"""Notification emitter (G1) — supervisor + per-channel delivery loops.
+"""Notification emitter — supervisor + per-channel delivery loops.
 
 Subscribes to op_bus (always) and optionally to event_bus (when ≥1 active
 channel has a "security:" prefix filter). Reloads channel configs every 60 s.

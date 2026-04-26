@@ -1,4 +1,4 @@
-"""Public theme API endpoints (D1).
+"""Public theme API endpoints.
 
 GET /api/v1/theme       — brand name and logo availability (no auth required)
 GET /api/v1/theme/logo  — serve org logo file from DATA_DIR (no auth required)

@@ -13,7 +13,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-MIGRATIONS_DIR = Path(__file__).parent / "sql" / "migrations"
+SETUP_DIR = Path(__file__).parent / "sql" / "setup"
 
 _pool: asyncpg.Pool | None = None
 
@@ -113,7 +113,13 @@ class Database:
         pg_params = _coerce_params(params)
         try:
             q_upper = query.strip().upper()
-            if q_upper.startswith('SELECT') or 'RETURNING' in q_upper:
+            # WITH [RECURSIVE] ... SELECT ... CTEs start with WITH, not SELECT.
+            is_query = (
+                q_upper.startswith('SELECT')
+                or q_upper.startswith('WITH')
+                or 'RETURNING' in q_upper
+            )
+            if is_query:
                 rows = await self._conn.fetch(pg_query, *pg_params)
                 return _Result(rows)
             else:
@@ -232,11 +238,17 @@ def _split_statements(sql: str) -> list[str]:
 
 
 async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
-    """Apply pending SQL migration files in sorted order.
+    """Initialise the schema and apply any pending incremental migrations.
 
-    Uses a _migrations tracking table.  Each migration runs inside its own
-    transaction — if it fails the transaction is rolled back and the migration
-    is not recorded as applied.
+    Fresh install path:
+      Runs setup/schema.sql once, then records it as 'schema_v1' in _migrations.
+
+    Existing install path:
+      Skips setup (schema_v1 already recorded) and applies any new numbered
+      files found in migrations/ that haven't been applied yet.
+
+    Each file runs inside its own transaction — on failure the transaction is
+    rolled back and the file is not recorded as applied.
     """
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS _migrations (
@@ -248,32 +260,19 @@ async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
     rows = await conn.fetch('SELECT name FROM _migrations ORDER BY name')
     applied = {r['name'] for r in rows}
 
-    if not MIGRATIONS_DIR.exists():
-        logger.warning('Migrations directory not found: %s', MIGRATIONS_DIR)
-        return
-
-    for migration_file in sorted(MIGRATIONS_DIR.glob('*.sql')):
-        name = migration_file.name
-        if name in applied:
-            continue
-
-        logger.info('Applying migration: %s', name)
-        sql = migration_file.read_text(encoding='utf-8')
+    # Fresh install: no migrations have run yet — initialise from setup schema.
+    setup_sentinel = 'schema_v1'
+    if setup_sentinel not in applied and not applied:
+        setup_file = SETUP_DIR / 'schema.sql'
+        if not setup_file.exists():
+            raise RuntimeError(f'Setup schema not found: {setup_file}')
+        logger.info('Fresh database — initialising from %s', setup_file.name)
+        sql = setup_file.read_text(encoding='utf-8')
         statements = _split_statements(sql)
+        async with conn.transaction():
+            if statements:
+                await conn.execute('\n'.join(statements))
+            await conn.execute("INSERT INTO _migrations (name) VALUES ($1)", setup_sentinel)
+        logger.info('Schema initialised: %s', setup_sentinel)
+        applied.add(setup_sentinel)
 
-        try:
-            async with conn.transaction():
-                if statements:
-                    # Join into one simple-query call.  Sending a batch avoids
-                    # the asyncpg bug where executing a single CREATE FUNCTION
-                    # with a $$ body returns a None command tag, and also skips
-                    # conn.execute() entirely for tombstone/comment-only files
-                    # (which would trigger an EmptyQueryResponse from postgres).
-                    await conn.execute('\n'.join(statements))
-                await conn.execute(
-                    "INSERT INTO _migrations (name) VALUES ($1)", name
-                )
-            logger.info('Migration applied: %s', name)
-        except Exception:
-            logger.exception('Migration failed: %s', name)
-            raise

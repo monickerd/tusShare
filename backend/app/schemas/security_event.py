@@ -2,7 +2,7 @@
 
 Every security event emitted by the application is represented as a SecurityEvent.
 The event_bus persists these to the security_events table and fans them out to
-live subscribers (SSE audit stream, syslog, webhook) that will be wired in E7.
+live subscribers (SSE audit stream, syslog, webhook).
 """
 from __future__ import annotations
 

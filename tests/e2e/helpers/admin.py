@@ -505,6 +505,10 @@ class AdminClient:
         r.raise_for_status()
         return r.json()
 
+    async def clear_user_asymmetric_keys(self, user_id: str) -> None:
+        r = await self._client.delete(f"{API}/admin/users/{user_id}/asymmetric-keys")
+        r.raise_for_status()
+
     async def delete_folder_escrow_policy(self, folder_id: str) -> None:
         r = await self._client.delete(f"{API}/admin/escrow/folder-policies/{folder_id}")
         r.raise_for_status()
@@ -513,6 +517,104 @@ class AdminClient:
         r = await self._client.get(f"{API}/admin/escrow/coverage-report", params=params)
         r.raise_for_status()
         return r.json()
+
+    # ------------------------------------------------------------------ #
+    #  Sharing restrictions (migration 016)                               #
+    # ------------------------------------------------------------------ #
+
+    async def get_sharing_flags(self) -> dict:
+        """GET /admin/sharing/flags — per-role sharing capability flag assignments."""
+        r = await self._client.get(f"{API}/admin/sharing/flags")
+        r.raise_for_status()
+        return r.json()
+
+    async def update_sharing_flags(
+        self, role_id: str, flags: dict[str, bool], step_up_token: str = ""
+    ) -> dict:
+        """PUT /admin/sharing/flags — update sharing capability flags for a role.
+
+        Requires step-up token for policy.sharing.* (pass via step_up_token).
+        Only the specified flags are updated; others are untouched.
+        """
+        headers = {"X-Step-Up-Token": step_up_token} if step_up_token else {}
+        r = await self._client.put(
+            f"{API}/admin/sharing/flags",
+            json={"role_id": role_id, "flags": flags},
+            headers=headers,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def list_sharing_rules(
+        self,
+        active_only: bool = False,
+        offset: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        """GET /admin/sharing/rules — list rules paginated."""
+        r = await self._client.get(
+            f"{API}/admin/sharing/rules",
+            params={"active_only": active_only, "offset": offset, "limit": limit},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def test_sharing_rules(
+        self,
+        sender_user_id: str,
+        share_type: str,
+        recipient_user_id: Optional[str] = None,
+    ) -> dict:
+        """POST /admin/sharing/rules/test — dry-run rule evaluation (no state change)."""
+        payload: dict[str, Any] = {
+            "sender_user_id": sender_user_id,
+            "share_type":     share_type,
+        }
+        if recipient_user_id is not None:
+            payload["recipient_user_id"] = recipient_user_id
+        r = await self._client.post(f"{API}/admin/sharing/rules/test", json=payload)
+        r.raise_for_status()
+        return r.json()
+
+    async def create_sharing_rule(self, step_up_token: str, **fields: Any) -> dict:
+        """POST /admin/sharing/rules — create rule + conditions.
+
+        Pass rule fields as keyword args (name, subject, effect, priority,
+        conditions, is_locked, locked_min_tier, applies_to_share_type, etc.).
+        """
+        r = await self._client.post(
+            f"{API}/admin/sharing/rules",
+            json=fields,
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def get_sharing_rule(self, rule_id: str) -> dict:
+        """GET /admin/sharing/rules/{rule_id} — fetch one rule with conditions."""
+        r = await self._client.get(f"{API}/admin/sharing/rules/{rule_id}")
+        r.raise_for_status()
+        return r.json()
+
+    async def update_sharing_rule(
+        self, rule_id: str, step_up_token: str, **fields: Any
+    ) -> dict:
+        """PUT /admin/sharing/rules/{rule_id} — update rule metadata and/or conditions."""
+        r = await self._client.put(
+            f"{API}/admin/sharing/rules/{rule_id}",
+            json=fields,
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def delete_sharing_rule(self, rule_id: str, step_up_token: str) -> None:
+        """DELETE /admin/sharing/rules/{rule_id} — remove rule and all its conditions."""
+        r = await self._client.delete(
+            f"{API}/admin/sharing/rules/{rule_id}",
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
 
 
 # ---------------------------------------------------------------------------

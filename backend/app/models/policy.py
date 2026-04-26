@@ -1,4 +1,4 @@
-"""Policy engine models and evaluation logic (Phase E3).
+"""Policy engine models and evaluation logic.
 
 Core concepts
 ─────────────
@@ -15,7 +15,7 @@ evaluate_user_policies(db, user_id)
 
 LDAP integration note
 ─────────────────────
-LDAP support requires the identity_providers table (Phase E6).  The resolver
+LDAP support requires the identity_providers table.  The resolver
 gracefully no-ops if no LDAP integration is configured, treating all ldap-source
 conditions as non-matching (conservative default).
 """
@@ -112,7 +112,7 @@ class Policy:
     name:           str
     scope_type:     str          # 'org' | 'team'
     scope_id:       str | None   # team_id or None
-    escrow_enabled: bool         # E4b: whether escrow grants are written for covered teams
+    escrow_enabled: bool         # whether escrow grants are written for covered teams
     created_by:     str | None
     created_at:     str
 
@@ -186,7 +186,7 @@ class PolicyEffect:
     role_level:      str | None         # roles.id for team_member; None otherwise
     permission:      str | None         # 'read'|'write'|'admin' for folder_acl; None otherwise
     recursive:       bool
-    escrow_override: int | None = None  # E4b: None=use policy default, 1=force-on, 0=force-off
+    escrow_override: int | None = None  # None=use policy default, 1=force-on, 0=force-off
     created_at:      str = ""
 
     @classmethod
@@ -280,7 +280,7 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
     result: dict[str, str] = {}
 
     if "totp_enabled" in fields:
-        # F7 (TOTP) is not yet implemented; default to '0' until the column exists
+        # TOTP: default to '0' if the column is absent
         try:
             cursor = await db.execute(
                 "SELECT totp_enabled FROM users WHERE id = ?", (user_id,)
@@ -291,7 +291,7 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
             result["totp_enabled"] = "0"
 
     if "auth_provider" in fields or "identity_provider" in fields:
-        # identity_providers table arrives in E6; gracefully degrade until then
+        # identity_providers table may be absent; gracefully degrade
         try:
             cursor = await db.execute(
                 "SELECT ip.provider_type, ip.name "
@@ -313,7 +313,7 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
                 if "identity_provider" in fields:
                     result["identity_provider"] = row["name"] or ""
         except Exception:
-            # E6 tables don't exist yet — treat as opaque user
+            # identity_providers table not available — treat as opaque user
             if "auth_provider" in fields:
                 result["auth_provider"] = "opaque"
             if "identity_provider" in fields:
@@ -457,14 +457,14 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
      10. Update policy_last_evaluated_at
 
     LDAP / OIDC notes:
-      • LDAP: requires identity_providers table (Phase E6). Gracefully no-ops if absent.
-      • OIDC:  same — gracefully no-ops until E6 is implemented.
+      • LDAP: requires identity_providers table Gracefully no-ops if absent.
+      • OIDC:  same — gracefully no-ops if identity providers are not configured.
       • If required integration is missing, all conditions for that source evaluate False
         (conservative — never grant based on unresolvable attributes).
 
     Key-wrapping note:
       Grants are written with key_wrapped=0.  The wrapping worker (to be implemented
-      as part of E4) performs the actual X25519/ML-KEM key wrap on the user's next
+      ) performs the actual X25519/ML-KEM key wrap on the user's next
       password-entry event.  Until key_wrapped=1, the user cannot access the folder.
     """
     import uuid as _uuid
@@ -543,7 +543,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     }
     internal_values = await resolve_internal_fields(db, user_id, internal_fields_needed)
 
-    # 6. Resolve LDAP fields (graceful no-op if E6 not yet present)
+    # 6. Resolve LDAP fields (graceful no-op if identity_providers absent)
     ldap_conditions = [
         c for c in all_conditions
         if field_defs.get(c.field) and field_defs[c.field].source == "ldap"
@@ -552,7 +552,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     if ldap_conditions:
         ldap_values = await _resolve_ldap_fields(db, user_id, ldap_conditions, field_defs)
 
-    # OIDC resolution: graceful no-op until E6
+    # OIDC resolution: graceful no-op if identity providers not configured
     oidc_conditions = [
         c for c in all_conditions
         if field_defs.get(c.field) and field_defs[c.field].source == "oidc"
@@ -597,7 +597,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
         )
         effects = await cursor.fetchall()
 
-        # E4b: build policy escrow map and per-team escrow overrides from team_escrow effects
+        # build policy escrow map and per-team escrow overrides from team_escrow effects
         policy_escrow_map: dict[str, bool] = {
             p.id: p.escrow_enabled for p in policies if p.id in matching_policy_ids
         }
@@ -610,7 +610,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                     escrow_overrides[pid] = {}
                 escrow_overrides[pid][eff["target_id"]] = eff["escrow_override"]
 
-        # E4b: load org-level escrow agents once (users holding the escrow_agent role)
+        # load org-level escrow agents once (users holding the escrow_agent role)
         cursor2 = await db.execute(
             "SELECT DISTINCT ur.user_id FROM user_roles ur "
             "WHERE ur.role_id = 'escrow_agent' AND ur.scope_type IS NULL",
@@ -665,7 +665,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                         (effect_id, user_id),
                     )
 
-                # E4b: write pending escrow grants for this team if effective escrow is ON.
+                # write pending escrow grants for this team if effective escrow is ON.
                 # Escrow grants are written as a side effect of any matching team_member
                 # evaluation — ON CONFLICT DO NOTHING makes this idempotent across evaluations.
                 if escrow_agent_ids:
@@ -691,7 +691,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                                 (target_id, ea_id),
                             )
                             ea_has_key = await cursor_ea.fetchone() is not None
-                            # Write pending grant (key_wrapped=0 until E4a fulfillment loop delivers it)
+                            # Write pending grant (key_wrapped=0 until fulfillment loop delivers the wrap)
                             ea_tg_id = str(_uuid.uuid4())
                             await db.execute(
                                 "INSERT INTO policy_team_grants "
@@ -846,7 +846,7 @@ async def _resolve_ldap_fields(
 ) -> dict[str, str]:
     """Resolve LDAP-source condition fields for a user.
 
-    Requires identity_providers + identity_provider_users tables (Phase E6).
+    Requires identity_providers + identity_provider_users tables.
     Gracefully returns empty dict if those tables don't exist yet.
 
     All conditions are translated to a single LDAP filter and issued in one
@@ -896,7 +896,7 @@ async def _resolve_oidc_fields(
 ) -> dict[str, str]:
     """Resolve OIDC-source condition fields for a user.
 
-    Requires identity_providers + identity_provider_users tables (Phase E6).
+    Requires identity_providers + identity_provider_users tables.
     Gracefully returns empty dict if those tables don't exist yet, or if
     the provider uses at_login mode and no cached claims are available.
     """

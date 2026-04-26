@@ -1,4 +1,4 @@
-"""Escrow policy resolution — org defaults + folder-level overrides (E5).
+"""Escrow policy resolution — org defaults + folder-level overrides.
 
 `resolve_effective_escrow_agents` is the single entry point.  It walks the
 folder ancestor chain (PostgreSQL recursive CTE), finds the closest policy

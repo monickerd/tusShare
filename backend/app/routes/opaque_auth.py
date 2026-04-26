@@ -388,6 +388,7 @@ async def opaque_register_start(
 @router.post("/register/finish")
 async def opaque_register_finish(
     body: OpaqueRegisterFinishRequest,
+    request: Request,
     response: Response,
     db=Depends(get_db),
 ):
@@ -429,9 +430,10 @@ async def opaque_register_finish(
             await db.rollback()
             raise HTTPException(status_code=400, detail="Invalid, expired, or already-used invite")
 
+        client_ip = _get_client_ip(request)
         await db.execute(
-            "UPDATE invites SET used_at = ? WHERE id = ?",
-            (now, invite_row["id"]),
+            "UPDATE invites SET used_at = ?, used_by_ip = ? WHERE id = ?",
+            (now, client_ip, invite_row["id"]),
         )
 
         await db.execute(
@@ -592,7 +594,7 @@ async def opaque_login_finish(
         # both succeeded, but guard anyway
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    # MFA gate (F7) — check for active MFA credentials and enforcement policy.
+    # MFA gate — check for active MFA credentials and enforcement policy.
     # If MFA is required, return a pending_token instead of session cookies so
     # the client can complete the MFA challenge.  mfa_reset_required bypasses
     # the "no credentials → skip" path and forces the user to enrollment.
@@ -679,7 +681,7 @@ async def opaque_login_finish(
         _login_mfa_settings = await _load_mfa_login(db)
         mfa_enrollment_required = _login_mfa_settings["mfa_enforcement"] == "required"
 
-    # Trigger 1 — evaluate policies on every password-entry event (E3).
+    # Trigger 1 — evaluate policies on every password-entry event.
     # Runs fire-and-forget so login latency is unaffected.  Debounce inside
     # evaluate_user_policies prevents redundant LDAP queries on rapid
     # login → step-up sequences.
