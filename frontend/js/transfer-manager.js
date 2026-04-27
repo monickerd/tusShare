@@ -232,5 +232,24 @@ const TransferManager = (() => {
         _refreshVisibility();
     }
 
-    return { start, pauseAll, dismissAll };
+    /**
+     * Return a snapshot of all current transfers for display in the account menu.
+     * Each entry: { label, type, status, pct }
+     */
+    function getAll() {
+        return Array.from(_transfers.entries()).map(([id, t]) => {
+            const nameEl = t.rowEl.querySelector('.transfer-row-name');
+            const pctEl  = t.rowEl.querySelector('.transfer-row-pct');
+            const icon   = t.rowEl.querySelector('.transfer-row-icon');
+            return {
+                id,
+                label:  nameEl ? nameEl.textContent : '',
+                type:   icon && icon.textContent === '↑' ? 'upload' : 'download',
+                status: t.status,
+                pct:    pctEl ? pctEl.textContent : '',
+            };
+        });
+    }
+
+    return { start, pauseAll, dismissAll, getAll };
 })();

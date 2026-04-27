@@ -373,6 +373,248 @@ const App = (() => {
         Teams.renderEphemeralJoinPage(container, teamId, slotId, kEphemeralB64url);
     }
 
+    // -----------------------------------------------------------------------
+    // Account menu dropdown
+    // -----------------------------------------------------------------------
+
+    let _accountMenuOpen = false;
+    let _accountMenuEl = null;
+
+    function _toggleAccountMenu() {
+        if (_accountMenuOpen) {
+            _closeAccountMenu();
+        } else {
+            _openAccountMenu();
+        }
+    }
+
+    function _closeAccountMenu() {
+        if (_accountMenuEl && _accountMenuEl.parentNode) {
+            _accountMenuEl.parentNode.removeChild(_accountMenuEl);
+        }
+        _accountMenuEl = null;
+        _accountMenuOpen = false;
+    }
+
+    function _openAccountMenu() {
+        _closeAccountMenu();
+        _accountMenuOpen = true;
+        Utils.markAllRead();
+
+        const panel = Utils.el('div', { className: 'account-menu' });
+
+        // Close when clicking outside
+        const _outsideClick = (e) => {
+            const btn = document.querySelector('.header-account-btn');
+            if (!panel.contains(e.target) && e.target !== btn && !btn?.contains(e.target)) {
+                _closeAccountMenu();
+                document.removeEventListener('mousedown', _outsideClick, true);
+            }
+        };
+        document.addEventListener('mousedown', _outsideClick, true);
+
+        // Tab bar
+        const tabs = ['Notifications', 'Transfers', 'My Account'];
+        let _activeTab = 'Notifications';
+        const contentEl = Utils.el('div', { className: 'account-menu-content' });
+
+        const tabBar = Utils.el('div', { className: 'account-menu-tabs' },
+            tabs.map(label => {
+                const btn = Utils.el('button', {
+                    className: 'account-menu-tab' + (label === _activeTab ? ' active' : ''),
+                    textContent: label,
+                    onClick: () => {
+                        _activeTab = label;
+                        panel.querySelectorAll('.account-menu-tab').forEach(b =>
+                            b.classList.toggle('active', b.textContent === label));
+                        _renderTabContent(contentEl, label);
+                    },
+                });
+                return btn;
+            })
+        );
+
+        panel.appendChild(tabBar);
+        panel.appendChild(contentEl);
+        _renderTabContent(contentEl, _activeTab);
+
+        document.querySelector('.header-actions')?.appendChild(panel);
+        _accountMenuEl = panel;
+    }
+
+    function _renderTabContent(container, tab) {
+        while (container.firstChild) container.removeChild(container.firstChild);
+        if (tab === 'Notifications')  _renderNotificationsTab(container);
+        else if (tab === 'Transfers') _renderTransfersTab(container);
+        else                          _renderMyAccountTab(container);
+    }
+
+    function _renderNotificationsTab(container) {
+        const history = Utils.getToastHistory();
+        if (history.length === 0) {
+            container.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No notifications this session.' }));
+            return;
+        }
+        const list = Utils.el('ul', { className: 'notification-list' });
+        for (let i = history.length - 1; i >= 0; i--) {
+            const n = history[i];
+            list.appendChild(Utils.el('li', { className: `notification-item notification-item--${n.type}` }, [
+                Utils.el('span', { className: 'notification-msg', textContent: n.message }),
+                Utils.el('span', { className: 'notification-time', textContent: Utils.timeAgo(n.timestamp.toISOString()) }),
+            ]));
+        }
+        container.appendChild(list);
+    }
+
+    function _renderTransfersTab(container) {
+        const transfers = TransferManager.getAll();
+        if (transfers.length === 0) {
+            container.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
+            return;
+        }
+        const list = Utils.el('ul', { className: 'transfer-list' });
+        for (const t of transfers) {
+            list.appendChild(Utils.el('li', { className: `transfer-item transfer-item--${t.status}` }, [
+                Utils.el('span', { className: 'transfer-item-icon', textContent: t.type === 'upload' ? '↑' : '↓' }),
+                Utils.el('span', { className: 'transfer-item-name', textContent: t.label }),
+                Utils.el('span', { className: 'transfer-item-pct',  textContent: t.pct }),
+            ]));
+        }
+        container.appendChild(list);
+    }
+
+    function _renderMyAccountTab(container) {
+        const user = Auth.getCurrentUser();
+        if (!user) return;
+
+        // --- Roles ---
+        const rolesSection = Utils.el('section', { className: 'account-section' }, [
+            Utils.el('h4', { className: 'account-section-title', textContent: 'Roles' }),
+            Utils.el('p', { className: 'account-section-body', textContent: [...user.roles].join(', ') || 'none' }),
+        ]);
+
+        // --- Key & auth status ---
+        const keyStatus = user.wrapped_master_key ? 'Encryption key present' : 'No encryption key';
+        const idpStatus = user.auth_method === 'opaque' ? 'Password (OPAQUE)' : user.auth_method;
+        const keySection = Utils.el('section', { className: 'account-section' }, [
+            Utils.el('h4', { className: 'account-section-title', textContent: 'Account' }),
+            Utils.el('p', { className: 'account-section-body' }, [
+                Utils.el('span', { textContent: `Auth: ${idpStatus}` }), Utils.el('br'),
+                Utils.el('span', { textContent: keyStatus }),
+            ]),
+        ]);
+
+        // --- MFA & Security ---
+        const mfaSection = Utils.el('section', { className: 'account-section' }, [
+            Utils.el('h4', { className: 'account-section-title', textContent: 'Security' }),
+            Utils.el('a', { href: '#/mfa', className: 'btn btn-secondary btn-sm', textContent: 'MFA Settings',
+                onClick: () => _closeAccountMenu() }),
+        ]);
+
+        // Change password — deferred: requires OPAQUE re-registration flow (not yet implemented)
+
+        // --- Sessions (async) ---
+        const sessionsSection = Utils.el('section', { className: 'account-section' });
+        sessionsSection.appendChild(Utils.el('h4', { className: 'account-section-title', textContent: 'Active Sessions' }));
+        const sessionsList = Utils.el('div', { className: 'account-section-body' });
+        sessionsList.textContent = 'Loading…';
+        sessionsSection.appendChild(sessionsList);
+        Api.get(`${Config.app.apiPrefix}/auth/me/sessions`).then(data => {
+            sessionsList.textContent = '';
+            if (!data.sessions.length) { sessionsList.textContent = 'No other sessions.'; return; }
+            const ul = Utils.el('ul', { className: 'sessions-list' });
+            for (const s of data.sessions) {
+                const label = [
+                    s.is_current ? '(this session)' : '',
+                    s.is_public_device ? 'Public device' : '',
+                    s.last_active_at ? `Last active ${Utils.timeAgo(s.last_active_at)}` : `Created ${Utils.timeAgo(s.created_at)}`,
+                ].filter(Boolean).join(' · ');
+                const revokeBtn = s.is_current ? null : Utils.el('button', {
+                    className: 'btn btn-danger btn-xs',
+                    textContent: 'Revoke',
+                    onClick: async () => {
+                        try {
+                            await Api.del(`${Config.app.apiPrefix}/auth/me/sessions/${s.id}`);
+                            li.remove();
+                            Utils.showToast('Session revoked', 'success');
+                        } catch (e) {
+                            Utils.showToast(`Failed: ${e.message}`, 'error');
+                        }
+                    },
+                });
+                const li = Utils.el('li', { className: 'session-item' + (s.is_current ? ' session-item--current' : '') }, [
+                    Utils.el('span', { textContent: label }),
+                    ...(revokeBtn ? [revokeBtn] : []),
+                ]);
+                ul.appendChild(li);
+            }
+            sessionsList.appendChild(ul);
+            if (data.sessions.length > 1) {
+                const revokeAllBtn = Utils.el('button', {
+                    className: 'btn btn-danger btn-sm',
+                    style: 'margin-top:8px',
+                    textContent: 'Revoke all other sessions',
+                    onClick: async () => {
+                        try {
+                            const r = await Api.del(`${Config.app.apiPrefix}/auth/me/sessions`);
+                            Utils.showToast(`${r.revoked} session(s) revoked`, 'success');
+                            sessionsList.textContent = 'No other sessions.';
+                        } catch (e) {
+                            Utils.showToast(`Failed: ${e.message}`, 'error');
+                        }
+                    },
+                });
+                sessionsList.appendChild(revokeAllBtn);
+            }
+        }).catch(() => { sessionsList.textContent = 'Could not load sessions.'; });
+
+        // --- Activity log (async) ---
+        const activitySection = Utils.el('section', { className: 'account-section' });
+        activitySection.appendChild(Utils.el('h4', { className: 'account-section-title', textContent: 'Recent Activity' }));
+        const activityList = Utils.el('div', { className: 'account-section-body' });
+        activityList.textContent = 'Loading…';
+        activitySection.appendChild(activityList);
+        Api.get(`${Config.app.apiPrefix}/auth/me/activity`).then(data => {
+            activityList.textContent = '';
+            if (!data.events.length) { activityList.textContent = 'No activity recorded.'; return; }
+            const ul = Utils.el('ul', { className: 'activity-list' });
+            for (const ev of data.events.slice(0, 10)) {
+                ul.appendChild(Utils.el('li', { className: 'activity-item' }, [
+                    Utils.el('span', { className: 'activity-type', textContent: ev.event_type }),
+                    Utils.el('span', { className: 'activity-time', textContent: Utils.timeAgo(ev.timestamp) }),
+                ]));
+            }
+            activityList.appendChild(ul);
+        }).catch(() => { activityList.textContent = 'Could not load activity.'; });
+
+        // --- Delete account (async: check admin setting) ---
+        const deleteSection = Utils.el('section', { className: 'account-section' });
+        Api.get(`${Config.app.apiPrefix}/admin/settings`).then(data => {
+            if (data.settings?.allow_user_delete_own_account === 'true') {
+                deleteSection.appendChild(Utils.el('h4', { className: 'account-section-title account-section-title--danger', textContent: 'Danger Zone' }));
+                deleteSection.appendChild(Utils.el('button', {
+                    className: 'btn btn-danger btn-sm',
+                    textContent: 'Delete My Account',
+                    onClick: async () => {
+                        const confirmed = await Utils.showConfirm(
+                            'This will permanently delete your account and all your files. This cannot be undone. Continue?'
+                        );
+                        if (!confirmed) return;
+                        try {
+                            await Api.del(`${Config.app.apiPrefix}/auth/me`);
+                            Auth.logout();
+                        } catch (e) {
+                            Utils.showToast(`Delete failed: ${e.message}`, 'error');
+                        }
+                    },
+                }));
+            }
+        }).catch(() => {});
+
+        const sections = [rolesSection, keySection, mfaSection, sessionsSection, activitySection, deleteSection];
+        for (const s of sections) container.appendChild(s);
+    }
+
     function _renderShell(container) {
         // Only re-render shell if not already present
         if (container.querySelector('.app-shell')) return;
@@ -405,8 +647,6 @@ const App = (() => {
             ]),
 
             Utils.el('a', { href: '#/teams', className: 'sidebar-link', id: 'nav-teams', textContent: 'Manage Teams' }),
-            // CLEANUP: move this under User Account settings menu when that's implemented (Tier 5)
-            Utils.el('a', { href: '#/mfa',   className: 'sidebar-link', id: 'nav-mfa',   textContent: 'Security' }),
         ]);
         if (user && user.is_admin) {
             nav.appendChild(Utils.el('a', {
@@ -417,11 +657,11 @@ const App = (() => {
         const unreadDot = Utils.el('span', { className: 'header-unread-dot' });
         const accountBtn = Utils.el('button', {
             className: 'btn btn-sm header-account-btn',
+            onClick: _toggleAccountMenu,
         }, [
             Utils.el('span', { textContent: user ? user.username : '' }),
             unreadDot,
         ]);
-        // Kept as a simple button for now; Tier 5 wires the dropdown.
         Utils.onUnreadChange(count => {
             unreadDot.classList.toggle('header-unread-dot--active', count > 0);
         });
@@ -512,7 +752,6 @@ const App = (() => {
             { id: 'nav-team-folders', test: h => /^#\/team-folders(\/.*)?$/.test(h) },
             { id: 'nav-teams',        test: h => /^#\/teams(\/.*)?$/.test(h) },
             { id: 'nav-admin',        test: h => h === '#/admin' },
-            { id: 'nav-mfa',          test: h => h === '#/mfa' },
         ];
         rules.forEach(({ id, test }) => {
             const el = document.getElementById(id);

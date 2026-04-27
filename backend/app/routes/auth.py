@@ -29,10 +29,11 @@ from app.auth.stepup import (
 )
 from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
-from app.database import get_db
+from app.database import db_session, get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 import app.sensitive_config as sensitive_config
+import app.storage.manager as storage
 
 logger = logging.getLogger(__name__)
 
@@ -665,3 +666,177 @@ async def step_up(
         pass  # policy engine must not block step-up
 
     return {"step_up_token": token}
+
+
+# ---------------------------------------------------------------------------
+# Session management (self-service)
+# ---------------------------------------------------------------------------
+
+@router.get("/me/sessions")
+async def list_my_sessions(
+    user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """List all active sessions for the current user. The current session is flagged."""
+    cursor = await db.execute(
+        """
+        SELECT id, created_at, last_active_at, expires_at, is_public_device
+        FROM refresh_tokens
+        WHERE user_id = ? AND revoked = 0 AND expires_at > NOW()
+        ORDER BY last_active_at DESC NULLS LAST
+        """,
+        (user.id,),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "sessions": [
+            {
+                "id":               row["id"],
+                "created_at":       str(row["created_at"]),
+                "last_active_at":   str(row["last_active_at"]) if row["last_active_at"] else None,
+                "expires_at":       str(row["expires_at"]),
+                "is_public_device": bool(row["is_public_device"]),
+                "is_current":       row["id"] == user.session_id,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.delete("/me/sessions/{token_id}")
+async def revoke_session(
+    token_id: str,
+    user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Revoke a specific session. Cannot revoke the current session."""
+    token_id = validate_uuid(token_id)
+    if token_id == user.session_id:
+        raise HTTPException(status_code=400, detail="Cannot revoke the current session; use logout instead")
+    result = await db.execute(
+        "UPDATE refresh_tokens SET revoked = 1 WHERE id = ? AND user_id = ? AND revoked = 0",
+        (token_id, user.id),
+    )
+    await db.commit()
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"message": "Session revoked"}
+
+
+@router.delete("/me/sessions")
+async def revoke_other_sessions(
+    user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Revoke all sessions except the current one."""
+    result = await db.execute(
+        "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND id != ? AND revoked = 0",
+        (user.id, user.session_id or ""),
+    )
+    await db.commit()
+    return {"revoked": result.rowcount}
+
+
+# ---------------------------------------------------------------------------
+# User activity log (self-service — hard-filtered to caller's own events)
+# ---------------------------------------------------------------------------
+
+@router.get("/me/activity")
+async def my_activity(
+    user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Return the last 50 security events for the calling user.
+
+    Filtered strictly by session token — user_id is never taken from a query param.
+    """
+    cursor = await db.execute(
+        """
+        SELECT event_type, severity, outcome, ip_address, actor_session_id,
+               timestamp, target_type, target_id, target_name, detail
+        FROM security_events
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+        LIMIT 50
+        """,
+        (user.id,),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "events": [
+            {
+                "event_type":       row["event_type"],
+                "severity":         row["severity"] or "info",
+                "outcome":          row["outcome"],
+                "ip_address":       row["ip_address"],
+                "session_id":       row["actor_session_id"],
+                "timestamp":        str(row["timestamp"]),
+                "target_type":      row["target_type"],
+                "target_id":        row["target_id"],
+                "target_name":      row["target_name"],
+                "detail":           (json.loads(row["detail"]) if row["detail"] else None),
+            }
+            for row in rows
+        ]
+    }
+
+
+# ---------------------------------------------------------------------------
+# Self-delete account
+# ---------------------------------------------------------------------------
+
+@router.delete("/me")
+async def delete_my_account(
+    request: Request,
+    user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Delete the calling user's own account and all associated files.
+
+    Requires the allow_user_delete_own_account admin setting to be 'true'.
+    Admin-only accounts (no user role) are not permitted to self-delete.
+    """
+    if not user.is_user:
+        raise HTTPException(status_code=403, detail="Admin-only accounts cannot self-delete")
+
+    cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'allow_user_delete_own_account'"
+    )
+    row = await cursor.fetchone()
+    if not row or row["value"] != "true":
+        raise HTTPException(status_code=403, detail="Self-deletion is not enabled on this server")
+
+    # Collect file storage keys before CASCADE deletes them
+    cursor = await db.execute(
+        "SELECT id, storage_key FROM files WHERE owner_id = ?", (user.id,)
+    )
+    file_rows = await cursor.fetchall()
+
+    await db.execute("DELETE FROM users WHERE id = ?", (user.id,))
+    await db.commit()
+
+    from app.services import event_bus
+    from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+    event_bus.emit(SecurityEvent(
+        event_type="user.self_deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=user.id, username=user.username, ip=_get_client_ip(request)),
+        target=EventTarget(type="user", id=user.id, name=user.username),
+    ))
+
+    rows_snapshot = list(file_rows)
+    uid_snapshot = user.id
+
+    async def _cleanup_blobs():
+        mgr = storage.get_manager()
+        async with db_session() as _db:
+            for row in rows_snapshot:
+                try:
+                    await mgr.delete_blob(_db, row["id"], row["storage_key"])
+                except Exception as exc:
+                    logger.warning("Failed to delete blob %s during self-delete: %s", row["storage_key"], exc)
+
+    asyncio.create_task(_cleanup_blobs())
+
+    return {"message": "Account deleted"}

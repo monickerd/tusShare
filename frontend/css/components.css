@@ -1901,3 +1901,159 @@
     padding: 1px 6px;
     border-radius: 10px;
 }
+
+/* === Account menu dropdown === */
+.account-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    width: 360px;
+    max-height: 520px;
+    overflow-y: auto;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-toast);
+    z-index: var(--z-modal);
+    display: flex;
+    flex-direction: column;
+}
+
+.account-menu-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+}
+
+.account-menu-tab {
+    flex: 1;
+    background: none;
+    border: none;
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    color: var(--color-text-muted);
+    border-bottom: 2px solid transparent;
+    font-family: var(--font-family);
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.account-menu-tab:hover,
+.account-menu-tab.active {
+    color: var(--color-text);
+}
+
+.account-menu-tab.active {
+    border-bottom-color: var(--color-primary);
+}
+
+.account-menu-content {
+    padding: var(--space-3);
+    overflow-y: auto;
+    flex: 1;
+}
+
+.account-menu-empty {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    text-align: center;
+    padding: var(--space-4) 0;
+}
+
+.notification-list,
+.transfer-list,
+.sessions-list,
+.activity-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.notification-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius);
+    font-size: var(--font-size-sm);
+    border-left: 3px solid var(--color-border);
+}
+
+.notification-item--success { border-left-color: var(--color-success); }
+.notification-item--error   { border-left-color: var(--color-danger); }
+.notification-item--warning { border-left-color: var(--color-warning); }
+.notification-item--info    { border-left-color: var(--color-info); }
+
+.notification-msg  { flex: 1; }
+.notification-time { color: var(--color-text-muted); font-size: var(--font-size-xs); white-space: nowrap; }
+
+.transfer-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    font-size: var(--font-size-sm);
+}
+
+.transfer-item-icon { width: 16px; text-align: center; }
+.transfer-item-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transfer-item-pct  { color: var(--color-text-muted); font-size: var(--font-size-xs); }
+
+.account-section {
+    margin-bottom: var(--space-4);
+}
+
+.account-section:last-child {
+    margin-bottom: 0;
+}
+
+.account-section-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 0 0 var(--space-2);
+}
+
+.account-section-title--danger {
+    color: var(--color-danger);
+}
+
+.account-section-body {
+    font-size: var(--font-size-sm);
+}
+
+.session-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) 0;
+    font-size: var(--font-size-sm);
+}
+
+.session-item--current {
+    font-weight: 600;
+}
+
+.activity-item {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) 0;
+    font-size: var(--font-size-sm);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.activity-item:last-child {
+    border-bottom: none;
+}
+
+.activity-type { color: var(--color-text); }
+.activity-time { color: var(--color-text-muted); font-size: var(--font-size-xs); white-space: nowrap; }
+
