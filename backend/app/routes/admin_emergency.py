@@ -224,6 +224,9 @@ async def emergency_revoke(
 
     await db.commit()
 
+    # Notify all open browser tabs for the revoked user immediately.
+    sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "emergency_revoke"})
+
     # ------------------------------------------------------------------
     # 7. Emit to event bus (after commit so the action is durable first)
     # ------------------------------------------------------------------

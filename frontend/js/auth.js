@@ -1874,7 +1874,59 @@ const Auth = (() => {
     // Logout / session check
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Identity watch — SSE stream that detects admin-forced changes
+    // ------------------------------------------------------------------
+
+    let _identitySource = null;
+    let _identityReconnectTimer = null;
+
+    function startIdentityWatch() {
+        if (_identitySource) return;
+        _connectIdentityWatch();
+    }
+
+    function _connectIdentityWatch() {
+        const url = `${Config.app.apiPrefix}/events/identity`;
+        const src = new EventSource(url, { withCredentials: true });
+
+        src.onmessage = (e) => {
+            let event;
+            try { event = JSON.parse(e.data); } catch { return; }
+            if (event.type !== 'identity_changed') return;
+            // Force logout — the admin has deactivated this account or revoked sessions.
+            src.close();
+            _identitySource = null;
+            clearTimeout(_identityReconnectTimer);
+            const reason = event.reason === 'deactivated'
+                ? 'Your account has been deactivated.'
+                : 'Your session was remotely revoked.';
+            Utils.showToast(reason, 'error');
+            // Brief delay so the toast is visible before the redirect.
+            setTimeout(() => logout(), 1500);
+        };
+
+        src.onerror = () => {
+            src.close();
+            if (!_currentUser) return; // already logged out — don't reconnect
+            // Reconnect after 10 s if the stream drops (network blip, server restart).
+            _identityReconnectTimer = setTimeout(_connectIdentityWatch, 10_000);
+        };
+
+        _identitySource = src;
+    }
+
+    function stopIdentityWatch() {
+        if (_identitySource) {
+            _identitySource.close();
+            _identitySource = null;
+        }
+        clearTimeout(_identityReconnectTimer);
+    }
+
     async function logout() {
+        stopIdentityWatch();
+
         // Dismiss the transfer panel immediately so the UI is clean at once,
         // then signal every active transfer to stop.  Uploads are stopped without
         // deleting the server-side partial so they appear as resumable pending rows
@@ -1942,6 +1994,7 @@ const Auth = (() => {
         logout,
         checkSession,
         touchKeyCache,
+        startIdentityWatch,
     };
 })();
 

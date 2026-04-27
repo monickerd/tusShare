@@ -191,6 +191,9 @@ const App = (() => {
             }
         }
 
+        // Start persistent identity watch so all tabs detect admin-forced changes.
+        Auth.startIdentityWatch();
+
         // Navigate to current hash or default
         const defaultHash = Auth.getCurrentUser()?.is_admin ? '#/admin' : '#/files';
         if (!window.location.hash || window.location.hash === '#/') {

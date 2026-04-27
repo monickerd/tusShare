@@ -20,7 +20,7 @@ from app.models.role import FLAG_MANAGE_USERS, FLAG_MANAGE_ROLES
 from app.database import db_session, get_db
 from app.models.role import ADMIN_ROLE_IDS, ROLE_ADMIN, ROLE_USER, ROLE_TIER, admin_best_tier, grant_role, revoke_role
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
-from app.services import event_bus
+from app.services import event_bus, sse_broker
 import app.storage.manager as storage
 from app.models.user import User
 from app.middleware.rate_limit import _get_client_ip
@@ -292,6 +292,8 @@ async def update_user(
             (user_id,),
         )
         await db.commit()
+        # Notify all open browser tabs so they redirect to login immediately.
+        sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "deactivated"})
 
     return {"message": "User updated"}
 
