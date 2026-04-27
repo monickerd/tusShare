@@ -828,13 +828,14 @@ CREATE TABLE admin_settings (
 -- Only the SHA-256 hash of the raw token is stored.
 -------------------------------------------------
 CREATE TABLE invites (
-    id         TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-    token_hash TEXT NOT NULL UNIQUE,
-    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TIMESTAMPTZ NOT NULL,
-    used_at    TIMESTAMPTZ,
-    used_by_ip TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    token_hash       TEXT NOT NULL UNIQUE,
+    created_by       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at       TIMESTAMPTZ NOT NULL,
+    used_at          TIMESTAMPTZ,
+    used_by_ip       TEXT,
+    used_by_user_id  TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_invites_created_by ON invites(created_by);
@@ -861,14 +862,15 @@ CREATE INDEX idx_invsl_invite  ON invite_short_links(invite_id);
 -- BEFORE UPDATE/DELETE triggers enforce immutability at the DB layer.
 -------------------------------------------------
 CREATE TABLE access_logs (
-    id         TEXT PRIMARY KEY,
-    file_id    TEXT,
-    user_id    TEXT,
-    share_id   TEXT,
-    ip_address TEXT NOT NULL,
-    user_agent TEXT,
-    action     TEXT NOT NULL CHECK(action IN ('view', 'download', 'upload', 'delete', 'share')),
-    timestamp  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id             TEXT PRIMARY KEY,
+    file_id        TEXT,
+    user_id        TEXT,
+    actor_username TEXT,      -- denormalised: actual username or 'external' for anonymous share access
+    share_id       TEXT,
+    ip_address     TEXT NOT NULL,
+    user_agent     TEXT,
+    action         TEXT NOT NULL CHECK(action IN ('view', 'download', 'upload', 'delete', 'share')),
+    timestamp      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_alog_file      ON access_logs(file_id);
@@ -914,6 +916,7 @@ CREATE INDEX idx_bwlog_timestamp ON bandwidth_log(timestamp);
 CREATE TABLE security_events (
     id               TEXT        PRIMARY KEY,
     user_id          TEXT,
+    actor_username   TEXT,      -- denormalised: preserved even if user is later deleted
     ip_address       TEXT        NOT NULL,
     user_agent       TEXT,
     event_type       TEXT        NOT NULL,

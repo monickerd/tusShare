@@ -244,6 +244,7 @@ async def evaluate_sharing_rules(
     actor,
     recipient_id: str | None,
     share_type: str,
+    actor_ip: str | None = None,
 ) -> None:
     """Evaluate active sharing rules in priority order.
 
@@ -303,7 +304,7 @@ async def evaluate_sharing_rules(
                 event_type="share.blocked",
                 severity="info",
                 outcome="failure",
-                actor=EventActor(user_id=actor.id, username=actor.username),
+                actor=EventActor(user_id=actor.id, username=actor.username, ip=actor_ip),
                 target=EventTarget(type="user", id=recipient_id or "", name=None)
                 if recipient_id else None,
                 detail={

@@ -143,6 +143,10 @@ async def run_rate_limit_cleanup(interval: float = RATE_LIMIT_CLEANUP_MAX_AGE) -
 
 
 def _get_client_ip(request: Request) -> str:
+    # Cloudflare sets CF-Connecting-IP; nginx/haproxy set X-Real-IP (or TRUSTED_IP_HEADER).
+    cf = request.headers.get("CF-Connecting-IP", "").strip()
+    if cf:
+        return cf
     trusted_header = settings.TRUSTED_IP_HEADER
     if trusted_header:
         forwarded = request.headers.get(trusted_header, "")

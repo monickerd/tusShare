@@ -42,7 +42,7 @@ _SETTINGS_VALIDATORS = {
     "global_max_file_size":   lambda v: v.isdigit() and int(v) >= 0,
     "global_bandwidth_limit": lambda v: v.isdigit() and int(v) >= 0,
     "disk_warning_threshold": lambda v: v.isdigit() and 0 <= int(v) <= 100,
-    "default_chunk_size":     lambda v: v.isdigit() and int(v) >= 1_048_576,
+    "default_chunk_size":     lambda v: v.isdigit() and int(v) >= 1,
     # MFA enforcement policy
     "mfa_enforcement":        lambda v: v in ("off", "optional", "required"),
     "mfa_allowed_methods":    _valid_mfa_allowed_methods,
@@ -223,19 +223,26 @@ async def list_invites(
 ):
     """List all invites (pending and used), most recent first."""
     cursor = await db.execute(
-        "SELECT id, created_by, expires_at, used_at, used_by_ip, created_at "
-        "FROM invites ORDER BY created_at DESC"
+        """
+        SELECT i.id, i.created_by, i.expires_at, i.used_at, i.used_by_ip,
+               i.used_by_user_id, u.username AS used_by_username, i.created_at
+        FROM invites i
+        LEFT JOIN users u ON u.id = i.used_by_user_id
+        ORDER BY i.created_at DESC
+        """
     )
     rows = await cursor.fetchall()
     return {
         "invites": [
             {
-                "id":          row["id"],
-                "created_by":  row["created_by"],
-                "expires_at":  row["expires_at"],
-                "used_at":     row["used_at"],
-                "used_by_ip":  row["used_by_ip"],
-                "created_at":  row["created_at"],
+                "id":                row["id"],
+                "created_by":        row["created_by"],
+                "expires_at":        row["expires_at"],
+                "used_at":           row["used_at"],
+                "used_by_ip":        row["used_by_ip"],
+                "used_by_user_id":   row["used_by_user_id"],
+                "used_by_username":  row["used_by_username"],
+                "created_at":        row["created_at"],
             }
             for row in rows
         ]

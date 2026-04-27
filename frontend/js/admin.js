@@ -691,7 +691,8 @@ const Admin = (() => {
                     Utils.el('td', { textContent: i.created_at ? i.created_at.slice(0, 10) : '—' }),
                     Utils.el('td', { textContent: i.expires_at ? i.expires_at.slice(0, 10) : '—' }),
                     Utils.el('td', { textContent: i.used_at    ? new Date(i.used_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—' }),
-                    Utils.el('td', { textContent: i.used_by_ip || '—' }),
+                    Utils.el('td', { textContent: i.used_by_username || '—' }),
+                Utils.el('td', { textContent: i.used_by_ip || '—' }),
                 ]));
             });
             return Utils.el('details', { className: 'admin-used-invites' }, [
@@ -702,6 +703,7 @@ const Admin = (() => {
                             Utils.el('th', { textContent: 'Created' }),
                             Utils.el('th', { textContent: 'Expired' }),
                             Utils.el('th', { textContent: 'Used At' }),
+                            Utils.el('th', { textContent: 'Used By' }),
                             Utils.el('th', { textContent: 'Used By IP' }),
                         ]),
                     ]),
@@ -2582,53 +2584,7 @@ const Admin = (() => {
             ]),
         ]));
 
-        // --- Live stream toggle ---
-        let _streamSource = null;
-        const streamStatus = Utils.el('span', { className: 'badge badge-neutral', textContent: 'Disconnected', style: 'margin-left:8px' });
-        const streamBtn = Utils.el('button', {
-            className: 'btn btn-sm', textContent: 'Connect',
-            onClick: () => {
-                if (_streamSource) {
-                    _streamSource.close();
-                    _streamSource = null;
-                    streamBtn.textContent = 'Connect';
-                    streamStatus.className = 'badge badge-neutral';
-                    streamStatus.textContent = 'Disconnected';
-                    return;
-                }
-                const token = Auth.getToken ? Auth.getToken() : '';
-                const url = `${_api()}/admin/audit/logs/stream`;
-                _streamSource = new EventSource(url);
-                streamBtn.textContent = 'Disconnect';
-                streamStatus.className = 'badge badge-info';
-                streamStatus.textContent = 'Connecting…';
-                _streamSource.onopen = () => {
-                    streamStatus.className = 'badge badge-success';
-                    streamStatus.textContent = 'Connected';
-                };
-                _streamSource.onerror = () => {
-                    streamStatus.className = 'badge badge-error';
-                    streamStatus.textContent = 'Error';
-                };
-                _streamSource.addEventListener('message', ev => {
-                    try { _prependStreamEvent(liveTable, JSON.parse(ev.data)); } catch {}
-                });
-                // Listen on all event type names is handled by the catch-all above
-            },
-        });
-        wrap.appendChild(Utils.el('div', { style: 'margin-bottom:12px; display:flex; align-items:center; gap:8px' }, [
-            Utils.el('strong', { textContent: 'Live stream:' }),
-            streamBtn,
-            streamStatus,
-        ]));
-
-        // --- Live stream table (populated by SSE) ---
-        const liveTable = _buildAuditTable([]);
-        liveTable.style.marginBottom = '24px';
-        wrap.appendChild(Utils.el('h4', { textContent: 'Recent events (live)', style: 'margin:0 0 8px' }));
-        wrap.appendChild(liveTable);
-
-        // --- Historical log query ---
+        // --- Log query ---
         wrap.appendChild(Utils.el('h4', { textContent: 'Query log', style: 'margin:0 0 8px' }));
 
         const etInput  = Utils.el('input', { type: 'text',   className: 'input-sm', placeholder: 'Event types (e.g. auth.*)', style: 'width:200px; margin-right:8px' });
@@ -2645,22 +2601,35 @@ const Admin = (() => {
         const queryBtn  = Utils.el('button', { className: 'btn btn-sm btn-primary', textContent: 'Search' });
         const exportBtn = Utils.el('button', { className: 'btn btn-sm',             textContent: 'Export CSV', style: 'margin-left:8px' });
 
+        // Auto-refresh controls
+        const refreshChk = Utils.el('input', { type: 'checkbox', id: 'audit-autorefresh', style: 'margin-left:16px; cursor:pointer' });
+        const refreshSel = Utils.el('select', { className: 'input-sm', style: 'width:80px' });
+        [['5s', 5], ['10s', 10], ['30s', 30]].forEach(([label, val]) => {
+            const o = Utils.el('option', { value: val, textContent: label });
+            if (val === 10) o.selected = true;
+            refreshSel.appendChild(o);
+        });
+        const refreshLabel = Utils.el('label', { htmlFor: 'audit-autorefresh', textContent: 'Auto-refresh', style: 'cursor:pointer; font-size:.9em' });
+
         const filterRow = Utils.el('div', { style: 'display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; align-items:center' }, [
             etInput, sevSel, uidInput,
             Utils.el('span', { textContent: 'From:', style: 'font-size:.85em' }), sinceIn,
             Utils.el('span', { textContent: 'To:',   style: 'font-size:.85em' }), untilIn,
             queryBtn, exportBtn,
+            Utils.el('span', { style: 'display:flex; align-items:center; gap:6px; margin-left:8px' }, [
+                refreshChk, refreshLabel, refreshSel,
+            ]),
         ]);
         wrap.appendChild(filterRow);
 
         const histTable = _buildAuditTable(events);
         wrap.appendChild(histTable);
 
-        const _buildQs = () => {
-            const p = new URLSearchParams();
-            if (etInput.value.trim())  p.set('event_types', etInput.value.trim());
+        const _buildQs = (limit = 200) => {
+            const p = new URLSearchParams({ limit });
+            if (etInput.value.trim())    p.set('event_types', etInput.value.trim());
             if (sevSel.value !== 'info') p.set('severity', sevSel.value);
-            if (uidInput.value.trim()) p.set('user_id', uidInput.value.trim());
+            if (uidInput.value.trim())   p.set('user_id', uidInput.value.trim());
             if (sinceIn.value) p.set('since', sinceIn.value.replace('T', ' '));
             if (untilIn.value) p.set('until', untilIn.value.replace('T', ' '));
             return p.toString();
@@ -2669,7 +2638,7 @@ const Admin = (() => {
         queryBtn.onclick = async () => {
             queryBtn.disabled = true;
             try {
-                const data = await Api.get(`${_api()}/admin/audit/logs?limit=200&${_buildQs()}`);
+                const data = await Api.get(`${_api()}/admin/audit/logs?${_buildQs(200)}`);
                 _populateAuditTable(histTable, data.events || []);
             } catch (e) {
                 Utils.showToast('Query failed: ' + e.message, 'error');
@@ -2679,8 +2648,25 @@ const Admin = (() => {
         };
 
         exportBtn.onclick = () => {
-            window.location = `${_api()}/admin/audit/logs/export?${_buildQs()}`;
+            window.location = `${_api()}/admin/audit/logs/export?${_buildQs(200)}`;
         };
+
+        // Auto-refresh: polls the pull API at the selected interval.
+        // Clears itself if the table is removed from the DOM (navigation away).
+        let _refreshTimer = null;
+        const _stopRefresh = () => { if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; } };
+        const _startRefresh = () => {
+            _stopRefresh();
+            _refreshTimer = setInterval(async () => {
+                if (!histTable.isConnected) { _stopRefresh(); return; }
+                try {
+                    const data = await Api.get(`${_api()}/admin/audit/logs?${_buildQs(50)}`);
+                    _populateAuditTable(histTable, data.events || []);
+                } catch {}
+            }, parseInt(refreshSel.value, 10) * 1000);
+        };
+        refreshChk.onchange = () => refreshChk.checked ? _startRefresh() : _stopRefresh();
+        refreshSel.onchange = () => { if (refreshChk.checked) _startRefresh(); };
 
         // --- SIEM destinations ---
         wrap.appendChild(Utils.el('hr', { style: 'margin:24px 0' }));
@@ -2725,15 +2711,6 @@ const Admin = (() => {
         }
     }
 
-    function _prependStreamEvent(table, ev) {
-        const tbody = table.querySelector('tbody');
-        const emptyRow = tbody.querySelector('td[colspan]');
-        if (emptyRow) emptyRow.closest('tr').remove();
-        tbody.insertBefore(_buildAuditRow(ev), tbody.firstChild);
-        // Cap live table at 100 rows
-        while (tbody.children.length > 100) tbody.removeChild(tbody.lastChild);
-    }
-
     function _buildAuditRow(ev) {
         const sevClass = ev.severity === 'critical' ? 'badge-error' : ev.severity === 'warning' ? 'badge-warning' : 'badge-neutral';
         return Utils.el('tr', {}, [
@@ -2741,7 +2718,7 @@ const Admin = (() => {
             Utils.el('td', { textContent: ev.event_type }),
             Utils.el('td', {}, [Utils.el('span', { className: `badge ${sevClass}`, textContent: ev.severity || 'info' })]),
             Utils.el('td', { textContent: ev.outcome || '' }),
-            Utils.el('td', { textContent: ev.actor_user_id || ev.actor_username || '' }),
+            Utils.el('td', { textContent: ev.actor_username || ev.actor_user_id || '' }),
             Utils.el('td', { textContent: ev.target_name || ev.target_id || '' }),
         ]);
     }

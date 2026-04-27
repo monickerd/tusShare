@@ -430,12 +430,6 @@ async def opaque_register_finish(
             await db.rollback()
             raise HTTPException(status_code=400, detail="Invalid, expired, or already-used invite")
 
-        client_ip = _get_client_ip(request)
-        await db.execute(
-            "UPDATE invites SET used_at = ?, used_by_ip = ? WHERE id = ?",
-            (now, client_ip, invite_row["id"]),
-        )
-
         await db.execute(
             "INSERT INTO users ("
             "  id, username, auth_method, opaque_registration_record, is_admin, "
@@ -453,6 +447,12 @@ async def opaque_register_finish(
             ),
         )
         await grant_role(db, user_id, ROLE_USER)
+
+        client_ip = _get_client_ip(request)
+        await db.execute(
+            "UPDATE invites SET used_at = ?, used_by_ip = ?, used_by_user_id = ? WHERE id = ?",
+            (now, client_ip, user_id, invite_row["id"]),
+        )
         await db.commit()
     except DuplicateError:
         await db.rollback()

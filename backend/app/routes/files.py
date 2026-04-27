@@ -17,6 +17,7 @@ from app.auth.dependencies import get_current_user, get_optional_user, require_u
 from app.auth.interface import AuthenticatedUser
 from app.database import db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
+from app.middleware.rate_limit import _get_client_ip
 from app.models.file import File, FileChunk
 from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
@@ -487,21 +488,16 @@ async def _log_download(
     socket peer address.  All values are truncated before DB insert.
     """
     try:
-        ip = (
-            request.headers.get("CF-Connecting-IP")
-            or request.headers.get("X-Real-IP")
-            or (request.client.host if request.client else "unknown")
-        )
-        ip = ip[:64]
+        ip = _get_client_ip(request)[:64]
         ua = (request.headers.get("User-Agent") or "")[:512]
         log_id = str(uuid.uuid4())
         await db.execute(
             """
             INSERT INTO access_logs
-                (id, file_id, user_id, share_id, ip_address, user_agent, action)
-            VALUES (?, ?, ?, NULL, ?, ?, 'download')
+                (id, file_id, user_id, actor_username, share_id, ip_address, user_agent, action)
+            VALUES (?, ?, ?, ?, NULL, ?, ?, 'download')
             """,
-            (log_id, file_id, user.id, ip, ua),
+            (log_id, file_id, user.id, user.username, ip, ua),
         )
         await db.commit()
     except Exception:

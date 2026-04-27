@@ -17,10 +17,10 @@ const Files = (() => {
     let _liveSource = null;
     let _liveReloadTimer = null;
 
-    // Upload IDs that are currently being actively uploaded in this page session.
-    // Used to suppress their static pending-upload rows while a live TransferManager
-    // row is already showing progress.
-    const _activeUploadIds = new Set();
+    // Active uploads being managed in this page session: uploadId → { pct: number }.
+    // Used to inject a live "uploading" row during folder re-renders so the file
+    // stays visible while a TransferManager row shows real-time progress.
+    const _activeUploads = new Map();
 
     function _startLive(folderId) {
         _stopLive();
@@ -452,9 +452,24 @@ const Files = (() => {
     }
 
     function _createPendingUploadRow(upload) {
-        // Suppress the static row while a live TransferManager row is showing progress
-        // for this same upload (e.g. navigating away and back during an active upload).
-        if (_activeUploadIds.has(upload.upload_id)) return null;
+        const activeEntry = _activeUploads.get(upload.upload_id);
+        if (activeEntry) {
+            // Re-inject a live "uploading" row so the file stays visible during re-renders.
+            // Progress comes from in-memory state, which is more current than the server offset.
+            const pct = activeEntry.pct;
+            return Utils.el('tr', { className: 'row-pending' }, [
+                Utils.el('td'),
+                Utils.el('td', {}, [
+                    Utils.el('div', { className: 'pending-name' }, [
+                        Utils.el('span', { className: 'pending-icon', textContent: '↑' }),
+                        Utils.el('span', { textContent: upload.original_name }),
+                    ]),
+                ]),
+                Utils.el('td', { textContent: `${pct}% — uploading…` }),
+                Utils.el('td', { textContent: '' }),
+                Utils.el('td'),
+            ]);
+        }
 
         const pct = upload.total_size > 0
             ? Math.round((upload.current_offset / upload.total_size) * 100)
@@ -527,6 +542,8 @@ const Files = (() => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, upload.original_name);
                     transfer.update(pct);
+                    const _ae = ctrl.uploadId ? _activeUploads.get(ctrl.uploadId) : null;
+                    if (_ae) _ae.pct = pct;
                 }, ctrl);
                 overlay.remove();
                 transfer.complete();
@@ -1409,6 +1426,8 @@ const Files = (() => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, label);
                     transfer.update(pct);
+                    const _ae = ctrl.uploadId ? _activeUploads.get(ctrl.uploadId) : null;
+                    if (_ae) _ae.pct = pct;
                 }, ctrl);
                 overlay.remove();
                 transfer.complete();
@@ -1640,7 +1659,7 @@ const Files = (() => {
 
             onCreated(id) {
                 _uploadId = id;
-                _activeUploadIds.add(id);
+                _activeUploads.set(id, { pct: 0 });
             },
 
             pause() {
@@ -1673,7 +1692,7 @@ const Files = (() => {
             shouldDeleteOnAbort() { return _deleteOnAbort; },
 
             cleanup() {
-                if (_uploadId) _activeUploadIds.delete(_uploadId);
+                if (_uploadId) _activeUploads.delete(_uploadId);
             },
         };
 

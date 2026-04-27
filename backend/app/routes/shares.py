@@ -331,24 +331,21 @@ async def _log_share_access(
     user_id: str | None,
     share_id: str,
     file_id: str | None,
+    username: str | None = None,
 ) -> None:
     """Log a share download event. Best-effort — never raises."""
     try:
-        ip = (
-            request.headers.get("CF-Connecting-IP")
-            or request.headers.get("X-Real-IP")
-            or (request.client.host if request.client else "unknown")
-        )
-        ip = ip[:64]
+        ip = _get_share_client_ip(request)[:64]
         ua = (request.headers.get("User-Agent") or "")[:512]
+        actor_username = username if user_id else "external"
         log_id = str(uuid.uuid4())
         await db.execute(
             """
             INSERT INTO access_logs
-                (id, file_id, user_id, share_id, ip_address, user_agent, action)
-            VALUES (?, ?, ?, ?, ?, ?, 'download')
+                (id, file_id, user_id, actor_username, share_id, ip_address, user_agent, action)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'download')
             """,
-            (log_id, file_id, user_id, share_id, ip, ua),
+            (log_id, file_id, user_id, actor_username, share_id, ip, ua),
         )
         await db.commit()
     except Exception:
@@ -604,7 +601,7 @@ async def create_share(
         recipient_user_id = None
 
     # Layer 2: identity-scoped sharing rules (evaluated after recipient is resolved)
-    await evaluate_sharing_rules(db, user, recipient_user_id, body.share_type)
+    await evaluate_sharing_rules(db, user, recipient_user_id, body.share_type, actor_ip=_get_share_client_ip(request))
 
     # Verify every referenced file exists, is complete, and the requester has access.
     # Owners and admins can always share their files. Team members may share any file
@@ -1071,7 +1068,7 @@ async def download_shared_file(
     # --- Access log on first chunk ---
     if not range_header or start == 0:
         user_id = user.id if user else None
-        await _log_share_access(db, request, user_id, share["id"], file_id)
+        await _log_share_access(db, request, user_id, share["id"], file_id, username=user.username if user else None)
 
     # --- Content-Disposition: RFC 5987 UTF-8 encoded filename ---
     safe_name = row["sanitized_name"] or "download"

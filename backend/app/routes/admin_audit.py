@@ -22,7 +22,7 @@ import secrets
 import uuid
 from typing import AsyncGenerator
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -30,6 +30,7 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.auth.idp_crypto import encrypt_token, decrypt_token
 from app.database import get_db
+from app.middleware.rate_limit import _get_client_ip
 from app.models.role import FLAG_MANAGE_USERS
 from app.services.siem_filters import PROFILE_META
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
@@ -60,19 +61,20 @@ def _severity_gte(severity: str, minimum: str) -> bool:
 
 def _row_to_dict(r) -> dict:
     return {
-        "event_id":        r["id"],
-        "timestamp":       str(r["timestamp"]),
-        "event_type":      r["event_type"],
-        "severity":        r["severity"] or "info",
-        "outcome":         r["outcome"],
-        "actor_user_id":   r["user_id"],
-        "actor_ip":        r["ip_address"],
-        "actor_session_id":r["actor_session_id"],
-        "target_type":     r["target_type"],
-        "target_id":       r["target_id"],
-        "target_name":     r["target_name"],
-        "admin_actor_id":  r["admin_actor_id"],
-        "detail":          (json.loads(r["detail"]) if r["detail"] else None),
+        "event_id":         r["id"],
+        "timestamp":        str(r["timestamp"]),
+        "event_type":       r["event_type"],
+        "severity":         r["severity"] or "info",
+        "outcome":          r["outcome"],
+        "actor_user_id":    r["user_id"],
+        "actor_username":   r["actor_username"],
+        "actor_ip":         r["ip_address"],
+        "actor_session_id": r["actor_session_id"],
+        "target_type":      r["target_type"],
+        "target_id":        r["target_id"],
+        "target_name":      r["target_name"],
+        "admin_actor_id":   r["admin_actor_id"],
+        "detail":           (json.loads(r["detail"]) if r["detail"] else None),
     }
 
 
@@ -137,7 +139,7 @@ async def list_audit_logs(
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     query = f"""
-        SELECT id, user_id, ip_address, actor_session_id,
+        SELECT id, user_id, actor_username, ip_address, actor_session_id,
                event_type, severity, outcome, action_key, detail, timestamp,
                target_type, target_id, target_name, admin_actor_id
         FROM security_events
@@ -199,7 +201,7 @@ async def export_audit_logs(
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     query = f"""
-        SELECT id, user_id, ip_address, actor_session_id,
+        SELECT id, user_id, actor_username, ip_address, actor_session_id,
                event_type, severity, outcome, detail, timestamp,
                target_type, target_id, target_name, admin_actor_id
         FROM security_events
@@ -218,7 +220,7 @@ async def export_audit_logs(
     writer = csv.writer(output)
     writer.writerow([
         "event_id", "timestamp", "event_type", "severity", "outcome",
-        "actor_user_id", "actor_ip", "actor_session_id",
+        "actor_user_id", "actor_username", "actor_ip", "actor_session_id",
         "target_type", "target_id", "target_name",
         "admin_actor_id", "detail",
     ])
@@ -226,7 +228,7 @@ async def export_audit_logs(
         writer.writerow([
             r["id"], r["timestamp"], r["event_type"],
             r["severity"] or "info", r["outcome"] or "",
-            r["user_id"] or "", r["ip_address"] or "", r["actor_session_id"] or "",
+            r["user_id"] or "", r["actor_username"] or "", r["ip_address"] or "", r["actor_session_id"] or "",
             r["target_type"] or "", r["target_id"] or "", r["target_name"] or "",
             r["admin_actor_id"] or "", r["detail"] or "",
         ])
@@ -394,6 +396,7 @@ async def list_siem_destinations(
 
 @router.post("/siem")
 async def create_siem_destination(
+    request: Request,
     body: SiemDestinationRequest,
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
@@ -422,7 +425,7 @@ async def create_siem_destination(
         event_type="admin.siem.config_changed",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         detail={"action": "created", "destination_id": dest_id, "name": body.name, "type": body.type},
     ))
 
@@ -431,6 +434,7 @@ async def create_siem_destination(
 
 @router.put("/siem/{dest_id}")
 async def update_siem_destination(
+    request: Request,
     dest_id: str,
     body: SiemDestinationRequest,
     admin: AuthenticatedUser = Depends(require_admin),
@@ -469,7 +473,7 @@ async def update_siem_destination(
         event_type="admin.siem.config_changed",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         detail={"action": "updated", "destination_id": dest_id, "name": body.name},
     ))
 
@@ -478,6 +482,7 @@ async def update_siem_destination(
 
 @router.delete("/siem/{dest_id}")
 async def delete_siem_destination(
+    request: Request,
     dest_id: str,
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
@@ -495,7 +500,7 @@ async def delete_siem_destination(
         event_type="admin.siem.config_changed",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         detail={"action": "deleted", "destination_id": dest_id, "name": row["name"]},
     ))
 
@@ -504,6 +509,7 @@ async def delete_siem_destination(
 
 @router.post("/siem/{dest_id}/test")
 async def test_siem_destination(
+    request: Request,
     dest_id: str,
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
@@ -521,7 +527,7 @@ async def test_siem_destination(
         event_type="admin.siem.test",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         detail={"destination_id": dest_id, "destination_name": row["name"]},
     )
 

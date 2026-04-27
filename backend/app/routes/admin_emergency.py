@@ -18,7 +18,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth.dependencies import require_admin
@@ -27,6 +27,7 @@ from app.database import get_db
 from app.models.role import FLAG_MANAGE_USERS
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
+from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import validate_uuid
 from app.validation.validators import validate_pagination
 
@@ -53,6 +54,7 @@ class EmergencyRevokeRequest(BaseModel):
 
 @router.post("/users/{user_id}/emergency-revoke")
 async def emergency_revoke(
+    request: Request,
     user_id: str,
     body: EmergencyRevokeRequest,
     admin: AuthenticatedUser = Depends(require_admin),
@@ -229,7 +231,7 @@ async def emergency_revoke(
         event_type="admin.emergency_revocation",
         severity="critical",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         target=EventTarget(type="user", id=user_id, name=target["username"]),
         admin_actor_id=admin.id,
         detail={
@@ -313,6 +315,7 @@ async def list_transfer_locks(
 
 @router.delete("/files/{file_id}/transfer-lock")
 async def clear_transfer_lock(
+    request: Request,
     file_id: str,
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
@@ -349,7 +352,7 @@ async def clear_transfer_lock(
         event_type="file.lock.cleared",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         target=EventTarget(type="file", id=file_id, name=row["sanitized_name"]),
         admin_actor_id=admin.id,
         detail={"file_owner_id": row["owner_id"]},

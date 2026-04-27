@@ -11,7 +11,7 @@ and regular user creation cannot escalate to admin.
 import asyncio
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
@@ -23,6 +23,7 @@ from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 import app.storage.manager as storage
 from app.models.user import User
+from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 from app.validation.validators import validate_pagination
 
@@ -218,6 +219,7 @@ async def get_user(
 
 @router.put("/{user_id}")
 async def update_user(
+    request: Request,
     user_id: str,
     body: UpdateUserRequest,
     admin: AuthenticatedUser = Depends(require_admin),
@@ -265,7 +267,7 @@ async def update_user(
             event_type="admin.user.deactivated" if not body.is_active else "admin.user.activated",
             severity="warning" if not body.is_active else "info",
             outcome="success",
-            actor=EventActor(user_id=admin.id, username=admin.username),
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
             target=EventTarget(type="user", id=user_id),
         ))
 
@@ -336,6 +338,7 @@ async def list_user_roles(
 
 @router.post("/{user_id}/roles/{role_id}")
 async def add_role_to_user(
+    request: Request,
     user_id: str,
     role_id: str,
     admin: AuthenticatedUser = Depends(require_admin),
@@ -386,7 +389,7 @@ async def add_role_to_user(
         event_type="admin.role.granted",
         severity="warning",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         target=EventTarget(type="user", id=user_id, name=target_row["username"]),
         detail={"role_id": role_id},
     ))
@@ -396,6 +399,7 @@ async def add_role_to_user(
 
 @router.delete("/{user_id}/roles/{role_id}")
 async def remove_role_from_user(
+    request: Request,
     user_id: str,
     role_id: str,
     admin: AuthenticatedUser = Depends(require_admin),
@@ -451,7 +455,7 @@ async def remove_role_from_user(
         event_type="admin.role.revoked",
         severity="warning",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
         detail={"role_id": role_id},
     ))
@@ -461,6 +465,7 @@ async def remove_role_from_user(
 
 @router.delete("/{user_id}")
 async def delete_user(
+    request: Request,
     user_id: str,
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
@@ -498,7 +503,7 @@ async def delete_user(
         event_type="admin.user.deleted",
         severity="critical",
         outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
         target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
     ))
 

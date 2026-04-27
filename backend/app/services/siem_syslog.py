@@ -124,6 +124,7 @@ def _format_rfc5424(dest: dict, event: SecurityEvent) -> bytes:
         f'severity="{event.severity}" '
         f'outcome="{event.outcome or ""}" '
         f'actor_user_id="{event.actor.user_id or ""}" '
+        f'actor_username="{event.actor.username or ""}" '
         f'actor_ip="{event.actor.ip or ""}"]'
     )
     msg = f"<{pri}>1 {ts} {hostname} {app_name} - {msgid} {structured}"

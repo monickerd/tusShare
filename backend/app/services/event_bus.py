@@ -137,15 +137,16 @@ async def _persist(event: SecurityEvent) -> None:
             await db.execute(
                 """
                 INSERT INTO security_events
-                    (id, user_id, ip_address, user_agent, event_type,
+                    (id, user_id, actor_username, ip_address, user_agent, event_type,
                      severity, outcome, actor_session_id,
                      target_type, target_id, target_name,
                      admin_actor_id, detail, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(uuid.uuid4()),
                     event.actor.user_id,
+                    event.actor.username,
                     event.actor.ip or "",
                     None,                           # user_agent — not available at bus level
                     event.event_type,
