@@ -393,8 +393,8 @@ const Teams = (() => {
 
         // Create team button
         const createBtn = Utils.el('button', {
-            className: 'btn btn-primary',
-            textContent: 'New Team',
+            className: 'btn btn-primary btn-new-team',
+            textContent: '+ New Team',
             onClick: () => _openCreateTeamDialog(container),
         });
         container.appendChild(createBtn);
@@ -479,9 +479,27 @@ const Teams = (() => {
 
         // ---- Members section ----
         const membersSection = Utils.el('section', { className: 'team-section' });
-        membersSection.appendChild(Utils.el('h3', { textContent: 'Members' }));
+        membersSection.appendChild(Utils.el('h3', { textContent: `Members (${members.length})` }));
+
+        // Live search filter
+        const memberSearch = Utils.el('input', {
+            type: 'search',
+            className: 'team-member-search',
+            placeholder: 'Filter members…',
+        });
+        membersSection.appendChild(memberSearch);
+
         const memberTable = _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner);
         membersSection.appendChild(memberTable);
+
+        // Filter table rows as user types
+        memberSearch.addEventListener('input', () => {
+            const q = memberSearch.value.toLowerCase();
+            for (const row of memberTable.querySelectorAll('tbody tr')) {
+                const name = row.querySelector('td')?.textContent?.toLowerCase() ?? '';
+                row.style.display = !q || name.includes(q) ? '' : 'none';
+            }
+        });
 
         if (isSupervisor) {
             membersSection.appendChild(Utils.el('button', {
@@ -504,19 +522,66 @@ const Teams = (() => {
             foldersSection.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folder associated with this team.' }));
         } else {
             const f = folders[0];
-            const folderRow = Utils.el('div', { className: 'team-folder-row' }, [
-                Utils.el('a', {
-                    href: `#/team-folders/${f.folder_id}`,
-                    className: 'folder-link',
-                    textContent: f.folder_name,
-                }),
-            ]);
+            const folderLink = Utils.el('a', {
+                href: `#/team-folders/${f.folder_id}`,
+                className: 'folder-link',
+                textContent: f.folder_name,
+            });
+            const folderRow = Utils.el('div', { className: 'team-folder-row' }, [folderLink]);
+
             if (isOwner) {
-                folderRow.appendChild(Utils.el('button', {
+                // Inline rename: pencil button toggles a text input in place
+                const editBtn = Utils.el('button', {
                     className: 'btn btn-secondary btn-xs',
-                    textContent: 'Rename',
-                    onClick: () => _openRenameFolderDialog(f.folder_id, f.folder_name, container, teamId),
-                }));
+                    textContent: '✎ Rename',
+                });
+                folderRow.appendChild(editBtn);
+
+                editBtn.addEventListener('click', () => {
+                    // Replace link with inline edit widget
+                    const nameInput = Utils.el('input', {
+                        type: 'text',
+                        className: 'input input-xs',
+                        value: folderLink.textContent,
+                    });
+                    const saveBtn = Utils.el('button', {
+                        className: 'btn btn-primary btn-xs',
+                        textContent: 'Save',
+                    });
+                    const cancelBtn = Utils.el('button', {
+                        className: 'btn btn-secondary btn-xs',
+                        textContent: 'Cancel',
+                    });
+                    const editRow = Utils.el('span', { className: 'folder-inline-edit' }, [nameInput, saveBtn, cancelBtn]);
+
+                    folderRow.replaceChild(editRow, folderLink);
+                    folderRow.removeChild(editBtn);
+                    nameInput.focus();
+                    nameInput.select();
+
+                    const restoreView = () => {
+                        folderRow.replaceChild(folderLink, editRow);
+                        folderRow.appendChild(editBtn);
+                    };
+
+                    cancelBtn.addEventListener('click', restoreView);
+                    nameInput.addEventListener('keydown', e => { if (e.key === 'Escape') restoreView(); });
+
+                    saveBtn.addEventListener('click', async () => {
+                        const name = nameInput.value.trim();
+                        if (!name) return;
+                        saveBtn.disabled = true;
+                        try {
+                            await Api.put(`${Config.app.apiPrefix}/folders/${f.folder_id}`, { name });
+                            folderLink.textContent = name;
+                            Utils.showToast('Folder renamed', 'success');
+                            restoreView();
+                        } catch (err) {
+                            Utils.showToast('Rename failed: ' + err.message, 'error');
+                            saveBtn.disabled = false;
+                        }
+                    });
+                });
             }
             foldersSection.appendChild(folderRow);
         }

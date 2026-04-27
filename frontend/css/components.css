@@ -2070,3 +2070,149 @@
 .activity-type { color: var(--color-text); }
 .activity-time { color: var(--color-text-muted); font-size: var(--font-size-xs); white-space: nowrap; }
 
+/* =========================================================================
+   Teams — list, cards, detail page
+   ========================================================================= */
+
+.team-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--space-4);
+    margin-top: var(--space-4);
+}
+
+.team-card {
+    background: var(--color-surface, #fff);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 6px);
+    padding: var(--space-4);
+    transition: box-shadow 0.15s;
+}
+
+.team-card:hover {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.team-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+}
+
+.team-card-name {
+    font-weight: 600;
+    font-size: var(--font-size-md, 1rem);
+    text-decoration: none;
+    color: var(--color-primary, #2563eb);
+}
+
+.team-card-name:hover {
+    text-decoration: underline;
+}
+
+.team-card-desc {
+    margin: 0;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+}
+
+.team-rotation-warn {
+    margin: var(--space-2) 0 0;
+    color: var(--color-warning, #d97706);
+    font-size: var(--font-size-sm);
+}
+
+.team-role-badge {
+    display: inline-block;
+    padding: 2px var(--space-2);
+    border-radius: 99px;
+    font-size: var(--font-size-xs);
+    background: var(--color-primary-muted, #dbeafe);
+    color: var(--color-primary, #2563eb);
+    white-space: nowrap;
+}
+
+/* ---- Team detail page sections ---- */
+
+.team-section {
+    margin-top: var(--space-6);
+}
+
+.team-section > h3 {
+    margin-bottom: var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-2);
+}
+
+.team-member-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+}
+
+.team-member-table th {
+    text-align: left;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 2px solid var(--color-border);
+    color: var(--color-text-muted);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.team-member-table td {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: middle;
+}
+
+.team-member-table tr:last-child td {
+    border-bottom: none;
+}
+
+.team-member-table td:last-child {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+}
+
+.team-folder-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+}
+
+/* ---- Member search filter ---- */
+
+.team-member-search {
+    display: block;
+    width: 100%;
+    max-width: 320px;
+    margin-bottom: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 4px);
+    background: var(--color-background);
+    color: var(--color-text);
+    font-size: var(--font-size-sm);
+}
+
+/* ---- Inline folder rename ---- */
+
+.folder-inline-edit {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.folder-inline-edit input {
+    padding: 2px var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 4px);
+    font-size: var(--font-size-sm);
+    background: var(--color-background);
+    color: var(--color-text);
+}
+
