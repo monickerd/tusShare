@@ -1882,6 +1882,9 @@ const Auth = (() => {
         TransferManager.dismissAll();
         TransferManager.pauseAll();
 
+        // Clear session-scoped toast history and unread counter.
+        Utils.clearToastHistory();
+
         // Close any open confirm/prompt modals so they don't linger on the login page.
         document.querySelectorAll('.modal-overlay').forEach(el => {
             if (el.parentNode) el.parentNode.removeChild(el);

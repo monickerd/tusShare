@@ -101,6 +101,28 @@ a:hover {
     font-size: var(--font-size-md);
 }
 
+.header-account-btn {
+    position: relative;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-md);
+}
+
+.header-unread-dot {
+    display: none;
+    position: absolute;
+    top: 2px;
+    right: -2px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color-success);
+    border: 2px solid var(--color-surface-header, var(--color-surface));
+}
+
+.header-unread-dot--active {
+    display: block;
+}
+
 .app-main {
     flex: 1;
     overflow: auto;

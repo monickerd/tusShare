@@ -414,6 +414,18 @@ const App = (() => {
             }));
         }
 
+        const unreadDot = Utils.el('span', { className: 'header-unread-dot' });
+        const accountBtn = Utils.el('button', {
+            className: 'btn btn-sm header-account-btn',
+        }, [
+            Utils.el('span', { textContent: user ? user.username : '' }),
+            unreadDot,
+        ]);
+        // Kept as a simple button for now; Tier 5 wires the dropdown.
+        Utils.onUnreadChange(count => {
+            unreadDot.classList.toggle('header-unread-dot--active', count > 0);
+        });
+
         const shellChildren = [
             Utils.el('header', { className: 'app-header' }, [
                 Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
@@ -421,7 +433,7 @@ const App = (() => {
                     _buildBrandEl(),
                 ]),
                 Utils.el('div', { className: 'header-actions' }, [
-                    Utils.el('span', { className: 'header-user', textContent: user ? user.username : '' }),
+                    accountBtn,
                     Utils.el('button', {
                         className: 'btn btn-secondary btn-sm',
                         textContent: 'Logout',

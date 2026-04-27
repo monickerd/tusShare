@@ -71,9 +71,16 @@ const Utils = (() => {
     }
 
     /**
-     * Toast notification system.
+     * Toast notification system — history, unread tracking, and auto-dismiss.
      */
     let _toastContainer = null;
+    const _toastHistory = [];   // { message, type, timestamp } — session-scoped
+    let _unreadCount = 0;
+    let _unreadListener = null; // single listener (app.js header dot)
+
+    function _notifyUnread() {
+        if (_unreadListener) _unreadListener(_unreadCount);
+    }
 
     function _ensureToastContainer() {
         if (!_toastContainer) {
@@ -84,6 +91,10 @@ const Utils = (() => {
     }
 
     function showToast(message, type = 'info') {
+        _toastHistory.push({ message, type, timestamp: new Date() });
+        _unreadCount++;
+        _notifyUnread();
+
         const container = _ensureToastContainer();
         const dismiss = el('button', {
             className: 'toast-dismiss',
@@ -95,14 +106,34 @@ const Utils = (() => {
             el('span', { className: 'toast-message', textContent: message }),
             dismiss,
         ]);
-        dismiss.addEventListener('click', () => {
+
+        let autoTimer = null;
+        const fadeAndRemove = () => {
+            clearTimeout(autoTimer);
             toast.classList.remove('toast-visible');
             setTimeout(() => {
                 if (toast.parentNode) toast.parentNode.removeChild(toast);
             }, Config.ui.toastFadeOutMs);
-        });
+        };
+
+        dismiss.addEventListener('click', fadeAndRemove);
+        if (Config.ui.toastAutoHideMs > 0) {
+            autoTimer = setTimeout(fadeAndRemove, Config.ui.toastAutoHideMs);
+        }
+
         container.appendChild(toast);
         requestAnimationFrame(() => toast.classList.add('toast-visible'));
+    }
+
+    function getToastHistory() { return _toastHistory.slice(); }
+    function getUnreadCount()  { return _unreadCount; }
+    function markAllRead()     { _unreadCount = 0; _notifyUnread(); }
+    function onUnreadChange(fn) { _unreadListener = fn; }
+    function clearToastHistory() {
+        _toastHistory.length = 0;
+        _unreadCount = 0;
+        _unreadListener = null;
+        _notifyUnread();
     }
 
     /**
@@ -264,6 +295,11 @@ const Utils = (() => {
         el,
         escHtml,
         showToast,
+        getToastHistory,
+        getUnreadCount,
+        markAllRead,
+        onUnreadChange,
+        clearToastHistory,
         showConfirm,
         showPrompt,
         showModal,
