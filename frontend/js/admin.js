@@ -424,6 +424,14 @@ const Admin = (() => {
             type: 'checkbox',
             checked: s['open_registration'] === 'true',
         });
+        const fldAllowSelfDelete = Utils.el('input', {
+            type: 'checkbox',
+            checked: s['allow_user_delete_own_account'] === 'true',
+        });
+        const fldMultiOwner = Utils.el('input', {
+            type: 'checkbox',
+            checked: s['allow_multi_team_owner'] === 'true',
+        });
 
         const saveBtn = Utils.el('button', {
             className: 'btn btn-primary btn-sm',
@@ -435,11 +443,13 @@ const Admin = (() => {
                     return;
                 }
                 const payload = {
-                    global_max_file_size:   String(parseInt(fldMaxFileSize.value, 10) * _MB),
-                    global_bandwidth_limit: String(parseInt(fldBandwidth.value, 10)   * _MB),
-                    disk_warning_threshold: String(parseInt(fldDiskWarn.value, 10)),
-                    default_chunk_size:     String(chunkMb * _MB),
-                    open_registration:      fldOpenReg.checked ? 'true' : 'false',
+                    global_max_file_size:          String(parseInt(fldMaxFileSize.value, 10) * _MB),
+                    global_bandwidth_limit:         String(parseInt(fldBandwidth.value, 10)   * _MB),
+                    disk_warning_threshold:         String(parseInt(fldDiskWarn.value, 10)),
+                    default_chunk_size:             String(chunkMb * _MB),
+                    open_registration:              fldOpenReg.checked ? 'true' : 'false',
+                    allow_user_delete_own_account:  fldAllowSelfDelete.checked ? 'true' : 'false',
+                    allow_multi_team_owner:         fldMultiOwner.checked ? 'true' : 'false',
                 };
                 saveBtn.disabled = true;
                 try {
@@ -460,6 +470,8 @@ const Admin = (() => {
             _row('Disk warning threshold (%)', 'Admin alert when filesystem usage reaches this %', fldDiskWarn),
             _row('Default chunk size (MB)', 'Enforced server-side; clients fetch this value on startup and use it for new uploads', fldChunkSize),
             _row('Open registration', 'Allow anyone to register without an invite', fldOpenReg),
+            _row('Allow users to delete their own account', 'When enabled, users can permanently delete their account from the account menu', fldAllowSelfDelete),
+            _row('Allow multiple team owners', 'When enabled, team owners may promote supervisors to co-owner', fldMultiOwner),
             Utils.el('div', { className: 'settings-actions' }, [saveBtn]),
         ]));
     }

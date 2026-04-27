@@ -416,8 +416,8 @@ const Teams = (() => {
 
     function _createTeamCard(team) {
         const roleLabel = {
-            team_owner:      'Owner',
-            team_supervisor: 'Supervisor',
+            team_admin:   'Owner',
+            team_manager: 'Supervisor',
             team_member:     'Member',
         }[team.my_role] || team.my_role;
 
@@ -458,12 +458,12 @@ const Teams = (() => {
             return;
         }
 
-        const { team, members, folders } = data;
+        const { team, members, folders, allow_multi_team_owner: allowMultiOwner } = data;
         const user        = Auth.getCurrentUser();
         const myMember    = members.find(m => m.user_id === user.id);
         const myRole      = myMember ? myMember.role : null;
-        const isOwner     = myRole === 'team_owner';
-        const isSupervisor= myRole === 'team_supervisor' || isOwner;
+        const isOwner     = myRole === 'team_admin';
+        const isSupervisor= myRole === 'team_manager' || isOwner;
 
         // Header
         container.appendChild(Utils.el('h2', { textContent: team.name }));
@@ -480,7 +480,7 @@ const Teams = (() => {
         // ---- Members section ----
         const membersSection = Utils.el('section', { className: 'team-section' });
         membersSection.appendChild(Utils.el('h3', { textContent: 'Members' }));
-        const memberTable = _buildMemberTable(team, members, myRole, teamId, container);
+        const memberTable = _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner);
         membersSection.appendChild(memberTable);
 
         if (isSupervisor) {
@@ -879,10 +879,11 @@ const Teams = (() => {
         closeModal = Utils.showModal('Create Custom Role', formContent);
     }
 
-    function _buildMemberTable(team, members, myRole, teamId, container) {
+    function _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner) {
         const user     = Auth.getCurrentUser();
-        const isOwner  = myRole === 'team_owner';
-        const isSupervisor = myRole === 'team_supervisor' || isOwner;
+        const isOwner  = myRole === 'team_admin';
+        const isSupervisor = myRole === 'team_manager' || isOwner;
+        const ownerCount = members.filter(m => m.role === 'team_admin').length;
 
         const thead = Utils.el('thead', {}, [
             Utils.el('tr', {}, [
@@ -894,11 +895,58 @@ const Teams = (() => {
         const tbody = Utils.el('tbody');
 
         for (const m of members) {
-            const roleLabel = { team_owner: 'Owner', team_supervisor: 'Supervisor', team_member: 'Member' }[m.role] || m.role;
-            const isSelf    = m.user_id === user.id;
-            const isTargetOwner = m.role === 'team_owner';
+            const roleLabel     = { team_admin: 'Owner', team_manager: 'Supervisor', team_member: 'Member' }[m.role] || m.role;
+            const isSelf        = m.user_id === user.id;
+            const isTargetOwner = m.role === 'team_admin';
 
             const actions = [];
+
+            // Role-change dropdown — owners only, not for self
+            if (isOwner && !isSelf) {
+                // Build the list of assignable target roles for this member
+                const roleOptions = [
+                    { value: 'team_member',  label: 'Member' },
+                    { value: 'team_manager', label: 'Supervisor' },
+                ];
+                // Show owner option only when the flag is on
+                if (allowMultiOwner) {
+                    roleOptions.push({ value: 'team_admin', label: 'Owner' });
+                }
+
+                const roleSelect = Utils.el('select', { className: 'input input-xs' });
+                for (const opt of roleOptions) {
+                    const option = Utils.el('option', { value: opt.value, textContent: opt.label });
+                    if (opt.value === m.role) option.selected = true;
+                    roleSelect.appendChild(option);
+                }
+
+                const applyBtn = Utils.el('button', {
+                    className: 'btn btn-secondary btn-xs',
+                    textContent: 'Apply',
+                    onClick: async () => {
+                        const newRole = roleSelect.value;
+                        if (newRole === m.role) return;
+                        // Guard: can't demote the only owner
+                        if (isTargetOwner && ownerCount <= 1) {
+                            Utils.showToast('Cannot demote the only owner — promote another member first.', 'error');
+                            return;
+                        }
+                        applyBtn.disabled = true;
+                        try {
+                            await Api.put(`${_api}/teams/${teamId}/members/${m.user_id}`, { role: newRole });
+                            Utils.showToast(`${m.username}'s role updated.`, 'success');
+                            renderTeamDetailPage(container, teamId);
+                        } catch (e) {
+                            Utils.showToast('Failed to change role: ' + e.message, 'error');
+                            applyBtn.disabled = false;
+                        }
+                    },
+                });
+
+                actions.push(Utils.el('span', { className: 'member-role-change' }, [roleSelect, applyBtn]));
+            }
+
+            // Remove button — supervisors and owners; not for self, not for other owners
             if (isSupervisor && !isSelf && !isTargetOwner) {
                 actions.push(Utils.el('button', {
                     className: 'btn btn-danger btn-xs',
@@ -1134,7 +1182,7 @@ const Teams = (() => {
         const usernameInput = Utils.el('input', { type: 'text', placeholder: 'Username', className: 'input' });
         const roleSelect = Utils.el('select', { className: 'input' });
         roleSelect.appendChild(Utils.el('option', { value: 'team_member', textContent: 'Member' }));
-        roleSelect.appendChild(Utils.el('option', { value: 'team_supervisor', textContent: 'Supervisor' }));
+        roleSelect.appendChild(Utils.el('option', { value: 'team_manager', textContent: 'Supervisor' }));
         modal.appendChild(usernameInput);
         modal.appendChild(roleSelect);
 

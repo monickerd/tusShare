@@ -51,6 +51,8 @@ _SETTINGS_VALIDATORS = {
     "notify_escrow_on_revocation": lambda v: v in ("0", "1"),
     # Self-service account deletion
     "allow_user_delete_own_account": lambda v: v in ("true", "false"),
+    # Multi-owner teams
+    "allow_multi_team_owner":        lambda v: v in ("true", "false"),
     # Audit retention
     "audit_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
     # Antivirus / server-side scanning

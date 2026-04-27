@@ -242,8 +242,8 @@ class UpdateMemberRoleRequest(BaseModel):
     @field_validator("role")
     @classmethod
     def validate_role(cls, v: str) -> str:
-        if v not in ASSIGNABLE_ROLES:
-            raise ValueError(f"Role must be one of: {', '.join(sorted(ASSIGNABLE_ROLES))}")
+        if v not in VALID_TEAM_ROLES:
+            raise ValueError(f"Role must be one of: {', '.join(sorted(VALID_TEAM_ROLES))}")
         return v
 
 
@@ -597,10 +597,17 @@ async def get_team_detail(
     members = await get_team_members(db, team_id)
     folders = await get_team_folders(db, team_id)
 
+    flag_cur = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'allow_multi_team_owner'"
+    )
+    flag_row = await flag_cur.fetchone()
+    allow_multi_owner = flag_row["value"] == "true" if flag_row else False
+
     return {
         "team": team.to_dict(),
         "members": [m.to_dict() for m in members],
         "folders": [f.to_dict() for f in folders],
+        "allow_multi_team_owner": allow_multi_owner,
     }
 
 
@@ -768,20 +775,49 @@ async def update_member_role(
     user: AuthenticatedUser = Depends(require_user_role),
     db=Depends(get_db),
 ):
-    """Change a member's role. Only owners may change roles."""
+    """Change a member's role. Only owners may change roles.
+
+    Promoting to team_admin requires the allow_multi_team_owner admin setting.
+    Demoting an existing team_admin is allowed only when another owner remains.
+    """
     team_id        = validate_uuid(team_id)
     target_user_id = validate_uuid(target_user_id)
     await _get_team_or_404(db, team_id)
     await _require_team_role(db, team_id, user, TEAM_ROLE_OWNER)
 
     if target_user_id == user.id:
-        raise HTTPException(status_code=422, detail="Owner cannot change their own role")
+        raise HTTPException(status_code=422, detail="Cannot change your own role")
 
     current_role = await get_team_member_role(db, team_id, target_user_id)
     if not current_role:
         raise HTTPException(status_code=404, detail="User is not a member of this team")
-    if current_role == TEAM_ROLE_OWNER:
-        raise HTTPException(status_code=422, detail="Cannot change the owner's role")
+
+    # Promoting to owner requires the admin flag
+    if body.role == TEAM_ROLE_OWNER:
+        flag_cur = await db.execute(
+            "SELECT value FROM admin_settings WHERE key = 'allow_multi_team_owner'"
+        )
+        flag_row = await flag_cur.fetchone()
+        if not flag_row or flag_row["value"] != "true":
+            raise HTTPException(
+                status_code=403,
+                detail="Multi-owner teams are not enabled by the administrator",
+            )
+
+    # Demoting an existing owner is only allowed if another owner will remain
+    if current_role == TEAM_ROLE_OWNER and body.role != TEAM_ROLE_OWNER:
+        cnt_cur = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM user_roles "
+            "WHERE scope_type = 'team' AND scope_id = ? AND role_id = ?",
+            (team_id, TEAM_ROLE_OWNER),
+        )
+        cnt_row = await cnt_cur.fetchone()
+        owner_count = cnt_row["cnt"] if cnt_row else 1
+        if owner_count <= 1:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot demote the only owner — promote another member first",
+            )
 
     await db.execute(
         "UPDATE user_roles SET role_id = ? "
@@ -789,6 +825,10 @@ async def update_member_role(
         (body.role, target_user_id, team_id),
     )
     await db.commit()
+    logger.info(
+        "User %s changed role of %s in team %s: %s → %s",
+        user.id, target_user_id, team_id, current_role, body.role,
+    )
     return {"ok": True}
 
 
