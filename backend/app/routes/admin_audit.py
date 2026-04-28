@@ -26,12 +26,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.auth.dependencies import require_admin
+from app.auth.api_key import check_api_key, make_api_key_dep
+from app.auth.dependencies import get_optional_user, require_admin
 from app.auth.interface import AuthenticatedUser
 from app.auth.idp_crypto import encrypt_token, decrypt_token
 from app.database import get_db
 from app.middleware.rate_limit import _get_client_ip
-from app.models.role import FLAG_MANAGE_USERS
+from app.models.role import FLAG_MANAGE_USERS, FLAG_VIEW_ADMIN_PANEL
 from app.services.siem_filters import PROFILE_META
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
@@ -45,6 +46,33 @@ _SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 _MAX_EXPORT_ROWS = 50_000
 _SSE_KEEPALIVE_SECS = 25  # comment-only keepalive to hold the connection
 
+# FastAPI dependency for the SSE stream — API key only (machine consumers only).
+_require_audit_key = make_api_key_dep("audit_read")
+
+
+# ---------------------------------------------------------------------------
+# Dual-auth dependency (admin JWT OR audit_read API key)
+# ---------------------------------------------------------------------------
+
+async def _require_audit_read(
+    request: Request,
+    optional_user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> dict | None:
+    """Accept either an admin JWT or an audit_read API key.
+
+    Returns the API key DB row when authenticated via API key (callers use
+    filter_event_types / filter_min_severity from it), or None for JWT auth.
+    Browser admin UI uses the JWT path; machine consumers use the API key path.
+    """
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        return await check_api_key(x_api_key, "audit_read")
+    if optional_user is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not optional_user.has_flag(FLAG_VIEW_ADMIN_PANEL):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -57,6 +85,26 @@ def _matches_event_types(event_type: str, patterns: list[str]) -> bool:
 
 def _severity_gte(severity: str, minimum: str) -> bool:
     return _SEVERITY_ORDER.get(severity, 0) >= _SEVERITY_ORDER.get(minimum, 0)
+
+
+def _apply_key_filters(rows: list, key_row: dict | None) -> list:
+    """Apply per-key event-type and severity filters from the API key's own config.
+
+    Only active when auth is via API key (key_row is not None) and the key has
+    filter_event_types or filter_min_severity set.  These constraints are
+    additive — they narrow results on top of any query-param filters.
+    """
+    if not key_row:
+        return rows
+    et_raw = key_row.get("filter_event_types")
+    sev    = key_row.get("filter_min_severity")
+    if et_raw:
+        patterns = [p.strip() for p in et_raw.split(",") if p.strip()]
+        if patterns:
+            rows = [r for r in rows if _matches_event_types(r["event_type"], patterns)]
+    if sev:
+        rows = [r for r in rows if _severity_gte(r.get("severity") or "info", sev)]
+    return rows
 
 
 def _row_to_dict(r) -> dict:
@@ -92,7 +140,7 @@ async def list_audit_logs(
     since:       str   = Query("",  description="ISO timestamp lower bound"),
     until:       str   = Query("",  description="ISO timestamp upper bound"),
     after:       str   = Query("",  description="Cursor — event_id to page from (exclusive)"),
-    admin: AuthenticatedUser = Depends(require_admin),
+    _auth=Depends(_require_audit_read),
     db=Depends(get_db),
 ):
     """Paginated query over security_events. Suitable for gap-fill after SIEM reconnect."""
@@ -155,6 +203,7 @@ async def list_audit_logs(
     if et_patterns:
         rows = [r for r in rows if _matches_event_types(r["event_type"], et_patterns)]
 
+    rows = _apply_key_filters(rows, _auth)
     return {"events": [_row_to_dict(r) for r in rows], "count": len(rows)}
 
 
@@ -169,7 +218,7 @@ async def export_audit_logs(
     user_id:     str = Query(""),
     since:       str = Query(""),
     until:       str = Query(""),
-    admin: AuthenticatedUser = Depends(require_admin),
+    _auth=Depends(_require_audit_read),
     db=Depends(get_db),
 ):
     """Download security_events as a CSV file (max 50 000 rows)."""
@@ -216,6 +265,8 @@ async def export_audit_logs(
     if et_patterns:
         rows = [r for r in rows if _matches_event_types(r["event_type"], et_patterns)]
 
+    rows = _apply_key_filters(rows, _auth)
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -250,17 +301,22 @@ async def stream_audit_logs(
     event_types: str = Query(""),
     severity:    str = Query("info"),
     user_id:     str = Query(""),
-    admin: AuthenticatedUser = Depends(require_admin),
+    _key: dict = Depends(_require_audit_key),
 ):
     """Stream security events in real-time via Server-Sent Events.
 
+    Machine-only endpoint — requires an API key with audit_read scope.
+    The browser admin UI uses the pull API (/logs) with polling instead.
     Reconnect via Last-Event-ID header to resume from the last seen event_id.
-    The endpoint validates admin auth and then subscribes to the event bus.
-    Clients should reconnect automatically (standard SSE browser behaviour).
     """
     et_patterns = [p.strip() for p in event_types.split(",") if p.strip()]
     min_sev = severity if severity in _SEVERITY_ORDER else "info"
     uid_filter = user_id.strip() or None
+
+    # Per-key filter constraints (additive on top of query-param filters).
+    key_et_raw = _key.get("filter_event_types") or ""
+    key_et_patterns = [p.strip() for p in key_et_raw.split(",") if p.strip()]
+    key_min_sev = _key.get("filter_min_severity") or "info"
 
     async def _generate() -> AsyncGenerator[bytes, None]:
         import asyncio
@@ -276,7 +332,11 @@ async def stream_audit_logs(
 
                 if not _severity_gte(event.severity, min_sev):
                     continue
+                if not _severity_gte(event.severity, key_min_sev):
+                    continue
                 if et_patterns and not _matches_event_types(event.event_type, et_patterns):
+                    continue
+                if key_et_patterns and not _matches_event_types(event.event_type, key_et_patterns):
                     continue
                 if uid_filter and event.actor.user_id != uid_filter:
                     continue

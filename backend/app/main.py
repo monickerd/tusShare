@@ -28,10 +28,35 @@ from app.util.integrity import check_integrity, get_result as get_integrity_resu
 from app.util.sri import inject_sri
 from app.util.theme import inject_theme
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.DEBUG else logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+def _configure_logging() -> None:
+    if settings.LOG_JSON:
+        import json as _json
+        import traceback as _tb
+
+        class _JSONFormatter(logging.Formatter):
+            def format(self, record: logging.LogRecord) -> str:
+                obj: dict = {
+                    "ts":      self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+                    "level":   record.levelname,
+                    "logger":  record.name,
+                    "msg":     record.getMessage(),
+                }
+                if record.exc_info:
+                    obj["exc"] = _tb.format_exception(*record.exc_info)
+                return _json.dumps(obj, separators=(",", ":"))
+
+        handler = logging.StreamHandler()
+        handler.setFormatter(_JSONFormatter())
+        logging.root.handlers = [handler]
+        logging.root.setLevel(logging.DEBUG if settings.DEBUG else logging.INFO)
+    else:
+        logging.basicConfig(
+            level=logging.DEBUG if settings.DEBUG else logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -128,7 +153,7 @@ async def lifespan(app: FastAPI):
     settings.FILES_DIR.mkdir(parents=True, exist_ok=True)
     settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Initialize database and run migrations
+    # Initialize database
     await init_db()
 
     # Load and verify the sensitive function config (must run before routes handle requests)

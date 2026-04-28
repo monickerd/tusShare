@@ -3618,6 +3618,13 @@ const Admin = (() => {
         }
     }
 
+    const _KEY_SCOPES = [
+        { value: 'ops_read',           label: 'ops_read',           desc: 'Read operational events (/op-events)' },
+        { value: 'audit_read',         label: 'audit_read',         desc: 'Read security audit logs (/admin/audit/logs)' },
+        { value: 'events.read',        label: 'events.read',        desc: 'Legacy alias for ops_read (backward compat)' },
+        { value: 'notification_write', label: 'notification_write', desc: 'Internal — channel delivery auth' },
+    ];
+
     function _renderApiKeysPanel(container, keys) {
         container.innerHTML = '';
         const wrap = Utils.el('div', { style: 'padding:16px' });
@@ -3633,19 +3640,34 @@ const Admin = (() => {
             wrap.appendChild(Utils.el('p', { textContent: 'No API keys.', className: 'text-muted' }));
         } else {
             const table = Utils.el('table', { className: 'admin-table', style: 'width:100%' });
-            table.innerHTML = '<thead><tr><th>Name</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead>';
+            table.innerHTML = '<thead><tr><th>Name</th><th>Scopes</th><th>Filters</th><th>Created</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead>';
             const tbody = Utils.el('tbody');
             for (const k of keys) {
                 const tr = Utils.el('tr');
                 const scopes = (() => { try { return JSON.parse(k.scopes || '[]'); } catch { return []; } })();
+                const filterParts = [];
+                if (k.filter_event_types)  filterParts.push(`types: ${k.filter_event_types}`);
+                if (k.filter_min_severity) filterParts.push(`sev≥${k.filter_min_severity}`);
                 tr.innerHTML = `
                   <td>${Utils.escHtml(k.name)}</td>
                   <td style="font-size:12px">${Utils.escHtml(scopes.join(', '))}</td>
+                  <td style="font-size:11px;color:var(--color-muted,#888)">${Utils.escHtml(filterParts.join(' · ') || '—')}</td>
                   <td style="font-size:12px">${k.created_at ? k.created_at.slice(0, 10) : ''}</td>
                   <td style="font-size:12px">${k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'}</td>
                   <td style="font-size:12px">${k.expires_at ? k.expires_at.slice(0, 10) : 'never'}</td>
-                  <td></td>
+                  <td style="white-space:nowrap"></td>
                 `;
+                const actionsCell = tr.cells[6];
+                const rotateBtn = Utils.el('button', { textContent: 'Rotate', className: 'btn btn-sm', style: 'margin-right:4px' });
+                rotateBtn.addEventListener('click', async () => {
+                    if (!confirm(`Rotate key "${k.name}"? The current key will stop working immediately.`)) return;
+                    try {
+                        const result = await Api.post(`${_api()}/admin/api-keys/${k.id}/rotate`, {});
+                        _showApiKeyReveal(result.key, result.name, container);
+                    } catch (err) {
+                        Utils.showToast('Rotate failed: ' + err.message, 'error');
+                    }
+                });
                 const revokeBtn = Utils.el('button', { textContent: 'Revoke', className: 'btn btn-sm btn-danger' });
                 revokeBtn.addEventListener('click', async () => {
                     if (!confirm(`Revoke API key "${k.name}"? This cannot be undone.`)) return;
@@ -3657,7 +3679,7 @@ const Admin = (() => {
                         Utils.showToast('Revoke failed: ' + err.message, 'error');
                     }
                 });
-                tr.cells[5].appendChild(revokeBtn);
+                actionsCell.append(rotateBtn, revokeBtn);
                 tbody.appendChild(tr);
             }
             table.appendChild(tbody);
@@ -3669,28 +3691,46 @@ const Admin = (() => {
 
     function _showApiKeyModal(refreshContainer) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:420px' });
+        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:480px' });
         box.appendChild(Utils.el('h3', { textContent: 'Create API Key', style: 'margin-top:0' }));
 
-        const nameInp   = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. Grafana dashboard' });
+        const nameInp   = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. Grafana SIEM' });
         const expiryInp = Utils.el('input', { type: 'date', style: 'width:200px' });
-        // Scope checkboxes
-        const eventsChk = Utils.el('input', { type: 'checkbox', checked: true });
-        const scopeRow  = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:10px' });
-        scopeRow.append(eventsChk, Utils.el('label', { textContent: 'events.read' }));
+        const filterTypesInp = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. auth.*,admin.* (leave blank for all)' });
+        const filterSevSel = Utils.el('select', { style: 'width:100%' });
+        for (const [v, l] of [['', 'All (info+)'], ['warning', 'warning+'], ['critical', 'critical only']]) {
+            const opt = Utils.el('option', { value: v, textContent: l });
+            filterSevSel.appendChild(opt);
+        }
 
-        const mkField = (label, inp) => {
+        const mkField = (label, inp, hint) => {
             const row = Utils.el('div', { style: 'margin-bottom:10px' });
             row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:13px;margin-bottom:4px' }));
             row.appendChild(inp);
+            if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:11px;color:var(--color-muted,#888);margin:2px 0 0' }));
             return row;
         };
 
+        // Scope checkboxes
+        const scopeLabel = Utils.el('label', { textContent: 'Scopes', style: 'display:block;font-size:13px;margin-bottom:4px' });
+        const scopeChecks = {};
+        const scopeWrap = Utils.el('div', { style: 'margin-bottom:10px' });
+        scopeWrap.appendChild(scopeLabel);
+        for (const s of _KEY_SCOPES) {
+            const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
+            const chk = Utils.el('input', { type: 'checkbox' });
+            if (s.value === 'ops_read') chk.checked = true;
+            scopeChecks[s.value] = chk;
+            row.append(chk, Utils.el('span', { innerHTML: `<b>${Utils.escHtml(s.label)}</b> <span style="font-size:11px;color:var(--color-muted,#888)">${Utils.escHtml(s.desc)}</span>` }));
+            scopeWrap.appendChild(row);
+        }
+
         box.append(
             mkField('Name', nameInp),
-            Utils.el('label', { textContent: 'Scopes', style: 'display:block;font-size:13px;margin-bottom:4px' }),
-            scopeRow,
+            scopeWrap,
             mkField('Expiry date (optional)', expiryInp),
+            mkField('Filter event types (optional)', filterTypesInp, 'Comma-separated glob patterns. Only events matching these will be visible to this key.'),
+            mkField('Minimum severity (optional)', filterSevSel),
         );
 
         const errEl = Utils.el('p', { className: 'error-text', style: 'display:none;margin-bottom:8px' });
@@ -3701,11 +3741,13 @@ const Admin = (() => {
         cancelBtn.addEventListener('click', () => document.body.removeChild(modal));
         const createBtn = Utils.el('button', { textContent: 'Create Key', className: 'btn btn-primary btn-sm' });
         createBtn.addEventListener('click', async () => {
-            const scopes = eventsChk.checked ? ['events.read'] : [];
+            const scopes = _KEY_SCOPES.map(s => s.value).filter(v => scopeChecks[v].checked);
             const body = {
-                name:       nameInp.value.trim(),
+                name:                nameInp.value.trim(),
                 scopes,
-                expires_at: expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null,
+                expires_at:          expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null,
+                filter_event_types:  filterTypesInp.value.trim() || null,
+                filter_min_severity: filterSevSel.value || null,
             };
             try {
                 const result = await Api.post(`${_api()}/admin/api-keys`, body);

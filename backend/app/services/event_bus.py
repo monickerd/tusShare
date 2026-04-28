@@ -37,8 +37,10 @@ logger = logging.getLogger(__name__)
 # than letting it grow without bound and OOM the process.
 _SUBSCRIBER_MAXSIZE = 2000
 
-# Module-level queue: emitters put events here; the drainer task reads them.
-_write_queue: asyncio.Queue[SecurityEvent] = asyncio.Queue()
+# Module-level queue: emitters put (event, should_persist) tuples here.
+# should_persist=False is used when the caller already wrote the DB row inline
+# and only wants fan-out to SSE/syslog/webhook subscribers.
+_write_queue: asyncio.Queue[tuple[SecurityEvent, bool]] = asyncio.Queue()
 
 # Live subscriber queues — each is a bounded asyncio.Queue.
 _subscribers: list[asyncio.Queue[SecurityEvent]] = []
@@ -59,7 +61,17 @@ def emit(event: SecurityEvent) -> None:
     background task without await. The drainer task persists and fans out
     asynchronously.
     """
-    _write_queue.put_nowait(event)
+    _write_queue.put_nowait((event, True))
+
+
+def emit_fanout_only(event: SecurityEvent) -> None:
+    """Enqueue a security event for fan-out only — skip the DB persist step.
+
+    Use this when the caller has already written the row to security_events
+    inline (e.g. log_security_event) and only needs SIEM subscriber delivery
+    (SSE stream, syslog, webhook) without creating a duplicate DB row.
+    """
+    _write_queue.put_nowait((event, False))
 
 
 def subscribe() -> asyncio.Queue[SecurityEvent]:
@@ -103,18 +115,20 @@ async def start() -> asyncio.Task:
 # ---------------------------------------------------------------------------
 
 async def _drain_loop() -> None:
-    """Drain the write queue: persist each event then fan out to subscribers."""
+    """Drain the write queue: optionally persist each event then fan out to subscribers."""
     while True:
         try:
-            event = await _write_queue.get()
-            await _persist(event)
+            event, should_persist = await _write_queue.get()
+            if should_persist:
+                await _persist(event)
             _fanout(event)
         except asyncio.CancelledError:
             # Flush remaining events before exiting so nothing is silently lost.
             while not _write_queue.empty():
                 try:
-                    event = _write_queue.get_nowait()
-                    await _persist(event)
+                    event, should_persist = _write_queue.get_nowait()
+                    if should_persist:
+                        await _persist(event)
                     _fanout(event)
                 except asyncio.QueueEmpty:
                     break

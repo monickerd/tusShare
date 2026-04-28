@@ -175,10 +175,15 @@ class NotifSettingsModel(BaseModel):
         return v
 
 
+_VALID_SCOPES = frozenset({"events.read", "ops_read", "audit_read", "notification_write"})
+
+
 class ApiKeyCreateModel(BaseModel):
-    name:       str
-    scopes:     list[str] = ["events.read"]
-    expires_at: str | None = None   # ISO datetime string or None
+    name:               str
+    scopes:             list[str] = ["events.read"]
+    expires_at:         str | None = None   # ISO datetime string or None
+    filter_event_types: str | None = None   # comma-separated glob patterns, e.g. "auth.*,admin.*"
+    filter_min_severity: str | None = None  # info | warning | critical
 
     @field_validator("name")
     @classmethod
@@ -186,6 +191,23 @@ class ApiKeyCreateModel(BaseModel):
         v = v.strip()
         if not v or len(v) > 128:
             raise ValueError("name must be 1–128 characters")
+        return v
+
+    @field_validator("scopes")
+    @classmethod
+    def _scopes(cls, v: list[str]) -> list[str]:
+        unknown = set(v) - _VALID_SCOPES
+        if unknown:
+            raise ValueError(f"Unknown scope(s): {', '.join(sorted(unknown))}. Valid: {', '.join(sorted(_VALID_SCOPES))}")
+        if not v:
+            raise ValueError("At least one scope is required")
+        return v
+
+    @field_validator("filter_min_severity")
+    @classmethod
+    def _severity(cls, v: str | None) -> str | None:
+        if v is not None and v not in ("info", "warning", "critical"):
+            raise ValueError("filter_min_severity must be info, warning, or critical")
         return v
 
 
@@ -496,13 +518,17 @@ async def create_api_key(
     now      = datetime.now(timezone.utc).isoformat()
 
     await db.execute(
-        "INSERT INTO api_keys (id, name, key_hash, scopes, created_by, created_at, expires_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO api_keys "
+        "(id, name, key_hash, scopes, filter_event_types, filter_min_severity, "
+        " created_by, created_at, expires_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             key_id,
             body.name,
             key_hash,
             json.dumps(body.scopes),
+            body.filter_event_types,
+            body.filter_min_severity,
             user.id,
             now,
             body.expires_at,
@@ -511,12 +537,52 @@ async def create_api_key(
     await db.commit()
 
     return {
-        "id":         key_id,
-        "name":       body.name,
-        "key":        raw,         # shown only once
-        "scopes":     body.scopes,
-        "created_at": now,
-        "expires_at": body.expires_at,
+        "id":                  key_id,
+        "name":                body.name,
+        "key":                 raw,        # shown only once
+        "scopes":              body.scopes,
+        "filter_event_types":  body.filter_event_types,
+        "filter_min_severity": body.filter_min_severity,
+        "created_at":          now,
+        "expires_at":          body.expires_at,
+    }
+
+
+@api_keys_router.post("/api-keys/{key_id}/rotate", status_code=200)
+async def rotate_api_key(
+    key_id: str,
+    user: AuthenticatedUser = Depends(require_admin),
+    db=Depends(get_db),
+    _stepup=Depends(require_step_up(_STEPUP_KEYS)),
+):
+    """Issue a new raw key for an existing API key entry (old key is immediately invalidated)."""
+    key_id = validate_uuid(key_id)
+    cursor = await db.execute(
+        "SELECT id, name, scopes, filter_event_types, filter_min_severity, expires_at "
+        "FROM api_keys WHERE id = ?",
+        (key_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    raw      = "tss_" + secrets.token_urlsafe(32)
+    key_hash = hashlib.sha256(raw.encode()).hexdigest()
+
+    await db.execute(
+        "UPDATE api_keys SET key_hash = ?, last_used_at = NULL WHERE id = ?",
+        (key_hash, key_id),
+    )
+    await db.commit()
+
+    return {
+        "id":                  key_id,
+        "name":                row["name"],
+        "key":                 raw,        # shown only once
+        "scopes":              json.loads(row["scopes"] or "[]"),
+        "filter_event_types":  row["filter_event_types"],
+        "filter_min_severity": row["filter_min_severity"],
+        "expires_at":          row["expires_at"],
     }
 
 

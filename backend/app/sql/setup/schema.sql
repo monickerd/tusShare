@@ -1053,18 +1053,25 @@ CREATE TABLE IF NOT EXISTS notification_channels (
 
 -------------------------------------------------
 -- API KEYS (pull endpoint auth)
--- key_hash: SHA-256 hex of the raw "tss_..." key — never store plaintext
--- scopes:   JSON array of scope strings (e.g. ["events.read"])
+-- key_hash:            SHA-256 hex of the raw "tss_..." key — never store plaintext
+-- scopes:              JSON array of scope strings, e.g. ["audit_read"]
+-- filter_event_types:  Optional comma-separated glob patterns (e.g. "auth.*,admin.*").
+--                      When set, audit/op-events endpoints only return matching events,
+--                      regardless of query-param filters — lets an ops SIEM key be
+--                      scoped to only the events it needs.
+-- filter_min_severity: Optional minimum severity gate ("info"|"warning"|"critical").
 -------------------------------------------------
 CREATE TABLE IF NOT EXISTS api_keys (
-    id           TEXT PRIMARY KEY,
-    name         TEXT NOT NULL,
-    key_hash     TEXT NOT NULL UNIQUE,
-    scopes       TEXT NOT NULL DEFAULT '["events.read"]',
-    created_by   TEXT NOT NULL REFERENCES users(id),
-    created_at   TIMESTAMPTZ DEFAULT now(),
-    last_used_at TIMESTAMPTZ,
-    expires_at   TIMESTAMPTZ
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    key_hash            TEXT NOT NULL UNIQUE,
+    scopes              TEXT NOT NULL DEFAULT '["events.read"]',
+    filter_event_types  TEXT,
+    filter_min_severity TEXT,
+    created_by          TEXT NOT NULL REFERENCES users(id),
+    created_at          TIMESTAMPTZ DEFAULT now(),
+    last_used_at        TIMESTAMPTZ,
+    expires_at          TIMESTAMPTZ
 );
 
 -------------------------------------------------

@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     APP_NAME: str = "tusShare"
     APP_VERSION: str = "0.1.0"
     DEBUG: bool = False
+    # Set LOG_JSON=true to emit structured JSON on stdout (for Filebeat/Vector/Fluentd).
+    # Default is human-readable text, suitable for local development.
+    LOG_JSON: bool = False
 
     # Server
     HOST: str = "0.0.0.0"

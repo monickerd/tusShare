@@ -33,6 +33,8 @@ import jwt
 
 from app.conf.auth import STEP_UP_TIMESTAMP_TOLERANCE
 from app.config import settings
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +285,26 @@ def get_verifier(challenge_type: str) -> StepUpVerifier:
 # Security event logging helper
 # ---------------------------------------------------------------------------
 
+# Maps legacy flat event_type strings to (dot_namespaced_type, severity, outcome, extra_detail).
+# extra_detail is merged under caller-supplied detail (caller values win).
+_EVENT_MAP: dict[str, tuple[str, str, str, dict]] = {
+    "step_up_failed":                  ("auth.stepup.failure",          "warning", "failure", {}),
+    "step_up_lockout":                 ("auth.stepup.blocked",          "warning", "blocked", {}),
+    "step_up_granted":                 ("auth.stepup.success",          "info",    "success", {}),
+    "mfa_admin_removed":               ("admin.mfa.credential_removed", "warning", "success", {}),
+    "mfa_admin_reset":                 ("admin.mfa.credential_reset",   "warning", "success", {}),
+    "ldap_login_failed":               ("auth.ldap.login",              "warning", "failure", {}),
+    "oidc_login_failed":               ("auth.oidc.login",              "warning", "failure", {}),
+    "oidc_login_success":              ("auth.oidc.login",              "info",    "success", {}),
+    "mfa_totp_verified":               ("auth.mfa.challenged",          "info",    "success", {"method": "totp"}),
+    "mfa_webauthn_verified":           ("auth.mfa.challenged",          "info",    "success", {"method": "webauthn"}),
+    "mfa_recovery_code_used":          ("auth.recovery.used",           "warning", "success", {"method": "recovery_code"}),
+    "session_unlock_webauthn":         ("auth.session.unlocked",        "info",    "success", {"method": "webauthn"}),
+    "mfa_credential_removed":          ("auth.mfa.credential_removed",  "info",    "success", {}),
+    "password_reset_via_recovery_key": ("auth.recovery.used",           "warning", "success", {}),
+}
+
+
 async def log_security_event(
     db,
     event_type: str,
@@ -292,7 +314,12 @@ async def log_security_event(
     action_key: str | None = None,
     detail: dict | None = None,
 ) -> None:
-    """Insert a row into security_events (best-effort; never raises)."""
+    """Insert a row into security_events (best-effort; never raises).
+
+    Also fans the event out to SIEM subscribers (SSE stream, syslog, webhook)
+    via emit_fanout_only — the inline DB write above is the canonical record,
+    so the bus skips re-persisting to avoid duplicate rows.
+    """
     try:
         await db.execute(
             "INSERT INTO security_events "
@@ -311,3 +338,20 @@ async def log_security_event(
         await db.commit()
     except Exception:
         logger.exception("Failed to log security event: %s", event_type)
+
+    try:
+        mapped_type, severity, outcome, extra = _EVENT_MAP.get(
+            event_type, (event_type, "info", None, {})
+        )
+        merged: dict = {**extra, **(detail or {})}
+        if action_key:
+            merged.setdefault("action_key", action_key)
+        event_bus.emit_fanout_only(SecurityEvent(
+            event_type=mapped_type,
+            severity=severity,
+            outcome=outcome,
+            actor=EventActor(user_id=user_id, ip=ip_address),
+            detail=merged,
+        ))
+    except Exception:
+        logger.exception("Failed to fan out security event to bus: %s", event_type)
