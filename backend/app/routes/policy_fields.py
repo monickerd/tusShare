@@ -5,7 +5,7 @@ Mounted at /api/v1/admin/policy-fields.
 Policy fields are the registry of valid condition attributes that can be used
 when building policy conditions.  There are two categories:
 
-  source='internal'  — seeded at migration time; not user-editable; always available.
+  source='internal'  — seeded at schema init time; not user-editable; always available.
   source='ldap'      — registered by admins with can_define_policy_fields.
   source='oidc'      — registered by admins with can_define_policy_fields.
 

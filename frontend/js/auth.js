@@ -517,6 +517,7 @@ const Auth = (() => {
 
             _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch(() => {});
             Teams.processPendingTeamOperations().catch(() => {});
+            startIdentityWatch();
 
             const currentHash = window.location.hash;
             if (!currentHash || currentHash === '#/' || currentHash === '#/login') {
@@ -569,6 +570,9 @@ const Auth = (() => {
             });
 
             status.textContent = '';
+            // Start identity watch so SSE-delivered deactivation/revocation events
+            // are received on this tab (same as the normal login path in app.js).
+            startIdentityWatch();
             // After unlock, navigate to the current hash — but if the hash is #/login
             // (which is where the unlock prompt is rendered), redirect to #/files instead
             // so the user isn't sent back to the login form.

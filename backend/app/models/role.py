@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from app.database import DuplicateError
 
 # ---------------------------------------------------------------------------
-# System role IDs — 6-tier hierarchy (seeded in migration 010)
+# System role IDs — 6-tier hierarchy (seeded in schema.sql)
 # ---------------------------------------------------------------------------
 ROLE_SERVER_ADMIN      = "server_admin"
 ROLE_ORG_ADMIN         = "org_admin"
@@ -17,8 +17,7 @@ ROLE_TEAM_MEMBER       = "team_member"
 # Basic user role — grants file storage access; separate from admin tiers
 ROLE_USER = "role_user"
 
-# Legacy: superseded by ROLE_SERVER_ADMIN.  Kept for backward
-# compat during transition; will be retired in a follow-up migration.
+# Legacy: superseded by ROLE_SERVER_ADMIN.  Kept for backward compat; retire once all call sites are updated.
 ROLE_ADMIN = "role_admin"
 
 # All role IDs that carry administrative authority at global scope.

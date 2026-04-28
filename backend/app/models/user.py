@@ -29,7 +29,6 @@ class User:
     x25519_private_wrapped: str | None = None
     mlkem768_private_wrapped: str | None = None
     asymmetric_key_iv: str | None = None
-    # Identity provider (migration 006)
     identity_provider_id: str | None = None
 
     @classmethod

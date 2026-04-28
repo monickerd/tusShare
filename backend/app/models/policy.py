@@ -269,7 +269,7 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
     Returns a dict of {field_name: string_value} for each requested field.
     Missing fields are omitted — callers should treat absence as non-matching.
 
-    Supported internal fields (seeded in migration 012):
+    Supported internal fields (seeded in schema.sql):
       totp_enabled      — '1' if user has TOTP active, '0' otherwise
       auth_provider     — 'opaque' | 'oidc' | 'ldap'
       identity_provider — the identity_providers.name for non-opaque users, or None

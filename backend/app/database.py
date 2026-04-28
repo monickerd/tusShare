@@ -1,4 +1,4 @@
-"""PostgreSQL database connection manager and migration runner."""
+"""PostgreSQL database connection manager."""
 
 import logging
 import re
@@ -181,7 +181,7 @@ async def seed_admin_settings(db: Database) -> None:
 
 
 async def init_db() -> None:
-    """Create the connection pool, run pending migrations, and seed defaults."""
+    """Create the connection pool, initialise the schema, and seed defaults."""
     global _pool
 
     _pool = await asyncpg.create_pool(
@@ -238,17 +238,10 @@ def _split_statements(sql: str) -> list[str]:
 
 
 async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
-    """Initialise the schema and apply any pending incremental migrations.
+    """Initialise the schema on a fresh install.
 
-    Fresh install path:
-      Runs setup/schema.sql once, then records it as 'schema_v1' in _migrations.
-
-    Existing install path:
-      Skips setup (schema_v1 already recorded) and applies any new numbered
-      files found in migrations/ that haven't been applied yet.
-
-    Each file runs inside its own transaction — on failure the transaction is
-    rolled back and the file is not recorded as applied.
+    Runs setup/schema.sql once and records 'schema_v1' in _migrations.
+    Subsequent startups see the sentinel and skip the setup step.
     """
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS _migrations (
