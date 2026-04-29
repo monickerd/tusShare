@@ -347,6 +347,7 @@ def create_app() -> FastAPI:
     from app.routes.admin_escrow import router as admin_escrow_router
     from app.routes.admin_sharing import router as admin_sharing_router
     from app.routes.admin_service_accounts import router as admin_service_accounts_router
+    from app.routes.admin_profiles import router as admin_profiles_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
@@ -378,6 +379,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_escrow_router,         prefix="/api/v1/admin/escrow",          tags=["admin-escrow"])
     app.include_router(admin_sharing_router,        prefix="/api/v1/admin/sharing",         tags=["admin-sharing"])
     app.include_router(admin_service_accounts_router, prefix="/api/v1/admin",                tags=["admin-service-accounts"])
+    app.include_router(admin_profiles_router,         prefix="/api/v1/admin",                tags=["admin-profiles"])
 
     # --- SIEM HTTP error event handlers ---
     # Legitimate users should not regularly encounter these codes, so each

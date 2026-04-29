@@ -60,9 +60,10 @@ const Admin = (() => {
             id: 'security',
             label: 'Security & Privacy',
             sections: [
-                ['audit',     'Audit & SIEM',        _renderAuditSection],
-                ['antivirus', 'Antivirus',            _renderAntivirusSection],
-                ['sharing',   'Sharing Restrictions', _renderSharingSection],
+                ['profiles',  'Settings Profile',     _renderProfilesSection],
+                ['audit',     'Audit & SIEM',         _renderAuditSection],
+                ['antivirus', 'Antivirus',             _renderAntivirusSection],
+                ['sharing',   'Sharing Restrictions',  _renderSharingSection],
             ],
         },
     ];
@@ -4810,6 +4811,332 @@ const Admin = (() => {
         box.appendChild(doneBtn);
         modal.appendChild(box);
         document.body.appendChild(modal);
+    }
+
+    // ------------------------------------------------------------------
+    // Settings Profile section
+    // ------------------------------------------------------------------
+
+    async function _renderProfilesSection(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+        let profilesData;
+        try {
+            profilesData = await Api.get(`${_api()}/admin/settings/profiles`);
+        } catch (err) {
+            container.innerHTML = '';
+            _showError(container, 'Failed to load profiles: ' + err.message);
+            return;
+        }
+        container.innerHTML = '';
+
+        const profiles = profilesData.profiles || [];
+
+        // ---- Apply built-in profile ------------------------------------------
+        const applySection = Utils.el('div', { style: 'margin-bottom:24px' });
+        applySection.appendChild(Utils.el('h5', { textContent: 'Apply Built-in Profile', style: 'margin-bottom:8px' }));
+        applySection.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'margin-bottom:12px',
+            textContent: 'Apply a pre-defined security profile to configure sharing restrictions, escrow settings, and lock states in one step.',
+        }));
+
+        const profileCards = Utils.el('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px' });
+        let selectedProfile = profiles[0]?.id || 'recommended';
+
+        for (const p of profiles) {
+            const card = Utils.el('div', {
+                style: [
+                    'flex:1;min-width:180px;padding:12px;border-radius:6px;cursor:pointer',
+                    'border:2px solid var(--color-border,#dee2e6);background:var(--color-surface,#fff)',
+                ].join(';'),
+                dataset: { profileId: p.id },
+            });
+            card.appendChild(Utils.el('div', { textContent: p.name, style: 'font-weight:600;margin-bottom:4px' }));
+            card.appendChild(Utils.el('div', { textContent: p.description, className: 'text-muted', style: 'font-size:12px' }));
+            card.addEventListener('click', () => {
+                selectedProfile = p.id;
+                profileCards.querySelectorAll('[data-profile-id]').forEach(c => {
+                    c.style.borderColor = c.dataset.profileId === p.id
+                        ? 'var(--color-primary,#0d6efd)'
+                        : 'var(--color-border,#dee2e6)';
+                });
+            });
+            if (p.id === selectedProfile) card.style.borderColor = 'var(--color-primary,#0d6efd)';
+            profileCards.appendChild(card);
+        }
+        applySection.appendChild(profileCards);
+
+        const applyBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Preview & Apply' });
+        applyBtn.addEventListener('click', () => _showApplyProfileModal(selectedProfile, () => _renderProfilesSection(container)));
+        applySection.appendChild(applyBtn);
+        container.appendChild(applySection);
+
+        // ---- Export current settings -----------------------------------------
+        const exportSection = Utils.el('div', { style: 'margin-bottom:24px' });
+        exportSection.appendChild(Utils.el('h5', { textContent: 'Export Current Settings', style: 'margin-bottom:8px' }));
+        exportSection.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'margin-bottom:12px',
+            textContent: 'Download the current security profile as a JSON file. User IDs are stripped; role IDs are preserved.',
+        }));
+        const exportBtn = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Export Settings' });
+        exportBtn.addEventListener('click', async () => {
+            exportBtn.disabled = true;
+            exportBtn.textContent = 'Exporting…';
+            try {
+                const data  = await Api.get(`${_api()}/admin/settings/export`);
+                const blob  = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url   = URL.createObjectURL(blob);
+                const a     = document.createElement('a');
+                a.href      = url;
+                a.download  = `filexfer-profile-${new Date().toISOString().slice(0,10)}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+            } catch (err) {
+                _showError(exportSection, 'Export failed: ' + err.message);
+            } finally {
+                exportBtn.disabled = false;
+                exportBtn.textContent = 'Export Settings';
+            }
+        });
+        exportSection.appendChild(exportBtn);
+        container.appendChild(exportSection);
+
+        // ---- Import profile from file ----------------------------------------
+        const importSection = Utils.el('div', { style: 'margin-bottom:24px' });
+        importSection.appendChild(Utils.el('h5', { textContent: 'Import Profile from File', style: 'margin-bottom:8px' }));
+        importSection.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'margin-bottom:12px',
+            textContent: 'Load a previously exported profile JSON and apply it to this instance.',
+        }));
+
+        const fileInput  = Utils.el('input', { type: 'file', accept: '.json', style: 'margin-bottom:8px;display:block' });
+        const modeSelect = Utils.el('select', { className: 'form-select form-select-sm', style: 'width:auto;display:inline-block;margin-right:8px' }, [
+            Utils.el('option', { value: 'replace', textContent: 'Replace all' }),
+            Utils.el('option', { value: 'merge',   textContent: 'Merge (review diff)' }),
+        ]);
+        const importBtn  = Utils.el('button', { className: 'btn btn-warning btn-sm', textContent: 'Preview Import' });
+        importBtn.addEventListener('click', async () => {
+            if (!fileInput.files[0]) { alert('Select a profile JSON file first.'); return; }
+            try {
+                const text = await fileInput.files[0].text();
+                const profileJson = JSON.parse(text);
+                _showImportProfileModal(profileJson, modeSelect.value, () => _renderProfilesSection(container));
+            } catch {
+                alert('Failed to parse profile file. Ensure it is valid JSON.');
+            }
+        });
+        importSection.append(fileInput, Utils.el('div', {}, [modeSelect, importBtn]));
+        container.appendChild(importSection);
+    }
+
+    function _showApplyProfileModal(profileId, refreshFn) {
+        const modal = Utils.el('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;display:flex;align-items:center;justify-content:center' });
+        const box   = Utils.el('div', { style: 'background:var(--color-bg,#fff);border-radius:8px;padding:24px;width:640px;max-width:95vw;max-height:80vh;overflow-y:auto' });
+
+        box.appendChild(Utils.el('h4', { textContent: `Apply Profile: ${profileId.replace(/_/g,' ')}`, style: 'margin-bottom:16px' }));
+
+        const modeRow = Utils.el('div', { style: 'display:flex;gap:12px;margin-bottom:16px;align-items:center' });
+        modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0' }));
+        const modeSelect = Utils.el('select', { className: 'form-select form-select-sm', style: 'width:auto' }, [
+            Utils.el('option', { value: 'replace', textContent: 'Replace all' }),
+            Utils.el('option', { value: 'merge',   textContent: 'Merge' }),
+        ]);
+        modeRow.appendChild(modeSelect);
+        box.appendChild(modeRow);
+
+        const diffArea = Utils.el('div', { style: 'margin-bottom:16px' });
+        box.appendChild(diffArea);
+
+        const confirmRow = Utils.el('div', { style: 'display:none;margin-bottom:12px' });
+        const confirmInp = Utils.el('input', { type: 'text', className: 'form-control form-control-sm', placeholder: 'Type REPLACE to confirm' });
+        confirmRow.appendChild(Utils.el('p', { style: 'color:var(--color-danger,#dc3545);margin-bottom:4px', textContent: 'This will replace all sharing rules and security settings. Type REPLACE to confirm.' }));
+        confirmRow.appendChild(confirmInp);
+        box.appendChild(confirmRow);
+
+        const btnRow   = Utils.el('div', { style: 'display:flex;gap:8px' });
+        const previewBtn = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Preview diff' });
+        const applyBtn   = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Apply', disabled: true });
+        const cancelBtn  = Utils.el('button', { className: 'btn btn-light btn-sm', textContent: 'Cancel' });
+        btnRow.append(previewBtn, applyBtn, cancelBtn);
+        box.appendChild(btnRow);
+
+        cancelBtn.addEventListener('click', () => document.body.removeChild(modal));
+
+        let diffData = null;
+
+        async function loadDiff() {
+            previewBtn.disabled = true;
+            diffArea.textContent = 'Loading diff…';
+            try {
+                const resp = await Api.post(`${_api()}/admin/settings/apply-profile`, {
+                    profile: profileId, mode: modeSelect.value, confirm: false,
+                });
+                diffData = resp.diff || [];
+                _renderDiffTable(diffArea, diffData, modeSelect.value);
+                applyBtn.disabled = false;
+                if (modeSelect.value === 'replace') confirmRow.style.display = '';
+                else confirmRow.style.display = 'none';
+            } catch (err) {
+                diffArea.textContent = 'Error loading diff: ' + err.message;
+            } finally {
+                previewBtn.disabled = false;
+            }
+        }
+
+        previewBtn.addEventListener('click', loadDiff);
+        modeSelect.addEventListener('change', () => { applyBtn.disabled = true; diffArea.textContent = ''; confirmRow.style.display = 'none'; });
+
+        applyBtn.addEventListener('click', async () => {
+            const mode = modeSelect.value;
+            const confirmText = mode === 'replace' ? confirmInp.value : 'REPLACE';
+            if (mode === 'replace' && confirmInp.value !== 'REPLACE') {
+                alert('Type REPLACE to confirm replacement of all settings.');
+                return;
+            }
+            applyBtn.disabled = true;
+            applyBtn.textContent = 'Applying…';
+            try {
+                const decisions = {};
+                if (mode === 'merge') {
+                    diffArea.querySelectorAll('[data-decision-key]').forEach(sel => {
+                        decisions[sel.dataset.decisionKey] = sel.value;
+                    });
+                }
+                await Api.post(`${_api()}/admin/settings/apply-profile`, {
+                    profile: profileId, mode, confirm: true,
+                    confirmation_text: confirmText, decisions,
+                });
+                document.body.removeChild(modal);
+                refreshFn();
+            } catch (err) {
+                _showError(box, 'Apply failed: ' + err.message);
+                applyBtn.disabled = false;
+                applyBtn.textContent = 'Apply';
+            }
+        });
+
+        modal.appendChild(box);
+        document.body.appendChild(modal);
+    }
+
+    function _showImportProfileModal(profileJson, mode, refreshFn) {
+        const modal = Utils.el('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;display:flex;align-items:center;justify-content:center' });
+        const box   = Utils.el('div', { style: 'background:var(--color-bg,#fff);border-radius:8px;padding:24px;width:640px;max-width:95vw;max-height:80vh;overflow-y:auto' });
+
+        box.appendChild(Utils.el('h4', { textContent: 'Import Profile', style: 'margin-bottom:8px' }));
+
+        if (profileJson._warnings?.length) {
+            const warnBox = Utils.el('div', { style: 'background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:10px;margin-bottom:12px' });
+            for (const w of profileJson._warnings) {
+                warnBox.appendChild(Utils.el('p', { textContent: w, style: 'margin:0 0 4px' }));
+            }
+            box.appendChild(warnBox);
+        }
+
+        const diffArea = Utils.el('div', { style: 'margin-bottom:16px', textContent: 'Loading diff…' });
+        box.appendChild(diffArea);
+
+        const confirmRow = Utils.el('div', { style: `display:${mode === 'replace' ? '' : 'none'};margin-bottom:12px` });
+        const confirmInp = Utils.el('input', { type: 'text', className: 'form-control form-control-sm', placeholder: 'Type REPLACE to confirm' });
+        confirmRow.appendChild(Utils.el('p', { style: 'color:var(--color-danger,#dc3545);margin-bottom:4px', textContent: 'This will replace all sharing rules and security settings. Type REPLACE to confirm.' }));
+        confirmRow.appendChild(confirmInp);
+        box.appendChild(confirmRow);
+
+        const btnRow  = Utils.el('div', { style: 'display:flex;gap:8px' });
+        const applyBtn  = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Apply Import', disabled: true });
+        const cancelBtn = Utils.el('button', { className: 'btn btn-light btn-sm', textContent: 'Cancel' });
+        btnRow.append(applyBtn, cancelBtn);
+        box.appendChild(btnRow);
+
+        cancelBtn.addEventListener('click', () => document.body.removeChild(modal));
+
+        let diffData = null;
+
+        Api.post(`${_api()}/admin/settings/import`, { profile_json: profileJson, mode, confirm: false })
+            .then(resp => {
+                diffData = resp.diff || [];
+                _renderDiffTable(diffArea, diffData, mode);
+                applyBtn.disabled = false;
+            })
+            .catch(err => { diffArea.textContent = 'Error: ' + err.message; });
+
+        applyBtn.addEventListener('click', async () => {
+            if (mode === 'replace' && confirmInp.value !== 'REPLACE') {
+                alert('Type REPLACE to confirm.'); return;
+            }
+            applyBtn.disabled = true;
+            applyBtn.textContent = 'Importing…';
+            try {
+                const decisions = {};
+                if (mode === 'merge') {
+                    diffArea.querySelectorAll('[data-decision-key]').forEach(sel => {
+                        decisions[sel.dataset.decisionKey] = sel.value;
+                    });
+                }
+                await Api.post(`${_api()}/admin/settings/import`, {
+                    profile_json: profileJson, mode, confirm: true,
+                    confirmation_text: mode === 'replace' ? confirmInp.value : 'REPLACE',
+                    decisions,
+                });
+                document.body.removeChild(modal);
+                refreshFn();
+            } catch (err) {
+                _showError(box, 'Import failed: ' + err.message);
+                applyBtn.disabled = false;
+                applyBtn.textContent = 'Apply Import';
+            }
+        });
+
+        modal.appendChild(box);
+        document.body.appendChild(modal);
+    }
+
+    function _renderDiffTable(container, diff, mode) {
+        container.innerHTML = '';
+        if (!diff.length) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No differences — current settings already match the profile.' }));
+            return;
+        }
+        const changed = diff.filter(d => d.changed);
+        const same    = diff.filter(d => !d.changed);
+        if (same.length) {
+            container.appendChild(Utils.el('p', {
+                className: 'text-muted',
+                style: 'font-size:12px',
+                textContent: `${same.length} setting(s) already match — shown below.`,
+            }));
+        }
+
+        const table = Utils.el('table', { className: 'table table-sm', style: 'font-size:12px' });
+        const thead = Utils.el('thead');
+        thead.appendChild(Utils.el('tr', {}, [
+            Utils.el('th', { textContent: 'Setting' }),
+            Utils.el('th', { textContent: 'Current' }),
+            Utils.el('th', { textContent: 'Proposed' }),
+            ...(mode === 'merge' ? [Utils.el('th', { textContent: 'Use' })] : []),
+        ]));
+        table.appendChild(thead);
+
+        const tbody = Utils.el('tbody');
+        for (const d of diff) {
+            const tr = Utils.el('tr', { style: d.changed ? 'background:rgba(255,243,205,.4)' : '' });
+            tr.appendChild(Utils.el('td', { textContent: d.label }));
+            tr.appendChild(Utils.el('td', { textContent: d.current == null ? '(not set)' : JSON.stringify(d.current), style: 'word-break:break-all' }));
+            tr.appendChild(Utils.el('td', { textContent: JSON.stringify(d.proposed), style: 'word-break:break-all' }));
+            if (mode === 'merge') {
+                const sel = Utils.el('select', { className: 'form-select form-select-sm', dataset: { decisionKey: d.key } }, [
+                    Utils.el('option', { value: 'proposed', textContent: 'Proposed', selected: true }),
+                    Utils.el('option', { value: 'current',  textContent: 'Keep current' }),
+                ]);
+                if (!d.changed) sel.value = 'current';
+                tr.appendChild(Utils.el('td', {}, [sel]));
+            }
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        container.appendChild(table);
     }
 
     return { renderAdminPage };

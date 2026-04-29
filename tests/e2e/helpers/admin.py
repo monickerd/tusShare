@@ -683,6 +683,116 @@ class AdminClient:
         r.raise_for_status()
         return r.json()
 
+    # -----------------------------------------------------------------------
+    # Security profiles (Phase 4)
+    # -----------------------------------------------------------------------
+
+    async def list_profiles(self) -> list[dict]:
+        """GET /admin/settings/profiles — list built-in profile names."""
+        r = await self._client.get(f"{API}/admin/settings/profiles")
+        r.raise_for_status()
+        return r.json()["profiles"]
+
+    async def export_settings(self, step_up_token: str) -> dict:
+        """GET /admin/settings/export — returns the full profile dict."""
+        r = await self._client.get(
+            f"{API}/admin/settings/export",
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def preview_apply_profile(
+        self, profile: str, mode: str = "replace", step_up_token: str = ""
+    ) -> list[dict]:
+        """POST /admin/settings/apply-profile (confirm=False) — return diff list."""
+        headers = {"X-Step-Up-Token": step_up_token} if step_up_token else {}
+        r = await self._client.post(
+            f"{API}/admin/settings/apply-profile",
+            json={"profile": profile, "mode": mode, "confirm": False},
+            headers=headers,
+        )
+        r.raise_for_status()
+        return r.json()["diff"]
+
+    async def apply_profile(
+        self,
+        profile: str,
+        step_up_token: str,
+        mode: str = "replace",
+        decisions: Optional[dict[str, str]] = None,
+        mark_first_run: bool = False,
+    ) -> dict:
+        """POST /admin/settings/apply-profile (confirm=True) — apply and return message."""
+        r = await self._client.post(
+            f"{API}/admin/settings/apply-profile",
+            json={
+                "profile":           profile,
+                "mode":              mode,
+                "confirm":           True,
+                "confirmation_text": "REPLACE" if mode == "replace" else "",
+                "decisions":         decisions or {},
+                "mark_first_run":    mark_first_run,
+            },
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def preview_import_profile(
+        self, profile_json: dict, mode: str = "replace", step_up_token: str = ""
+    ) -> dict:
+        """POST /admin/settings/import (confirm=False) — return diff + warnings."""
+        headers = {"X-Step-Up-Token": step_up_token} if step_up_token else {}
+        r = await self._client.post(
+            f"{API}/admin/settings/import",
+            json={"profile_json": profile_json, "mode": mode, "confirm": False},
+            headers=headers,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def import_profile(
+        self,
+        profile_json: dict,
+        step_up_token: str,
+        mode: str = "replace",
+        decisions: Optional[dict[str, str]] = None,
+    ) -> dict:
+        """POST /admin/settings/import (confirm=True) — apply and return message."""
+        r = await self._client.post(
+            f"{API}/admin/settings/import",
+            json={
+                "profile_json":      profile_json,
+                "mode":              mode,
+                "confirm":           True,
+                "confirmation_text": "REPLACE" if mode == "replace" else "",
+                "decisions":         decisions or {},
+            },
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def get_role_permissions(self, role_id: str) -> dict:
+        """GET /admin/roles/{role_id} — returns {flag: {value, is_locked, locked_min_tier}}."""
+        r = await self._client.get(f"{API}/admin/roles/{role_id}")
+        r.raise_for_status()
+        return r.json()["role"]["permissions"]
+
+    async def update_role_permissions_raw(
+        self, role_id: str, permissions: dict, step_up_token: str = ""
+    ) -> dict:
+        """PUT /admin/roles/{role_id}/permissions — raw permissions dict with lock info."""
+        headers = {"X-Step-Up-Token": step_up_token} if step_up_token else {}
+        r = await self._client.put(
+            f"{API}/admin/roles/{role_id}/permissions",
+            json={"permissions": permissions},
+            headers=headers,
+        )
+        r.raise_for_status()
+        return r.json()
+
 
 # ---------------------------------------------------------------------------
 # Generic authenticated API client (for non-admin users)
