@@ -51,6 +51,7 @@ FLAG_ACCESS_ALL_FILES        = "can_access_all_files"
 FLAG_MANAGE_USER_MFA         = "can_manage_user_mfa"
 FLAG_MANAGE_ESCROW           = "can_manage_escrow"
 FLAG_MANAGE_SHARING          = "can_manage_sharing"
+FLAG_MANAGE_SERVICE_ACCOUNTS = "can_manage_service_accounts"
 
 # Sharing capability flags — default ON for role_user; admins remove to restrict
 FLAG_CREATE_LINK_SHARES      = "can_create_link_shares"

@@ -49,6 +49,8 @@ from __future__ import annotations
 import pytest
 import httpx
 
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
 DEX_URL = "http://localhost:5556/dex"   # host-accessible Dex URL (Playwright + httpx tests)
@@ -75,6 +77,16 @@ _REDACTED = "••••••••"
 
 # Module-level state shared between tests (ordered run)
 _state: dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# OIDC login success emits auth.oidc.login, but test_10_06 guards itself with
+# _skip_if_no_dex() and may be skipped even when the group runs.  To avoid
+# false manifest failures when Dex is unavailable, no SIEM events are asserted
+# here.  OIDC emission is verified directly in test_25_siem_emission.py.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 # ---------------------------------------------------------------------------
@@ -397,3 +409,13 @@ async def test_10_11_delete_provider_delinks_oidc_users(seeded_env):
         users = await admin.list_users()
         alice = next((u for u in users if u["id"] == _state["alice_oidc_user_id"]), None)
         assert alice is not None, "OIDC user was deleted along with the provider — must not happen"
+
+
+# ---------------------------------------------------------------------------
+# 10-12  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_10_12_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

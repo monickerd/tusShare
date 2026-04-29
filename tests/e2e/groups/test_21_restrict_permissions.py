@@ -98,6 +98,7 @@ from tests.e2e.helpers.auth  import register_via_invite
 from tests.e2e.helpers.db    import _psql, PG_DB_NAME
 from tests.e2e.helpers.files import create_folder, upload_file_api
 from tests.e2e.helpers.teams import create_team, add_member, add_team_folder
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -133,6 +134,19 @@ _file_perm_parent_id:         str = ""
 _file_perm_restricted_id:     str = ""
 _file_in_perm_parent:         str = ""
 _file_in_perm_restricted:     str = ""
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 21-03 (outsider cannot PATCH restrict_permissions → 403),
+#   21-05/06 (member blocked by team boundary → 403),
+#   21-08/09 (outsider blocked by shared-tree boundary → 403),
+#   21-11 (outsider blocked by permission boundary → 403),
+#   21-17/19 (file access blocked by team/permission boundary → 403).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -536,3 +550,13 @@ async def test_21_19_file_blocked_by_permission_boundary():
     assert r.status_code == 403, (
         f"Expected 403 for file behind permission boundary, got {r.status_code}: {r.text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 21-20  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_21_20_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

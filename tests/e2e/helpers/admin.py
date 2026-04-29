@@ -616,6 +616,73 @@ class AdminClient:
         )
         r.raise_for_status()
 
+    # -----------------------------------------------------------------------
+    # Service accounts
+    # -----------------------------------------------------------------------
+
+    async def list_service_accounts(self) -> list[dict]:
+        """GET /admin/service-accounts — list all service accounts."""
+        r = await self._client.get(f"{API}/admin/service-accounts")
+        r.raise_for_status()
+        return r.json()["service_accounts"]
+
+    async def create_service_account(
+        self,
+        username: str,
+        step_up_token: str,
+        description: Optional[str] = None,
+        expires_at: Optional[str] = None,
+    ) -> dict:
+        """POST /admin/service-accounts — create a service account, return {id, username, key}."""
+        payload: dict[str, Any] = {"username": username}
+        if description is not None:
+            payload["description"] = description
+        if expires_at is not None:
+            payload["expires_at"] = expires_at
+        r = await self._client.post(
+            f"{API}/admin/service-accounts",
+            json=payload,
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def get_service_account(self, sa_id: str) -> dict:
+        """GET /admin/service-accounts/{id} — fetch detail + role list."""
+        r = await self._client.get(f"{API}/admin/service-accounts/{sa_id}")
+        r.raise_for_status()
+        return r.json()
+
+    async def update_service_account(
+        self, sa_id: str, step_up_token: str, **fields: Any
+    ) -> dict:
+        """PATCH /admin/service-accounts/{id} — update name/description/is_active/expires_at."""
+        r = await self._client.patch(
+            f"{API}/admin/service-accounts/{sa_id}",
+            json=fields,
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def delete_service_account(self, sa_id: str, step_up_token: str) -> None:
+        """DELETE /admin/service-accounts/{id} — hard-delete service account + key."""
+        r = await self._client.delete(
+            f"{API}/admin/service-accounts/{sa_id}",
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+
+    async def rotate_service_account_key(self, sa_id: str, step_up_token: str) -> dict:
+        """POST /admin/service-accounts/{id}/rotate-key — replace key, return {id, key}."""
+        r = await self._client.post(
+            f"{API}/admin/service-accounts/{sa_id}/rotate-key",
+            json={},
+            headers={"X-Step-Up-Token": step_up_token},
+        )
+        r.raise_for_status()
+        return r.json()
+
 
 # ---------------------------------------------------------------------------
 # Generic authenticated API client (for non-admin users)

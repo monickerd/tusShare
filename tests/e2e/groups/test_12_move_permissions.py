@@ -46,6 +46,7 @@ from tests.e2e.helpers.shares import (
 from tests.e2e.helpers.teams  import (
     create_team, add_member, add_team_folder,
 )
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 # Module-level world state
 _owner:       dict = {}   # User A — file owner, team creator
@@ -55,6 +56,14 @@ _team_folder: dict = {}
 _file:        dict = {}   # the "passwords.txt" file
 _member_share: dict = {}  # share created by User B while they had team access
 _owner_share:  dict = {}  # share created by User A (owner) — should always resolve
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# File move and share access routes do not emit SIEM events.
+# No deny rules active so share.blocked does not fire.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -245,3 +254,13 @@ async def test_12_08_member_share_restores_when_file_moved_back():
         f"Share should resolve again once file is back in team folder; "
         f"got {resp.status_code}: {resp.text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 12-09  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_12_09_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

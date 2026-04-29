@@ -29,6 +29,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import timezone
 
+from app.config import settings
 from app.schemas.security_event import SecurityEvent
 
 logger = logging.getLogger(__name__)
@@ -106,6 +107,7 @@ def init(db_session_factory) -> None:
 async def start() -> asyncio.Task:
     """Start the background drainer task. Returns the task for cancellation."""
     global _drainer_task
+    _clear_capture()
     _drainer_task = asyncio.create_task(_drain_loop(), name="event_bus_drainer")
     return _drainer_task
 
@@ -191,3 +193,28 @@ def _fanout(event: SecurityEvent) -> None:
             dead.append(q)
     for q in dead:
         unsubscribe(q)
+    _write_capture(event)
+
+
+def _write_capture(event: SecurityEvent) -> None:
+    """Append event as a JSON line to SIEM_CAPTURE_FILE. No-op if not configured."""
+    path = settings.SIEM_CAPTURE_FILE
+    if not path:
+        return
+    try:
+        line = json.dumps(event.model_dump(mode="json"))
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        logger.exception("Event bus: failed to write SIEM capture file")
+
+
+def _clear_capture() -> None:
+    """Truncate the capture file at startup. No-op if SIEM_CAPTURE_FILE not set."""
+    path = settings.SIEM_CAPTURE_FILE
+    if not path:
+        return
+    try:
+        open(path, "w").close()  # noqa: WPS515
+    except Exception:
+        logger.exception("Event bus: failed to clear SIEM capture file")

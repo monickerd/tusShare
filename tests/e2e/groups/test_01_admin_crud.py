@@ -27,9 +27,20 @@ from playwright.async_api import Browser
 from tests.e2e.conftest      import ADMIN_USERNAME, ADMIN_PASSWORD
 from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.auth  import login, register_via_invite
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# test_01_10 causes a regular user to attempt /admin/settings → 403 → auth.forbidden.
+# Settings and invite CRUD do not emit SIEM events.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+]
 
 
 # seeded_env fixture is inherited from conftest.py
@@ -154,3 +165,13 @@ async def test_01_10_non_admin_cannot_access_settings(
         )
     finally:
         await user_session.ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# 01-11  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_01_11_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

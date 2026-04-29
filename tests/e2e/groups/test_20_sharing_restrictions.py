@@ -138,6 +138,7 @@ from tests.e2e.helpers.crypto_stubs import (
     fake_aes256_key, fake_iv_12, fake_kem_ciphertext, fake_x25519_pub,
 )
 from tests.e2e.helpers.files  import upload_file_api
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -166,6 +167,20 @@ _custom_file_id: str = ""  # file uploaded by _custom (Section D — share must 
 # Rule IDs used across sequential tests within a section; cleared at section end
 _rule_id:  str = ""
 _rule2_id: str = ""
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 20-02 (_plain blocked from /admin/sharing/flags),
+#   20-03 (_no_mgr without can_manage_sharing → 403),
+#   20-04 to 20-07 (sharing capability disabled → 403 on POST /shares),
+#   20-08/16 (sharing mutation without step-up → 403 step_up_required).
+# share.blocked: 20-34 (deny rule matched → security event emitted).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+    ExpectedSiemEvent("share.blocked",  outcome="failure", severity="info",    tier=2),
+]
 
 # Roles created during setup — deleted in teardown
 _setup_roles: list[str] = []
@@ -1336,3 +1351,13 @@ async def test_20_34_blocked_share_emits_share_blocked_security_event(
 
     await admin_client.delete_sharing_rule(_rule_id, tok)
     _rule_id = ""
+
+
+# ---------------------------------------------------------------------------
+# 20-35  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_20_35_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

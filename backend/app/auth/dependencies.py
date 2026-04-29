@@ -54,6 +54,12 @@ async def get_current_user(
     if token is None:
         raise HTTPException(status_code=401, detail="Authentication required")
 
+    # Service account tokens are identified by the 'sa_' prefix and bypass
+    # the JWT path entirely — they authenticate directly against the key table.
+    if token.startswith("sa_"):
+        from app.auth.service_account import authenticate_service_account
+        return await authenticate_service_account(token)
+
     try:
         payload = verify_access_token(token)
     except jwt.PyJWTError:

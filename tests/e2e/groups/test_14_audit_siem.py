@@ -19,8 +19,6 @@ Tests
 14-04  Severity filter: requesting 'warning' minimum excludes info events
 14-05  CSV export returns 200 with text/csv content-type and correct headers
 14-06  Non-admin cannot query audit logs (403)
-14-07  SSE stream endpoint returns 200 with text/event-stream content-type
-14-08  SSE stream delivers an event emitted after the connection opens
 14-09  Emergency revocation emits admin.emergency_revocation at severity=critical
 14-10  SIEM: create syslog destination — appears in list with correct fields
 14-11  SIEM: webhook destination rejects non-HTTPS URL (400)
@@ -28,19 +26,21 @@ Tests
 14-13  SIEM: delete destination — gone from list
 14-14  SIEM: admin.siem.config_changed event emitted on destination create
 14-15  Retention setting is readable via GET /admin/settings
+14-16  SIEM manifest: all expected events reached the capture file
+
+Note: 14-07 and 14-08 were removed when the SSE stream was restricted to
+API-key-only access.  Browser admin UI uses the pull API with auto-refresh.
 """
 
 from __future__ import annotations
 
-import asyncio
-
-import httpx
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin import AdminClient, ApiClient
-from tests.e2e.helpers.auth  import register_via_invite
-from tests.e2e.helpers.audit import get_recent_event
+from tests.e2e.helpers.admin        import AdminClient, ApiClient
+from tests.e2e.helpers.auth         import register_via_invite
+from tests.e2e.helpers.audit        import get_recent_event
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -48,6 +48,21 @@ API     = f"{APP_URL}/api/v1"
 # Module-level state shared across tests
 _victim: dict = {}       # {id, session} — the user who will be revoked
 _dest_id: str = ""       # created syslog destination id (cleaned up in 14-13)
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# Tier labels (see siem_manifest.py for full semantics):
+#   tier=3  critical severity → captured by all profiles including relaxed
+#   tier=2  non-critical, in recommended globs (auth.*, admin.*, ...) → high_security + recommended
+#   tier=1  non-critical, outside recommended globs (e.g. file.upload) → high_security only
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    # SIEM config operations are admin.* at info severity → recommended + high_security
+    ExpectedSiemEvent("admin.siem.config_changed", outcome="success", severity="info", tier=2),
+    # Emergency revocation is critical severity → captured by all profiles
+    ExpectedSiemEvent("admin.emergency_revocation", outcome="success", severity="critical", tier=3),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -204,95 +219,6 @@ async def test_14_06_non_admin_cannot_query_audit_logs():
         r = await victim_api.get("/admin/audit/logs")
     assert r.status_code == 403, (
         f"Regular user should be denied audit log access, got {r.status_code}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 14-07  SSE content-type header
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_14_07_sse_endpoint_returns_event_stream_content_type(
-    admin_client: AdminClient,
-):
-    """Open the SSE stream and verify status + content-type header.
-
-    We do NOT read any body bytes — SSE streams stay open indefinitely and
-    the first keepalive comment arrives after 25 s, which would exceed any
-    reasonable read timeout.  The status code and content-type header are
-    available as soon as the connection is established.
-    """
-    cookies = admin_client._cookies
-    # No read timeout — the stream never finishes; we close as soon as we have headers.
-    timeout = httpx.Timeout(connect=5.0, read=None, write=5.0, pool=5.0)
-
-    async with httpx.AsyncClient(cookies=cookies, timeout=timeout) as client:
-        async with client.stream("GET", f"{API}/admin/audit/logs/stream") as resp:
-            assert resp.status_code == 200, (
-                f"SSE stream returned {resp.status_code}"
-            )
-            ct = resp.headers.get("content-type", "")
-            assert "text/event-stream" in ct, (
-                f"Expected text/event-stream, got: {ct!r}"
-            )
-            # Headers confirmed — close without reading body.
-
-
-# ---------------------------------------------------------------------------
-# 14-08  SSE stream delivers live events
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_14_08_sse_stream_delivers_events(admin_client: AdminClient):
-    """
-    Connect to the SSE stream, trigger a SIEM config-change event by creating
-    a throwaway destination, then assert the event arrives on the stream within
-    five seconds.
-    """
-    cookies = admin_client._cookies
-    received: list[str] = []
-    stream_opened = asyncio.Event()
-
-    async def _consume():
-        async with httpx.AsyncClient(cookies=cookies, timeout=10) as client:
-            async with client.stream("GET", f"{API}/admin/audit/logs/stream") as resp:
-                stream_opened.set()
-                async for line in resp.aiter_lines():
-                    if line.startswith("event:"):
-                        received.append(line)
-                    if any("admin.siem" in s for s in received):
-                        return
-
-    consumer = asyncio.create_task(_consume())
-
-    # Wait for the stream to open before triggering the event
-    await asyncio.wait_for(stream_opened.wait(), timeout=3)
-
-    dest = await admin_client.create_siem_destination(
-        name="14-sse-seed",
-        type="syslog",
-        host="127.0.0.1",
-        port=514,
-        protocol="udp",
-        syslog_format="rfc5424",
-    )
-    await admin_client.delete_siem_destination(dest["id"])
-
-    # Give the stream up to five seconds to deliver the event
-    try:
-        await asyncio.wait_for(asyncio.shield(consumer), timeout=5)
-    except asyncio.TimeoutError:
-        pass
-    finally:
-        consumer.cancel()
-        try:
-            await consumer
-        except (asyncio.CancelledError, Exception):
-            pass
-
-    assert any("admin.siem" in s for s in received), (
-        f"SSE stream did not deliver expected admin.siem event within 5s. "
-        f"Received lines: {received}"
     )
 
 
@@ -472,3 +398,14 @@ async def test_14_15_retention_setting_readable_and_writable(admin_client: Admin
 
     # Restore
     await admin_client.set_setting("audit_retention_days", original)
+
+
+# ---------------------------------------------------------------------------
+# 14-16  SIEM manifest — all expected events reached the capture file
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_14_16_siem_manifest():
+    """Verify that all events declared in _SIEM_MANIFEST appeared in the SIEM
+    capture file during this test group, filtered by the active SIEM test tier."""
+    assert_manifest(_SIEM_MANIFEST)

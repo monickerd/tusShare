@@ -38,6 +38,7 @@ from playwright.async_api import Browser
 from tests.e2e.helpers.admin  import AdminClient, ApiClient
 from tests.e2e.helpers.auth   import register_via_invite, login
 from tests.e2e.helpers.files  import create_folder
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 from tests.e2e.helpers.teams  import (
     create_team,
     get_team, list_teams, update_team, delete_team,
@@ -56,6 +57,14 @@ _owner:       dict = {}
 _member_user: dict = {}
 _team_role:   dict = {}
 _team_folder: dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# Team creation, member add/remove, team-role CRUD, and folder operations
+# do not emit SIEM events in the current implementation.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -314,3 +323,13 @@ async def test_06_19_delete_team():
         await delete_team(owner_api, _team["id"])
         teams = await list_teams(owner_api)
     assert not any(t["id"] == _team["id"] for t in teams)
+
+
+# ---------------------------------------------------------------------------
+# 06-20  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_06_20_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

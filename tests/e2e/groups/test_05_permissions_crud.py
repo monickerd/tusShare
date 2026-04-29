@@ -34,6 +34,7 @@ from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.auth  import register_via_invite, login
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -41,6 +42,19 @@ API     = f"{APP_URL}/api/v1"
 # Module-level test state
 _test_user: dict = {}
 _test_role: dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 05-01 (no flag), 05-09 (plain user hits 4 admin paths).
+# admin.role.granted: 05-02 (grant role), 05-10 (cycle grant).
+# admin.role.revoked: 05-10 (cycle revoke).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden",     outcome="failure", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.role.granted", outcome="success", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.role.revoked", outcome="success", severity="warning", tier=2),
+]
 
 
 async def _get_user_api(browser: Browser, admin_client: AdminClient, username: str, password: str) -> tuple:
@@ -219,3 +233,13 @@ async def test_05_10_grant_revoke_cycle(admin_client: AdminClient):
 
     # Re-grant so teardown fixture can clean up without role-in-use errors
     await admin_client.grant_role(_test_user["id"], _test_role["id"])
+
+
+# ---------------------------------------------------------------------------
+# 05-11  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_05_11_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

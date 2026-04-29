@@ -27,6 +27,7 @@ from playwright.async_api import Browser
 from tests.e2e.conftest      import ADMIN_USERNAME, ADMIN_PASSWORD
 from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.auth  import register_via_invite
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -34,6 +35,18 @@ API     = f"{APP_URL}/api/v1"
 # Users created in this group (module-level state shared across tests)
 _alice: dict = {}
 _bob:   dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# admin.user.deactivated/activated from 02-06/07 (users.py emit).
+# admin.user.deleted (severity=critical) from 02-08.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("admin.user.deactivated", outcome="success", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.user.activated",   outcome="success", severity="info",    tier=2),
+    ExpectedSiemEvent("admin.user.deleted",      outcome="success", severity="critical", tier=3),
+]
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -210,3 +223,13 @@ async def test_02_11_duplicate_username_rejected(
     assert r.status_code in (409, 400, 422), (
         f"Duplicate username should fail at register/start, got {r.status_code}: {r.text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 02-12  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_02_12_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

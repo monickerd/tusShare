@@ -153,6 +153,11 @@ class Settings(BaseSettings):
     # so that X-Forwarded-Proto cannot be spoofed by external clients.
     FORCE_HTTPS: bool = False
 
+    # SIEM event capture file (test / debug only)
+    # When set, every fan-out security event is appended as a JSON line to this file.
+    # Cleared on app startup.  Leave empty in production.
+    SIEM_CAPTURE_FILE: str = ""
+
     # Antivirus / server-side scanning
     # ESCROW_PRIVATE_KEY: DER-encoded ECDH P-256 private key (base64) used to decrypt
     # escrow-wrapped file keys for server-side AV scanning.  When absent the webhook

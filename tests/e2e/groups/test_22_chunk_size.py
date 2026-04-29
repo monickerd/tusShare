@@ -50,6 +50,7 @@ from tests.e2e.helpers.admin        import AdminClient, ApiClient
 from tests.e2e.helpers.auth         import register_via_invite
 from tests.e2e.helpers.crypto_stubs import chunk_hash, fake_aes256_key, fake_iv_12
 from tests.e2e.helpers.files        import _SERVER_DEFAULT_CHUNK_SIZE
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -59,6 +60,14 @@ API     = f"{APP_URL}/api/v1"
 # ---------------------------------------------------------------------------
 
 _user: dict = {}   # regular user for upload tests
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# Chunk size enforcement returns 400 (not 403), so auth.forbidden is not
+# emitted.  No other SIEM-instrumented paths are exercised here.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +273,13 @@ async def test_22_04_non_final_chunk_wrong_body_size_is_rejected(admin_client: A
 
     finally:
         await admin_client.set_setting("default_chunk_size", original_setting)
+
+
+# ---------------------------------------------------------------------------
+# 22-05  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_22_05_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

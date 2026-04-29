@@ -115,6 +115,9 @@ services:
       TUSSHARE_DEBUG: "false"
       # Dex runs over HTTP in the test environment — allow HTTP OIDC issuer URLs.
       TUSSHARE_ALLOW_HTTP_IDP: "true"
+      # Append every fan-out security event as a JSON line for SIEM emission tests.
+      # Cleared on each app startup (i.e. each reset_db()).  Not for production use.
+      TUSSHARE_SIEM_CAPTURE_FILE: "/data/siem_capture.jsonl"
     volumes:
       - tusshare_test_data:/data
     depends_on:

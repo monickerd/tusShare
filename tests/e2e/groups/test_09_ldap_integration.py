@@ -44,6 +44,8 @@ from __future__ import annotations
 import pytest
 import httpx
 
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+
 APP_URL  = "http://localhost:8001"
 API      = f"{APP_URL}/api/v1"
 
@@ -79,6 +81,15 @@ _BOB   = {"username": "ldap_bob",   "password": "Bob!Ldap99"}
 _state: dict = {}
 
 _REDACTED = "••••••••"
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# LDAP login success does not emit a SIEM event (no log_security_event call
+# on the success path in idp_auth.py).  Provider CRUD and validation errors
+# return 400/404, not 403.  No SIEM events are expected from this group.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 # ---------------------------------------------------------------------------
@@ -429,3 +440,13 @@ async def test_09_12_delete_provider_delinks_users(seeded_env):
     users = await admin.list_users()
     alice = next((u for u in users if u["id"] == _state.get("alice_user_id")), None)
     assert alice is not None, "ldap_alice was deleted along with the provider — must not happen"
+
+
+# ---------------------------------------------------------------------------
+# 09-13  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_09_13_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

@@ -52,6 +52,7 @@ from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin   import AdminClient, ApiClient
 from tests.e2e.helpers.auth    import register_via_invite
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 from tests.e2e.helpers.files   import (
     create_folder, can_list_folder, can_access_admin,
     can_list_users, can_download_file,
@@ -68,6 +69,17 @@ API     = f"{APP_URL}/api/v1"
 _users:   dict[str, dict] = {}
 _teams:   dict[str, dict] = {}
 _folders: dict[str, dict] = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 08-02 (alice blocked from admin), 08-04 (outsider blocked
+# from alice's folder).  Further 403s may occur in team access tests but
+# those paths can also return 404; the two guaranteed ones are sufficient.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+]
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -300,3 +312,13 @@ async def test_08_10_login_rate_limit():
             assert r.status_code in (400, 404, 422, 429), (
                 f"Unexpected status on attempt {i+1}: {r.status_code}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 08-11  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_08_11_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

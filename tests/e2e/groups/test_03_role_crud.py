@@ -27,6 +27,7 @@ import pytest
 from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin import AdminClient
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 SYSTEM_ROLE_NAMES = {
     "server_admin", "org_admin", "operational_admin",
@@ -39,6 +40,17 @@ SYSTEM_ROLE_NAMES = {
 # Module-level state
 _custom_role:   dict = {}
 _user_for_role: dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# admin.role.granted from 03-07 and 03-13 (grant_role emits via users.py).
+# admin.role.revoked from 03-09 (revoke_role emits via users.py).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("admin.role.granted", outcome="success", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.role.revoked", outcome="success", severity="warning", tier=2),
+]
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -179,3 +191,13 @@ async def test_03_13_deleting_role_removes_from_users(admin_client: AdminClient)
     # Cleanup
     if "session" in _user_for_role:
         await _user_for_role["session"].ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# 03-14  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_03_14_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

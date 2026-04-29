@@ -40,9 +40,10 @@ const Admin = (() => {
             id: 'users',
             label: 'Users',
             sections: [
-                ['users',   'User Management',    _renderUsers],
-                ['invites', 'Invites',             _renderInvites],
-                ['idp',     'Identity Providers',  _renderIdpSection],
+                ['users',            'User Management',    _renderUsers],
+                ['invites',          'Invites',             _renderInvites],
+                ['service-accounts', 'Service Accounts',   _renderServiceAccountsSection],
+                ['idp',              'Identity Providers',  _renderIdpSection],
             ],
         },
         {
@@ -4581,6 +4582,207 @@ const Admin = (() => {
             resultBox,
         ]));
         container.appendChild(wrap);
+    }
+
+    // ------------------------------------------------------------------
+    // Service Accounts section
+    // ------------------------------------------------------------------
+
+    async function _renderServiceAccountsSection(container) {
+        container.innerHTML = '<p class="text-muted" style="padding:16px">Loading…</p>';
+        try {
+            const data = await Api.get(`${_api()}/admin/service-accounts`);
+            _renderServiceAccountsPanel(container, data.service_accounts || []);
+        } catch (err) {
+            _showError(container, `Failed to load: ${err.message}`);
+        }
+    }
+
+    function _renderServiceAccountsPanel(container, accounts) {
+        container.innerHTML = '';
+        const wrap = Utils.el('div', { style: 'padding:16px' });
+
+        const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px' });
+        header.appendChild(Utils.el('h3', { textContent: 'Service Accounts', style: 'margin:0' }));
+        const createBtn = Utils.el('button', { textContent: '+ Create Service Account', className: 'btn btn-primary btn-sm' });
+        createBtn.addEventListener('click', () => _showCreateServiceAccountModal(container));
+        header.appendChild(createBtn);
+        wrap.appendChild(header);
+
+        wrap.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'font-size:13px;margin-bottom:12px',
+            textContent: 'Service accounts are machine identities that authenticate via bearer token. They receive no permissions by default — assign roles after creation.',
+        }));
+
+        if (accounts.length === 0) {
+            wrap.appendChild(Utils.el('p', { textContent: 'No service accounts.', className: 'text-muted' }));
+        } else {
+            const table = Utils.el('table', { className: 'admin-table', style: 'width:100%' });
+            table.innerHTML = '<thead><tr><th>Name</th><th>Description</th><th>Status</th><th>Key prefix</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead>';
+            const tbody = Utils.el('tbody');
+            for (const sa of accounts) {
+                const tr = Utils.el('tr');
+                const statusBadge = sa.is_active
+                    ? '<span style="color:var(--color-ok,#2d7a36)">active</span>'
+                    : '<span style="color:var(--color-error,#c0392b)">inactive</span>';
+                tr.innerHTML = `
+                  <td>${Utils.escHtml(sa.username)}</td>
+                  <td style="font-size:12px;color:var(--color-muted,#888)">${Utils.escHtml(sa.description || '—')}</td>
+                  <td style="font-size:12px">${statusBadge}</td>
+                  <td style="font-family:monospace;font-size:12px">${Utils.escHtml(sa.key_prefix || '—')}</td>
+                  <td style="font-size:12px">${sa.last_used_at ? sa.last_used_at.slice(0, 10) : 'never'}</td>
+                  <td style="font-size:12px">${sa.key_expires_at ? sa.key_expires_at.slice(0, 10) : 'never'}</td>
+                  <td style="white-space:nowrap"></td>
+                `;
+                const actionsCell = tr.cells[6];
+
+                const rotateBtn = Utils.el('button', { textContent: 'Rotate Key', className: 'btn btn-sm', style: 'margin-right:4px' });
+                rotateBtn.addEventListener('click', async () => {
+                    if (!confirm(`Rotate the key for "${sa.username}"? The current key will stop working immediately.`)) return;
+                    try {
+                        const result = await Api.post(`${_api()}/admin/service-accounts/${sa.id}/rotate-key`, {});
+                        _showSaKeyReveal(result.key, sa.username, container);
+                    } catch (err) {
+                        Utils.showToast('Rotate failed: ' + err.message, 'error');
+                    }
+                });
+
+                const toggleBtn = Utils.el('button', {
+                    textContent: sa.is_active ? 'Deactivate' : 'Activate',
+                    className: 'btn btn-sm' + (sa.is_active ? ' btn-warning' : ''),
+                    style: 'margin-right:4px',
+                });
+                toggleBtn.addEventListener('click', async () => {
+                    const action = sa.is_active ? 'Deactivate' : 'Activate';
+                    if (!confirm(`${action} service account "${sa.username}"?`)) return;
+                    try {
+                        await Api.patch(`${_api()}/admin/service-accounts/${sa.id}`, { is_active: !sa.is_active });
+                        Utils.showToast(`${action}d "${sa.username}".`);
+                        await _renderServiceAccountsSection(container.closest('.admin-section-body') || container);
+                    } catch (err) {
+                        Utils.showToast(`${action} failed: ` + err.message, 'error');
+                    }
+                });
+
+                const deleteBtn = Utils.el('button', { textContent: 'Delete', className: 'btn btn-sm btn-danger' });
+                deleteBtn.addEventListener('click', async () => {
+                    if (!confirm(`Permanently delete service account "${sa.username}"? This cannot be undone.`)) return;
+                    try {
+                        await Api.del(`${_api()}/admin/service-accounts/${sa.id}`);
+                        Utils.showToast(`Service account "${sa.username}" deleted.`);
+                        await _renderServiceAccountsSection(container.closest('.admin-section-body') || container);
+                    } catch (err) {
+                        Utils.showToast('Delete failed: ' + err.message, 'error');
+                    }
+                });
+
+                actionsCell.append(rotateBtn, toggleBtn, deleteBtn);
+                tbody.appendChild(tr);
+            }
+            table.appendChild(tbody);
+            wrap.appendChild(table);
+        }
+
+        container.appendChild(wrap);
+    }
+
+    function _showCreateServiceAccountModal(refreshContainer) {
+        const modal = Utils.el('div', { className: 'modal-overlay' });
+        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:460px' });
+        box.appendChild(Utils.el('h3', { textContent: 'Create Service Account', style: 'margin-top:0' }));
+
+        const nameInp  = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. backup-agent' });
+        const descInp  = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'Optional description' });
+        const expiryInp = Utils.el('input', { type: 'date', style: 'width:200px' });
+
+        const mkField = (label, inp, hint) => {
+            const row = Utils.el('div', { style: 'margin-bottom:10px' });
+            row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:13px;margin-bottom:4px' }));
+            row.appendChild(inp);
+            if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:11px;color:var(--color-muted,#888);margin:2px 0 0' }));
+            return row;
+        };
+
+        box.append(
+            mkField('Name', nameInp, 'Lowercase, no spaces recommended. Used as the bearer token identity.'),
+            mkField('Description (optional)', descInp),
+            mkField('Key expiry (optional)', expiryInp, 'Leave blank for a non-expiring key.'),
+        );
+
+        box.appendChild(Utils.el('p', {
+            style: 'font-size:12px;color:var(--color-muted,#888);margin-bottom:8px',
+            textContent: 'The service account will be created with no roles. Assign roles via the Roles & Permissions section after creation.',
+        }));
+
+        const errEl = Utils.el('p', { className: 'error-text', style: 'display:none;margin-bottom:8px' });
+        box.appendChild(errEl);
+
+        const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end' });
+        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-sm' });
+        cancelBtn.addEventListener('click', () => document.body.removeChild(modal));
+
+        const createBtn = Utils.el('button', { textContent: 'Create', className: 'btn btn-primary btn-sm' });
+        createBtn.addEventListener('click', async () => {
+            errEl.style.display = 'none';
+            const body = {
+                username:    nameInp.value.trim(),
+                description: descInp.value.trim() || null,
+                expires_at:  expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null,
+            };
+            if (!body.username) {
+                errEl.textContent = 'Name is required.';
+                errEl.style.display = '';
+                return;
+            }
+            createBtn.disabled = true;
+            try {
+                const result = await Api.post(`${_api()}/admin/service-accounts`, body);
+                document.body.removeChild(modal);
+                _showSaKeyReveal(result.key, result.username, refreshContainer);
+            } catch (err) {
+                errEl.textContent = err.message;
+                errEl.style.display = '';
+                createBtn.disabled = false;
+            }
+        });
+
+        btns.append(cancelBtn, createBtn);
+        box.appendChild(btns);
+        modal.appendChild(box);
+        document.body.appendChild(modal);
+        nameInp.focus();
+    }
+
+    function _showSaKeyReveal(rawKey, username, refreshContainer) {
+        const modal = Utils.el('div', { className: 'modal-overlay' });
+        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:520px' });
+        box.appendChild(Utils.el('h3', { textContent: 'Service Account Key', style: 'margin-top:0' }));
+        box.appendChild(Utils.el('p', { textContent: 'Copy this key now — it will not be shown again.', style: 'color:var(--color-warning,#d97706);font-weight:600' }));
+        box.appendChild(Utils.el('p', { textContent: username, style: 'font-weight:600;margin-bottom:6px' }));
+
+        const codeWrap = Utils.el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:8px' });
+        const code = Utils.el('code', { textContent: rawKey, style: 'word-break:break-all;background:var(--color-surface,#f5f5f5);padding:8px;border-radius:4px;flex:1;font-size:13px' });
+        const copyBtn = Utils.el('button', { textContent: 'Copy', className: 'btn btn-sm' });
+        copyBtn.addEventListener('click', () => {
+            navigator.clipboard.writeText(rawKey).then(() => { copyBtn.textContent = 'Copied!'; });
+        });
+        codeWrap.append(code, copyBtn);
+        box.appendChild(codeWrap);
+
+        box.appendChild(Utils.el('p', {
+            style: 'font-size:12px;color:var(--color-muted,#888);margin-bottom:16px',
+            textContent: 'Pass this as a Bearer token: Authorization: Bearer <key>',
+        }));
+
+        const doneBtn = Utils.el('button', { textContent: 'Done', className: 'btn btn-primary btn-sm' });
+        doneBtn.addEventListener('click', async () => {
+            document.body.removeChild(modal);
+            await _renderServiceAccountsSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
+        });
+        box.appendChild(doneBtn);
+        modal.appendChild(box);
+        document.body.appendChild(modal);
     }
 
     return { renderAdminPage };

@@ -59,6 +59,7 @@ from tests.e2e.helpers.admin  import AdminClient, ApiClient
 from tests.e2e.helpers.auth   import register_via_invite
 from tests.e2e.helpers.crypto_stubs import fake_asymmetric_keys, fake_g2_point, fake_kem_bundle
 from tests.e2e.helpers.files  import create_folder
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -76,6 +77,18 @@ _op_admin: dict = {}   # admin with operational_admin (tier 3) + can_manage_escr
 _folder: dict = {}     # named folder IDs
 _unprotected_team_id: str = ""   # team from test_19_13 (no escrow member)
 _protected_team_id:   str = ""   # team from test_19_15 (e1 as escrow member)
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 19-02 (_plain blocked from escrow settings), 19-03 (_mgr
+#   blocked without can_manage_escrow), 19-24 (inaccessible folder → 403),
+#   19-25 (overrides_allowed=False blocks child policy → 403),
+#   19-26/27 (policy_locked blocks lower-tier admin → 403).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+]
 
 
 async def _reg(browser, admin_client, username: str, password: str) -> dict:
@@ -619,3 +632,13 @@ async def test_19_28_folder_deletion_cascades_to_escrow_policy(admin_client: Adm
     with pytest.raises(httpx.HTTPStatusError) as exc_info:
         await admin_client.get_folder_escrow_policy(fd["id"])
     assert exc_info.value.response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# 19-29  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_19_29_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

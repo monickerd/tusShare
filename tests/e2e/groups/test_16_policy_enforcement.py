@@ -64,6 +64,7 @@ from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.auth  import ldap_login, register_via_invite
 from tests.e2e.helpers.files import create_folder, can_list_folder
 from tests.e2e.helpers.teams import create_team, delete_team, is_member
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -76,6 +77,19 @@ _provider_id: str = ""
 _apis:        dict[str, ApiClient] = {}
 _user_ids:    dict[str, str]       = {}
 _admin_api:   Optional[ApiClient]  = None
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 16-03/07/09 (LDAP users denied gated folder → 403),
+#   16-13 (no manage_policies → 403 on /admin/policies),
+#   16-14 (can_view_admin_panel alone → 403 on policy CRUD).
+# set_role_permissions() hits the role-permissions endpoint, not the
+# user-role endpoint, so admin.role.granted/revoked are NOT emitted here.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+]
 
 # Folders owned by the admin — LDAP users have no default access
 _gated_folder:    dict = {}   # used by section 1 (single condition)
@@ -645,3 +659,13 @@ async def test_16_15_manage_policies_flag_enables_and_revoking_blocks(
                 await admin_client.delete_policy(created_policy_id)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# 16-16  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_16_16_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

@@ -20,6 +20,7 @@ from playwright.async_api import Browser
 from tests.e2e.helpers.admin  import AdminClient, ApiClient
 from tests.e2e.helpers.auth   import register_via_invite
 from tests.e2e.helpers.files  import delete_file, upload_file_api
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 from tests.e2e.helpers.shares import (
     create_link_share, delete_share,
     resolve_share_public, download_share_content_public,
@@ -32,6 +33,15 @@ APP_URL = "http://localhost:8001"
 _user:  dict = {}
 _file:  dict = {}
 _share: dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# Share creation, access, and revocation routes do not emit SIEM events in
+# the current implementation (file.share.* events are not yet wired).
+# No sharing deny-rules are active so share.blocked does not fire.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -186,3 +196,13 @@ async def test_11_06_deleted_file_returns_404_from_share():
     assert content_resp.status_code == 404, (
         f"Content of deleted file should return 404, got {content_resp.status_code}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 11-07  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_11_07_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

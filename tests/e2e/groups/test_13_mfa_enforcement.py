@@ -36,6 +36,7 @@ from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.auth  import register_via_invite
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -48,6 +49,18 @@ _charlie: dict = {}   # never enrolls; used for browser nav and optional-mode te
 # TOTP state carried between enroll/start and enroll/finish tests
 _alice_totp:  dict = {}   # {secret_b32, cred_id}
 _bob_totp:    dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 13-03 (unenrolled blocked from /folders), 13-03b (blocked
+# from /uploads), 13-10 (admin MFA wipe without step-up → 403), 13-10b,
+# 13-11 (second unenrolled user blocked).
+# MFA enrollment (enroll/start + enroll/finish) does not emit SIEM events.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -470,3 +483,13 @@ async def test_13_15_admin_endpoints_unaffected_by_mfa_enforcement(
 
     # Restore optional so teardown fixture's 'off' reset is the only state change needed
     await admin_client.set_setting("mfa_enforcement", "optional")
+
+
+# ---------------------------------------------------------------------------
+# 13-16  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_13_16_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

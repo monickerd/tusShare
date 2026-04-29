@@ -82,6 +82,7 @@ from tests.e2e.helpers.files import (
     create_folder,
     get_folder,
 )
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -89,6 +90,14 @@ API     = f"{APP_URL}/api/v1"
 pytestmark = pytest.mark.s3
 
 _REDACTED = "••••••••"
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# S3 storage and file CRUD routes do not emit SIEM events.
+# No permission-denied paths (admin credentials used throughout).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 # Per-module state shared across tests
 _state: dict = {}
@@ -518,3 +527,13 @@ async def test_17_17_migrated_file_still_downloadable(s3_env):
         f"Expected 200 downloading migrated file from warm S3 bucket, "
         f"got {r.status_code}: {r.text[:200]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 17-18  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_17_18_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

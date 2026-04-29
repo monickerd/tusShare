@@ -31,6 +31,7 @@ from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin  import AdminClient, ApiClient
 from tests.e2e.helpers.auth   import register_via_invite
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 from tests.e2e.helpers.files  import (
     create_folder, list_root, get_folder, rename_folder,
     move_folder, delete_folder, get_file, rename_file,
@@ -45,6 +46,15 @@ _user:        dict = {}
 _folder_a:    dict = {}
 _folder_b:    dict = {}
 _file:        dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# File upload, rename, move, download, and delete routes do not emit SIEM
+# events in the current implementation.  Quota enforcement returns 400/413,
+# not 403, so no auth.forbidden is generated.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -240,3 +250,13 @@ async def test_07_15_quota_enforcement(admin_client: AdminClient):
 
     # Restore unlimited quota
     await admin_client.update_user(_user["id"], disk_quota=0)
+
+
+# ---------------------------------------------------------------------------
+# 07-16  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_07_16_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

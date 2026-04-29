@@ -46,7 +46,7 @@ _SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 _MAX_EXPORT_ROWS = 50_000
 _SSE_KEEPALIVE_SECS = 25  # comment-only keepalive to hold the connection
 
-# FastAPI dependency for the SSE stream — API key only (machine consumers only).
+# FastAPI dependency for API-key-only callers that need the raw key row (e.g. rotate).
 _require_audit_key = make_api_key_dep("audit_read")
 
 
@@ -305,15 +305,16 @@ async def stream_audit_logs(
 ):
     """Stream security events in real-time via Server-Sent Events.
 
-    Machine-only endpoint — requires an API key with audit_read scope.
-    The browser admin UI uses the pull API (/logs) with polling instead.
-    Reconnect via Last-Event-ID header to resume from the last seen event_id.
+    Machine/SIEM consumer endpoint — requires an audit_read API key.
+    Browser admin UI uses the pull API (/logs) with auto-refresh instead.
+    API key callers get their per-key event-type and severity filters applied
+    on top of the query-param filters.
     """
     et_patterns = [p.strip() for p in event_types.split(",") if p.strip()]
     min_sev = severity if severity in _SEVERITY_ORDER else "info"
     uid_filter = user_id.strip() or None
 
-    # Per-key filter constraints (additive on top of query-param filters).
+    # Per-key filter constraints from the API key's own configuration.
     key_et_raw = _key.get("filter_event_types") or ""
     key_et_patterns = [p.strip() for p in key_et_raw.split(",") if p.strip()]
     key_min_sev = _key.get("filter_min_severity") or "info"

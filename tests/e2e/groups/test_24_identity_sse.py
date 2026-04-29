@@ -41,6 +41,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from tests.e2e.helpers.admin import AdminClient
 from tests.e2e.helpers.auth  import register_via_invite, UserSession
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL        = "http://localhost:8001"
 API            = f"{APP_URL}/api/v1"
@@ -52,6 +53,17 @@ SSE_LOGOUT_MS  = 10_000   # max time for SSE → 1.5 s toast → logout to compl
 _alice:   dict = {}
 _bob:     dict = {}
 _charlie: dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# admin.user.deactivated: 24-02 (admin deactivates Alice → identity_changed SSE).
+# admin.emergency_revocation: 24-03 (emergency revoke on Bob → identity_changed SSE).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("admin.user.deactivated",   outcome="success", severity="warning",  tier=2),
+    ExpectedSiemEvent("admin.emergency_revocation", outcome="success", severity="critical", tier=3),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -281,3 +293,13 @@ async def test_24_04_two_tabs_both_receive_identity_sse(admin_client: AdminClien
     finally:
         await tab1.close()
         await tab2.close()
+
+
+# ---------------------------------------------------------------------------
+# 24-05  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_24_05_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

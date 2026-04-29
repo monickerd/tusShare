@@ -469,6 +469,13 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     """
     import uuid as _uuid
 
+    # Service accounts are policy-exempt — they receive only explicitly granted
+    # roles and must never be auto-enrolled via policy triggers.
+    cursor = await db.execute("SELECT auth_method FROM users WHERE id = ?", (user_id,))
+    _am_row = await cursor.fetchone()
+    if _am_row and _am_row["auth_method"] == "service":
+        return
+
     # 1. Debounce
     if not force:
         cursor = await db.execute(

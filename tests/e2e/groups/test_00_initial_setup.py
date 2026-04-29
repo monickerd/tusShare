@@ -26,6 +26,7 @@ from playwright.async_api import Browser, expect
 
 from tests.e2e.helpers.db   import reset_db, get_bootstrap_token
 from tests.e2e.helpers.auth import bootstrap_admin, login, register_via_invite
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL        = "http://localhost:8001"
 API            = f"{APP_URL}/api/v1"
@@ -33,6 +34,14 @@ ADMIN_USERNAME = "bootstrap_admin"
 ADMIN_PASSWORD = "Sup3r!Str0ngPassw0rd"
 USER_USERNAME  = "first_user"
 USER_PASSWORD  = "Us3r!Passw0rd99"
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# OPAQUE login and registration do not emit SIEM events.
+# No 401/403 responses are expected from the happy-path bootstrap flow.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 # ---------------------------------------------------------------------------
@@ -189,3 +198,13 @@ async def test_00_08_admin_creates_invite_and_user_registers(browser: Browser):
     finally:
         await page.close()
         await user_session.ctx.close()
+
+
+# ---------------------------------------------------------------------------
+# 00-09  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_00_09_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

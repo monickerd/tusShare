@@ -58,7 +58,7 @@ CREATE TABLE users (
     username                 CITEXT NOT NULL UNIQUE
                                  CHECK(length(username) BETWEEN 1 AND 64),
     auth_method              TEXT NOT NULL DEFAULT 'opaque'
-                                 CHECK(auth_method IN ('opaque', 'ldap', 'oidc')),
+                                 CHECK(auth_method IN ('opaque', 'ldap', 'oidc', 'service')),
     opaque_registration_record BYTEA,
     is_admin                 INTEGER NOT NULL DEFAULT 0,
     is_active                INTEGER NOT NULL DEFAULT 1,
@@ -98,6 +98,9 @@ CREATE TABLE users (
     -- Per-user UI preferences (JSON)
     ui_prefs                 TEXT DEFAULT NULL,
 
+    -- Human-readable description (used primarily for service accounts)
+    description              TEXT DEFAULT NULL,
+
     created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -124,6 +127,26 @@ CREATE TABLE identity_provider_users (
 
 CREATE INDEX idx_idp_users_user     ON identity_provider_users(user_id);
 CREATE INDEX idx_idp_users_provider ON identity_provider_users(provider_id);
+
+-------------------------------------------------
+-- SERVICE ACCOUNT KEYS
+-- One bearer key per service account (1:1 enforced by UNIQUE on service_account_id).
+-- key_hash:   SHA-256 hex of the raw bearer token (sa_<32 url-safe base64 chars>).
+-- key_prefix: first 12 chars of the raw key, shown in the admin UI for identification.
+-- Raw key is returned exactly once (creation / rotation) and never stored.
+-------------------------------------------------
+CREATE TABLE service_account_keys (
+    id                   TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    service_account_id   TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    key_hash             TEXT NOT NULL UNIQUE,
+    key_prefix           TEXT NOT NULL,
+    created_by           TEXT NOT NULL REFERENCES users(id),
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at           TIMESTAMPTZ,
+    last_used_at         TIMESTAMPTZ
+);
+
+CREATE INDEX idx_sak_hash ON service_account_keys(key_hash);
 
 -------------------------------------------------
 -- OIDC STATE NONCES
@@ -1221,7 +1244,8 @@ INSERT INTO role_permission_flags (flag, description, category, is_sensitive) VA
     ('can_create_link_shares',      'May create anonymous link shares',                                   'sharing',       0),
     ('can_create_user_shares',      'May create user-to-user KEM shares',                                 'sharing',       0),
     ('can_create_upload_grants',    'May enable upload access on a share',                                'sharing',       0),
-    ('can_share_folders',           'May create upload-only folder shares',                               'sharing',       0);
+    ('can_share_folders',           'May create upload-only folder shares',                               'sharing',       0),
+    ('can_manage_service_accounts', 'Create, rotate, and delete machine-identity service accounts',       'admin',         0);
 
 -------------------------------------------------
 -- PERMISSION FLAG GRANTS PER ROLE
@@ -1252,7 +1276,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('server_admin', 'can_create_link_shares',      '1'),
     ('server_admin', 'can_create_user_shares',      '1'),
     ('server_admin', 'can_create_upload_grants',    '1'),
-    ('server_admin', 'can_share_folders',           '1');
+    ('server_admin', 'can_share_folders',           '1'),
+    ('server_admin', 'can_manage_service_accounts', '1');
 
 -- org_admin: org-wide; no system-level or integration settings
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1279,7 +1304,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('org_admin', 'can_create_link_shares',      '1'),
     ('org_admin', 'can_create_user_shares',      '1'),
     ('org_admin', 'can_create_upload_grants',    '1'),
-    ('org_admin', 'can_share_folders',           '1');
+    ('org_admin', 'can_share_folders',           '1'),
+    ('org_admin', 'can_manage_service_accounts', '1');
 
 -- operational_admin: user/team lifecycle only
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1306,7 +1332,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('operational_admin', 'can_create_link_shares',      '0'),
     ('operational_admin', 'can_create_user_shares',      '0'),
     ('operational_admin', 'can_create_upload_grants',    '0'),
-    ('operational_admin', 'can_share_folders',           '0');
+    ('operational_admin', 'can_share_folders',           '0'),
+    ('operational_admin', 'can_manage_service_accounts', '1');
 
 -- team_admin: team-scoped; can create roles and manage within their team
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1333,7 +1360,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('team_admin', 'can_create_link_shares',      '0'),
     ('team_admin', 'can_create_user_shares',      '0'),
     ('team_admin', 'can_create_upload_grants',    '0'),
-    ('team_admin', 'can_share_folders',           '0');
+    ('team_admin', 'can_share_folders',           '0'),
+    ('team_admin', 'can_manage_service_accounts', '0');
 
 -- team_manager: member management only
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1360,7 +1388,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('team_manager', 'can_create_link_shares',      '0'),
     ('team_manager', 'can_create_user_shares',      '0'),
     ('team_manager', 'can_create_upload_grants',    '0'),
-    ('team_manager', 'can_share_folders',           '0');
+    ('team_manager', 'can_share_folders',           '0'),
+    ('team_manager', 'can_manage_service_accounts', '0');
 
 -- escrow_agent: only the escrow capability flag
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1391,7 +1420,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('role_admin', 'can_create_link_shares',      '1'),
     ('role_admin', 'can_create_user_shares',      '1'),
     ('role_admin', 'can_create_upload_grants',    '1'),
-    ('role_admin', 'can_share_folders',           '1');
+    ('role_admin', 'can_share_folders',           '1'),
+    ('role_admin', 'can_manage_service_accounts', '1');
 
 -- role_user: sharing capabilities; no admin flags
 INSERT INTO role_permissions (role_id, flag, value) VALUES

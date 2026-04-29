@@ -63,6 +63,7 @@ _SENSITIVE_DEFAULTS = [
     ("admin.api_keys.manage",           "password", "Create or revoke API keys for pull event consumers"),
     ("auth.mfa.admin_remove",           "password", "Admin removes MFA credential(s) from a user account"),
     ("auth.mfa.admin_reset",       "password", "Admin forces MFA re-enrollment for a user"),
+    ("admin.service_accounts.*",   "password", "Create, delete, or rotate service account keys"),
 ]
 
 # is_sensitive=False — common operations (step-up can be enabled later by

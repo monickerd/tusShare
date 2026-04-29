@@ -1,0 +1,99 @@
+"""Service account authentication.
+
+Service accounts are rows in the `users` table with auth_method='service'.
+They authenticate via a bearer token prefixed with 'sa_'.
+
+Usage in routes — use the get_service_account dependency when you want to
+accept ONLY service account tokens.  For the common case of accepting either
+a human JWT or a service account token, see auth/dependencies.py —
+get_current_user checks for the 'sa_' prefix automatically.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+from datetime import datetime, timezone
+
+from fastapi import HTTPException
+
+from app.auth.interface import AuthenticatedUser
+from app.database import db_session
+from app.models.role import get_user_global_flags, get_user_global_role_ids
+
+logger = logging.getLogger(__name__)
+
+_PREFIX = "sa_"
+_MIN_LEN = len(_PREFIX) + 20  # prefix + at least 20 chars of entropy
+
+
+def _hash_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def _update_last_used(key_id: str) -> None:
+    try:
+        async with db_session() as db:
+            await db.execute(
+                "UPDATE service_account_keys SET last_used_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), key_id),
+            )
+            await db.commit()
+    except Exception:
+        logger.debug("service_account: failed to update last_used_at for key %s", key_id)
+
+
+async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
+    """Validate a raw service account bearer token.
+
+    Raises HTTPException(401) on any failure.  Callers must only pass tokens
+    that already have the 'sa_' prefix — check before calling.
+    """
+    if len(raw_token) < _MIN_LEN:
+        raise HTTPException(status_code=401, detail="Invalid service account token")
+
+    key_hash = _hash_key(raw_token)
+    now_iso  = datetime.now(timezone.utc).isoformat()
+
+    async with db_session() as db:
+        cursor = await db.execute(
+            """
+            SELECT sak.id        AS key_id,
+                   sak.expires_at,
+                   u.id          AS user_id,
+                   u.username,
+                   u.is_active,
+                   u.auth_method
+            FROM   service_account_keys sak
+            JOIN   users u ON u.id = sak.service_account_id
+            WHERE  sak.key_hash = ?
+            """,
+            (key_hash,),
+        )
+        row = await cursor.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=401, detail="Invalid service account token")
+
+    if not row["is_active"]:
+        raise HTTPException(status_code=401, detail="Service account is inactive")
+
+    if row["expires_at"] and row["expires_at"] < now_iso:
+        raise HTTPException(status_code=401, detail="Service account key has expired")
+
+    # Load RBAC state
+    async with db_session() as db:
+        roles = await get_user_global_role_ids(db, row["user_id"])
+        flags = await get_user_global_flags(db, row["user_id"])
+
+    asyncio.create_task(_update_last_used(row["key_id"]))
+
+    return AuthenticatedUser(
+        id=row["user_id"],
+        username=row["username"],
+        auth_method="service",
+        roles=roles,
+        flags=flags,
+        # Service accounts have no key material, session, or MFA state.
+        session_id=None,
+    )

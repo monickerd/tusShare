@@ -44,11 +44,21 @@ from tests.e2e.helpers.admin  import AdminClient, ApiClient  # ApiClient used in
 from tests.e2e.helpers.auth   import register_via_invite
 from tests.e2e.helpers.files  import upload_file_api, create_folder, batch_move_files
 from tests.e2e.helpers.db     import _psql, PG_DB_NAME
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = os.getenv("TEST_APP_URL", "http://localhost:8001")
 API     = f"{APP_URL}/api/v1"
 
 _FAKE_ENDPOINT = "http://av.fake.local/scan"
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# AV gate rejections return 451 (not 403), so auth.forbidden is not emitted.
+# File upload/download/move routes do not emit SIEM events.
+# No SIEM events are expected from this group.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 # Module-level state populated in setup_module fixture
 _user:   dict = {}
@@ -251,3 +261,13 @@ async def test_18_12_bulk_rescan_501_without_escrow_key(admin_client: AdminClien
     r = await admin_client._client.post(f"{API}/admin/files/av-rescan")
     assert r.status_code == 501
     assert "ESCROW_PRIVATE_KEY" in r.json().get("detail", "")
+
+
+# ---------------------------------------------------------------------------
+# 18-13  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_18_13_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

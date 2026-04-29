@@ -33,6 +33,7 @@ from playwright.async_api import Browser
 from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.auth  import register_via_invite
 from tests.e2e.helpers.teams import create_team, list_members, add_member
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -41,6 +42,16 @@ API     = f"{APP_URL}/api/v1"
 _team:       dict = {}
 _owner:      dict = {}
 _supervisor: dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 23-04 (promote blocked when flag disabled → 403),
+#   23-12 (demoted owner cannot change member roles → 403).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden", outcome="failure", severity="warning", tier=2),
+]
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -292,3 +303,13 @@ async def test_23_12_demoted_owner_loses_role_change_privilege():
     assert r.status_code == 403, (
         f"Expected 403 (insufficient role after demotion), got {r.status_code}: {r.text}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 23-13  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_23_13_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

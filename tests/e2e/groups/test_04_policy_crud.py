@@ -28,11 +28,21 @@ import pytest
 from tests.e2e.helpers.admin   import AdminClient, ApiClient
 from tests.e2e.helpers.policies import create_policy_with_conditions
 from tests.e2e.helpers.teams   import create_team, delete_team
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 _field:         dict = {}
 _policy:        dict = {}
 _condition:     dict = {}
 _team_policy:   dict = {}
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# Policy and policy-field CRUD routes do not emit SIEM events.
+# Team creation does not emit SIEM events.
+# No 401/403 responses expected from the happy-path policy tests.
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -184,3 +194,13 @@ async def test_04_13_cannot_delete_field_in_use(admin_client: AdminClient):
     # Cleanup: delete the policy (and its conditions) first, then the field
     await admin_client.delete_policy(_policy["id"])
     await admin_client.delete_policy_field("department")
+
+
+# ---------------------------------------------------------------------------
+# 04-14  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_04_14_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)

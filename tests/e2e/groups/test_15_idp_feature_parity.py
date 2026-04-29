@@ -78,6 +78,7 @@ from tests.e2e.helpers.shares import create_link_share, resolve_share_public
 from tests.e2e.helpers.teams  import (
     create_team, add_member, list_team_folders, delete_team, add_team_folder,
 )
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -113,6 +114,20 @@ _folders:   dict[str, dict]      = {}   # private folder per actor
 _files:     dict[str, dict]      = {}   # uploaded files for sharing tests
 _mixed_team: dict                = {}   # team created in test 15-20
 _contexts:  list                 = []   # BrowserContexts to close in teardown
+
+# ---------------------------------------------------------------------------
+# SIEM manifest — events this group's actions must produce
+#
+# auth.forbidden: 15-11 to 15-15 (private folder isolation → 403),
+#   15-24 (LDAP user without admin role → 403).
+# admin.role.granted: 15-25 (server_admin granted to LDAP user).
+# admin.role.revoked: 15-26 (server_admin revoked from LDAP user).
+# ---------------------------------------------------------------------------
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("auth.forbidden",     outcome="failure", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.role.granted", outcome="success", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.role.revoked", outcome="success", severity="warning", tier=2),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -575,3 +590,13 @@ async def test_15_26_revoke_admin_role_from_ldap_user_blocks_access(
         f"LDAP user after role revocation should be blocked from /admin/settings, "
         f"got {r.status_code}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 15-27  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_15_27_siem_manifest():
+    """Verify expected SIEM events appeared in the capture file during this test group."""
+    assert_manifest(_SIEM_MANIFEST)
