@@ -536,4 +536,4 @@ async def test_27_16_mark_first_run_sets_setting(admin_client: AdminClient):
 @pytest.mark.asyncio(loop_scope="session")
 async def test_27_17_siem_manifest(admin_client: AdminClient):
     """SIEM manifest: profile_applied, profile_exported, profile_imported all emitted."""
-    await assert_manifest(_SIEM_MANIFEST)
+    assert_manifest(_SIEM_MANIFEST)
