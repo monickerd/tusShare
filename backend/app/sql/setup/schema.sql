@@ -308,9 +308,11 @@ CREATE TABLE role_permission_flags (
 -- When a user holds multiple global roles the max value across roles wins.
 -------------------------------------------------
 CREATE TABLE role_permissions (
-    role_id TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    flag    TEXT NOT NULL REFERENCES role_permission_flags(flag) ON DELETE CASCADE,
-    value   TEXT NOT NULL DEFAULT '0',
+    role_id         TEXT    NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    flag            TEXT    NOT NULL REFERENCES role_permission_flags(flag) ON DELETE CASCADE,
+    value           TEXT    NOT NULL DEFAULT '0',
+    is_locked       BOOLEAN NOT NULL DEFAULT FALSE,
+    locked_min_tier INTEGER,
     PRIMARY KEY (role_id, flag)
 );
 

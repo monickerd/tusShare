@@ -9,6 +9,10 @@ All write operations enforce the modular permission framework:
 Inheritance cap (hard invariant): a newly created role's permission set must be
 a strict subset of the creator's own effective permissions.  Enforced here at
 creation time; cannot be bypassed regardless of tier.
+
+Lock model: when is_locked=TRUE on a role_permissions row, only admins with
+role_tier <= locked_min_tier may modify that flag's value or lock state.
+An admin may not lock a flag at a tier lower (higher privilege) than their own.
 """
 
 import re as _re
@@ -25,6 +29,7 @@ from app.models.role import (
     ROLE_ORG_ADMIN,
     ROLE_SERVER_ADMIN,
     SENSITIVE_FLAGS,
+    admin_best_tier,
 )
 
 router = APIRouter()
@@ -54,12 +59,20 @@ async def _load_role(db, role_id: str):
     return row
 
 
-async def _load_role_permissions(db, role_id: str) -> dict[str, str]:
-    """Return {flag: value} for all flags assigned to a role."""
+async def _load_role_permissions(db, role_id: str) -> dict:
+    """Return {flag: {value, is_locked, locked_min_tier}} for all flags on a role."""
     cursor = await db.execute(
-        "SELECT flag, value FROM role_permissions WHERE role_id = ?", (role_id,)
+        "SELECT flag, value, is_locked, locked_min_tier FROM role_permissions WHERE role_id = ?",
+        (role_id,),
     )
-    return {r["flag"]: r["value"] for r in await cursor.fetchall()}
+    return {
+        r["flag"]: {
+            "value":           r["value"],
+            "is_locked":       bool(r["is_locked"]),
+            "locked_min_tier": r["locked_min_tier"],
+        }
+        for r in await cursor.fetchall()
+    }
 
 
 async def _load_all_flags(db) -> list[dict]:
@@ -126,8 +139,14 @@ class UpdateRoleRequest(BaseModel):
     description: str | None = None
 
 
+class FlagUpdate(BaseModel):
+    value:           str
+    is_locked:       bool = False
+    locked_min_tier: int | None = None
+
+
 class UpdatePermissionsRequest(BaseModel):
-    permissions: dict[str, str]   # {flag: '0'/'1'}
+    permissions: dict[str, FlagUpdate]  # {flag: {value, is_locked, locked_min_tier}}
 
 
 # ---------------------------------------------------------------------------
@@ -152,12 +171,16 @@ async def list_roles(
 
     # Bulk-load permissions for all roles in one query
     cursor = await db.execute(
-        "SELECT role_id, flag, value FROM role_permissions"
+        "SELECT role_id, flag, value, is_locked, locked_min_tier FROM role_permissions"
     )
     perm_rows = await cursor.fetchall()
-    perms_by_role: dict[str, dict[str, str]] = {}
+    perms_by_role: dict[str, dict] = {}
     for r in perm_rows:
-        perms_by_role.setdefault(r["role_id"], {})[r["flag"]] = r["value"]
+        perms_by_role.setdefault(r["role_id"], {})[r["flag"]] = {
+            "value":           r["value"],
+            "is_locked":       bool(r["is_locked"]),
+            "locked_min_tier": r["locked_min_tier"],
+        }
 
     roles = [
         _role_to_dict(row, perms_by_role.get(row["id"], {}))
@@ -165,7 +188,7 @@ async def list_roles(
     ]
 
     flags = await _load_all_flags(db)
-    return {"roles": roles, "flags": flags}
+    return {"roles": roles, "flags": flags, "admin_tier": admin_best_tier(admin.roles)}
 
 
 # ---------------------------------------------------------------------------
@@ -259,7 +282,7 @@ async def get_role(
     row = await _load_role(db, role_id)
     permissions = await _load_role_permissions(db, role_id)
     flags = await _load_all_flags(db)
-    return {"role": _role_to_dict(row, permissions), "flags": flags}
+    return {"role": _role_to_dict(row, permissions), "flags": flags, "admin_tier": admin_best_tier(admin.roles)}
 
 
 # ---------------------------------------------------------------------------
@@ -334,14 +357,19 @@ async def update_role_permissions(
     admin: AuthenticatedUser = Depends(get_current_user),
     db=Depends(get_db),
 ):
-    """Set permission flag values for a role.
+    """Set permission flag values and lock state for a role.
 
     Requires can_manage_roles.  Sensitive flags require server_admin or org_admin.
     The inheritance cap does NOT apply here (an admin with can_manage_roles can
     grant flags they don't personally hold, subject to the sensitive-flag gate).
     This mirrors how an org admin can delegate permissions to lower tiers.
+
+    Lock enforcement: if a flag is currently locked, only admins at the required
+    tier may modify its value or lock state.  An admin may not lock a flag at a
+    tier lower (higher privilege) than their own.
     """
     _check_manage_roles(admin)
+    my_tier = admin_best_tier(admin.roles)
 
     await _load_role(db, role_id)  # 404 if missing
 
@@ -349,23 +377,56 @@ async def update_role_permissions(
     all_flags_cursor = await db.execute("SELECT flag FROM role_permission_flags")
     known_flags = {r["flag"] for r in await all_flags_cursor.fetchall()}
 
-    for flag, val in body.permissions.items():
+    for flag, fu in body.permissions.items():
         if flag not in known_flags:
             raise HTTPException(status_code=400, detail=f"Unknown flag: {flag}")
-        if val not in ("0", "1"):
-            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}")
+        if fu.value not in ("0", "1"):
+            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {fu.value!r}")
+
+    # Load existing lock state for all flags being touched
+    if body.permissions:
+        placeholders = ",".join("?" * len(body.permissions))
+        cursor = await db.execute(
+            f"SELECT flag, is_locked, locked_min_tier FROM role_permissions "
+            f"WHERE role_id = ? AND flag IN ({placeholders})",
+            (role_id, *body.permissions.keys()),
+        )
+        existing_locks = {r["flag"]: r for r in await cursor.fetchall()}
+    else:
+        existing_locks = {}
+
+    # Lock enforcement: blocked if flag is locked and caller lacks the required tier
+    for flag in body.permissions:
+        row = existing_locks.get(flag)
+        if row and row["is_locked"] and row["locked_min_tier"] is not None:
+            if my_tier > row["locked_min_tier"]:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Flag '{flag}' is locked — requires role tier ≤ {row['locked_min_tier']}",
+                )
+
+    # Prevent locking a flag at a tier the caller does not hold
+    for flag, fu in body.permissions.items():
+        if fu.is_locked and fu.locked_min_tier is not None and fu.locked_min_tier < my_tier:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot lock '{flag}' at tier {fu.locked_min_tier} — your best tier is {my_tier}",
+            )
 
     # Sensitive flag gate
     for flag in SENSITIVE_FLAGS:
-        if body.permissions.get(flag, "0") == "1":
+        fu = body.permissions.get(flag)
+        if fu is not None and fu.value == "1":
             _check_sensitive_flag_authority(admin)
 
-    # Upsert each flag value
-    for flag, val in body.permissions.items():
+    # Upsert each flag with value and lock state
+    for flag, fu in body.permissions.items():
         await db.execute(
-            "INSERT INTO role_permissions (role_id, flag, value) VALUES (?, ?, ?) "
-            "ON CONFLICT (role_id, flag) DO UPDATE SET value = excluded.value",
-            (role_id, flag, val),
+            "INSERT INTO role_permissions (role_id, flag, value, is_locked, locked_min_tier) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (role_id, flag) DO UPDATE SET "
+            "value = excluded.value, is_locked = excluded.is_locked, locked_min_tier = excluded.locked_min_tier",
+            (role_id, flag, fu.value, fu.is_locked, fu.locked_min_tier),
         )
 
     await db.commit()

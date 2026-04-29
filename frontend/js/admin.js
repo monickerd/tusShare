@@ -944,7 +944,7 @@ const Admin = (() => {
             return;
         }
 
-        const { roles, flags } = data;
+        const { roles, flags, admin_tier: adminTier } = data;
 
         // Index flags by category for grouped rendering
         const flagsByCategory = {};
@@ -960,7 +960,7 @@ const Admin = (() => {
 
         const roleList = Utils.el('div', { className: 'roles-list' });
         for (const role of roles) {
-            roleList.appendChild(_buildRoleCard(role, flags, flagsByCategory, () => _renderRoles(container)));
+            roleList.appendChild(_buildRoleCard(role, flags, flagsByCategory, adminTier, () => _renderRoles(container)));
         }
 
         container.innerHTML = '';
@@ -968,7 +968,7 @@ const Admin = (() => {
         container.appendChild(roleList);
     }
 
-    function _buildRoleCard(role, flags, flagsByCategory, refreshFn) {
+    function _buildRoleCard(role, flags, flagsByCategory, adminTier, refreshFn) {
         const body = Utils.el('div', { className: 'role-card-body', style: 'display:none' });
         let bodyLoaded = false;
 
@@ -1048,25 +1048,48 @@ const Admin = (() => {
         });
 
         // Permission flag toggles, grouped by category
-        const flagInputs = {};   // flag → checkbox element
+        // flagInputs: flag → { chk (value checkbox), lockChk (lock checkbox) }
+        const flagInputs = {};
         const flagSections = _FLAG_CATEGORIES
             .filter(cat => flagsByCategory[cat.key])
             .map(cat => {
                 const rows = (flagsByCategory[cat.key] || []).map(f => {
-                    const currentVal = (role.permissions || {})[f.flag] || '0';
+                    const permData = (role.permissions || {})[f.flag] || { value: '0', is_locked: false, locked_min_tier: null };
+                    const isLocked  = permData.is_locked;
+                    const lockTier  = permData.locked_min_tier;
+                    // canEdit: flag is unlocked, OR this admin's tier is within the lock threshold
+                    const canEdit   = !isLocked || (lockTier !== null && adminTier <= lockTier);
+
                     const chk = Utils.el('input', {
                         type: 'checkbox',
-                        checked: currentVal === '1',
+                        checked: permData.value === '1',
+                        disabled: !canEdit,
                         title: f.is_sensitive ? 'Sensitive — requires Server Admin or Org Admin to activate' : '',
                     });
-                    flagInputs[f.flag] = chk;
-                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') }, [
+                    const lockChk = Utils.el('input', {
+                        type: 'checkbox',
+                        checked: isLocked,
+                        disabled: !canEdit,
+                        title: 'Lock — lower-tier admins cannot change this flag',
+                    });
+                    flagInputs[f.flag] = { chk, lockChk };
+
+                    const badges = [
+                        f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
+                        isLocked && !canEdit ? Utils.el('span', { className: 'flag-locked-badge', textContent: `locked ≤ tier ${lockTier}` }) : null,
+                    ].filter(Boolean);
+
+                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') + (isLocked ? ' flag-locked' : '') }, [
                         Utils.el('label', { className: 'flag-label' }, [
                             chk,
                             Utils.el('span', { className: 'flag-name', textContent: f.flag }),
-                            f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
-                        ].filter(Boolean)),
+                            ...badges,
+                        ]),
                         Utils.el('span', { className: 'flag-desc', textContent: f.description }),
+                        Utils.el('label', { className: 'flag-lock-label', title: 'Lock this flag' }, [
+                            lockChk,
+                            Utils.el('span', { className: 'flag-lock-text', textContent: 'Lock' }),
+                        ]),
                     ]);
                 });
                 return Utils.el('div', { className: 'flag-category' }, [
@@ -1080,8 +1103,12 @@ const Admin = (() => {
             textContent: 'Save Permissions',
             onClick: async () => {
                 const permissions = {};
-                for (const [flag, chk] of Object.entries(flagInputs)) {
-                    permissions[flag] = chk.checked ? '1' : '0';
+                for (const [flag, { chk, lockChk }] of Object.entries(flagInputs)) {
+                    permissions[flag] = {
+                        value:           chk.checked ? '1' : '0',
+                        is_locked:       lockChk.checked,
+                        locked_min_tier: lockChk.checked ? adminTier : null,
+                    };
                 }
                 saveFlagsBtn.disabled = true;
                 try {
