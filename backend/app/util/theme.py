@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Only variables defined in themes/default/colors.css may be overridden via
-# theme.json.  Restricting to this whitelist prevents arbitrary CSS injection.
+# theme.json.  Split into two sets: color vars (strict color syntax) and shadow
+# vars (box-shadow syntax).  Restricting to these whitelists prevents arbitrary
+# CSS injection.
 _ALLOWED_COLOR_VARS: frozenset[str] = frozenset({
     "--color-bg",
     "--color-surface",
@@ -64,6 +66,9 @@ _ALLOWED_COLOR_VARS: frozenset[str] = frozenset({
     "--color-scrollbar-track",
     "--color-scrollbar-thumb",
     "--color-scrollbar-hover",
+})
+
+_ALLOWED_SHADOW_VARS: frozenset[str] = frozenset({
     "--shadow-toast",
     "--shadow-modal",
     "--shadow-dropdown",
@@ -71,7 +76,7 @@ _ALLOWED_COLOR_VARS: frozenset[str] = frozenset({
 
 # CSS color value: hex, rgb/rgba, hsl/hsla, or 'transparent'.
 # No semicolons, braces, or quotes — prevents CSS injection through values.
-_CSS_VALUE_RE = re.compile(
+_CSS_COLOR_RE = re.compile(
     r'^(?:'
     r'#[0-9a-fA-F]{3,8}'              # #rgb  #rgba  #rrggbb  #rrggbbaa
     r'|rgba?\(\s*[\d.,\s%]+\)'        # rgb(…) / rgba(…)
@@ -79,6 +84,11 @@ _CSS_VALUE_RE = re.compile(
     r'|transparent'
     r')$'
 )
+
+# Box-shadow value: lengths (px/em/rem), optional rgba/hex color, optional 'inset'.
+# Allows digits, sign, units, spaces, commas, parens, hash, percent.
+# Blocks ;  {  }  '  "  <  >  — sufficient to prevent CSS injection via custom props.
+_CSS_SHADOW_RE = re.compile(r'^[0-9a-z%#.,\s()\-]+$', re.IGNORECASE)
 
 # Logo filename: alphanumeric start, then alphanumeric + safe punctuation.
 # No slashes, dots at start, or traversal sequences.
@@ -164,15 +174,22 @@ def load_theme(data_dir: Path) -> dict[str, Any]:
         else:
             colors: dict[str, str] = {}
             for var, val in colors_raw.items():
-                if var not in _ALLOWED_COLOR_VARS:
+                is_color  = var in _ALLOWED_COLOR_VARS
+                is_shadow = var in _ALLOWED_SHADOW_VARS
+                if not is_color and not is_shadow:
                     logger.warning("Theme: unknown CSS variable %r, ignoring", var)
                     continue
-                if not isinstance(val, str) or not _CSS_VALUE_RE.match(val.strip()):
+                if not isinstance(val, str):
+                    logger.warning("Theme: value for %r must be a string, ignoring", var)
+                    continue
+                stripped = val.strip()
+                pattern = _CSS_COLOR_RE if is_color else _CSS_SHADOW_RE
+                if not pattern.match(stripped):
                     logger.warning(
-                        "Theme: invalid color value for %r: %r, ignoring", var, val
+                        "Theme: invalid value for %r: %r, ignoring", var, val
                     )
                     continue
-                colors[var] = val.strip()
+                colors[var] = stripped
             config["colors"] = colors
 
     # --- ui feature flags ---

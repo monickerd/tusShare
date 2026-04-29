@@ -1,10 +1,10 @@
 {
-  "generated": "2026-04-29T01:41:35.369558+00:00",
+  "generated": "2026-04-29T06:35:48.872376+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
     "frontend/js/admin.js": "sha256-81xradHFrps0LxhMpr6uUcS65qjcrp+w/LT2SaKf0pY=",
     "frontend/js/api.js": "sha256-48CiuL7K4S9Zmpo75aq4OHaGCxjfxPMy4nkVzz3jlIA=",
-    "frontend/js/app.js": "sha256-h58sXPBAW5d8/CLqdX4kIW5n01u4Y+DT/BZu9cH7W1g=",
+    "frontend/js/app.js": "sha256-XEWbuq9ZdvXbMN9Ws4vaL5002pq3LUhoqiQU1toY7Sc=",
     "frontend/js/auth.js": "sha256-Sk4AS2YFp4JB8Gx+iUIA3D94rgMtP9cmNWUyNW9dgkg=",
     "frontend/js/config.js": "sha256-JKlYy20oVRCCIHTU7Me75fsNlJJ98CKTAz5Xqd0qlp0=",
     "frontend/js/crypto.js": "sha256-/nCbFoYIALlRIIZvHR/jyX+JGd0b3+nh5DISdKq0HCc=",
@@ -16,6 +16,7 @@
     "frontend/js/transfer-manager.js": "sha256-1eqTnfW+8VlmtLW2FwB+DbF/7xyAyMMYIM4CmU0IpU0=",
     "frontend/js/upload.js": "sha256-uyrneo9bdDp74itYvdsDiyu0LHovUcb6Ki31Yiobfh8=",
     "frontend/js/utils.js": "sha256-mScMeRrDzqMSYvHQ1ssHJZu0KI0v1O7HjAQuitjbnAg=",
+    "frontend/js/wizard.js": "sha256-c0b3bovprtAx+jyq3ah6ffUFGNTeqBeyUqR5uTVwsBw=",
     "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
     "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",

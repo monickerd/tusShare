@@ -6,7 +6,10 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+import json as _json
+import mimetypes
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from app.auth.dependencies import require_admin
@@ -302,6 +305,141 @@ async def reload_theme(
         "has_logo":        "logo_path" in config,
         "color_overrides": len(config.get("colors", {})),
     }
+
+
+class UpdateThemeRequest(BaseModel):
+    brand_name: str | None = None
+    ui: dict[str, bool] | None = None
+
+
+@router.patch("/theme")
+async def update_theme(
+    body: UpdateThemeRequest,
+    admin: AuthenticatedUser = Depends(require_admin),
+):
+    """Update theme.json brand_name and/or ui flags and hot-reload.
+
+    Reads existing theme.json, merges supplied fields, writes atomically,
+    then triggers an in-process reload so the change is live immediately.
+    """
+    from pathlib import Path as _Path
+    from app.util.theme import (
+        inject_theme, load_theme, _BRAND_NAME_MAX, _UI_FLAG_DEFAULTS,
+    )
+
+    path = settings.DATA_DIR / "theme.json"
+    existing: dict = {}
+    if path.exists():
+        try:
+            existing = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+
+    if body.brand_name is not None:
+        if not (1 <= len(body.brand_name) <= _BRAND_NAME_MAX):
+            raise HTTPException(
+                status_code=400,
+                detail=f"brand_name must be 1–{_BRAND_NAME_MAX} chars",
+            )
+        existing["brand_name"] = body.brand_name
+
+    if body.ui is not None:
+        ui_block = existing.get("ui", {})
+        for key, val in body.ui.items():
+            if key not in _UI_FLAG_DEFAULTS:
+                raise HTTPException(status_code=400, detail=f"Unknown ui flag: {key!r}")
+            ui_block[key] = bool(val)
+        existing["ui"] = ui_block
+
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(_json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write theme.json: {exc}")
+
+    frontend_dir = _Path(__file__).parent.parent.parent / "frontend"
+    inject_theme(frontend_dir, settings.DATA_DIR)
+    config = load_theme(settings.DATA_DIR)
+
+    return {
+        "message":         "Theme updated",
+        "brand_name":      config.get("brand_name"),
+        "has_logo":        "logo_path" in config,
+        "color_overrides": len(config.get("colors", {})),
+    }
+
+
+_LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+_LOGO_ALLOWED_MIME: frozenset[str] = frozenset({
+    "image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/webp",
+})
+
+
+@router.post("/theme/logo")
+async def upload_theme_logo(
+    file: UploadFile = File(...),
+    admin: AuthenticatedUser = Depends(require_admin),
+):
+    """Upload an org logo to DATA_DIR and wire it into theme.json.
+
+    Filename is sanitised; only image MIME types are accepted.  Triggers a
+    hot-reload after saving.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+    from app.util.theme import (
+        inject_theme, load_theme, _LOGO_FILENAME_RE, _BRAND_NAME_MAX,
+        _UI_FLAG_DEFAULTS,
+    )
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    content_type, _ = mimetypes.guess_type(file.filename)
+    if content_type not in _LOGO_ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail="Logo must be PNG, JPEG, GIF, SVG, or WebP",
+        )
+
+    # Sanitise filename to prevent path traversal
+    safe_name = _re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    if not _LOGO_FILENAME_RE.match(safe_name):
+        raise HTTPException(status_code=400, detail="Invalid logo filename")
+
+    data = await file.read(_LOGO_MAX_BYTES + 1)
+    if len(data) > _LOGO_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Logo must be ≤ 2 MB")
+
+    dest = settings.DATA_DIR / safe_name
+    try:
+        dest.write_bytes(data)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save logo: {exc}")
+
+    # Write logo_path into theme.json
+    path = settings.DATA_DIR / "theme.json"
+    existing: dict = {}
+    if path.exists():
+        try:
+            existing = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    existing["logo_path"] = safe_name
+
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(_json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update theme.json: {exc}")
+
+    frontend_dir = _Path(__file__).parent.parent.parent / "frontend"
+    inject_theme(frontend_dir, settings.DATA_DIR)
+    load_theme(settings.DATA_DIR)
+
+    return {"message": "Logo uploaded", "logo_path": safe_name, "logo_url": "/api/v1/theme/logo"}
 
 
 class CreateInviteShortLinkRequest(BaseModel):

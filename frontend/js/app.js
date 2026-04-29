@@ -60,6 +60,7 @@ const App = (() => {
         { pattern: /^#\/teams\/([0-9a-f-]+)$/,                                               handler: _routeTeamDetail },
         { pattern: /^#\/teams$/,                                                              handler: _routeTeams },
         { pattern: /^#\/admin$/,                                                              handler: _routeAdmin },
+        { pattern: /^#\/setup$/,                                                              handler: _routeSetup },
         { pattern: /^#\/join\/([0-9a-f-]+)\/([0-9a-f-]+)\/([A-Za-z0-9_-]+)$/,               handler: _routeEphemeralJoin },
         { pattern: /^#\/mfa$/,                                                                handler: _routeMfa },
         { pattern: /^#\/s\/(.+)$/,                                                            handler: _routePublicShare },
@@ -344,14 +345,33 @@ const App = (() => {
         Teams.renderTeamDetailPage(document.getElementById('main-content'), teamId);
     }
 
-    function _routeAdmin(container) {
+    async function _routeAdmin(container) {
         const user = Auth.getCurrentUser();
         if (!user || !user.is_admin) {
             window.location.hash = '#/files';
             return;
         }
+        // Check first-run flag before rendering admin panel.
+        // On error (network/auth) fall through to normal admin panel.
+        try {
+            const { settings } = await Api.get(`${Config.app.apiPrefix}/admin/settings`);
+            if (!settings || settings.first_run_completed !== '1') {
+                window.location.hash = '#/setup';
+                return;
+            }
+        } catch { /* fall through */ }
         _renderShell(container);
         Admin.renderAdminPage(document.getElementById('main-content'));
+    }
+
+    function _routeSetup(container) {
+        const user = Auth.getCurrentUser();
+        if (!user || !user.is_admin) {
+            window.location.hash = '#/login';
+            return;
+        }
+        _renderShell(container);
+        Wizard.renderSetupWizard(document.getElementById('main-content'));
     }
 
     function _routeMfa(container) {
