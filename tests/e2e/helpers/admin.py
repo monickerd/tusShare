@@ -181,14 +181,21 @@ class AdminClient:
 
     async def set_role_permissions(self, role_id: str, flags: dict[str, bool]) -> dict:
         """Replace the full permission flag set for a role. Returns {flag: bool} dict."""
-        str_flags = {k: ("1" if v else "0") for k, v in flags.items()}
+        fu_flags = {
+            k: {"value": "1" if v else "0", "is_locked": False, "locked_min_tier": None}
+            for k, v in flags.items()
+        }
         r = await self._client.put(
             f"{API}/admin/roles/{role_id}/permissions",
-            json={"permissions": str_flags},
+            json={"permissions": fu_flags},
         )
         r.raise_for_status()
         role = await self.get_role(role_id)
-        return {k: (v == "1") for k, v in role.get("permissions", {}).items()}
+        perms = role.get("permissions", {})
+        return {
+            k: (v["value"] == "1" if isinstance(v, dict) else v == "1")
+            for k, v in perms.items()
+        }
 
     async def get_user_roles(self, user_id: str) -> list[dict]:
         r = await self._client.get(f"{API}/admin/users/{user_id}/roles")

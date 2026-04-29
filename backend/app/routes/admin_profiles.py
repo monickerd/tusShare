@@ -491,7 +491,7 @@ async def export_settings(
         event_type="admin.settings.profile_exported",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.user_id),
+        actor=EventActor(user_id=admin.id),
         detail={"exported_by_tier": admin_best_tier(admin.roles)},
     ))
 
@@ -540,7 +540,7 @@ async def apply_profile(
             detail="Replace mode requires confirmation_text = 'REPLACE'",
         )
 
-    admin_id  = admin.user_id
+    admin_id  = admin.id
     tier      = admin_best_tier(admin.roles)
 
     if body.mode == "replace":
@@ -607,7 +607,7 @@ async def import_profile(
             detail="Replace mode requires confirmation_text = 'REPLACE'",
         )
 
-    admin_id = admin.user_id
+    admin_id = admin.id
     tier     = admin_best_tier(admin.roles)
 
     if body.mode == "replace":
