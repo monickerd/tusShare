@@ -14,6 +14,20 @@ build/
 venv/
 env/
 
+# Test & coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Log files
+*.log
+
+# Rust build artifacts
+tusshare-opaque/target/
+
+# Generated files (commit deliberately when pinned, not as stale artifacts)
+requirements-hashed.txt
+
 # Data & uploads (never commit live data)
 data/
 
