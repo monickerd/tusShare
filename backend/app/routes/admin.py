@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
+from app.config import settings
 from app.models.role import FLAG_MANAGE_INVITES
 from app.database import get_db
 import app.storage.manager as storage
@@ -101,8 +102,9 @@ async def update_settings(
     try:
         for key, value in body.settings.items():
             await db.execute(
-                "UPDATE admin_settings SET value = ?, updated_at = NOW() WHERE key = ?",
-                (value, key),
+                "INSERT INTO admin_settings (key, value) VALUES (?, ?)"
+                " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()",
+                (key, value),
             )
         await db.commit()
     except Exception:

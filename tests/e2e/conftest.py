@@ -97,6 +97,10 @@ async def seeded_env(browser: Browser):
     )
     admin_client = AdminClient.from_session(admin_session)
 
+    # Mark the first-run wizard as complete so any browser navigation to
+    # #/admin lands on the admin panel rather than being redirected to #/setup.
+    await admin_client.set_setting("first_run_completed", "1")
+
     env = {
         "admin_session": admin_session,
         "admin_client":  admin_client,

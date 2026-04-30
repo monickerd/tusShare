@@ -240,9 +240,9 @@ const App = (() => {
         // Need master key for file operations; admin accounts have no keys
         if (!Auth.getMasterKeyObj()) {
             if (Auth.getCurrentUser()?.is_admin) {
-                // Admin only has access to the admin route — redirect away from file routes,
-                // but if already at #/admin fall through and let the route render normally.
-                if (hash !== '#/admin') {
+                // Admin only has access to the admin route and the first-run wizard.
+                // Redirect away from file routes, but let #/admin and #/setup fall through.
+                if (hash !== '#/admin' && hash !== '#/setup') {
                     window.location.hash = '#/admin';
                     return;
                 }

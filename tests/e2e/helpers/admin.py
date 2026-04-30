@@ -781,6 +781,46 @@ class AdminClient:
         r.raise_for_status()
         return r.json()
 
+    # -----------------------------------------------------------------------
+    # Hardware scan + Theme (Phase 5)
+    # -----------------------------------------------------------------------
+
+    async def get_hw_scan(self) -> dict:
+        """GET /admin/hw-scan — hardware capability probe results."""
+        r = await self._client.get(f"{API}/admin/hw-scan")
+        r.raise_for_status()
+        return r.json()
+
+    async def update_theme(
+        self,
+        brand_name: Optional[str] = None,
+        ui: Optional[dict[str, bool]] = None,
+    ) -> dict:
+        """PATCH /admin/theme — update brand_name and/or ui feature flags."""
+        payload: dict[str, Any] = {}
+        if brand_name is not None:
+            payload["brand_name"] = brand_name
+        if ui is not None:
+            payload["ui"] = ui
+        r = await self._client.patch(f"{API}/admin/theme", json=payload)
+        r.raise_for_status()
+        return r.json()
+
+    async def upload_theme_logo(
+        self, filename: str, data: bytes, content_type: str = "image/png"
+    ) -> "httpx.Response":
+        """POST /admin/theme/logo — raw response so callers can check error codes."""
+        return await self._client.post(
+            f"{API}/admin/theme/logo",
+            files={"file": (filename, data, content_type)},
+        )
+
+    async def reload_theme(self) -> dict:
+        """POST /admin/theme/reload — hot-reload theme.json."""
+        r = await self._client.post(f"{API}/admin/theme/reload")
+        r.raise_for_status()
+        return r.json()
+
     async def get_role_permissions(self, role_id: str) -> dict:
         """GET /admin/roles/{role_id} — returns {flag: {value, is_locked, locked_min_tier}}."""
         r = await self._client.get(f"{API}/admin/roles/{role_id}")
