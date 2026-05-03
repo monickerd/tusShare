@@ -56,6 +56,16 @@ const Utils = (() => {
                 // setAttribute('checked', false) sets checked="false" which is still
                 // truthy in HTML — any attribute presence means checked/disabled/etc.
                 elem[key] = val;
+            } else if (key === 'style') {
+                // Set via individual CSSOM properties instead of setAttribute so that
+                // style-src 'unsafe-inline' is not required in the CSP.
+                for (const decl of String(val).split(';')) {
+                    const sep = decl.indexOf(':');
+                    if (sep < 1) continue;
+                    const prop = decl.slice(0, sep).trim();
+                    const value = decl.slice(sep + 1).trim();
+                    if (prop) elem.style.setProperty(prop, value);
+                }
             } else {
                 elem.setAttribute(key, val);
             }

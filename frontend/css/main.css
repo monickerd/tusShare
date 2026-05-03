@@ -686,6 +686,20 @@ body[data-ui-admin-transparency-banner="false"] .admin-transparency-banner {
     color: var(--color-text-muted);
 }
 
+/* === Utility classes === */
+.hidden        { display: none; }
+.loading-msg   { padding: var(--space-4); }
+.text-sm       { font-size: var(--font-size-sm); }
+.text-md       { font-size: var(--font-size-md); }
+.text-nowrap   { white-space: nowrap; }
+.text-muted-xs { font-size: var(--font-size-xs); color: var(--color-text-muted); }
+.text-muted-sm { font-size: var(--font-size-sm); color: var(--color-text-muted); }
+.text-mono-sm  { font-family: var(--font-family-mono); font-size: var(--font-size-sm); }
+.text-success  { color: var(--color-success); }
+.text-danger   { color: var(--color-danger); }
+.td-url        { font-size: var(--font-size-sm); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.td-trunc      { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+
 /* === Team detail folder row === */
 .team-folder-row {
     display: flex;

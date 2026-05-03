@@ -332,7 +332,7 @@ const Wizard = (() => {
 
         scanBtn.addEventListener('click', async () => {
             _setSaving(scanBtn, 'Scanning…');
-            scanResults.innerHTML = '<p class="text-muted" style="font-size:13px">Running hardware probes — takes 1–3 seconds…</p>';
+            scanResults.innerHTML = '<p class="text-muted" class="text-md">Running hardware probes — takes 1–3 seconds…</p>';
             try {
                 const r = await Api.get(`${_api()}/admin/hw-scan`);
                 _state.hwScanResults = r;
@@ -697,7 +697,7 @@ const Wizard = (() => {
         }));
 
         const listArea = Utils.el('div', { style: 'margin-bottom:16px' });
-        listArea.innerHTML = '<p class="text-muted" style="font-size:13px">Loading users…</p>';
+        listArea.innerHTML = '<p class="text-muted" class="text-md">Loading users…</p>';
         wrapper.appendChild(listArea);
 
         const err = _errEl();

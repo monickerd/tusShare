@@ -2082,7 +2082,7 @@ const StepUp = (() => {
                     <label for="stepup-password">Password</label>
                     <input type="password" id="stepup-password" class="stepup-password-input"
                            autocomplete="current-password" placeholder="Enter your password">
-                    <div id="stepup-error" class="stepup-error" style="display:none"></div>
+                    <div id="stepup-error" class="stepup-error hidden"></div>
                 </div>
                 <div class="modal-footer">
                     <button id="stepup-cancel" class="btn btn-secondary">Cancel</button>
@@ -2102,7 +2102,7 @@ const StepUp = (() => {
 
         function _showError(msg) {
             errorDiv.textContent = msg;
-            errorDiv.style.display = '';
+            errorDiv.classList.remove('hidden');
             passwordInput.value = '';
             passwordInput.focus();
         }
@@ -2125,7 +2125,7 @@ const StepUp = (() => {
 
             confirmBtn.disabled = true;
             confirmBtn.textContent = 'Verifying…';
-            errorDiv.style.display = 'none';
+            errorDiv.classList.add('hidden');
 
             try {
                 const user = Auth.getCurrentUser();

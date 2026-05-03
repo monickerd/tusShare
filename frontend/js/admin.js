@@ -116,7 +116,7 @@ const Admin = (() => {
     // ------------------------------------------------------------------
 
     function renderAdminPage(container) {
-        container.innerHTML = '<p class="text-muted" style="padding:var(--space-4)">Loading…</p>';
+        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         _loadAdminPrefs().then(prefs => {
             const liveTabs = _applyLayoutPrefs(prefs);
             _renderAdmin(container, liveTabs);
@@ -2175,7 +2175,7 @@ const Admin = (() => {
     // ------------------------------------------------------------------
 
     async function _renderIdpSection(container) {
-        container.innerHTML = '<p class="text-muted" style="padding:16px">Loading…</p>';
+        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         try {
             const data = await Api.get(`${_api()}/admin/identity-providers`);
             _renderIdpList(container, data.providers || []);
@@ -2578,7 +2578,7 @@ const Admin = (() => {
     // ------------------------------------------------------------------
 
     async function _renderAuditSection(container) {
-        container.innerHTML = '<p class="text-muted" style="padding:16px">Loading…</p>';
+        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         try {
             const [logsData, siemData, settingsData] = await Promise.all([
                 Api.get(`${_api()}/admin/audit/logs?limit=50`),
@@ -3046,7 +3046,7 @@ const Admin = (() => {
     // =========================================================================
 
     async function _renderStorageSection(container) {
-        container.innerHTML = '<p class="text-muted" style="padding:16px">Loading…</p>';
+        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         try {
             const [volumes, usage, tiers] = await Promise.all([
                 Api.get(`${_api()}/admin/storage/volumes`),
@@ -3382,7 +3382,7 @@ const Admin = (() => {
     // ------------------------------------------------------------------
 
     async function _renderNotificationsSection(container) {
-        container.innerHTML = '<p class="text-muted" style="padding:16px">Loading…</p>';
+        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         try {
             const [channelsData, settingsData] = await Promise.all([
                 Api.get(`${_api()}/admin/notifications/channels`),
@@ -3463,9 +3463,9 @@ const Admin = (() => {
                 const batchStr  = ch.batch_size ? `${ch.batch_size} events` : (ch.batch_interval_s ? `${ch.batch_interval_s}s` : 'immediate');
                 tr.innerHTML = `
                   <td>${Utils.escHtml(ch.name)}</td>
-                  <td style="font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${Utils.escHtml(ch.endpoint_url)}</td>
-                  <td style="font-size:12px">${Utils.escHtml(filterStr)}</td>
-                  <td style="font-size:12px">${batchStr}</td>
+                  <td class="td-url">${Utils.escHtml(ch.endpoint_url)}</td>
+                  <td class="text-sm">${Utils.escHtml(filterStr)}</td>
+                  <td class="text-sm">${batchStr}</td>
                   <td><span class="${ch.enabled ? 'badge-success' : 'badge-muted'}">${ch.enabled ? 'enabled' : 'disabled'}</span></td>
                   <td></td>
                 `;
@@ -3532,11 +3532,11 @@ const Admin = (() => {
                 const tr = Utils.el('tr');
                 const dataStr = JSON.stringify(ev.data || {});
                 tr.innerHTML = `
-                  <td style="white-space:nowrap">${ev.created_at ? ev.created_at.slice(0, 19).replace('T', ' ') : ''}</td>
+                  <td class="text-nowrap">${ev.created_at ? ev.created_at.slice(0, 19).replace('T', ' ') : ''}</td>
                   <td>${Utils.escHtml(ev.event_type)}</td>
                   <td><span class="badge-${ev.severity === 'error' ? 'danger' : ev.severity === 'warning' ? 'warning' : 'muted'}">${ev.severity}</span></td>
                   <td>${Utils.escHtml(ev.source)}</td>
-                  <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${Utils.escHtml(dataStr.slice(0, 120))}</td>
+                  <td class="td-trunc">${Utils.escHtml(dataStr.slice(0, 120))}</td>
                 `;
                 tbody.appendChild(tr);
             }
@@ -3638,7 +3638,7 @@ const Admin = (() => {
     // ------------------------------------------------------------------
 
     async function _renderApiKeysSection(container) {
-        container.innerHTML = '<p class="text-muted" style="padding:16px">Loading…</p>';
+        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         try {
             const data = await Api.get(`${_api()}/admin/api-keys`);
             _renderApiKeysPanel(container, data.keys || []);
@@ -3679,12 +3679,12 @@ const Admin = (() => {
                 if (k.filter_min_severity) filterParts.push(`sev≥${k.filter_min_severity}`);
                 tr.innerHTML = `
                   <td>${Utils.escHtml(k.name)}</td>
-                  <td style="font-size:12px">${Utils.escHtml(scopes.join(', '))}</td>
-                  <td style="font-size:11px;color:var(--color-muted,#888)">${Utils.escHtml(filterParts.join(' · ') || '—')}</td>
-                  <td style="font-size:12px">${k.created_at ? k.created_at.slice(0, 10) : ''}</td>
-                  <td style="font-size:12px">${k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'}</td>
-                  <td style="font-size:12px">${k.expires_at ? k.expires_at.slice(0, 10) : 'never'}</td>
-                  <td style="white-space:nowrap"></td>
+                  <td class="text-sm">${Utils.escHtml(scopes.join(', '))}</td>
+                  <td class="text-muted-xs">${Utils.escHtml(filterParts.join(' · ') || '—')}</td>
+                  <td class="text-sm">${k.created_at ? k.created_at.slice(0, 10) : ''}</td>
+                  <td class="text-sm">${k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'}</td>
+                  <td class="text-sm">${k.expires_at ? k.expires_at.slice(0, 10) : 'never'}</td>
+                  <td class="text-nowrap"></td>
                 `;
                 const actionsCell = tr.cells[6];
                 const rotateBtn = Utils.el('button', { textContent: 'Rotate', className: 'btn btn-sm', style: 'margin-right:4px' });
@@ -3750,7 +3750,7 @@ const Admin = (() => {
             const chk = Utils.el('input', { type: 'checkbox' });
             if (s.value === 'ops_read') chk.checked = true;
             scopeChecks[s.value] = chk;
-            row.append(chk, Utils.el('span', { innerHTML: `<b>${Utils.escHtml(s.label)}</b> <span style="font-size:11px;color:var(--color-muted,#888)">${Utils.escHtml(s.desc)}</span>` }));
+            row.append(chk, Utils.el('span', { innerHTML: `<b>${Utils.escHtml(s.label)}</b> <span class="text-muted-xs">${Utils.escHtml(s.desc)}</span>` }));
             scopeWrap.appendChild(row);
         }
 
@@ -4617,7 +4617,7 @@ const Admin = (() => {
     // ------------------------------------------------------------------
 
     async function _renderServiceAccountsSection(container) {
-        container.innerHTML = '<p class="text-muted" style="padding:16px">Loading…</p>';
+        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         try {
             const data = await Api.get(`${_api()}/admin/service-accounts`);
             _renderServiceAccountsPanel(container, data.service_accounts || []);
@@ -4652,16 +4652,16 @@ const Admin = (() => {
             for (const sa of accounts) {
                 const tr = Utils.el('tr');
                 const statusBadge = sa.is_active
-                    ? '<span style="color:var(--color-ok,#2d7a36)">active</span>'
-                    : '<span style="color:var(--color-error,#c0392b)">inactive</span>';
+                    ? '<span class="text-success">active</span>'
+                    : '<span class="text-danger">inactive</span>';
                 tr.innerHTML = `
                   <td>${Utils.escHtml(sa.username)}</td>
-                  <td style="font-size:12px;color:var(--color-muted,#888)">${Utils.escHtml(sa.description || '—')}</td>
-                  <td style="font-size:12px">${statusBadge}</td>
-                  <td style="font-family:monospace;font-size:12px">${Utils.escHtml(sa.key_prefix || '—')}</td>
-                  <td style="font-size:12px">${sa.last_used_at ? sa.last_used_at.slice(0, 10) : 'never'}</td>
-                  <td style="font-size:12px">${sa.key_expires_at ? sa.key_expires_at.slice(0, 10) : 'never'}</td>
-                  <td style="white-space:nowrap"></td>
+                  <td class="text-muted-sm">${Utils.escHtml(sa.description || '—')}</td>
+                  <td class="text-sm">${statusBadge}</td>
+                  <td class="text-mono-sm">${Utils.escHtml(sa.key_prefix || '—')}</td>
+                  <td class="text-sm">${sa.last_used_at ? sa.last_used_at.slice(0, 10) : 'never'}</td>
+                  <td class="text-sm">${sa.key_expires_at ? sa.key_expires_at.slice(0, 10) : 'never'}</td>
+                  <td class="text-nowrap"></td>
                 `;
                 const actionsCell = tr.cells[6];
 

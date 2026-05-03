@@ -96,15 +96,10 @@ CACHE_CONTROL_REVALIDATE = "no-cache"
 # SRI integrity hashes are injected into index.html at startup
 # (see app/util/sri.py), so every <script> and <link> tag is covered.
 #
-# 'unsafe-inline' in style-src remains intentional: several JS modules set
-# element.style.* to computed pixel values at runtime (context-menu positioning,
-# progress-bar widths) that cannot be expressed as static CSS classes.  Replacing
-# them would require CSS custom properties or a nonce-based <style> pipeline —
-# a non-trivial refactor tracked for a future hardening pass.
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
     "script-src 'self' 'wasm-unsafe-eval'; "
-    "style-src 'self' 'unsafe-inline'; "
+    "style-src 'self'; "
     "img-src 'self' data: blob:; "
     "connect-src 'self'; "
     "font-src 'self'; "
