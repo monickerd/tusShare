@@ -329,12 +329,18 @@ CREATE TABLE folders (
     owner_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     is_shared            INTEGER NOT NULL DEFAULT 0,
     restrict_permissions BOOLEAN NOT NULL DEFAULT FALSE,
+
+    -- Soft-delete / trash
+    deleted_at           TIMESTAMPTZ DEFAULT NULL,
+    deleted_by           TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL,
+
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_folders_parent ON folders(parent_id);
-CREATE INDEX idx_folders_owner  ON folders(owner_id);
+CREATE INDEX idx_folders_parent     ON folders(parent_id);
+CREATE INDEX idx_folders_owner      ON folders(owner_id);
+CREATE INDEX idx_folders_deleted_at ON folders(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE UNIQUE INDEX idx_folders_unique_name ON folders(parent_id, owner_id, name);
 
 -------------------------------------------------
@@ -378,6 +384,10 @@ CREATE TABLE files (
     escrow_encrypted_key  TEXT,
     escrow_key_iv         TEXT,
 
+    -- Soft-delete / trash
+    deleted_at          TIMESTAMPTZ DEFAULT NULL,
+    deleted_by          TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL,
+
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -385,6 +395,7 @@ CREATE TABLE files (
 CREATE INDEX idx_files_folder      ON files(folder_id);
 CREATE INDEX idx_files_owner       ON files(owner_id);
 CREATE INDEX idx_files_storage_key ON files(storage_key);
+CREATE INDEX idx_files_deleted_at  ON files(deleted_at) WHERE deleted_at IS NOT NULL;
 
 -------------------------------------------------
 -- FILE CHUNKS (per-chunk IVs for streaming decryption)
@@ -1471,6 +1482,8 @@ INSERT INTO admin_settings (key, value) VALUES ('regex_match_timeout_ms',      '
 INSERT INTO admin_settings (key, value) VALUES ('allow_user_delete_own_account', 'false')  ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('allow_multi_team_owner',        'false')  ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('first_run_completed',           '0')      ON CONFLICT (key) DO NOTHING;
+INSERT INTO admin_settings (key, value) VALUES ('trash_enabled',                 'true')   ON CONFLICT (key) DO NOTHING;
+INSERT INTO admin_settings (key, value) VALUES ('trash_retention_days',          '30')     ON CONFLICT (key) DO NOTHING;
 
 -------------------------------------------------
 -- DEFAULT LOCAL STORAGE VOLUME

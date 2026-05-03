@@ -269,3 +269,25 @@ async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
         logger.info('Schema initialised: %s', setup_sentinel)
         applied.add(setup_sentinel)
 
+    # Incremental migrations — applied in order to existing databases.
+    _INCREMENTAL_MIGRATIONS: list[tuple[str, list[str]]] = [
+        ("migrate_trash_v1", [
+            "ALTER TABLE files ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL",
+            "ALTER TABLE files ADD COLUMN IF NOT EXISTS deleted_by TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL",
+            "ALTER TABLE folders ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL",
+            "ALTER TABLE folders ADD COLUMN IF NOT EXISTS deleted_by TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_files_deleted_at   ON files(deleted_at)   WHERE deleted_at IS NOT NULL",
+            "CREATE INDEX IF NOT EXISTS idx_folders_deleted_at ON folders(deleted_at) WHERE deleted_at IS NOT NULL",
+            "INSERT INTO admin_settings (key, value) VALUES ('trash_enabled', 'true') ON CONFLICT DO NOTHING",
+            "INSERT INTO admin_settings (key, value) VALUES ('trash_retention_days', '30') ON CONFLICT DO NOTHING",
+        ]),
+    ]
+    for name, stmts in _INCREMENTAL_MIGRATIONS:
+        if name not in applied:
+            async with conn.transaction():
+                for stmt in stmts:
+                    await conn.execute(stmt)
+                await conn.execute("INSERT INTO _migrations (name) VALUES ($1)", name)
+            applied.add(name)
+            logger.info('Migration applied: %s', name)
+

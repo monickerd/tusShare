@@ -192,7 +192,7 @@ async def batch_move_files(
     for item in body.files:
         try:
             cursor = await db.execute(
-                "SELECT id, folder_id, owner_id, av_scan_status FROM files WHERE id = ?", (item.id,)
+                "SELECT id, folder_id, owner_id, av_scan_status FROM files WHERE id = ? AND deleted_at IS NULL", (item.id,)
             )
             file_row = await cursor.fetchone()
             if file_row is None:
@@ -296,7 +296,7 @@ async def get_file_metadata(
     """Get file metadata (not content)."""
     file_id = validate_uuid(file_id)
 
-    cursor = await db.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    cursor = await db.execute("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
@@ -316,7 +316,7 @@ async def update_file(
     """Update file metadata (rename, move)."""
     file_id = validate_uuid(file_id)
 
-    cursor = await db.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    cursor = await db.execute("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
@@ -408,17 +408,17 @@ async def delete_file(
     user: AuthenticatedUser = Depends(require_user_role),
     db=Depends(get_db),
 ):
-    """Delete a file (metadata and blob).
+    """Delete a file.
 
-    DB mutations (quota update + row delete) are atomic in a single transaction.
-    Disk blob removal happens AFTER the commit in a thread to avoid blocking
-    the event loop. If the blob unlink fails, it's logged but doesn't roll back
-    the DB — a background cleanup job can catch orphans later.
+    When trash is enabled the file is soft-deleted (moved to trash). Otherwise
+    the row and blob are permanently removed immediately.
+    DB mutations are atomic; blob removal is non-blocking and best-effort.
     """
     file_id = validate_uuid(file_id)
 
     cursor = await db.execute(
-        "SELECT id, storage_key, owner_id, folder_id, encrypted_size FROM files WHERE id = ?",
+        "SELECT id, storage_key, owner_id, folder_id, encrypted_size FROM files "
+        "WHERE id = ? AND deleted_at IS NULL",
         (file_id,),
     )
     row = await cursor.fetchone()
@@ -428,6 +428,23 @@ async def delete_file(
     if row["owner_id"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # Check whether trash is enabled.
+    cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'trash_enabled'",
+    )
+    setting = await cursor.fetchone()
+    trash_enabled = (setting["value"] if setting else "true") == "true"
+
+    if trash_enabled:
+        await db.execute(
+            "UPDATE files SET deleted_at = NOW(), deleted_by = ? WHERE id = ?",
+            (user.id, file_id),
+        )
+        await db.commit()
+        sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
+        return {"message": "File moved to trash"}
+
+    # Trash disabled — hard delete immediately.
     storage_key = row["storage_key"]
     encrypted_size = row["encrypted_size"]
     owner_id = row["owner_id"]
@@ -446,11 +463,8 @@ async def delete_file(
         await db.rollback()
         raise
 
-    # Notify any SSE subscribers watching this folder
     sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
 
-    # Blob cleanup after commit — non-blocking, best-effort.
-    # file_storage_locations rows were already cascade-deleted with the files row.
     async def _bg_delete(fid: str, key: str) -> None:
         try:
             async with db_session() as _db:
@@ -459,7 +473,6 @@ async def delete_file(
             pass
 
     asyncio.create_task(_bg_delete(file_id, storage_key))
-
     return {"message": "File deleted"}
 
 
@@ -524,7 +537,8 @@ async def get_file_content(
 
     cursor = await db.execute(
         "SELECT id, storage_key, owner_id, folder_id, sanitized_name, "
-        "encrypted_size, upload_complete, transfer_locked_at, av_scan_status FROM files WHERE id = ?",
+        "encrypted_size, upload_complete, transfer_locked_at, av_scan_status FROM files "
+        "WHERE id = ? AND deleted_at IS NULL",
         (file_id,),
     )
     row = await cursor.fetchone()
@@ -631,7 +645,7 @@ async def get_file_chunks(
     """
     file_id = validate_uuid(file_id)
 
-    cursor = await db.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    cursor = await db.execute("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")

@@ -13,6 +13,8 @@ class Folder:
     restrict_permissions: bool
     created_at: str
     updated_at: str
+    deleted_at: str | None = None
+    deleted_by: str | None = None
 
     @classmethod
     def from_row(cls, row) -> "Folder":
@@ -25,6 +27,8 @@ class Folder:
             restrict_permissions=bool(row["restrict_permissions"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            deleted_at=row.get("deleted_at"),
+            deleted_by=row.get("deleted_by"),
         )
 
     def to_dict(self) -> dict:
@@ -37,6 +41,7 @@ class Folder:
             "restrict_permissions": self.restrict_permissions,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "deleted_at": self.deleted_at,
         }
 
 
@@ -59,6 +64,8 @@ class File:
     upload_complete: bool
     created_at: str
     updated_at: str
+    deleted_at: str | None = None
+    deleted_by: str | None = None
 
     @classmethod
     def from_row(cls, row) -> "File":
@@ -80,6 +87,8 @@ class File:
             upload_complete=bool(row["upload_complete"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            deleted_at=row.get("deleted_at"),
+            deleted_by=row.get("deleted_by"),
         )
 
     def to_dict(self) -> dict:
@@ -99,6 +108,7 @@ class File:
             "checksum_sha256": self.checksum_sha256,
             "upload_complete": self.upload_complete,
             "created_at": self.created_at,
+            "deleted_at": self.deleted_at,
         }
 
 

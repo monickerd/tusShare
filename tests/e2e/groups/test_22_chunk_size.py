@@ -30,10 +30,10 @@ Tests
 
 Test 22-04 notes
 ----------------
-To exercise the non-final chunk path without sending megabytes, the test
-temporarily sets default_chunk_size to a small value (128 bytes), creates an
-upload totalling 300 bytes (two chunks needed), then sends a first PATCH with
-a deliberately wrong body size.  The original chunk size is restored in a
+To exercise the non-final chunk path, the test temporarily sets
+default_chunk_size to the minimum valid value (65536 bytes), creates an upload
+totalling 65652 bytes (two chunks needed), then sends a first PATCH with a
+deliberately wrong body size.  The original chunk size is restored in a
 try/finally block to avoid cross-test contamination.
 """
 
@@ -218,14 +218,14 @@ async def test_22_03_mismatched_chunk_size_at_upload_start_is_rejected():
 async def test_22_04_non_final_chunk_wrong_body_size_is_rejected(admin_client: AdminClient):
     """Non-final PATCH chunk with wrong byte count → 400 "Unexpected chunk size".
 
-    Uses a small temporary chunk_size (128 bytes) to avoid sending megabytes.
-    Upload total is 300 bytes so the first chunk is non-final, triggering the
+    Uses the minimum valid chunk_size (65536 bytes) to keep the upload small.
+    Upload total is 65652 bytes so the first chunk is non-final, triggering the
     per-chunk body-size check.
     """
-    small_chunk_size = 128
-    expected_enc_size = small_chunk_size + 16  # 144 bytes — correct non-final chunk size
-    total_size = 300                           # needs 2+ chunks → first is non-final
-    original_size = 200
+    small_chunk_size = 65536
+    expected_enc_size = small_chunk_size + 16  # 65552 bytes — correct non-final chunk size
+    total_size = 65652                         # needs 2+ chunks → first is non-final
+    original_size = 65600
 
     original_setting = str(_SERVER_DEFAULT_CHUNK_SIZE)
 

@@ -1,7 +1,26 @@
 # tusShare
 
-Self-hosted, end-to-end encrypted file sharing. Files are encrypted in your browser
-before they leave your device — the server never sees plaintext content.
+tusShare is a self-hosted, end-to-end encrypted file sharing service. Key features:
+
+— Resumable uploads and downloads
+— Share links to files external users, or even share a folder for them to upload to
+— Group folders
+— Customizable, adding more or less security to fit your preferences
+— Add your own branding and colour scheme
+— Ready for many integrations, including LDAP and OIDC, storage, and SIEM feeds.
+
+
+## Background
+This project was programmed with Claude, but each feature and flow designed by a human.
+I wanted a self-hosted file sharing service for my friends, but I wanted to also be
+able to assure them their data was still totally private.
+
+User passwords are used to protect the files you have access to, so:
+MAKE SURE YOU USE A GOOD PASSWORD
+(and add Multi-Factor Authentication on top of it)
+
+Your password never leaves your browser (Zero Knowledge Proofs), but password123 will
+still give any malicious people an easy win.
 
 ---
 

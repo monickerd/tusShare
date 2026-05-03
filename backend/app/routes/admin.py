@@ -46,7 +46,7 @@ _SETTINGS_VALIDATORS = {
     "global_max_file_size":   lambda v: v.isdigit() and int(v) >= 0,
     "global_bandwidth_limit": lambda v: v.isdigit() and int(v) >= 0,
     "disk_warning_threshold": lambda v: v.isdigit() and 0 <= int(v) <= 100,
-    "default_chunk_size":     lambda v: v.isdigit() and int(v) >= 1,
+    "default_chunk_size":     lambda v: v.isdigit() and int(v) >= 65536,
     # MFA enforcement policy
     "mfa_enforcement":        lambda v: v in ("off", "optional", "required"),
     "mfa_allowed_methods":    _valid_mfa_allowed_methods,
@@ -67,6 +67,9 @@ _SETTINGS_VALIDATORS = {
     "av_scan_retry_attempts": lambda v: v.isdigit() and 1 <= int(v) <= 10,
     # First-run wizard completion flag (set by the profile wizard after first profile selection)
     "first_run_completed":    lambda v: v in ("0", "1"),
+    # Trash / soft-delete
+    "trash_enabled":          lambda v: v in ("true", "false"),
+    "trash_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
 }
 
 

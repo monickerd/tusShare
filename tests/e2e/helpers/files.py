@@ -298,3 +298,43 @@ async def list_shares(client: ApiClient) -> list[dict]:
     r = await client.get("/shares")
     r.raise_for_status()
     return r.json()
+
+
+# ---------------------------------------------------------------------------
+# Trash helpers
+# ---------------------------------------------------------------------------
+
+
+async def list_trash(client: ApiClient) -> dict:
+    """Return {"files": [...], "folders": [...]} for all soft-deleted items."""
+    r = await client.get("/trash")
+    r.raise_for_status()
+    return r.json()
+
+
+async def restore_file_from_trash(client: ApiClient, file_id: str) -> dict:
+    r = await client.post(f"/trash/files/{file_id}/restore")
+    r.raise_for_status()
+    return r.json()
+
+
+async def restore_folder_from_trash(client: ApiClient, folder_id: str) -> dict:
+    r = await client.post(f"/trash/folders/{folder_id}/restore")
+    r.raise_for_status()
+    return r.json()
+
+
+async def permanently_delete_file_from_trash(client: ApiClient, file_id: str) -> None:
+    r = await client.delete(f"/trash/files/{file_id}")
+    r.raise_for_status()
+
+
+async def permanently_delete_folder_from_trash(client: ApiClient, folder_id: str) -> None:
+    r = await client.delete(f"/trash/folders/{folder_id}")
+    r.raise_for_status()
+
+
+async def empty_trash(client: ApiClient) -> dict:
+    r = await client.delete("/trash")
+    r.raise_for_status()
+    return r.json()

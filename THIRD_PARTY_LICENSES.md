@@ -110,3 +110,8 @@ The `frontend/js/lib/opaque.js` file is a WebAssembly bundle compiled from the
 | serde | MIT / Apache-2.0 |
 
 All Rust crates are used under their MIT license option.
+
+**Security monitoring:** The `opaque-ke` crate (compiled into the WASM bundle)
+should be checked for CVEs whenever `@noble/post-quantum` and `@noble/curves`
+are audited for updates. Compiled WASM bundles do not receive automatic
+dependency scanning and must be reviewed manually.

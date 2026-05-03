@@ -55,20 +55,21 @@ async def list_root_folders(
     db=Depends(get_db),
 ):
     """List user's root-level folders, root-level files, and the shared folder."""
-    # User's own root folders (no parent), excluding team-owned folders
+    # User's own root folders (no parent), excluding team-owned folders and deleted folders
     cursor = await db.execute(
         "SELECT f.* FROM folders f "
         "LEFT JOIN team_folders tf ON tf.folder_id = f.id "
-        "WHERE f.owner_id = ? AND f.parent_id IS NULL AND f.is_shared = 0 AND tf.folder_id IS NULL "
+        "WHERE f.owner_id = ? AND f.parent_id IS NULL AND f.is_shared = 0 "
+        "  AND tf.folder_id IS NULL AND f.deleted_at IS NULL "
         "ORDER BY f.name",
         (user.id,),
     )
     own_folders = [Folder.from_row(r).to_dict() for r in await cursor.fetchall()]
 
-    # User's root-level files (no folder)
+    # User's root-level files (no folder), excluding deleted files
     cursor = await db.execute(
         "SELECT * FROM files WHERE owner_id = ? AND folder_id IS NULL AND upload_complete = 1 "
-        "ORDER BY original_name",
+        "AND deleted_at IS NULL ORDER BY original_name",
         (user.id,),
     )
     own_files = [File.from_row(r).to_dict() for r in await cursor.fetchall()]
@@ -152,7 +153,9 @@ async def get_folder_contents(
     """
     folder_id = validate_uuid(folder_id)
 
-    cursor = await db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    cursor = await db.execute(
+        "SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,)
+    )
     folder_row = await cursor.fetchone()
     if folder_row is None:
         raise HTTPException(status_code=404, detail="Folder not found")
@@ -166,16 +169,17 @@ async def get_folder_contents(
            not await has_folder_permission(db, folder_id, user.id):
             raise HTTPException(status_code=403, detail="Access denied")
 
-    # Child folders
+    # Child folders (excluding soft-deleted)
     cursor = await db.execute(
-        "SELECT * FROM folders WHERE parent_id = ? ORDER BY name",
+        "SELECT * FROM folders WHERE parent_id = ? AND deleted_at IS NULL ORDER BY name",
         (folder_id,),
     )
     child_folders = [Folder.from_row(r).to_dict() for r in await cursor.fetchall()]
 
-    # Files in this folder
+    # Files in this folder (excluding soft-deleted)
     cursor = await db.execute(
-        "SELECT * FROM files WHERE folder_id = ? AND upload_complete = 1 ORDER BY original_name",
+        "SELECT * FROM files WHERE folder_id = ? AND upload_complete = 1 AND deleted_at IS NULL "
+        "ORDER BY original_name",
         (folder_id,),
     )
     files = [File.from_row(r).to_dict() for r in await cursor.fetchall()]
@@ -407,10 +411,17 @@ async def delete_folder(
     user: AuthenticatedUser = Depends(require_user_role),
     db=Depends(get_db),
 ):
-    """Delete a folder and all its contents (cascade)."""
+    """Delete a folder and all its contents.
+
+    When trash is enabled the folder and entire subtree are soft-deleted.
+    Otherwise the row is hard-deleted immediately (cascade removes descendants;
+    blob cleanup is deferred to a future background pass).
+    """
     folder_id = validate_uuid(folder_id)
 
-    cursor = await db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    cursor = await db.execute(
+        "SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,)
+    )
     folder_row = await cursor.fetchone()
     if folder_row is None:
         raise HTTPException(status_code=404, detail="Folder not found")
@@ -421,18 +432,74 @@ async def delete_folder(
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot delete the shared folder")
 
-    # CASCADE handles child folders and files in DB
+    cursor = await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'trash_enabled'"
+    )
+    setting = await cursor.fetchone()
+    trash_enabled = (setting["value"] if setting else "true") == "true"
+
+    if trash_enabled:
+        await db.execute("BEGIN")
+        try:
+            # Mark the entire subtree deleted.
+            await db.execute(
+                """
+                WITH RECURSIVE subtree AS (
+                    SELECT id FROM folders WHERE id = ?
+                    UNION ALL
+                    SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id
+                )
+                UPDATE folders
+                   SET deleted_at = NOW(), deleted_by = ?
+                 WHERE id IN (SELECT id FROM subtree)
+                """,
+                (folder_id, user.id),
+            )
+            await db.execute(
+                """
+                WITH RECURSIVE subtree AS (
+                    SELECT id FROM folders WHERE id = ?
+                    UNION ALL
+                    SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id
+                )
+                UPDATE files
+                   SET deleted_at = NOW(), deleted_by = ?
+                 WHERE folder_id IN (SELECT id FROM subtree)
+                """,
+                (folder_id, user.id),
+            )
+            # Escrow policies are not cascade-deleted on soft-delete, so remove them explicitly.
+            await db.execute(
+                """
+                WITH RECURSIVE subtree AS (
+                    SELECT id FROM folders WHERE id = ?
+                    UNION ALL
+                    SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id
+                )
+                DELETE FROM folder_escrow_policies
+                 WHERE folder_id IN (SELECT id FROM subtree)
+                """,
+                (folder_id,),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+        sse_broker.publish(
+            folder_row["parent_id"] or f"root:{folder_row['owner_id']}",
+            {"type": "change"},
+        )
+        return {"message": "Folder moved to trash"}
+
+    # Trash disabled — hard delete immediately (blob cleanup deferred).
     await db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
     await db.commit()
 
-    # TODO: Clean up orphaned file blobs from disk in Phase 3+
-
-    # Notify the parent folder (or root) that a subfolder was removed
     sse_broker.publish(
         folder_row["parent_id"] or f"root:{folder_row['owner_id']}",
         {"type": "change"},
     )
-
     return {"message": "Folder deleted"}
 
 

@@ -994,7 +994,7 @@ async def download_shared_file(
 
     cursor = await db.execute(
         "SELECT id, storage_key, sanitized_name, encrypted_size, upload_complete "
-        "FROM files WHERE id = ?",
+        "FROM files WHERE id = ? AND deleted_at IS NULL",
         (file_id,),
     )
     row = await cursor.fetchone()

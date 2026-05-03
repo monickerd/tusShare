@@ -4,14 +4,18 @@ This document describes tusShare's security architecture in an assessment-style
 format: for each threat category, it states what protection is in place and what
 the residual risk or limitations are.
 
----
+## Human Statement
 
-## Reporting a vulnerability
+I'm a security analyst, but my focus is on the offensive security side. As such,
+I tried to cover off as many avenues of attack as I could during the design.
+That said, this was a fun side project to build out something useful and get
+some experience using AI.
 
-Please report security issues by email to **davidbham.work@gmail.com** rather than
-opening a public GitHub issue. Include a description of the issue, reproduction
-steps, and any relevant environment details. You will receive an acknowledgement
-within 48 hours.
+That means: I am some random guy on the internet with no track record, building
+an entire app with AI. I heavily encourage you to do your own testing. I don't
+have capacity to maintain this, so please feel free to create forks and update
+to your heart's content.
+
 
 ---
 

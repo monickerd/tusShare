@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.auth.jwt import run_token_cleanup
 from app.routes.uploads import run_upload_cleanup
+from app.services.trash import run_trash_cleanup
 from app.config import settings
 from app.services import event_bus, op_bus, notification_emitter, siem_syslog, siem_webhook
 import app.storage.manager as storage
@@ -172,6 +173,7 @@ async def lifespan(app: FastAPI):
     rate_limit_task         = asyncio.create_task(run_rate_limit_cleanup())
     token_cleanup_task      = asyncio.create_task(run_token_cleanup(db_session))
     upload_cleanup_task     = asyncio.create_task(run_upload_cleanup(db_session))
+    trash_cleanup_task      = asyncio.create_task(run_trash_cleanup(db_session))
     opaque_session_cleanup  = asyncio.create_task(_run_opaque_session_cleanup(db_session))
     mfa_cleanup_task        = asyncio.create_task(_run_mfa_cleanup(db_session))
     oidc_state_cleanup_task = asyncio.create_task(_run_oidc_state_cleanup(db_session))
@@ -230,7 +232,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown — cancel background tasks
-    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, opaque_session_cleanup, mfa_cleanup_task, oidc_state_cleanup_task, event_bus_task, op_bus_task, notif_task, siem_syslog_task, siem_webhook_task, storage_tiering_task, storage_reconcile_task):
+    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, trash_cleanup_task, opaque_session_cleanup, mfa_cleanup_task, oidc_state_cleanup_task, event_bus_task, op_bus_task, notif_task, siem_syslog_task, siem_webhook_task, storage_tiering_task, storage_reconcile_task):
         task.cancel()
         try:
             await task
@@ -348,6 +350,7 @@ def create_app() -> FastAPI:
     from app.routes.admin_sharing import router as admin_sharing_router
     from app.routes.admin_service_accounts import router as admin_service_accounts_router
     from app.routes.admin_profiles import router as admin_profiles_router
+    from app.routes.trash import router as trash_router
 
     app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
@@ -380,6 +383,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_sharing_router,        prefix="/api/v1/admin/sharing",         tags=["admin-sharing"])
     app.include_router(admin_service_accounts_router, prefix="/api/v1/admin",                tags=["admin-service-accounts"])
     app.include_router(admin_profiles_router,         prefix="/api/v1/admin",                tags=["admin-profiles"])
+    app.include_router(trash_router,                  prefix="/api/v1/trash",                tags=["trash"])
 
     # --- SIEM HTTP error event handlers ---
     # Legitimate users should not regularly encounter these codes, so each
