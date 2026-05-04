@@ -2,12 +2,12 @@
 
 tusShare is a self-hosted, end-to-end encrypted file sharing service. Key features:
 
-— Resumable uploads and downloads
-— Share links to files external users, or even share a folder for them to upload to
-— Group folders
-— Customizable, adding more or less security to fit your preferences
-— Add your own branding and colour scheme
-— Ready for many integrations, including LDAP and OIDC, storage, and SIEM feeds.
+– Resumable uploads and downloads
+– Share links to files external users, or even share a folder for them to upload to
+– Group folders
+– Customizable, adding more or less security to fit your preferences
+– Add your own branding and colour scheme
+– Ready for many integrations, including LDAP and OIDC, storage, and SIEM feeds.
 
 
 ## Background
