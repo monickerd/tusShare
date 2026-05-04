@@ -266,7 +266,8 @@ const Files = (() => {
     function _renderFolderContents(container, folders, files, pendingUploads = []) {
         _clearContainer(container);
 
-        if (folders.length === 0 && files.length === 0 && pendingUploads.length === 0) {
+        const hasActiveInFolder = [..._activeUploads.values()].some(e => e.folderId === _currentFolderId);
+        if (folders.length === 0 && files.length === 0 && pendingUploads.length === 0 && !hasActiveInFolder) {
             container.appendChild(Utils.el('div', {
                 className: 'empty-state',
                 textContent: 'This folder is empty. Upload files or create a subfolder.',
@@ -303,6 +304,27 @@ const Files = (() => {
         for (const upload of pendingUploads) {
             const row = _createPendingUploadRow(upload);
             if (row) tbody.appendChild(row);
+        }
+
+        // Inject rows for active uploads not yet reflected in server response.
+        // This closes the timing gap: if the user navigated away before the server
+        // had the upload in pending_uploads, the upload still appears immediately.
+        const serverPendingIds = new Set(pendingUploads.map(u => u.upload_id));
+        for (const [uploadId, entry] of _activeUploads) {
+            if (entry.folderId === _currentFolderId && !serverPendingIds.has(uploadId)) {
+                tbody.appendChild(Utils.el('tr', { className: 'row-pending' }, [
+                    Utils.el('td'),
+                    Utils.el('td', {}, [
+                        Utils.el('div', { className: 'pending-name' }, [
+                            Utils.el('span', { className: 'pending-icon', textContent: '↑' }),
+                            Utils.el('span', { textContent: entry.originalName }),
+                        ]),
+                    ]),
+                    Utils.el('td', { textContent: `${entry.pct}% — uploading…` }),
+                    Utils.el('td', { textContent: '' }),
+                    Utils.el('td'),
+                ]));
+            }
         }
 
         table.appendChild(tbody);
@@ -527,7 +549,7 @@ const Files = (() => {
             }
 
             const location = `${Config.app.apiPrefix}/uploads/${upload.upload_id}`;
-            const ctrl     = _makeUploadCtrl();
+            const ctrl     = _makeUploadCtrl(_currentFolderId, upload.original_name);
             ctrl.onCreated(upload.upload_id); // ID is already known — register immediately
             const overlay  = _showUploadOverlay(upload.original_name);
             const transfer = TransferManager.start(upload.original_name, 'upload', {
@@ -1412,7 +1434,7 @@ const Files = (() => {
             const file = files[i];
             const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
 
-            const ctrl = _makeUploadCtrl();
+            const ctrl = _makeUploadCtrl(folderId, file.name);
             const overlay = _showUploadOverlay(label);
             const transfer = TransferManager.start(label, 'upload', {
                 onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
@@ -1647,7 +1669,7 @@ const Files = (() => {
      * creates the upload resource; it registers the ID so pending-upload rows
      * are suppressed while the live TransferManager row is active.
      */
-    function _makeUploadCtrl() {
+    function _makeUploadCtrl(folderId = null, originalName = '') {
         let _paused        = false;
         let _stopped       = false;
         let _deleteOnAbort = true;   // false when stopped by logout (leave partial for resume)
@@ -1659,7 +1681,7 @@ const Files = (() => {
 
             onCreated(id) {
                 _uploadId = id;
-                _activeUploads.set(id, { pct: 0 });
+                _activeUploads.set(id, { pct: 0, folderId, originalName });
             },
 
             pause() {
