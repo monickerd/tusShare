@@ -24,8 +24,46 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Tracks {upload_id → bytes_evicted_so_far} for stride-based cache eviction.
-# Process-local; benign on restart (worst case: one stale stride in page cache).
+# Process-local fallback for upload eviction stride tracking.
+# When Redis is configured, Redis HASH is used so offsets are shared across workers.
 _evict_offsets: dict[str, int] = {}
+_EVICT_REDIS_KEY = "evict_offsets"
+
+
+async def _get_evict_offset(upload_id: str) -> int:
+    from app.redis_client import get_redis
+    r = get_redis()
+    if r is not None:
+        try:
+            val = await r.hget(_EVICT_REDIS_KEY, upload_id)
+            return int(val) if val is not None else 0
+        except Exception:
+            pass
+    return _evict_offsets.get(upload_id, 0)
+
+
+async def _set_evict_offset(upload_id: str, value: int) -> None:
+    from app.redis_client import get_redis
+    r = get_redis()
+    if r is not None:
+        try:
+            await r.hset(_EVICT_REDIS_KEY, upload_id, value)
+            return
+        except Exception:
+            pass
+    _evict_offsets[upload_id] = value
+
+
+async def _del_evict_offset(upload_id: str) -> None:
+    from app.redis_client import get_redis
+    r = get_redis()
+    if r is not None:
+        try:
+            await r.hdel(_EVICT_REDIS_KEY, upload_id)
+            return
+        except Exception:
+            pass
+    _evict_offsets.pop(upload_id, None)
 
 
 class LocalProvider(StorageProvider):
@@ -60,13 +98,14 @@ class LocalProvider(StorageProvider):
 
         new_offset = offset + len(data)
         evict_stride = settings.UPLOAD_EVICT_STRIDE_MB * 1024 * 1024
-        last_evicted = _evict_offsets.get(upload_id, 0)
-        if evict_stride > 0 and new_offset - last_evicted >= evict_stride:
-            try:
-                await asyncio.to_thread(_stride_evict, blob, new_offset)
-                _evict_offsets[upload_id] = new_offset
-            except Exception:
-                pass  # eviction is best-effort
+        if evict_stride > 0:
+            last_evicted = await _get_evict_offset(upload_id)
+            if new_offset - last_evicted >= evict_stride:
+                try:
+                    await asyncio.to_thread(_stride_evict, blob, new_offset)
+                    await _set_evict_offset(upload_id, new_offset)
+                except Exception:
+                    pass  # eviction is best-effort
 
         return None  # local provider has no ETag concept
 
@@ -98,7 +137,7 @@ class LocalProvider(StorageProvider):
         except OSError as exc:
             raise OSError(f"Local finalize failed for {upload_id}: {exc}") from exc
         finally:
-            _evict_offsets.pop(upload_id, None)
+            await _del_evict_offset(upload_id)
 
         return size
 
@@ -112,7 +151,7 @@ class LocalProvider(StorageProvider):
                 logger.warning("Failed to remove staging blob %s: %s", upload_id, exc)
 
         await asyncio.to_thread(_remove)
-        _evict_offsets.pop(upload_id, None)
+        await _del_evict_offset(upload_id)
 
     # ------------------------------------------------------------------
     # Direct blob write (share uploads)

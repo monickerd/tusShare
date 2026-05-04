@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     FILES_DIR: Path = Path("/data/files")
     UPLOADS_DIR: Path = Path("/data/uploads")
 
+    # Redis (optional — required for multi-worker / multi-container deployments)
+    # When set, rate-limit counters, SSE events, and upload-eviction offsets use
+    # Redis instead of per-process memory, making all workers share state.
+    REDIS_URL: str = ""
+
     # Database
     DATABASE_URL: str = "postgresql://tusshare:tusshare@postgres:5432/tusshare"
     # Superuser URL used only for first-run sensitive_config schema bootstrap.

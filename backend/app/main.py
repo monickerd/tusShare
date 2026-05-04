@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.auth.jwt import run_token_cleanup
 from app.routes.uploads import run_upload_cleanup
 from app.services.trash import run_trash_cleanup
+from app.services.sse_broker import run_redis_listener
 from app.config import settings
 from app.services import event_bus, op_bus, notification_emitter, siem_syslog, siem_webhook
 import app.storage.manager as storage
@@ -174,6 +175,7 @@ async def lifespan(app: FastAPI):
     token_cleanup_task      = asyncio.create_task(run_token_cleanup(db_session))
     upload_cleanup_task     = asyncio.create_task(run_upload_cleanup(db_session))
     trash_cleanup_task      = asyncio.create_task(run_trash_cleanup(db_session))
+    redis_sse_task          = asyncio.create_task(run_redis_listener())
     opaque_session_cleanup  = asyncio.create_task(_run_opaque_session_cleanup(db_session))
     mfa_cleanup_task        = asyncio.create_task(_run_mfa_cleanup(db_session))
     oidc_state_cleanup_task = asyncio.create_task(_run_oidc_state_cleanup(db_session))
@@ -232,12 +234,14 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown — cancel background tasks
-    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, trash_cleanup_task, opaque_session_cleanup, mfa_cleanup_task, oidc_state_cleanup_task, event_bus_task, op_bus_task, notif_task, siem_syslog_task, siem_webhook_task, storage_tiering_task, storage_reconcile_task):
+    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, trash_cleanup_task, redis_sse_task, opaque_session_cleanup, mfa_cleanup_task, oidc_state_cleanup_task, event_bus_task, op_bus_task, notif_task, siem_syslog_task, siem_webhook_task, storage_tiering_task, storage_reconcile_task):
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:
             pass
+    from app import redis_client
+    await redis_client.close()
     await close_db()
     logger.info("%s stopped", settings.APP_NAME)
 

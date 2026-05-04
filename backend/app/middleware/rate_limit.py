@@ -1,14 +1,15 @@
-"""In-memory sliding window rate limiter.
+"""Sliding window rate limiter.
 
-Tracks request counts per key (IP or user ID) within sliding windows.
-Returns 429 Too Many Requests when limits are exceeded.
-
-Note: In-memory only — resets on restart. Acceptable for small user pools.
+Single-worker mode (no Redis): in-process per-worker counters.
+Multi-worker mode (TUSSHARE_REDIS_URL set): Redis sorted-set sliding windows
+  shared across all workers.  Uses a single Lua script for atomic
+  check-and-increment so there are no race conditions.
 """
 
 import asyncio
 import logging
 import time
+import uuid
 from collections import defaultdict
 
 from fastapi import Depends, HTTPException
@@ -30,11 +31,53 @@ from app.services import event_bus
 logger = logging.getLogger(__name__)
 
 
-class _SlidingWindowCounter:
-    """Tracks request timestamps per key within a sliding window.
+# Lua script: atomic sliding-window check-and-increment using a Redis sorted set.
+# KEYS[1] = rate-limit key; ARGV[1] = now (float), ARGV[2] = window (int),
+# ARGV[3] = max_requests (int), ARGV[4] = unique member string.
+_REDIS_SLIDE_SCRIPT = """
+local key   = KEYS[1]
+local now   = tonumber(ARGV[1])
+local win   = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - win)
+local cnt = redis.call('ZCARD', key)
+if cnt >= limit then return 0 end
+redis.call('ZADD', key, now, ARGV[4])
+redis.call('EXPIRE', key, win)
+return 1
+"""
 
-    All mutations are protected by an asyncio.Lock to prevent race conditions
-    between concurrent requests (read-modify-write on the timestamps list).
+# Lua script: escalation check and record for error tracker.
+# Returns: 0 = not escalated, 1 = already escalated, 2 = just escalated now
+_REDIS_ESCALATE_SCRIPT = """
+local err_key = KEYS[1]
+local esc_key = KEYS[2]
+local now     = tonumber(ARGV[1])
+local win     = tonumber(ARGV[2])
+local thresh  = tonumber(ARGV[3])
+local dur     = tonumber(ARGV[4])
+local member  = ARGV[5]
+-- Already escalated?
+local esc_until = tonumber(redis.call('GET', esc_key) or '0')
+if esc_until and esc_until > now then return 1 end
+-- Record error
+redis.call('ZREMRANGEBYSCORE', err_key, '-inf', now - win)
+redis.call('ZADD', err_key, now, member)
+redis.call('EXPIRE', err_key, win)
+local cnt = redis.call('ZCARD', err_key)
+if cnt >= thresh then
+    redis.call('SET', esc_key, now + dur, 'EX', dur)
+    return 2
+end
+return 0
+"""
+
+
+class _SlidingWindowCounter:
+    """Sliding window rate counter.
+
+    Uses Redis sorted sets when Redis is configured; falls back to an
+    in-process asyncio.Lock-protected list otherwise.
     """
 
     def __init__(self):
@@ -42,20 +85,30 @@ class _SlidingWindowCounter:
         self._lock = asyncio.Lock()
 
     async def is_allowed(self, key: str, max_requests: int, window_seconds: int) -> bool:
+        from app.redis_client import get_redis
+        r = get_redis()
+        if r is not None:
+            try:
+                result = await r.eval(
+                    _REDIS_SLIDE_SCRIPT, 1, key,
+                    time.time(), window_seconds, max_requests, str(uuid.uuid4()),
+                )
+                return bool(result)
+            except Exception as exc:
+                logger.warning("Redis rate-limit eval failed (%s); falling back to local", exc)
+
+        # In-process fallback
         now = time.monotonic()
         cutoff = now - window_seconds
-
         async with self._lock:
-            timestamps = self._requests[key]
-            self._requests[key] = [t for t in timestamps if t > cutoff]
-
+            self._requests[key] = [t for t in self._requests[key] if t > cutoff]
             if len(self._requests[key]) >= max_requests:
                 return False
-
             self._requests[key].append(now)
             return True
 
     async def cleanup(self, max_age: float = RATE_LIMIT_CLEANUP_MAX_AGE) -> None:
+        """Clean up stale in-process entries (Redis entries expire automatically)."""
         now = time.monotonic()
         async with self._lock:
             stale_keys = [
@@ -78,6 +131,9 @@ class _ErrorRateTracker:
     the error window, it enters 'escalated' mode and is throttled to
     ESCALATED_MAX requests per ESCALATED_WINDOW seconds for
     ESCALATED_DURATION seconds.
+
+    Uses Redis when TUSSHARE_REDIS_URL is set so escalation state is shared
+    across all workers; falls back to in-process dicts otherwise.
     """
 
     def __init__(self):
@@ -88,20 +144,37 @@ class _ErrorRateTracker:
     async def record_error(self, ip: str) -> bool:
         """Record an error for the given IP.
 
-        Returns True if this error pushed the IP into escalated mode for
-        the first time (so the caller can log the escalation event).
+        Returns True if this error pushed the IP into escalated mode for the
+        first time (so the caller can log the escalation event).
         """
         threshold = settings.RATE_LIMIT_ERROR_THRESHOLD
         if threshold <= 0:
-            return False  # escalation disabled
+            return False
 
+        from app.redis_client import get_redis
+        r = get_redis()
+        if r is not None:
+            try:
+                result = await r.eval(
+                    _REDIS_ESCALATE_SCRIPT,
+                    2,
+                    f"errtk:{ip}", f"errtk:esc:{ip}",
+                    time.time(),
+                    settings.RATE_LIMIT_ERROR_WINDOW,
+                    threshold,
+                    settings.RATE_LIMIT_ESCALATED_DURATION,
+                    str(uuid.uuid4()),
+                )
+                return int(result) == 2  # 2 = just escalated
+            except Exception as exc:
+                logger.warning("Redis error tracker eval failed (%s); falling back to local", exc)
+
+        # In-process fallback
         now = time.monotonic()
         cutoff = now - settings.RATE_LIMIT_ERROR_WINDOW
-
         async with self._lock:
             self._errors[ip] = [t for t in self._errors[ip] if t > cutoff]
             self._errors[ip].append(now)
-
             already_escalated = (
                 ip in self._escalated_until and self._escalated_until[ip] > now
             )
@@ -114,11 +187,24 @@ class _ErrorRateTracker:
         """Return True if the IP is currently in escalated throttle mode."""
         if settings.RATE_LIMIT_ERROR_THRESHOLD <= 0:
             return False
+
+        from app.redis_client import get_redis
+        r = get_redis()
+        if r is not None:
+            try:
+                val = await r.get(f"errtk:esc:{ip}")
+                if val is not None:
+                    return float(val) > time.time()
+                return False
+            except Exception as exc:
+                logger.warning("Redis escalation check failed (%s); falling back to local", exc)
+
         now = time.monotonic()
         async with self._lock:
             return ip in self._escalated_until and self._escalated_until[ip] > now
 
     async def cleanup(self, max_age: float) -> None:
+        """Clean up stale in-process entries (Redis entries expire automatically)."""
         now = time.monotonic()
         async with self._lock:
             stale_errors = [k for k, v in self._errors.items() if not v or v[-1] < now - max_age]
