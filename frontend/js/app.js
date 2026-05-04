@@ -722,25 +722,51 @@ const App = (() => {
         // --- Delete account (async: check admin setting) ---
         const deleteSection = Utils.el('section', { className: 'account-section' });
         Api.get(`${Config.app.apiPrefix}/admin/settings`).then(data => {
-            if (data.settings?.allow_user_delete_own_account === 'true') {
-                deleteSection.appendChild(Utils.el('h4', { className: 'account-section-title account-section-title--danger', textContent: 'Danger Zone' }));
-                deleteSection.appendChild(Utils.el('button', {
-                    className: 'btn btn-danger btn-sm',
-                    textContent: 'Delete My Account',
-                    onClick: async () => {
+            if (data.settings?.allow_user_delete_own_account !== 'true') return;
+            const canDeleteOwned = data.settings?.can_delete_owned_shared === 'true';
+            deleteSection.appendChild(Utils.el('h4', { className: 'account-section-title account-section-title--danger', textContent: 'Danger Zone' }));
+            deleteSection.appendChild(Utils.el('button', {
+                className: 'btn btn-danger btn-sm',
+                textContent: 'Delete My Account',
+                onClick: async () => {
+                    // Check for owned teams before confirming
+                    let ownedTeams = [];
+                    try {
+                        const owned = await Api.get(`${Config.app.apiPrefix}/auth/me/owned-shared`);
+                        ownedTeams = owned.owned_teams || [];
+                    } catch { /* proceed without warning if check fails */ }
+
+                    if (ownedTeams.length > 0) {
+                        const teamList = ownedTeams.map(t => `"${t.name}"`).join(', ');
+                        if (!canDeleteOwned) {
+                            Utils.showToast(
+                                `You own ${ownedTeams.length > 1 ? 'teams' : 'a team'} (${teamList}). ` +
+                                'Promote another member to Owner first, then delete your account.',
+                                'warning'
+                            );
+                            return;
+                        }
+                        const confirmed = await Utils.showConfirm(
+                            `You own the following team${ownedTeams.length > 1 ? 's' : ''}: ${teamList}.\n\n` +
+                            'Deleting your account will permanently delete these teams and all their content. ' +
+                            'This cannot be undone. Continue?'
+                        );
+                        if (!confirmed) return;
+                    } else {
                         const confirmed = await Utils.showConfirm(
                             'This will permanently delete your account and all your files. This cannot be undone. Continue?'
                         );
                         if (!confirmed) return;
-                        try {
-                            await Api.del(`${Config.app.apiPrefix}/auth/me`);
-                            Auth.logout();
-                        } catch (e) {
-                            Utils.showToast(`Delete failed: ${e.message}`, 'error');
-                        }
-                    },
-                }));
-            }
+                    }
+
+                    try {
+                        await Api.del(`${Config.app.apiPrefix}/auth/me`);
+                        Auth.logout();
+                    } catch (e) {
+                        Utils.showToast(`Delete failed: ${e.message}`, 'error');
+                    }
+                },
+            }));
         }).catch(() => {});
 
         const sections = [rolesSection, keySection, mfaSection, ...(changePwSection ? [changePwSection] : []), sessionsSection, activitySection, deleteSection];

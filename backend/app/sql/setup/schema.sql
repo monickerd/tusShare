@@ -1480,6 +1480,7 @@ INSERT INTO admin_settings (key, value) VALUES ('escrow_default_role_ids',     '
 INSERT INTO admin_settings (key, value) VALUES ('escrow_require_coverage',     '0')       ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('regex_match_timeout_ms',      '500')     ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('allow_user_delete_own_account', 'false')  ON CONFLICT (key) DO NOTHING;
+INSERT INTO admin_settings (key, value) VALUES ('can_delete_owned_shared',       'false')  ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('allow_multi_team_owner',        'false')  ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('first_run_completed',           '0')      ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('trash_enabled',                 'true')   ON CONFLICT (key) DO NOTHING;

@@ -785,6 +785,26 @@ async def my_activity(
 # Self-delete account
 # ---------------------------------------------------------------------------
 
+@router.get("/me/owned-shared")
+async def get_owned_shared(
+    user: AuthenticatedUser = Depends(get_current_user),
+    db=Depends(get_db),
+):
+    """Return teams the calling user is the sole owner of.
+
+    Used by the frontend to warn before account deletion — if any teams are
+    returned, the user should promote another owner before proceeding.
+    """
+    cursor = await db.execute(
+        "SELECT id, name FROM teams WHERE owner_id = ? ORDER BY name",
+        (user.id,),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "owned_teams": [{"id": row["id"], "name": row["name"]} for row in rows],
+    }
+
+
 @router.delete("/me")
 async def delete_my_account(
     request: Request,
@@ -795,16 +815,43 @@ async def delete_my_account(
 
     Requires the allow_user_delete_own_account admin setting to be 'true'.
     Admin-only accounts (no user role) are not permitted to self-delete.
+
+    If the user is the owner of any teams, the can_delete_owned_shared setting
+    governs whether those teams are deleted (true) or the request is rejected
+    (false) with a 409 listing the owned teams.
     """
     if not user.is_user:
         raise HTTPException(status_code=403, detail="Admin-only accounts cannot self-delete")
 
     cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'allow_user_delete_own_account'"
+        "SELECT key, value FROM admin_settings "
+        "WHERE key IN ('allow_user_delete_own_account', 'can_delete_owned_shared')"
     )
-    row = await cursor.fetchone()
-    if not row or row["value"] != "true":
+    settings_rows = await cursor.fetchall()
+    settings = {row["key"]: row["value"] for row in settings_rows}
+
+    if settings.get("allow_user_delete_own_account") != "true":
         raise HTTPException(status_code=403, detail="Self-deletion is not enabled on this server")
+
+    # Check for owned teams
+    cursor = await db.execute(
+        "SELECT id, name FROM teams WHERE owner_id = ?", (user.id,)
+    )
+    owned_teams = await cursor.fetchall()
+
+    if owned_teams:
+        if settings.get("can_delete_owned_shared") != "true":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "owned_teams",
+                    "message": "You are the owner of teams that must be managed before deleting your account.",
+                    "teams": [{"id": row["id"], "name": row["name"]} for row in owned_teams],
+                },
+            )
+        # Delete owned teams first (cascades to team_folders, file_team_keys, etc.)
+        for team_row in owned_teams:
+            await db.execute("DELETE FROM teams WHERE id = ?", (team_row["id"],))
 
     # Collect file storage keys before CASCADE deletes them
     cursor = await db.execute(
@@ -823,10 +870,10 @@ async def delete_my_account(
         outcome="success",
         actor=EventActor(user_id=user.id, username=user.username, ip=_get_client_ip(request)),
         target=EventTarget(type="user", id=user.id, name=user.username),
+        detail={"owned_teams_deleted": len(owned_teams)} if owned_teams else {},
     ))
 
     rows_snapshot = list(file_rows)
-    uid_snapshot = user.id
 
     async def _cleanup_blobs():
         mgr = storage.get_manager()

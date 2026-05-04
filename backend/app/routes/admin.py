@@ -55,6 +55,7 @@ _SETTINGS_VALIDATORS = {
     "notify_escrow_on_revocation": lambda v: v in ("0", "1"),
     # Self-service account deletion
     "allow_user_delete_own_account": lambda v: v in ("true", "false"),
+    "can_delete_owned_shared":       lambda v: v in ("true", "false"),
     # Multi-owner teams
     "allow_multi_team_owner":        lambda v: v in ("true", "false"),
     # Audit retention

@@ -281,6 +281,9 @@ async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
             "INSERT INTO admin_settings (key, value) VALUES ('trash_enabled', 'true') ON CONFLICT DO NOTHING",
             "INSERT INTO admin_settings (key, value) VALUES ('trash_retention_days', '30') ON CONFLICT DO NOTHING",
         ]),
+        ("migrate_settings_v2", [
+            "INSERT INTO admin_settings (key, value) VALUES ('can_delete_owned_shared', 'false') ON CONFLICT DO NOTHING",
+        ]),
     ]
     for name, stmts in _INCREMENTAL_MIGRATIONS:
         if name not in applied:
