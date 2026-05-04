@@ -284,6 +284,21 @@ async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
         ("migrate_settings_v2", [
             "INSERT INTO admin_settings (key, value) VALUES ('can_delete_owned_shared', 'false') ON CONFLICT DO NOTHING",
         ]),
+        ("migrate_copy_v1", [
+            # Allow multiple files to share the same blob (blob ref-counting for copies)
+            "ALTER TABLE files DROP CONSTRAINT IF EXISTS files_storage_key_key",
+            # can_copy_files permission flag
+            "INSERT INTO role_permission_flags (flag, description, category, is_sensitive) VALUES ('can_copy_files', 'May copy files within copy_boundary policy', 'files', 0) ON CONFLICT DO NOTHING",
+            "INSERT INTO role_permissions (role_id, flag, value) VALUES ('server_admin',      'can_copy_files', '1') ON CONFLICT DO NOTHING",
+            "INSERT INTO role_permissions (role_id, flag, value) VALUES ('org_admin',         'can_copy_files', '1') ON CONFLICT DO NOTHING",
+            "INSERT INTO role_permissions (role_id, flag, value) VALUES ('operational_admin', 'can_copy_files', '1') ON CONFLICT DO NOTHING",
+            "INSERT INTO role_permissions (role_id, flag, value) VALUES ('team_admin',        'can_copy_files', '1') ON CONFLICT DO NOTHING",
+            "INSERT INTO role_permissions (role_id, flag, value) VALUES ('team_manager',      'can_copy_files', '1') ON CONFLICT DO NOTHING",
+            "INSERT INTO role_permissions (role_id, flag, value) VALUES ('role_admin',        'can_copy_files', '1') ON CONFLICT DO NOTHING",
+            "INSERT INTO role_permissions (role_id, flag, value) VALUES ('role_user',         'can_copy_files', '1') ON CONFLICT DO NOTHING",
+            # copy_boundary admin setting (any | same_team | disabled)
+            "INSERT INTO admin_settings (key, value) VALUES ('copy_boundary', 'any') ON CONFLICT DO NOTHING",
+        ]),
     ]
     for name, stmts in _INCREMENTAL_MIGRATIONS:
         if name not in applied:

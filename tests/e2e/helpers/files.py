@@ -125,6 +125,29 @@ async def batch_move_files(
     return r.json()
 
 
+async def batch_copy_files(
+    client:    ApiClient,
+    file_ids:  list[str],
+    folder_id: str,
+    file_items: Optional[list[dict]] = None,
+) -> dict:
+    """Copy files to destination_folder_id.
+
+    For personal→personal copies (paths 1 and 2) no crypto fields are needed and
+    file_ids is sufficient.  For cross-boundary copies, pass file_items directly
+    (list of dicts with file_id + optional pre_c1/encrypted_file_key/key_iv).
+    The test suite uses stub encryption so key fields are faked.
+    """
+    if file_items is None:
+        file_items = [{"file_id": fid} for fid in file_ids]
+    r = await client.post(
+        "/files/batch-copy",
+        json={"files": file_items, "destination_folder_id": folder_id},
+    )
+    r.raise_for_status()
+    return r.json()
+
+
 # ---------------------------------------------------------------------------
 # Access check helpers — verify HTTP status without decrypting
 # ---------------------------------------------------------------------------

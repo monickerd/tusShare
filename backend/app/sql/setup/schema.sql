@@ -355,7 +355,7 @@ CREATE TABLE files (
     id                  TEXT PRIMARY KEY,
     original_name       TEXT NOT NULL,
     sanitized_name      TEXT NOT NULL,
-    storage_key         TEXT NOT NULL UNIQUE,
+    storage_key         TEXT NOT NULL,
     folder_id           TEXT REFERENCES folders(id) ON DELETE SET NULL,
     owner_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     mime_type           TEXT NOT NULL DEFAULT 'application/octet-stream',
@@ -1258,7 +1258,8 @@ INSERT INTO role_permission_flags (flag, description, category, is_sensitive) VA
     ('can_create_user_shares',      'May create user-to-user KEM shares',                                 'sharing',       0),
     ('can_create_upload_grants',    'May enable upload access on a share',                                'sharing',       0),
     ('can_share_folders',           'May create upload-only folder shares',                               'sharing',       0),
-    ('can_manage_service_accounts', 'Create, rotate, and delete machine-identity service accounts',       'admin',         0);
+    ('can_manage_service_accounts', 'Create, rotate, and delete machine-identity service accounts',       'admin',         0),
+    ('can_copy_files',              'May copy files within copy_boundary policy',                          'files',         0);
 
 -------------------------------------------------
 -- PERMISSION FLAG GRANTS PER ROLE
@@ -1290,7 +1291,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('server_admin', 'can_create_user_shares',      '1'),
     ('server_admin', 'can_create_upload_grants',    '1'),
     ('server_admin', 'can_share_folders',           '1'),
-    ('server_admin', 'can_manage_service_accounts', '1');
+    ('server_admin', 'can_manage_service_accounts', '1'),
+    ('server_admin', 'can_copy_files',              '1');
 
 -- org_admin: org-wide; no system-level or integration settings
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1318,7 +1320,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('org_admin', 'can_create_user_shares',      '1'),
     ('org_admin', 'can_create_upload_grants',    '1'),
     ('org_admin', 'can_share_folders',           '1'),
-    ('org_admin', 'can_manage_service_accounts', '1');
+    ('org_admin', 'can_manage_service_accounts', '1'),
+    ('org_admin', 'can_copy_files',              '1');
 
 -- operational_admin: user/team lifecycle only
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1346,7 +1349,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('operational_admin', 'can_create_user_shares',      '0'),
     ('operational_admin', 'can_create_upload_grants',    '0'),
     ('operational_admin', 'can_share_folders',           '0'),
-    ('operational_admin', 'can_manage_service_accounts', '1');
+    ('operational_admin', 'can_manage_service_accounts', '1'),
+    ('operational_admin', 'can_copy_files',              '1');
 
 -- team_admin: team-scoped; can create roles and manage within their team
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1374,7 +1378,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('team_admin', 'can_create_user_shares',      '0'),
     ('team_admin', 'can_create_upload_grants',    '0'),
     ('team_admin', 'can_share_folders',           '0'),
-    ('team_admin', 'can_manage_service_accounts', '0');
+    ('team_admin', 'can_manage_service_accounts', '0'),
+    ('team_admin', 'can_copy_files',              '1');
 
 -- team_manager: member management only
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1402,7 +1407,8 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('team_manager', 'can_create_user_shares',      '0'),
     ('team_manager', 'can_create_upload_grants',    '0'),
     ('team_manager', 'can_share_folders',           '0'),
-    ('team_manager', 'can_manage_service_accounts', '0');
+    ('team_manager', 'can_manage_service_accounts', '0'),
+    ('team_manager', 'can_copy_files',              '1');
 
 -- escrow_agent: only the escrow capability flag
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1434,14 +1440,16 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('role_admin', 'can_create_user_shares',      '1'),
     ('role_admin', 'can_create_upload_grants',    '1'),
     ('role_admin', 'can_share_folders',           '1'),
-    ('role_admin', 'can_manage_service_accounts', '1');
+    ('role_admin', 'can_manage_service_accounts', '1'),
+    ('role_admin', 'can_copy_files',              '1');
 
 -- role_user: sharing capabilities; no admin flags
 INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('role_user', 'can_create_link_shares',   '1'),
     ('role_user', 'can_create_user_shares',   '1'),
     ('role_user', 'can_create_upload_grants', '1'),
-    ('role_user', 'can_share_folders',        '1');
+    ('role_user', 'can_share_folders',        '1'),
+    ('role_user', 'can_copy_files',           '1');
 
 -- team_member and role_user have no other flags granted.
 
@@ -1485,6 +1493,7 @@ INSERT INTO admin_settings (key, value) VALUES ('allow_multi_team_owner',       
 INSERT INTO admin_settings (key, value) VALUES ('first_run_completed',           '0')      ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('trash_enabled',                 'true')   ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('trash_retention_days',          '30')     ON CONFLICT (key) DO NOTHING;
+INSERT INTO admin_settings (key, value) VALUES ('copy_boundary',                  'any')    ON CONFLICT (key) DO NOTHING;
 
 -------------------------------------------------
 -- DEFAULT LOCAL STORAGE VOLUME

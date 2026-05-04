@@ -1987,5 +1987,8 @@ const Teams = (() => {
         decryptFileKeyFromTeam,
         wrapTeamKeyForMember,
         unwrapTeamKey,
+        // PRE scalar helpers — used by files.js for cross-team copy
+        computeRKScalar,
+        applyPRERotation,
     };
 })();

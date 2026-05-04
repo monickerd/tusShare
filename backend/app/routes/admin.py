@@ -58,6 +58,8 @@ _SETTINGS_VALIDATORS = {
     "can_delete_owned_shared":       lambda v: v in ("true", "false"),
     # Multi-owner teams
     "allow_multi_team_owner":        lambda v: v in ("true", "false"),
+    # File copy policy
+    "copy_boundary":                 lambda v: v in ("any", "same_team", "disabled"),
     # Audit retention
     "audit_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
     # Antivirus / server-side scanning

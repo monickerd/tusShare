@@ -410,6 +410,7 @@ const Files = (() => {
             { label: 'Share with user', action: () => Shares.openUserShareDialog([file]) },
             { label: 'Add to Team', action: () => Teams.openAddToTeamDialog([file]) },
             { label: 'Move', action: () => _openMoveModal([{ type: 'file', id: file.id, name: file.original_name }]) },
+            { label: 'Copy to…', action: () => _openCopyModal([{ type: 'file', id: file.id, name: file.original_name, encrypted_file_key: file.encrypted_file_key, key_iv: file.key_iv }]) },
             { label: 'Rename', action: () => _renameFile(file) },
             { label: 'Delete', action: () => _deleteFile(file), danger: true },
         ];
@@ -802,6 +803,11 @@ const Files = (() => {
             className: 'btn btn-secondary btn-sm',
             textContent: 'Move selected',
             onClick: () => _openMoveModal(selected),
+        }));
+        bar.appendChild(Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Copy selected',
+            onClick: () => _openCopyModal(selected.filter(i => i.type === 'file')),
         }));
         bar.appendChild(Utils.el('button', {
             className: 'btn btn-danger btn-sm',
@@ -1277,6 +1283,264 @@ const Files = (() => {
             );
         } else {
             _finishMoveToast(items, destination, errors);
+        }
+        _reloadCurrentView();
+    }
+
+    /**
+     * Open the folder-picker modal for a copy operation.
+     * Only file items are copied (folder items are silently filtered out).
+     */
+    function _openCopyModal(items) {
+        const files = items.filter(i => i.type === 'file');
+        if (files.length === 0) {
+            Utils.showToast('Only files can be copied — select at least one file.', 'warning');
+            return;
+        }
+
+        let selectedDest = null;
+        let currentSelectedEl = null;
+
+        const copyBtn = Utils.el('button', {
+            className: 'btn btn-primary',
+            textContent: 'Copy here',
+            disabled: true,
+            onClick: async () => {
+                overlay.remove();
+                await _executeCopies(files, selectedDest);
+            },
+        });
+
+        function _selectDest(optionEl, dest) {
+            if (currentSelectedEl) currentSelectedEl.classList.remove('selected');
+            optionEl.classList.add('selected');
+            currentSelectedEl = optionEl;
+            selectedDest = dest;
+            copyBtn.disabled = false;
+        }
+
+        const pickerList = Utils.el('ul', { className: 'folder-picker' });
+        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: 'My Files' }));
+
+        const rootRow = Utils.el('div', { className: 'folder-picker-option' }, [
+            Utils.el('span', { className: 'picker-folder-name', textContent: 'My Files (root)' }),
+        ]);
+        rootRow.addEventListener('click', () => _selectDest(rootRow, { id: null, label: 'My Files (root)', isTeam: false }));
+        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-item' }, [rootRow]));
+
+        const loadingLi = Utils.el('li', { className: 'folder-picker-loading', textContent: 'Loading…' });
+        pickerList.appendChild(loadingLi);
+
+        const overlay = Utils.el('div', {
+            className: 'modal-overlay',
+            onClick: (e) => { if (e.target === overlay) overlay.remove(); },
+        });
+
+        const title = files.length === 1
+            ? `Copy "${files[0].name}"`
+            : `Copy ${files.length} files`;
+
+        overlay.appendChild(Utils.el('div', { className: 'modal move-modal' }, [
+            Utils.el('h3', { textContent: title }),
+            pickerList,
+            Utils.el('div', { className: 'modal-actions' }, [
+                Utils.el('button', {
+                    className: 'btn btn-secondary',
+                    textContent: 'Cancel',
+                    onClick: () => overlay.remove(),
+                }),
+                copyBtn,
+            ]),
+        ]));
+        document.body.appendChild(overlay);
+
+        Promise.all([
+            Api.get(`${Config.app.apiPrefix}/folders`),
+            Api.get(`${Config.app.apiPrefix}/teams`),
+        ]).then(async ([foldersData, teamsData]) => {
+            loadingLi.remove();
+            for (const folder of (foldersData.folders || [])) {
+                pickerList.appendChild(_createPickerFolderNode(folder, 0, _selectDest, false));
+            }
+            for (const team of (teamsData.teams || [])) {
+                pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: team.name }));
+                try {
+                    const tfData = await Api.get(`${Config.app.apiPrefix}/teams/${team.id}/folders`);
+                    const teamFolders = tfData.folders || [];
+                    if (teamFolders.length === 0) {
+                        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-loading', textContent: 'No folders in this team' }));
+                    } else {
+                        for (const tf of teamFolders) {
+                            pickerList.appendChild(_createPickerFolderNode(
+                                { id: tf.folder_id, name: tf.folder_name }, 0, _selectDest, true
+                            ));
+                        }
+                    }
+                } catch {
+                    pickerList.appendChild(Utils.el('li', { className: 'folder-picker-error', textContent: 'Failed to load folders' }));
+                }
+            }
+        }).catch(() => {
+            if (loadingLi.parentNode) loadingLi.textContent = 'Failed to load folders';
+        });
+    }
+
+    /**
+     * Execute copies for a list of file items to a destination folder.
+     * Determines the crypto path per file and calls POST /files/batch-copy.
+     * destination: { id: string|null, label: string, isTeam: boolean }
+     */
+    async function _executeCopies(files, destination) {
+        const destId = destination.id;
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey) {
+            Utils.showToast('Session expired — please log in again', 'error');
+            return;
+        }
+
+        // Resolve destination team info
+        let destTeamId = null;
+        let destTeamPK = null;
+        if (destination.isTeam && destId) {
+            try {
+                const folderData = await Api.get(`${Config.app.apiPrefix}/folders/${destId}`);
+                destTeamId = folderData.team_id || null;
+                if (destTeamId) {
+                    const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}`);
+                    destTeamPK = teamData.team?.pre_public_key || null;
+                }
+            } catch {
+                Utils.showToast('Failed to resolve destination team — copy cancelled', 'error');
+                return;
+            }
+        }
+
+        const srcTeamId = _currentTeamId || null;
+
+        // Pre-fetch source team file keys and my team SK when needed for cross-boundary paths
+        let srcTeamFileKeyMap = null; // Map<file_id, {pre_c1, encrypted_file_key, key_iv}>
+        let skSrcBigInt = null;
+        let skSrcBytes = null;
+        let skDestBytes = null;
+        let rkBigInt = null;
+
+        const needsSourceTeamKey = srcTeamId && srcTeamId !== destTeamId;
+
+        if (needsSourceTeamKey) {
+            try {
+                const asymKeys = Auth.getAsymmetricKeys();
+                if (!asymKeys) throw new Error('Asymmetric keys not available');
+                const srcMyKey = await Api.get(`${Config.app.apiPrefix}/teams/${srcTeamId}/my-key`);
+                const srcKeyResult = await Teams.unwrapTeamKey(
+                    srcMyKey, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+                );
+                skSrcBigInt = srcKeyResult.sk_bigint;
+                skSrcBytes  = srcKeyResult.sk_bytes;
+
+                // Fetch all file keys for this source team once
+                const fkData = await Api.get(`${Config.app.apiPrefix}/teams/${srcTeamId}/file-keys`);
+                srcTeamFileKeyMap = new Map((fkData.file_keys || []).map(fk => [fk.file_id, fk]));
+
+                // Cross-team (path 3): also unwrap dest team SK to compute rk
+                if (destTeamId && destTeamId !== srcTeamId) {
+                    const destMyKey = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}/my-key`);
+                    const destKeyResult = await Teams.unwrapTeamKey(
+                        destMyKey, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+                    );
+                    skDestBytes = destKeyResult.sk_bytes;
+                    rkBigInt = Teams.computeRKScalar(skSrcBytes, skDestBytes);
+                }
+            } catch (e) {
+                Utils.showToast(`Failed to load team key: ${e.message}`, 'error');
+                return;
+            }
+        }
+
+        const total = files.length;
+        let errors = 0;
+        let done = 0;
+
+        const initialLabel = files.length === 1
+            ? `Copying "${files[0].name}"…`
+            : `Copying ${files.length} files…`;
+        const overlay = _showMoveOverlay(initialLabel);
+
+        const batches = _chunk(files, 50);
+        for (const batch of batches) {
+            overlay.update(done, total, 'Copying files…');
+            const batchItems = [];
+
+            for (const file of batch) {
+                try {
+                    const item = { file_id: file.id };
+
+                    if (srcTeamId === destTeamId) {
+                        // Path 1 (personal→personal) or Path 2 (same-team): server handles everything
+
+                    } else if (!srcTeamId && destTeamId) {
+                        // Path 4: Personal → Team — encrypt DEK for team
+                        let fileData = file;
+                        if (!fileData.encrypted_file_key) {
+                            const fetched = await Api.get(`${Config.app.apiPrefix}/files/${file.id}`);
+                            fileData = fetched.file || fetched;
+                        }
+                        const fileKeyBytes = await _resolveFileKeyBytes(fileData, masterKey);
+                        const teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK);
+                        item.pre_c1 = teamKey.pre_c1;
+                        item.encrypted_file_key = teamKey.encrypted_file_key;
+                        item.key_iv = teamKey.key_iv;
+
+                    } else if (srcTeamId && !destTeamId) {
+                        // Path 5: Team → Personal — decrypt DEK from team, re-wrap under personal KEK
+                        const fk = srcTeamFileKeyMap?.get(file.id);
+                        if (!fk) throw new Error(`Team file key not found for ${file.id}`);
+                        const dekKey = await Teams.decryptFileKeyFromTeam(
+                            fk.pre_c1, fk.encrypted_file_key, fk.key_iv, skSrcBigInt
+                        );
+                        const { encryptedKeyB64, ivB64 } = await Crypto.encryptFileKey(dekKey, masterKey);
+                        item.encrypted_file_key = encryptedKeyB64;
+                        item.key_iv = ivB64;
+
+                    } else {
+                        // Path 3: Cross-Team — apply re-encryption key to C1
+                        const fk = srcTeamFileKeyMap?.get(file.id);
+                        if (!fk) throw new Error(`Team file key not found for ${file.id}`);
+                        item.pre_c1 = await Teams.applyPRERotation(fk.pre_c1, rkBigInt);
+                    }
+
+                    batchItems.push(item);
+                } catch {
+                    errors++;
+                }
+            }
+
+            if (batchItems.length > 0) {
+                try {
+                    const result = await Api.post(
+                        `${Config.app.apiPrefix}/files/batch-copy`,
+                        { files: batchItems, destination_folder_id: destId },
+                    );
+                    errors += (result.failed || []).length;
+                } catch {
+                    errors += batchItems.length;
+                }
+            }
+            done += batch.length;
+            overlay.update(done, total);
+        }
+
+        overlay.remove();
+
+        const label = destination.label || 'selected folder';
+        if (errors === 0) {
+            Utils.showToast(
+                files.length === 1
+                    ? `"${files[0].name}" copied to ${label}`
+                    : `${files.length} files copied to ${label}`,
+                'success',
+            );
+        } else {
+            Utils.showToast(`${errors} of ${total} files failed to copy`, 'error');
         }
         _reloadCurrentView();
     }
