@@ -534,7 +534,116 @@ const App = (() => {
                 onClick: () => _closeAccountMenu() }),
         ]);
 
-        // Change password — deferred: requires OPAQUE re-registration flow (not yet implemented)
+        // --- Change password (OPAQUE users only) ---
+        let changePwSection = null;
+        if (user.auth_method === 'opaque') {
+            changePwSection = Utils.el('section', { className: 'account-section' });
+            changePwSection.appendChild(Utils.el('h4', { className: 'account-section-title', textContent: 'Password' }));
+            const changePwBody = Utils.el('div', { className: 'account-section-body' });
+
+            function _showChangePwBtn() {
+                while (changePwBody.firstChild) changePwBody.removeChild(changePwBody.firstChild);
+                changePwBody.appendChild(Utils.el('button', {
+                    className: 'btn btn-secondary btn-sm',
+                    textContent: 'Change Password',
+                    onClick: _showChangePwForm,
+                }));
+            }
+
+            function _showChangePwForm() {
+                while (changePwBody.firstChild) changePwBody.removeChild(changePwBody.firstChild);
+                const newPwInput = Utils.el('input', {
+                    type: 'password', autocomplete: 'new-password',
+                });
+                const confirmPwInput = Utils.el('input', {
+                    type: 'password', autocomplete: 'new-password',
+                });
+                const statusEl = Utils.el('p', { className: 'text-muted-sm' });
+                const submitBtn = Utils.el('button', {
+                    className: 'btn btn-primary btn-sm', textContent: 'Change Password',
+                    onClick: () => _doChangePw(newPwInput.value, confirmPwInput.value, statusEl, submitBtn),
+                });
+                const cancelBtn = Utils.el('button', {
+                    className: 'btn btn-secondary btn-sm', textContent: 'Cancel',
+                    onClick: _showChangePwBtn,
+                });
+                changePwBody.appendChild(Utils.el('div', { className: 'change-pw-form' }, [
+                    Utils.el('div', { className: 'form-group' }, [
+                        Utils.el('label', { textContent: 'New password' }),
+                        newPwInput,
+                    ]),
+                    Utils.el('div', { className: 'form-group' }, [
+                        Utils.el('label', { textContent: 'Confirm new password' }),
+                        confirmPwInput,
+                    ]),
+                    statusEl,
+                    Utils.el('div', { className: 'btn-row-sm' }, [submitBtn, cancelBtn]),
+                ]));
+                newPwInput.focus();
+            }
+
+            async function _doChangePw(newPw, confirmPw, statusEl, submitBtn) {
+                statusEl.textContent = '';
+                if (!newPw || newPw.length < 8) {
+                    statusEl.textContent = 'Password must be at least 8 characters.';
+                    return;
+                }
+                if (newPw !== confirmPw) {
+                    statusEl.textContent = 'Passwords do not match.';
+                    return;
+                }
+                const masterKey = Auth.getMasterKeyObj();
+                if (!masterKey) {
+                    statusEl.textContent = 'Encryption key not loaded. Re-enter your password to unlock first.';
+                    return;
+                }
+                submitBtn.disabled = true;
+                statusEl.textContent = 'Generating new credentials…';
+                try {
+                    const opaque = await Auth.loadOpaque();
+                    const { clientRegistrationState, registrationRequest } =
+                        opaque.client.startRegistration({ password: newPw });
+
+                    const round1 = await Api.post(
+                        `${Config.app.apiPrefix}/auth/opaque/password-change/start`,
+                        { client_registration_request: registrationRequest },
+                    );
+
+                    const { registrationRecord, exportKey } = opaque.client.finishRegistration({
+                        clientRegistrationState,
+                        registrationResponse: round1.registration_response,
+                        password: newPw,
+                        identifiers: { client: user.username, server: 'tusshare' },
+                    });
+
+                    const newKek = await Crypto.deriveOpaqueKEK(exportKey);
+                    const { wrappedKeyB64, ivB64 } = await Crypto.wrapMasterKey(masterKey, newKek);
+
+                    // Api auto-handles step-up: server returns 403 step_up_required,
+                    // Api prompts for current password, then retries with X-Step-Up-Token.
+                    statusEl.textContent = 'Confirm current password when prompted…';
+                    await Api.post(
+                        `${Config.app.apiPrefix}/auth/opaque/password-change/finish`,
+                        {
+                            client_registration_record: registrationRecord,
+                            wrapped_master_key:    wrappedKeyB64,
+                            wrapped_master_key_iv: ivB64,
+                        },
+                    );
+
+                    Utils.showToast('Password changed successfully.', 'success');
+                    _showChangePwBtn();
+                } catch (err) {
+                    if (err.message !== 'Step-up cancelled by user') {
+                        statusEl.textContent = err.message || 'Password change failed. Please try again.';
+                    }
+                    submitBtn.disabled = false;
+                }
+            }
+
+            _showChangePwBtn();
+            changePwSection.appendChild(changePwBody);
+        }
 
         // --- Sessions (async) ---
         const sessionsSection = Utils.el('section', { className: 'account-section' });
@@ -634,7 +743,7 @@ const App = (() => {
             }
         }).catch(() => {});
 
-        const sections = [rolesSection, keySection, mfaSection, sessionsSection, activitySection, deleteSection];
+        const sections = [rolesSection, keySection, mfaSection, ...(changePwSection ? [changePwSection] : []), sessionsSection, activitySection, deleteSection];
         for (const s of sections) container.appendChild(s);
     }
 

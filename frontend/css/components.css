@@ -2070,6 +2070,15 @@
 .activity-type { color: var(--color-text); }
 .activity-time { color: var(--color-text-muted); font-size: var(--font-size-xs); white-space: nowrap; }
 
+.change-pw-form .form-group { margin-bottom: var(--space-3); }
+.change-pw-form .form-group label { font-size: var(--font-size-sm); display: block; margin-bottom: var(--space-1); }
+
+.btn-row-sm {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+}
+
 /* =========================================================================
    Teams — list, cards, detail page
    ========================================================================= */

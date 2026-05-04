@@ -253,8 +253,9 @@ _ROUTE_LIMITS = [
     ("/api/v1/auth/opaque/login/",    {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     ("/api/v1/auth/opaque/register/", {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     ("/api/v1/auth/opaque/step-up/",  {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/migrate/",  {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/recover/",  {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/migrate/",         {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/recover/",         {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/password-change/", {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # Invite validation — tighter window to slow token enumeration
     ("/api/v1/auth/invite/",    {"GET"},          20,                        60),
     # Public share/short-link resolution — keyed by IP to slow token enumeration

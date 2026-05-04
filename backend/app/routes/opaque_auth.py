@@ -31,7 +31,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 import app.sensitive_config as sensitive_config
-from app.auth.stepup import log_security_event
+from app.auth.stepup import log_security_event, verify_step_up_token
 from app.auth.dependencies import get_current_user, require_user_role
 from app.middleware.rate_limit import _counter, _get_client_ip
 from app.auth.interface import AuthenticatedUser
@@ -1136,6 +1136,158 @@ async def opaque_recover_finish(
     logger.info("Password reset via recovery key: user_id=%s ip=%s", user_id, client_ip)
     await log_security_event(
         db, "password_reset_via_recovery_key", user_id, client_ip, user_agent,
+    )
+
+    return {"success": True}
+
+
+# ---------------------------------------------------------------------------
+# Password change (authenticated, step-up gated)
+# ---------------------------------------------------------------------------
+# Two-round OPAQUE re-registration for already-authenticated OPAQUE users.
+# The step-up in /finish proves the user knows their current password before
+# the new OPAQUE record and re-wrapped master key are written.
+
+class OpaquePasswordChangeStartRequest(BaseModel):
+    client_registration_request: str   # base64 RegistrationRequest bytes
+
+    @field_validator("client_registration_request")
+    @classmethod
+    def val_reg_request(cls, v: str) -> str:
+        validate_base64(v, max_length=_OPAQUE_REG_REQUEST_B64_MAX)
+        return v
+
+
+class OpaquePasswordChangeFinishRequest(BaseModel):
+    client_registration_record: str    # base64 RegistrationUpload bytes (new password)
+    wrapped_master_key: str            # master key re-wrapped under new OPAQUE KEK
+    wrapped_master_key_iv: str
+
+    @field_validator("client_registration_record")
+    @classmethod
+    def val_reg_record(cls, v: str) -> str:
+        validate_base64(v, max_length=_OPAQUE_REG_RECORD_B64_MAX)
+        return v
+
+    @field_validator("wrapped_master_key")
+    @classmethod
+    def val_wrapped_key(cls, v: str) -> str:
+        validate_base64(v, max_length=_WRAPPED_KEY_B64_MAX)
+        return v
+
+    @field_validator("wrapped_master_key_iv")
+    @classmethod
+    def val_iv(cls, v: str) -> str:
+        validate_base64(v, max_length=_IV_B64_MAX)
+        return v
+
+
+@router.post("/password-change/start")
+async def opaque_password_change_start(
+    body: OpaquePasswordChangeStartRequest,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Password change round 1 — initiate OPAQUE re-registration.
+
+    Returns the RegistrationResponse for the client to complete local
+    registration with the new password.  Only available to OPAQUE users.
+    """
+    if user.auth_method != "opaque":
+        raise HTTPException(
+            status_code=400,
+            detail="Password change is only available for OPAQUE accounts",
+        )
+
+    reg_request_bytes = _decode_b64_field(body.client_registration_request, "client_registration_request")
+    setup_bytes = sensitive_config.get_opaque_server_setup()
+    username_bytes = user.username.encode("utf-8")
+
+    try:
+        reg_response_bytes = await asyncio.to_thread(
+            tusshare_opaque.server_start_registration,
+            setup_bytes, reg_request_bytes, username_bytes,
+        )
+    except ValueError as exc:
+        logger.warning("OPAQUE password-change/start failed for user %s: %s", user.id, exc)
+        raise HTTPException(status_code=400, detail="Invalid registration request")
+
+    return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
+
+
+@router.post("/password-change/finish")
+async def opaque_password_change_finish(
+    body: OpaquePasswordChangeFinishRequest,
+    request: Request,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Password change round 2 — commit new OPAQUE record.
+
+    Requires X-Step-Up-Token header proving the user authenticated with their
+    current password.  Atomically replaces the OPAQUE registration record and
+    master key wrapping, then revokes all other sessions.
+    """
+    if user.auth_method != "opaque":
+        raise HTTPException(
+            status_code=400,
+            detail="Password change is only available for OPAQUE accounts",
+        )
+
+    token = request.headers.get("x-step-up-token", "")
+    if not token or not verify_step_up_token(
+        token, user.id, "user.change_password", session_id=user.session_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "step_up_required", "action": "user.change_password"},
+        )
+
+    reg_upload_bytes = _decode_b64_field(body.client_registration_record, "client_registration_record")
+    try:
+        new_reg_record_bytes = await asyncio.to_thread(
+            tusshare_opaque.server_finish_registration,
+            reg_upload_bytes,
+        )
+    except ValueError as exc:
+        logger.warning("OPAQUE password-change/finish failed for user %s: %s", user.id, exc)
+        raise HTTPException(status_code=400, detail="Invalid registration data")
+
+    await db.execute("BEGIN")
+    try:
+        await db.execute(
+            "UPDATE users SET "
+            "  opaque_registration_record = ?, "
+            "  wrapped_master_key = ?, wrapped_master_key_iv = ? "
+            "WHERE id = ?",
+            (
+                new_reg_record_bytes,
+                body.wrapped_master_key, body.wrapped_master_key_iv,
+                user.id,
+            ),
+        )
+        # Revoke other sessions so old-password JWTs cannot be replayed.
+        # The current session (identified by user.session_id) is preserved.
+        if user.session_id:
+            await db.execute(
+                "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND id != ?",
+                (user.id, user.session_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
+                (user.id,),
+            )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    client_ip = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")[:512]
+    logger.info("Password changed: user=%s id=%s ip=%s", user.username, user.id, client_ip)
+    await log_security_event(
+        db, "user.password_changed", user.id, client_ip, user_agent,
     )
 
     return {"success": True}

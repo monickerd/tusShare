@@ -64,6 +64,7 @@ _SENSITIVE_DEFAULTS = [
     ("auth.mfa.admin_remove",           "password", "Admin removes MFA credential(s) from a user account"),
     ("auth.mfa.admin_reset",       "password", "Admin forces MFA re-enrollment for a user"),
     ("admin.service_accounts.*",   "password", "Create, delete, or rotate service account keys"),
+    ("user.change_password",       "password", "Change own account password (OPAQUE re-registration)"),
 ]
 
 # is_sensitive=False — common operations (step-up can be enabled later by

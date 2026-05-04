@@ -1999,6 +1999,7 @@ const Auth = (() => {
         checkSession,
         touchKeyCache,
         startIdentityWatch,
+        loadOpaque: _loadOpaque,
     };
 })();
 
