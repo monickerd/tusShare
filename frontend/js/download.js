@@ -230,29 +230,7 @@ const Download = (() => {
 
             if (done.has(i)) continue;
 
-            const chunk = manifest.chunks[i];
-            const resp  = await fetch(`${_prefix()}/files/${fileId}/content`, {
-                headers:     { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` },
-                credentials: 'same-origin',
-                signal,
-            });
-
-            if (resp.status !== 206 && !resp.ok) {
-                const body = await resp.json().catch(() => ({}));
-                throw new Error(body.detail || `Fetch failed (${resp.status})`);
-            }
-
-            const encryptedBuf = await resp.arrayBuffer();
-
-            let plainBuf;
-            try {
-                plainBuf = await Crypto.decryptChunk(encryptedBuf, chunk.iv, fileKey);
-            } catch (_) {
-                throw new Error(
-                    `Chunk ${i + 1}/${totalChunks} failed integrity check — ` +
-                    `the data may be corrupted (offset ${chunk.offset})`
-                );
-            }
+            const plainBuf = await _fetchDecryptChunk(fileId, manifest.chunks[i], i, totalChunks, fileKey, signal);
 
             // Write to OPFS first, then record in IndexedDB (crash-safe ordering)
             await _writeChunk(dir, fileId, i, plainBuf);
@@ -314,33 +292,9 @@ const Download = (() => {
         let   totalBytes      = 0;
 
         for (let i = 0; i < totalChunks; i++) {
-            const chunk = manifest.chunks[i];
-            const resp  = await fetch(`${_prefix()}/files/${fileId}/content`, {
-                headers:     { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` },
-                credentials: 'same-origin',
-                signal,
-            });
-
-            if (resp.status !== 206 && !resp.ok) {
-                const body = await resp.json().catch(() => ({}));
-                throw new Error(body.detail || `Fetch failed (${resp.status})`);
-            }
-
-            const encryptedBuf = await resp.arrayBuffer();
-
-            let plainBuf;
-            try {
-                plainBuf = await Crypto.decryptChunk(encryptedBuf, chunk.iv, fileKey);
-            } catch (_) {
-                throw new Error(
-                    `Chunk ${i + 1}/${totalChunks} failed integrity check — ` +
-                    `the data may be corrupted (offset ${chunk.offset})`
-                );
-            }
-
+            const plainBuf = await _fetchDecryptChunk(fileId, manifest.chunks[i], i, totalChunks, fileKey, signal);
             decryptedChunks.push(new Uint8Array(plainBuf));
             totalBytes += plainBuf.byteLength;
-
             if (onProgress) onProgress(i + 1, totalChunks);
         }
 
@@ -362,6 +316,38 @@ const Download = (() => {
     // ------------------------------------------------------------------
     // Shared helpers
     // ------------------------------------------------------------------
+
+    /**
+     * Range-fetch and decrypt one chunk of an authenticated file.
+     *
+     * @param {string}   fileId
+     * @param {{offset:number, size_bytes:number, iv:string}} chunk
+     * @param {number}   chunkIdx    - Zero-based index (used in error message).
+     * @param {number}   totalChunks
+     * @param {CryptoKey} fileKey
+     * @param {AbortSignal|null} signal
+     * @returns {Promise<ArrayBuffer>} Decrypted plaintext buffer.
+     */
+    async function _fetchDecryptChunk(fileId, chunk, chunkIdx, totalChunks, fileKey, signal) {
+        const resp = await fetch(`${_prefix()}/files/${fileId}/content`, {
+            headers:     { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` },
+            credentials: 'same-origin',
+            signal,
+        });
+        if (resp.status !== 206 && !resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            throw new Error(body.detail || `Fetch failed (${resp.status})`);
+        }
+        const encBuf = await resp.arrayBuffer();
+        try {
+            return await Crypto.decryptChunk(encBuf, chunk.iv, fileKey);
+        } catch (_) {
+            throw new Error(
+                `Chunk ${chunkIdx + 1}/${totalChunks} failed integrity check — ` +
+                `the data may be corrupted (offset ${chunk.offset})`
+            );
+        }
+    }
 
     async function _fetchManifest(fileId) {
         const limit = 500;
@@ -772,23 +758,7 @@ const Download = (() => {
             if (signal?.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' });
             if (done.has(i)) continue;
 
-            const chunk = manifest.chunks[i];
-            const resp  = await fetch(`${_prefix()}/files/${fileId}/content`, {
-                headers:     { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` },
-                credentials: 'same-origin',
-                signal,
-            });
-
-            if (resp.status !== 206 && !resp.ok) {
-                const body = await resp.json().catch(() => ({}));
-                throw new Error(body.detail || `Fetch failed (${resp.status})`);
-            }
-
-            const encBuf   = await resp.arrayBuffer();
-            const plainBuf = await Crypto.decryptChunk(encBuf, chunk.iv, fileKey).catch(() => {
-                throw new Error(`Chunk ${i+1}/${totalChunks} failed integrity check`);
-            });
-
+            const plainBuf = await _fetchDecryptChunk(fileId, manifest.chunks[i], i, totalChunks, fileKey, signal);
             await _writeChunk(dir, fileId, i, plainBuf);
             done.add(i);
             await _idbPut(idb, { fileId, totalChunks, done: [...done] });
@@ -841,16 +811,8 @@ const Download = (() => {
                 manifest.encrypted_file_key, manifest.key_iv, masterKey,
             );
             const chunks = [];
-            for (const chunk of manifest.chunks) {
-                const resp = await fetch(`${_prefix()}/files/${entry.fileId}/content`, {
-                    headers: { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` },
-                    credentials: 'same-origin', signal,
-                });
-                if (resp.status !== 206 && !resp.ok) {
-                    const body = await resp.json().catch(() => ({}));
-                    throw new Error(body.detail || `Fetch failed (${resp.status})`);
-                }
-                const plain = await Crypto.decryptChunk(await resp.arrayBuffer(), chunk.iv, fileKey);
+            for (let i = 0; i < manifest.chunks.length; i++) {
+                const plain = await _fetchDecryptChunk(entry.fileId, manifest.chunks[i], i, manifest.chunks.length, fileKey, signal);
                 chunks.push(new Uint8Array(plain));
             }
             zipEntries.push({ path: entry.path, data: _concatChunks(chunks) });

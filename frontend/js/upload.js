@@ -157,76 +157,14 @@ const Upload = (() => {
             const { ciphertext, ivB64: chunkIvB64 } = await Crypto.encryptChunk(plain, fileKey);
             const chunkHash = await _sha256Hex(ciphertext);
 
-            let attempt = 0;
-            while (true) {
-                const patchResp = await fetch(location, {
-                    method: 'PATCH',
-                    headers: {
-                        'Tus-Resumable':  '1.0.0',
-                        'Content-Type':   'application/offset+octet-stream',
-                        'Upload-Offset':  String(encryptedOffset),
-                        'X-Chunk-IV':     chunkIvB64,
-                        'X-Chunk-Hash':   `sha256:${chunkHash}`,
-                        'X-CSRF-Token':   _csrf(),
-                    },
-                    body: ciphertext,
-                    credentials: 'same-origin',
-                });
-
-                if (patchResp.ok) {
-                    const serverOffset = parseInt(patchResp.headers.get('Upload-Offset') || '0', 10);
-                    encryptedOffset = serverOffset;
-                    Auth.touchKeyCache();
-                    if (onProgress) onProgress(encryptedOffset, totalEncryptedSize);
-
-                    // Final chunk — server includes X-File-ID
-                    if (i === totalChunks - 1) {
-                        const fileId = patchResp.headers.get('X-File-ID') || null;
-                        return { fileId, fileKeyBytes, location };
-                    }
-                    break;
-                }
-
-                // 401 — access token expired mid-upload; refresh once and retry the chunk
-                // (does not count against maxRetries since it's not a data error)
-                if (patchResp.status === 401) {
-                    const refreshed = await Api.refreshTokens();
-                    if (!refreshed) {
-                        throw new Error('Session expired during upload. Please log in and try again.');
-                    }
-                    continue;
-                }
-
-                // Read body once — Response body can only be consumed once
-                const errBody = await patchResp.json().catch(() => ({}));
-
-                // 409 Conflict — server offset doesn't match; re-sync via HEAD
-                if (patchResp.status === 409) {
-                    const headResp = await fetch(location, {
-                        method: 'HEAD',
-                        headers: { 'Tus-Resumable': '1.0.0' },
-                        credentials: 'same-origin',
-                    });
-                    if (headResp.ok) {
-                        const serverOffset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
-                        if (serverOffset > encryptedOffset) {
-                            // Server is ahead — this chunk was already committed
-                            encryptedOffset = serverOffset;
-                            break;
-                        }
-                    }
-                }
-
-                // 400 hash mismatch — track repeated failures and abort if threshold exceeded
-                if (patchResp.status === 400 && errBody.detail?.includes('hash mismatch')) {
-                    integrityTracker.recordHashFailure(i); // throws if threshold exceeded
-                }
-
-                attempt++;
-                if (attempt >= _cfg().maxRetries) {
-                    throw new Error(errBody.detail || `Chunk ${i} failed after ${attempt} retries`);
-                }
-                await _sleep(_cfg().retryBaseDelay * Math.pow(2, attempt - 1));
+            const { newOffset, fileId, committed } = await _patchChunk(
+                location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, i, integrityTracker, true,
+            );
+            encryptedOffset = newOffset;
+            if (committed) {
+                Auth.touchKeyCache();
+                if (onProgress) onProgress(encryptedOffset, totalEncryptedSize);
+                if (i === totalChunks - 1) return { fileId, fileKeyBytes, location };
             }
         }
 
@@ -301,56 +239,14 @@ const Upload = (() => {
             const { ciphertext, ivB64: chunkIvB64 } = await Crypto.encryptChunk(plain, fileKey);
             const chunkHash = await _sha256Hex(ciphertext);
 
-            let attempt = 0;
-            while (true) {
-                const patchResp = await fetch(location, {
-                    method: 'PATCH',
-                    headers: {
-                        'Tus-Resumable': '1.0.0',
-                        'Content-Type':  'application/offset+octet-stream',
-                        'Upload-Offset': String(encryptedOffset),
-                        'X-Chunk-IV':    chunkIvB64,
-                        'X-Chunk-Hash':  `sha256:${chunkHash}`,
-                        'X-CSRF-Token':  _csrf(),
-                    },
-                    body: ciphertext,
-                    credentials: 'same-origin',
-                });
-
-                if (patchResp.ok) {
-                    encryptedOffset = parseInt(patchResp.headers.get('Upload-Offset') || '0', 10);
-                    Auth.touchKeyCache();
-                    if (onProgress) onProgress(encryptedOffset, totalEncryptedSize);
-
-                    if (i === totalChunks - 1) {
-                        const fileId = patchResp.headers.get('X-File-ID') || null;
-                        return { fileId, location };
-                    }
-                    break;
-                }
-
-                // 401 — access token expired mid-upload; refresh once and retry the chunk
-                if (patchResp.status === 401) {
-                    const refreshed = await Api.refreshTokens();
-                    if (!refreshed) {
-                        throw new Error('Session expired during upload. Please log in and try again.');
-                    }
-                    continue;
-                }
-
-                // Read body once — Response body can only be consumed once
-                const errBody = await patchResp.json().catch(() => ({}));
-
-                // 400 hash mismatch — track repeated failures and abort if threshold exceeded
-                if (patchResp.status === 400 && errBody.detail?.includes('hash mismatch')) {
-                    integrityTracker.recordHashFailure(i); // throws if threshold exceeded
-                }
-
-                attempt++;
-                if (attempt >= _cfg().maxRetries) {
-                    throw new Error(errBody.detail || `Resume chunk ${i} failed after ${attempt} retries`);
-                }
-                await _sleep(_cfg().retryBaseDelay * Math.pow(2, attempt - 1));
+            const { newOffset, fileId, committed } = await _patchChunk(
+                location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, i, integrityTracker,
+            );
+            encryptedOffset = newOffset;
+            if (committed) {
+                Auth.touchKeyCache();
+                if (onProgress) onProgress(encryptedOffset, totalEncryptedSize);
+                if (i === totalChunks - 1) return { fileId, location };
             }
         }
 
@@ -470,6 +366,83 @@ const Upload = (() => {
         let binary = '';
         for (const b of bytes) binary += String.fromCharCode(b);
         return btoa(binary);
+    }
+
+    /**
+     * Send one encrypted chunk to the server with retry, 401-refresh, and optional 409-resync.
+     *
+     * @param {string}      location         - Tus upload URL.
+     * @param {ArrayBuffer} ciphertext       - Encrypted chunk data.
+     * @param {string}      chunkIvB64       - Base64-encoded chunk IV.
+     * @param {string}      chunkHash        - Hex SHA-256 of ciphertext.
+     * @param {number}      encryptedOffset  - Current server byte offset.
+     * @param {number}      chunkIndex       - Zero-based chunk index (for error messages).
+     * @param {object}      integrityTracker - From _makeIntegrityTracker.
+     * @param {boolean}     [handle409]      - Resync via HEAD on 409 (new uploads only).
+     * @returns {Promise<{newOffset:number, fileId:string|null, committed:boolean}>}
+     *   committed=false when 409 revealed the chunk was already on the server.
+     */
+    async function _patchChunk(location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, chunkIndex, integrityTracker, handle409 = false) {
+        let attempt = 0;
+        while (true) {
+            const patchResp = await fetch(location, {
+                method: 'PATCH',
+                headers: {
+                    'Tus-Resumable': '1.0.0',
+                    'Content-Type':  'application/offset+octet-stream',
+                    'Upload-Offset': String(encryptedOffset),
+                    'X-Chunk-IV':    chunkIvB64,
+                    'X-Chunk-Hash':  `sha256:${chunkHash}`,
+                    'X-CSRF-Token':  _csrf(),
+                },
+                body: ciphertext,
+                credentials: 'same-origin',
+            });
+
+            if (patchResp.ok) {
+                return {
+                    newOffset: parseInt(patchResp.headers.get('Upload-Offset') || '0', 10),
+                    fileId:    patchResp.headers.get('X-File-ID') || null,
+                    committed: true,
+                };
+            }
+
+            // 401 — access token expired; refresh once and retry (not counted against maxRetries)
+            if (patchResp.status === 401) {
+                const refreshed = await Api.refreshTokens();
+                if (!refreshed) throw new Error('Session expired during upload. Please log in and try again.');
+                continue;
+            }
+
+            // Read body once — Response body can only be consumed once
+            const errBody = await patchResp.json().catch(() => ({}));
+
+            // 409 Conflict — server offset doesn't match; re-sync via HEAD
+            if (handle409 && patchResp.status === 409) {
+                const headResp = await fetch(location, {
+                    method: 'HEAD',
+                    headers: { 'Tus-Resumable': '1.0.0' },
+                    credentials: 'same-origin',
+                });
+                if (headResp.ok) {
+                    const serverOffset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
+                    if (serverOffset > encryptedOffset) {
+                        return { newOffset: serverOffset, fileId: null, committed: false };
+                    }
+                }
+            }
+
+            // 400 hash mismatch — track repeated failures and abort if threshold exceeded
+            if (patchResp.status === 400 && errBody.detail?.includes('hash mismatch')) {
+                integrityTracker.recordHashFailure(chunkIndex);
+            }
+
+            attempt++;
+            if (attempt >= _cfg().maxRetries) {
+                throw new Error(errBody.detail || `Chunk ${chunkIndex} failed after ${attempt} retries`);
+            }
+            await _sleep(_cfg().retryBaseDelay * Math.pow(2, attempt - 1));
+        }
     }
 
     /**
