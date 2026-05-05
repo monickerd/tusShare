@@ -57,10 +57,12 @@ _LDAP_USERNAME_RE = re.compile(r'^[a-zA-Z0-9._@\-]{1,64}$')
 # Covers common AD and OpenLDAP schemas without pulling sensitive fields.
 # Admins extend this per-provider via cfg["extra_attrs"].
 _DEFAULT_LDAP_ATTRS = [
-    "uid", "sAMAccountName",        # primary usernames
-    "mail", "userPrincipalName",    # email
-    "cn", "displayName", "name",    # display name
-    "memberOf",                     # group membership (role mapping)
+    "uid", "sAMAccountName",           # primary usernames
+    "mail", "userPrincipalName",       # email
+    "cn", "displayName", "name",       # display name
+    "memberOf",                        # group membership (role mapping)
+    "department", "departmentNumber",  # department (AD & inetOrgPerson schemas)
+    "title", "ou",                     # title/org-unit — common policy fields
 ]
 
 

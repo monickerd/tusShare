@@ -20,6 +20,17 @@ def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
+def fake_g1_point() -> str:
+    """48-byte BLS12-381 G1 compressed point stub.
+
+    validate_g1_point only checks: 48 bytes, first byte has MSB set.
+    Does not verify the point lies on the curve.
+    """
+    data = bytearray(os.urandom(48))
+    data[0] |= 0x80  # compression flag required by the validator
+    return _b64(bytes(data))
+
+
 def fake_g2_point() -> str:
     """96-byte BLS12-381 G2 compressed point stub.
 

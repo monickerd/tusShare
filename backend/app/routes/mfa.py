@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Re-use cookie helpers from auth.py to avoid duplication
-from app.routes.auth import _set_auth_cookies, _clear_auth_cookies
+from app.auth.cookies import set_auth_cookies, clear_auth_cookies
 
 
 # ---------------------------------------------------------------------------
@@ -620,4 +620,4 @@ async def _issue_session(db, response: Response, user_id: str, is_public_device:
     )
     access_token = create_access_token(user.id, session_id=token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token, max_age=rt_max_age)
+    set_auth_cookies(response, access_token, raw_refresh, csrf_token, max_age=rt_max_age)

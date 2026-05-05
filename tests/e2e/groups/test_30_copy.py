@@ -51,6 +51,7 @@ from tests.e2e.helpers.teams  import (
     create_team,
     add_member,
     add_team_folder,
+    add_file_team_keys,
 )
 from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12, fake_g2_point
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
@@ -109,8 +110,9 @@ async def setup(browser: Browser, admin_client: AdminClient):
     _team_a = await create_team(_alice["api"], "CopyTeamA_30")
     _team_b = await create_team(_carol["api"], "CopyTeamB_30")
 
-    # Bob joins team A
+    # Bob joins team A; Carol also joins team A so she can copy from it (path 3 requires source-team membership)
     await add_member(_alice["api"], _team_a["id"], "copy_bob_30")
+    await add_member(_alice["api"], _team_a["id"], "copy_carol_30")
 
     # Folders
     _folder_a  = await create_folder(_alice["api"], "CopyPersonal30")
@@ -199,6 +201,9 @@ async def test_30_03_cross_team_a_to_b():
 
     src = await upload_file_api(api_a, "src_cross.txt", b"cross-team",
                                 folder_id=_folder_ta["id"])
+
+    # Register the file's PRE key for team A (required for cross-team copy path 3)
+    await add_file_team_keys(api_a, _team_a["id"], [src["id"]])
 
     # Carol copies alice's team-A file to team B
     file_items = [{

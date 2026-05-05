@@ -30,6 +30,7 @@ async def validate_endpoint_url(
     *,
     allowed_schemes: tuple[str, ...] = ("http", "https"),
     allow_http: bool | None = None,
+    allow_private: bool = False,
 ) -> None:
     """Reject URLs that point to private/internal networks (SSRF prevention).
 
@@ -41,6 +42,11 @@ async def validate_endpoint_url(
       None  → use settings.DEBUG (default: block HTTP in production)
       True  → allow HTTP (e.g. when ALLOW_HTTP_IDP=true for OIDC)
       False → always block HTTP
+
+    allow_private: when True, skip the private/reserved-network check.
+      Set only for deployments that explicitly configure an internal IdP
+      (ALLOW_HTTP_IDP=true implies an on-premises deployment where the IdP
+      may resolve to a RFC 1918 address).
     """
     try:
         parsed = urllib.parse.urlparse(url)
@@ -61,6 +67,9 @@ async def validate_endpoint_url(
     hostname = parsed.hostname
     if not hostname:
         raise HTTPException(status_code=422, detail="endpoint_url must include a hostname")
+
+    if allow_private:
+        return
 
     try:
         addr_infos = await asyncio.to_thread(socket.getaddrinfo, hostname, None)

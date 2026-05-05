@@ -93,8 +93,13 @@ async def _get_oidc_client(cfg: dict[str, Any]):
     from app.config import settings as _s
 
     discovery_url = cfg["issuer_url"].rstrip("/") + "/.well-known/openid-configuration"
-    # Validate before connecting; allow HTTP only when ALLOW_HTTP_IDP is set.
-    await validate_endpoint_url(discovery_url, allow_http=_s.ALLOW_HTTP_IDP)
+    # When ALLOW_HTTP_IDP is set the deployment is explicitly on-premises, so
+    # the IdP may resolve to a RFC 1918 address — skip the private-IP check too.
+    await validate_endpoint_url(
+        discovery_url,
+        allow_http=_s.ALLOW_HTTP_IDP,
+        allow_private=_s.ALLOW_HTTP_IDP,
+    )
     # follow_redirects=False: a redirect could bypass the HTTPS/IP check above.
     async with httpx.AsyncClient(follow_redirects=False) as discovery_http:
         resp = await discovery_http.get(discovery_url, timeout=10)
@@ -220,11 +225,11 @@ async def handle_oidc_callback(
     jwks_uri = client.server_metadata.get("jwks_uri")
     if not jwks_uri:
         raise ValueError("OIDC server metadata missing jwks_uri")
-    await validate_endpoint_url(jwks_uri, allow_http=_s.ALLOW_HTTP_IDP)
+    await validate_endpoint_url(jwks_uri, allow_http=_s.ALLOW_HTTP_IDP, allow_private=_s.ALLOW_HTTP_IDP)
 
     userinfo_endpoint = client.server_metadata.get("userinfo_endpoint")
     if userinfo_endpoint:
-        await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP)
+        await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP, allow_private=_s.ALLOW_HTTP_IDP)
 
     # Validate ID token against IdP's JWKS, including nonce binding.
     claims = await asyncio.to_thread(
@@ -358,7 +363,7 @@ async def oidc_fetch_claims(
 
     try:
         from app.config import settings as _s
-        await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP)
+        await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP, allow_private=_s.ALLOW_HTTP_IDP)
         claims = await _fetch_userinfo(userinfo_endpoint, access_token)
         return claims
     except Exception as exc:

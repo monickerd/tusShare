@@ -119,6 +119,31 @@ async def is_member(client: ApiClient, team_id: str, user_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+async def add_file_team_keys(
+    client:   ApiClient,
+    team_id:  str,
+    file_ids: list[str],
+) -> dict:
+    """Register stub PRE file keys for the given files in a team.
+
+    Must be called by the file owner after uploading to a team folder.
+    The server stores key material verbatim (never decrypts), so stub values work.
+    """
+    from tests.e2e.helpers.crypto_stubs import fake_g1_point, fake_aes256_key, fake_iv_12
+    file_keys = [
+        {
+            "file_id":            fid,
+            "pre_c1":             fake_g1_point(),
+            "encrypted_file_key": fake_aes256_key(),
+            "key_iv":             fake_iv_12(),
+        }
+        for fid in file_ids
+    ]
+    r = await client.post(f"/teams/{team_id}/file-keys", json={"file_keys": file_keys})
+    r.raise_for_status()
+    return r.json()
+
+
 async def add_team_folder(
     client:    ApiClient,
     team_id:   str,

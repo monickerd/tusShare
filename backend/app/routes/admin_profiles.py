@@ -90,7 +90,7 @@ _PROFILES: dict[str, dict] = {
         ),
         "admin_settings": {
             "escrow_require_coverage":     {"value": "0", "is_locked": True,  "locked_min_tier": 2},
-            "notify_escrow_on_revocation": {"value": "0", "is_locked": True,  "locked_min_tier": 2},
+            "notify_escrow_on_revocation": {"value": "1", "is_locked": True,  "locked_min_tier": 2},
         },
         "role_flag_overrides": {
             "role_user": {
