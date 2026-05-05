@@ -24,6 +24,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from app.schemas.op_event import OperationalEvent
+from app.util.db import get_admin_setting
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,13 @@ _subscribers: list[asyncio.Queue[OperationalEvent]] = []
 _db_session_factory = None
 
 # ---------------------------------------------------------------------------
+# Event type constants
+# ---------------------------------------------------------------------------
+
+_EVT_API_KEY_EXPIRING = "system.api_key.expiring_soon"
+_EVT_API_KEY_EXPIRED  = "system.api_key.expired"
+
+# ---------------------------------------------------------------------------
 # State-transition deduplication gate
 # ---------------------------------------------------------------------------
 
@@ -42,15 +50,15 @@ _STATEFUL_TYPES: frozenset[str] = frozenset({
     "storage.volume.capacity_ok",
     "upload.quota.warning",
     "upload.quota.ok",
-    "system.api_key.expiring_soon",
-    "system.api_key.expired",
+    _EVT_API_KEY_EXPIRING,
+    _EVT_API_KEY_EXPIRED,
 })
 
 _PROBLEM_EVENTS: frozenset[str] = frozenset({
     "storage.volume.capacity_warning",
     "upload.quota.warning",
-    "system.api_key.expiring_soon",
-    "system.api_key.expired",
+    _EVT_API_KEY_EXPIRING,
+    _EVT_API_KEY_EXPIRED,
 })
 
 # state_key → "problem" | "ok"  (in-memory, single-process)
@@ -142,6 +150,31 @@ async def start() -> asyncio.Task:
 # Internal — drainer
 # ---------------------------------------------------------------------------
 
+async def _flush_remaining() -> None:
+    while not _write_queue.empty():
+        try:
+            event = _write_queue.get_nowait()
+            if _should_pass_gate(event):
+                await _persist(event)
+                _fanout(event)
+        except asyncio.QueueEmpty:
+            break
+        except Exception:
+            logger.exception("op_bus: error flushing on shutdown")
+
+
+def _tick_background_tasks(
+    now: float, last_cleanup: float, last_key_check: float
+) -> tuple[float, float]:
+    if now - last_cleanup > 3600:
+        asyncio.create_task(_cleanup_old_events())
+        last_cleanup = now
+    if now - last_key_check > 86400:
+        asyncio.create_task(_check_api_key_expiry())
+        last_key_check = now
+    return last_cleanup, last_key_check
+
+
 async def _drain_loop() -> None:
     last_cleanup = time.monotonic()
     last_key_check = time.monotonic()
@@ -153,25 +186,12 @@ async def _drain_loop() -> None:
                 await _persist(event)
                 _fanout(event)
 
-            now = time.monotonic()
-            if now - last_cleanup > 3600:
-                last_cleanup = now
-                asyncio.create_task(_cleanup_old_events())
-            if now - last_key_check > 86400:
-                last_key_check = now
-                asyncio.create_task(_check_api_key_expiry())
+            last_cleanup, last_key_check = _tick_background_tasks(
+                time.monotonic(), last_cleanup, last_key_check
+            )
 
         except asyncio.CancelledError:
-            while not _write_queue.empty():
-                try:
-                    event = _write_queue.get_nowait()
-                    if _should_pass_gate(event):
-                        await _persist(event)
-                        _fanout(event)
-                except asyncio.QueueEmpty:
-                    break
-                except Exception:
-                    logger.exception("op_bus: error flushing on shutdown")
+            await _flush_remaining()
             return
         except Exception:
             logger.exception("op_bus: unhandled error in drain loop")
@@ -225,11 +245,7 @@ async def _cleanup_old_events() -> None:
         return
     try:
         async with _db_session_factory() as db:
-            cursor = await db.execute(
-                "SELECT value FROM admin_settings WHERE key = 'op_event_retention_days'"
-            )
-            row = await cursor.fetchone()
-            days = int(row["value"]) if row and row["value"] else 30
+            days = await get_admin_setting(db, "op_event_retention_days", default=30, dtype=int)
             cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
             await db.execute(
                 "DELETE FROM operational_events WHERE created_at < ?", (cutoff,)
@@ -245,12 +261,7 @@ async def _check_api_key_expiry() -> None:
         return
     try:
         async with _db_session_factory() as db:
-            cursor = await db.execute(
-                "SELECT value FROM admin_settings WHERE key = 'api_key_expiry_warn_days'"
-            )
-            row = await cursor.fetchone()
-            warn_days = int(row["value"]) if row and row["value"] else 30
-
+            warn_days = await get_admin_setting(db, "api_key_expiry_warn_days", default=30, dtype=int)
             now = datetime.now(timezone.utc)
             warn_cutoff = (now + timedelta(days=warn_days)).isoformat()
 
@@ -264,7 +275,7 @@ async def _check_api_key_expiry() -> None:
                 exp = datetime.fromisoformat(row["expires_at"])
                 if exp <= now:
                     emit(OperationalEvent(
-                        event_type="system.api_key.expired",
+                        event_type=_EVT_API_KEY_EXPIRED,
                         severity="error",
                         source="system",
                         data={
@@ -275,7 +286,7 @@ async def _check_api_key_expiry() -> None:
                     ))
                 else:
                     emit(OperationalEvent(
-                        event_type="system.api_key.expiring_soon",
+                        event_type=_EVT_API_KEY_EXPIRING,
                         severity="warning",
                         source="system",
                         data={

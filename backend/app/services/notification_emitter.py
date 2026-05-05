@@ -12,8 +12,6 @@ Public API:
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -23,6 +21,7 @@ import httpx
 
 from app.schemas.op_event import OperationalEvent
 from app.services import op_bus
+from app.util.crypto import hmac_sha256_hex
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +32,7 @@ _reload_event: asyncio.Event | None = None
 _channel_queues: dict[str, asyncio.Queue] = {}
 
 _RETRY_DELAYS = (5, 20, 60)
+_SECURITY_PREFIX = "security:"
 
 
 # ---------------------------------------------------------------------------
@@ -89,11 +89,8 @@ async def catch_up(channel_id: str, db) -> None:
 
     # 2. User quotas
     try:
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'upload_quota_warn_pct'"
-        )
-        row = await cursor.fetchone()
-        warn_pct_upload = int(row["value"]) if row and row["value"] else 90
+        from app.util.db import get_admin_setting
+        warn_pct_upload = await get_admin_setting(db, "upload_quota_warn_pct", default=90, dtype=int)
 
         cursor = await db.execute(
             "SELECT id, disk_used, disk_quota FROM users "
@@ -118,11 +115,8 @@ async def catch_up(channel_id: str, db) -> None:
 
     # 3. API key expiry
     try:
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'api_key_expiry_warn_days'"
-        )
-        row = await cursor.fetchone()
-        warn_days = int(row["value"]) if row and row["value"] else 30
+        from app.util.db import get_admin_setting
+        warn_days = await get_admin_setting(db, "api_key_expiry_warn_days", default=30, dtype=int)
         warn_cutoff = (datetime.now(timezone.utc) + timedelta(days=warn_days)).isoformat()
 
         cursor = await db.execute(
@@ -166,7 +160,7 @@ def _matches_filter(event_type: str, filters: list[str]) -> bool:
     if not filters:
         return True
     for f in filters:
-        if f.startswith("security:"):
+        if f.startswith(_SECURITY_PREFIX):
             continue
         if event_type == f or event_type.startswith(f + "."):
             return True
@@ -175,9 +169,9 @@ def _matches_filter(event_type: str, filters: list[str]) -> bool:
 
 def _matches_security_filter(event_type: str, filters: list[str]) -> bool:
     for f in filters:
-        if not f.startswith("security:"):
+        if not f.startswith(_SECURITY_PREFIX):
             continue
-        prefix = f[len("security:"):]
+        prefix = f[len(_SECURITY_PREFIX):]
         if event_type == prefix or event_type.startswith(prefix + "."):
             return True
     return False
@@ -226,6 +220,68 @@ def _event_to_dict(event: OperationalEvent) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Supervisor helpers
+# ---------------------------------------------------------------------------
+
+def _needs_security_subscription(channels) -> bool:
+    return any(
+        any(f.startswith(_SECURITY_PREFIX) for f in json.loads(ch["event_filter"] or "[]"))
+        for ch in channels
+        if ch["enabled"]
+    )
+
+
+def _update_sec_subscription(
+    needs_sec: bool,
+    sec_sub_q,
+    channel_queues_local: dict[str, asyncio.Queue],
+):
+    from app.services import event_bus
+    if needs_sec and sec_sub_q is None:
+        sec_sub_q = event_bus.subscribe()
+        asyncio.create_task(
+            _forward_security_events(sec_sub_q, channel_queues_local),
+            name="notif_sec_forwarder",
+        )
+    elif not needs_sec and sec_sub_q is not None:
+        event_bus.unsubscribe(sec_sub_q)
+        sec_sub_q = None
+    return sec_sub_q
+
+
+def _cancel_removed_channels(
+    active_ids: set,
+    channel_tasks: dict[str, asyncio.Task],
+    channel_queues_local: dict[str, asyncio.Queue],
+) -> None:
+    for ch_id in list(channel_tasks):
+        if ch_id not in active_ids:
+            channel_tasks[ch_id].cancel()
+            del channel_tasks[ch_id]
+            q = channel_queues_local.pop(ch_id, None)
+            if q is not None:
+                op_bus.unsubscribe(q)
+            _channel_queues.pop(ch_id, None)
+
+
+def _start_new_channels(
+    channels,
+    channel_tasks: dict[str, asyncio.Task],
+    channel_queues_local: dict[str, asyncio.Queue],
+) -> None:
+    for ch in channels:
+        if not ch["enabled"] or ch["id"] in channel_tasks:
+            continue
+        q = op_bus.subscribe()
+        channel_queues_local[ch["id"]] = q
+        _channel_queues[ch["id"]] = q
+        channel_tasks[ch["id"]] = asyncio.create_task(
+            _channel_loop(dict(ch), q),
+            name=f"notif_ch_{ch['id'][:8]}",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Supervisor loop
 # ---------------------------------------------------------------------------
 
@@ -252,48 +308,12 @@ async def _supervisor_loop() -> None:
 
     while True:
         channels = await _load_channels()
-
-        needs_sec = any(
-            any(f.startswith("security:") for f in json.loads(ch["event_filter"] or "[]"))
-            for ch in channels
-            if ch["enabled"]
-        )
-
-        if needs_sec and sec_sub_q is None:
-            from app.services import event_bus
-            sec_sub_q = event_bus.subscribe()
-            asyncio.create_task(
-                _forward_security_events(sec_sub_q, channel_queues_local),
-                name="notif_sec_forwarder",
-            )
-        elif not needs_sec and sec_sub_q is not None:
-            from app.services import event_bus
-            event_bus.unsubscribe(sec_sub_q)
-            sec_sub_q = None
+        needs_sec = _needs_security_subscription(channels)
+        sec_sub_q = _update_sec_subscription(needs_sec, sec_sub_q, channel_queues_local)
 
         active_ids = {ch["id"] for ch in channels if ch["enabled"]}
-
-        for ch_id in list(channel_tasks):
-            if ch_id not in active_ids:
-                channel_tasks[ch_id].cancel()
-                del channel_tasks[ch_id]
-                q = channel_queues_local.pop(ch_id, None)
-                if q is not None:
-                    op_bus.unsubscribe(q)
-                _channel_queues.pop(ch_id, None)
-
-        for ch in channels:
-            if not ch["enabled"]:
-                continue
-            if ch["id"] not in channel_tasks:
-                q = op_bus.subscribe()
-                channel_queues_local[ch["id"]] = q
-                _channel_queues[ch["id"]] = q
-                t = asyncio.create_task(
-                    _channel_loop(dict(ch), q),
-                    name=f"notif_ch_{ch['id'][:8]}",
-                )
-                channel_tasks[ch["id"]] = t
+        _cancel_removed_channels(active_ids, channel_tasks, channel_queues_local)
+        _start_new_channels(channels, channel_tasks, channel_queues_local)
 
         # Wait 60 s, but wake early on a forced reload
         try:
@@ -334,6 +354,20 @@ async def _forward_security_events(
 # Per-channel delivery loop
 # ---------------------------------------------------------------------------
 
+def _compute_timeout(interval_s, last_flush: float) -> float:
+    if not interval_s:
+        return 30.0
+    return max(0.5, interval_s - (time.monotonic() - last_flush))
+
+
+def _append_if_matches(item, filters: list[str], accumulated: list) -> None:
+    if isinstance(item, OperationalEvent):
+        if _matches_filter(item.event_type, filters):
+            accumulated.append(_event_to_dict(item))
+    else:
+        accumulated.append(item)
+
+
 async def _channel_loop(channel: dict, q: asyncio.Queue) -> None:
     batch_size = channel.get("batch_size")
     interval_s = channel.get("batch_interval_s")
@@ -343,21 +377,11 @@ async def _channel_loop(channel: dict, q: asyncio.Queue) -> None:
 
     try:
         while True:
-            if interval_s:
-                elapsed = time.monotonic() - last_flush
-                timeout = max(0.5, interval_s - elapsed)
-            else:
-                timeout = 30.0
-
             try:
-                item = await asyncio.wait_for(q.get(), timeout=timeout)
-                # item may be OperationalEvent (from op_bus) or dict (from security forwarder)
-                if isinstance(item, OperationalEvent):
-                    if _matches_filter(item.event_type, filters):
-                        accumulated.append(_event_to_dict(item))
-                else:
-                    # Already a dict (security event reshaped)
-                    accumulated.append(item)
+                item = await asyncio.wait_for(
+                    q.get(), timeout=_compute_timeout(interval_s, last_flush)
+                )
+                _append_if_matches(item, filters, accumulated)
             except asyncio.TimeoutError:
                 pass
 
@@ -409,7 +433,7 @@ async def _send_one(channel: dict, events: list[dict]) -> None:
             logger.warning("notif: could not decrypt secret for channel %s", channel["id"])
 
     body = json.dumps({"events": events}, separators=(",", ":")).encode()
-    sig  = _sign(secret, body) if secret else ""
+    sig  = hmac_sha256_hex(secret, body)
 
     headers: dict[str, str] = {
         "Content-Type": "application/json",
@@ -421,7 +445,3 @@ async def _send_one(channel: dict, events: list[dict]) -> None:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(url, content=body, headers=headers)
         resp.raise_for_status()
-
-
-def _sign(secret: str, body: bytes) -> str:
-    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

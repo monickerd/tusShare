@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 
-async def get_admin_setting(db, key: str, default=None):
+async def get_admin_setting(db, key: str, default=None, *, dtype=None):
     """Fetch a single value from admin_settings by key.
 
-    Returns the raw string value, or *default* if the key is not set.
-    Callers are responsible for any type conversion (int, bool, etc.).
+    Returns the raw string value (or *dtype*-converted value when dtype is given),
+    or *default* if the key is not set or its value is NULL/empty.
     """
     cursor = await db.execute(
         "SELECT value FROM admin_settings WHERE key = ?", (key,)
     )
     row = await cursor.fetchone()
-    if row is None:
+    if row is None or not row["value"]:
         return default
-    return row["value"]
+    return dtype(row["value"]) if dtype is not None else row["value"]
 
 
 def build_update(fields: dict, table: str, where_col: str, where_val) -> tuple[str, list]:

@@ -10,12 +10,10 @@ Key precedence:
 from __future__ import annotations
 
 import base64
-import os
-
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.auth.stepup import hkdf_sha256
 from app.config import settings
+from app.util.crypto import aesgcm_decrypt_bytes, aesgcm_encrypt_bytes
 
 
 def _get_notif_key() -> bytes:
@@ -34,16 +32,8 @@ def _get_notif_key() -> bytes:
 
 
 def encrypt_channel_secret(plaintext: str) -> str:
-    key = _get_notif_key()
-    iv = os.urandom(12)
-    ct = AESGCM(key).encrypt(iv, plaintext.encode(), None)
-    return base64.urlsafe_b64encode(iv + ct).rstrip(b"=").decode()
+    return aesgcm_encrypt_bytes(_get_notif_key(), plaintext.encode())
 
 
 def decrypt_channel_secret(blob: str) -> str:
-    key = _get_notif_key()
-    padded = blob + "=" * (-len(blob) % 4)
-    raw = base64.urlsafe_b64decode(padded)
-    if len(raw) < 28:
-        raise ValueError("Notification channel secret blob too short")
-    return AESGCM(key).decrypt(raw[:12], raw[12:], None).decode()
+    return aesgcm_decrypt_bytes(_get_notif_key(), blob).decode()

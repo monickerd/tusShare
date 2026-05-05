@@ -24,6 +24,7 @@ import uuid
 from datetime import timezone
 
 from app.schemas.security_event import SecurityEvent
+from app.services.siem_filters import matches_destination_filter
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,18 @@ async def start() -> asyncio.Task:
 # Main dispatch loop
 # ---------------------------------------------------------------------------
 
+async def _dispatch_to_destinations(
+    destinations: list[dict], event: SecurityEvent
+) -> None:
+    for dest in destinations:
+        if not matches_destination_filter(dest, event):
+            continue
+        try:
+            await send_one(dest, event)
+        except Exception:
+            logger.exception("Syslog dispatch error for destination %s", dest.get("id"))
+
+
 async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
     from app.services import event_bus
 
@@ -74,14 +87,8 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
                 destinations = await _load_destinations()
                 reload_countdown = _RELOAD_INTERVAL_SECS
 
-            for dest in destinations:
-                from app.services.siem_filters import matches_destination_filter
-                if not matches_destination_filter(dest, event):
-                    continue
-                try:
-                    await send_one(dest, event)
-                except Exception:
-                    logger.exception("Syslog dispatch error for destination %s", dest.get("id"))
+            await _dispatch_to_destinations(destinations, event)
+
     except asyncio.CancelledError:
         event_bus.unsubscribe(q)
 
@@ -197,6 +204,7 @@ def _send_sync(protocol: str, host: str, port: int, payload: bytes) -> None:
             sock.sendto(payload + b"\n", (host, port))
     elif protocol == "tls":
         ctx = ssl.create_default_context()
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         with socket.create_connection((host, port), timeout=5) as raw:
             with ctx.wrap_socket(raw, server_hostname=host) as ssock:
                 ssock.sendall(payload + b"\n")

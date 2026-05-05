@@ -18,8 +18,6 @@ The signing format matches GitHub/Stripe webhooks:
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 from datetime import timezone
@@ -27,6 +25,8 @@ from datetime import timezone
 import httpx
 
 from app.schemas.security_event import SecurityEvent
+from app.services.siem_filters import matches_destination_filter
+from app.util.crypto import hmac_sha256_hex
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,19 @@ async def start() -> asyncio.Task:
 # Main dispatch loop
 # ---------------------------------------------------------------------------
 
+def _flush_pending(
+    destinations: list[dict],
+    overflow: dict[str, list[SecurityEvent]],
+    secrets_cache: dict[str, str],
+) -> None:
+    for dest in destinations:
+        did = dest["id"]
+        if overflow.get(did):
+            asyncio.create_task(
+                _send_with_retry(dest, overflow[did], secrets_cache.get(did, ""))
+            )
+
+
 async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
     from app.services import event_bus
 
@@ -85,7 +98,6 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
                 reload_countdown = _RELOAD_INTERVAL_SECS
 
             for dest in destinations:
-                from app.services.siem_filters import matches_destination_filter
                 if not matches_destination_filter(dest, event):
                     continue
                 did = dest["id"]
@@ -98,17 +110,13 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
                 if len(overflow[did]) >= batch_size:
                     batch = overflow[did][:batch_size]
                     overflow[did] = overflow[did][batch_size:]
-                    secret = secrets_cache.get(did, "")
-                    asyncio.create_task(_send_with_retry(dest, batch, secret))
+                    asyncio.create_task(
+                        _send_with_retry(dest, batch, secrets_cache.get(did, ""))
+                    )
 
     except asyncio.CancelledError:
         event_bus.unsubscribe(q)
-        # Flush any remaining partial batches
-        for dest in destinations:
-            did = dest["id"]
-            if overflow.get(did):
-                secret = secrets_cache.get(did, "")
-                asyncio.create_task(_send_with_retry(dest, overflow[did], secret))
+        _flush_pending(destinations, overflow, secrets_cache)
 
 
 async def _load_destinations() -> tuple[list[dict], dict[str, str]]:
@@ -194,7 +202,7 @@ async def send_one(dest: dict, events: list[SecurityEvent], secret: str) -> None
         ]
     }
     body = json.dumps(payload_dict, separators=(",", ":")).encode()
-    sig = _sign(secret, body)
+    sig = hmac_sha256_hex(secret, body)
 
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
@@ -207,9 +215,3 @@ async def send_one(dest: dict, events: list[SecurityEvent], secret: str) -> None
             },
         )
         resp.raise_for_status()
-
-
-def _sign(secret: str, body: bytes) -> str:
-    if not secret:
-        return ""
-    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()

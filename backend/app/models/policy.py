@@ -35,6 +35,7 @@ VALID_OPERATORS: frozenset[str] = frozenset({"=", "!=", "contains", "starts_with
 
 # Debounce: skip policy evaluation if last run was within this many seconds
 _DEBOUNCE_SECONDS = 300  # 5 minutes
+_SQL_HAS_TEAM_KEY = "SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id = ?"
 
 
 # ---------------------------------------------------------------------------
@@ -651,7 +652,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
 
                 # Check if user already has a team key (manual or from another policy)
                 cursor = await db.execute(
-                    "SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id = ?",
+                    _SQL_HAS_TEAM_KEY,
                     (target_id, user_id),
                 )
                 has_key = await cursor.fetchone() is not None
@@ -694,7 +695,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                             )
                             # Check if escrow agent already has a key for this team
                             cursor_ea = await db.execute(
-                                "SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id = ?",
+                                _SQL_HAS_TEAM_KEY,
                                 (target_id, ea_id),
                             )
                             ea_has_key = await cursor_ea.fetchone() is not None
@@ -746,7 +747,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                 team_id = await _get_folder_team_id(db, target_id)
                 if team_id:
                     cursor = await db.execute(
-                        "SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id = ?",
+                        _SQL_HAS_TEAM_KEY,
                         (team_id, user_id),
                     )
                     key_wrapped = 1 if await cursor.fetchone() is not None else 0
