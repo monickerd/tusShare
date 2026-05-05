@@ -38,7 +38,7 @@ _config_values: dict[str, str] = {}
 _loaded = False
 
 _HASH_FILENAME = ".sensitive_config.hash"
-_ERR_NOT_LOADED = _ERR_NOT_LOADED
+_ERR_NOT_LOADED = "sensitive_config.load() has not been called"
 
 # Sensitive config key for the OPAQUE server setup blob (base64-encoded bytes).
 OPAQUE_SERVER_SETUP_KEY = "opaque.server_setup"
