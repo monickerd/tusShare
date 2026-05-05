@@ -89,23 +89,25 @@ const App = (() => {
             Utils.showToast('Sign-in via identity provider failed. Please try again.', 'error');
             return;
         }
-        if (_qs.has('mfa_pending')) {
-            const pendingToken = _qs.get('mfa_pending');
+        if (_qs.has('mfa_challenge')) {
+            // Exchange the opaque challenge_id for the actual pending_token.
+            // The token is never placed in the URL — only the one-time challenge_id is.
+            const challengeId = _qs.get('mfa_challenge');
             history.replaceState(null, '', '/');
             window.location.hash = '#/login';
-            // Fetch available MFA methods from the pending token context
-            // by attempting a TOTP verify with an empty code — actually, we call
-            // a dedicated endpoint to list the methods for a pending token.
             try {
+                const challengeData = await Api.get(
+                    `${Config.app.apiPrefix}/auth/mfa/challenge/${encodeURIComponent(challengeId)}`,
+                );
+                const pendingToken = challengeData.pending_token;
                 const mfaInfo = await Api.post(
                     `${Config.app.apiPrefix}/auth/mfa/pending-info`,
                     { pending_token: pendingToken },
                 );
                 Auth.renderOidcMfaChallenge(_appEl(), pendingToken, mfaInfo.methods || []);
             } catch {
-                // If we can't determine methods, show an empty challenge — the MFA
-                // verify endpoints will reject the token if it's expired.
-                Auth.renderOidcMfaChallenge(_appEl(), pendingToken, []);
+                // Challenge expired or already used — send to login.
+                Auth.renderOidcMfaChallenge(_appEl(), '', []);
             }
             return;
         }

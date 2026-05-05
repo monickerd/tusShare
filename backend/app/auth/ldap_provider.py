@@ -53,6 +53,16 @@ logger = logging.getLogger(__name__)
 
 _LDAP_USERNAME_RE = re.compile(r'^[a-zA-Z0-9._@\-]{1,64}$')
 
+# Minimum attribute set fetched on every LDAP auth/fetch.
+# Covers common AD and OpenLDAP schemas without pulling sensitive fields.
+# Admins extend this per-provider via cfg["extra_attrs"].
+_DEFAULT_LDAP_ATTRS = [
+    "uid", "sAMAccountName",        # primary usernames
+    "mail", "userPrincipalName",    # email
+    "cn", "displayName", "name",    # display name
+    "memberOf",                     # group membership (role mapping)
+]
+
 
 def _validate_ldap_username(username: str) -> str:
     """Return username if it passes the whitelist, else raise ValueError.
@@ -98,6 +108,14 @@ def validate_ldap_config(cfg: dict[str, Any]) -> None:
     tls = cfg.get("tls", "verify")
     if tls not in ("verify", "starttls", "skip_verify"):
         raise ValueError("tls must be 'verify', 'starttls', or 'skip_verify'")
+
+    extra = cfg.get("extra_attrs")
+    if extra is not None:
+        if not isinstance(extra, list):
+            raise ValueError("extra_attrs must be a list of attribute name strings")
+        for attr in extra:
+            if not isinstance(attr, str) or not attr.strip():
+                raise ValueError("extra_attrs entries must be non-empty strings")
 
     # tls='verify' and tls='skip_verify' only activate on an ldaps:// socket — they
     # have no effect on a plaintext ldap:// connection and would silently transmit
@@ -214,11 +232,13 @@ def _ldap_authenticate_sync(
         search_filter = user_filter_tpl.replace("{username}", safe_username)
         logger.debug("LDAP search — server=%s base=%s filter=%s", server_uri, base_dn, search_filter)
 
+        extra_attrs = cfg.get("extra_attrs") or []
+        fetch_attrs = list(dict.fromkeys(_DEFAULT_LDAP_ATTRS + extra_attrs))
         svc_conn.search(
             search_base=base_dn,
             search_filter=search_filter,
             search_scope=SUBTREE,
-            attributes=["*"],
+            attributes=fetch_attrs,
         )
         result_entries = [
             e for e in (svc_conn.response or [])
@@ -334,7 +354,9 @@ def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | Non
         safe_username = escape_filter_chars(username)
         search_filter = user_filter_tpl.replace("{username}", safe_username)
         logger.debug("LDAP fetch — server=%s base=%s filter=%s", server_uri, base_dn, search_filter)
-        conn.search(base_dn, search_filter, search_scope=SUBTREE, attributes=["*"])
+        extra_attrs = cfg.get("extra_attrs") or []
+        fetch_attrs = list(dict.fromkeys(_DEFAULT_LDAP_ATTRS + extra_attrs))
+        conn.search(base_dn, search_filter, search_scope=SUBTREE, attributes=fetch_attrs)
         result_entries = [
             e for e in (conn.response or [])
             if isinstance(e, dict) and e.get("type") == "searchResEntry"

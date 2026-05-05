@@ -37,6 +37,7 @@ from typing import Any
 from urllib.parse import urlencode, urlparse
 
 from app.auth.idp_crypto import decrypt_idp_config, encrypt_token, decrypt_token
+from app.util.ssrf import validate_endpoint_url
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +90,13 @@ async def _get_oidc_client(cfg: dict[str, Any]):
         raise RuntimeError("authlib is not installed") from exc
 
     import httpx
+    from app.config import settings as _s
 
     discovery_url = cfg["issuer_url"].rstrip("/") + "/.well-known/openid-configuration"
-    async with httpx.AsyncClient() as discovery_http:
+    # Validate before connecting; allow HTTP only when ALLOW_HTTP_IDP is set.
+    await validate_endpoint_url(discovery_url, allow_http=_s.ALLOW_HTTP_IDP)
+    # follow_redirects=False: a redirect could bypass the HTTPS/IP check above.
+    async with httpx.AsyncClient(follow_redirects=False) as discovery_http:
         resp = await discovery_http.get(discovery_url, timeout=10)
         resp.raise_for_status()
         metadata = resp.json()
@@ -208,13 +213,25 @@ async def handle_oidc_callback(
     if not id_token_str:
         raise ValueError("OIDC token response missing id_token")
 
+    from app.config import settings as _s
+
+    # Validate URLs from the discovery doc before using them (RT-01).
+    # jwks_uri and userinfo_endpoint are server-controlled and may differ from issuer_url.
+    jwks_uri = client.server_metadata.get("jwks_uri")
+    if not jwks_uri:
+        raise ValueError("OIDC server metadata missing jwks_uri")
+    await validate_endpoint_url(jwks_uri, allow_http=_s.ALLOW_HTTP_IDP)
+
+    userinfo_endpoint = client.server_metadata.get("userinfo_endpoint")
+    if userinfo_endpoint:
+        await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP)
+
     # Validate ID token against IdP's JWKS, including nonce binding.
     claims = await asyncio.to_thread(
         _validate_id_token, id_token_str, cfg, client.server_metadata, expected_nonce
     )
 
     # Optionally call UserInfo to get additional claims
-    userinfo_endpoint = client.server_metadata.get("userinfo_endpoint")
     if userinfo_endpoint:
         try:
             userinfo = await _fetch_userinfo(
@@ -254,8 +271,8 @@ def _validate_id_token(
     if not jwks_uri:
         raise ValueError("OIDC server metadata missing jwks_uri")
 
-    # Fetch JWKS synchronously (runs in thread pool)
-    resp = httpx.get(jwks_uri, timeout=10)
+    # Fetch JWKS synchronously (runs in thread pool); redirects disabled (RT-02).
+    resp = httpx.get(jwks_uri, timeout=10, follow_redirects=False)
     resp.raise_for_status()
     jwks = resp.json()
 
@@ -280,7 +297,8 @@ def _validate_id_token(
 async def _fetch_userinfo(userinfo_endpoint: str, access_token: str) -> dict[str, Any]:
     """Call the UserInfo endpoint and return the claims dict."""
     import httpx
-    async with httpx.AsyncClient() as client:
+    # follow_redirects=False: a redirect could bypass the SSRF check done before this call (RT-02).
+    async with httpx.AsyncClient(follow_redirects=False) as client:
         resp = await client.get(
             userinfo_endpoint,
             headers={"Authorization": f"Bearer {access_token}"},
@@ -339,6 +357,8 @@ async def oidc_fetch_claims(
         return _json.loads(oidc_claims_cache) if oidc_claims_cache else {}
 
     try:
+        from app.config import settings as _s
+        await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP)
         claims = await _fetch_userinfo(userinfo_endpoint, access_token)
         return claims
     except Exception as exc:

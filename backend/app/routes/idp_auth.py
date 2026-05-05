@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import time
 import uuid
 
@@ -70,6 +71,60 @@ router = APIRouter()
 _LDAP_LOGIN_RATE_LIMIT  = 5
 _LDAP_LOGIN_RATE_WINDOW = 900   # 5 attempts per 15 minutes per IP
 
+# ---------------------------------------------------------------------------
+# OIDC MFA challenge store (RT-07)
+#
+# After a successful OIDC login that requires MFA, the pending_token must not
+# appear in the redirect URL (it would be logged by nginx/access logs and stored
+# in browser history).  Instead we store it server-side keyed by a random
+# challenge_id and redirect with only the challenge_id.  The frontend exchanges
+# the challenge_id for the pending_token via a one-time GET endpoint.
+#
+# Note: this store is per-process.  In multi-worker deployments the OIDC
+# callback and the challenge exchange must hit the same worker (use sticky
+# sessions in nginx / Cloudflare) or migrate this to Redis.
+# ---------------------------------------------------------------------------
+
+class _OidcMfaChallengeStore:
+    def __init__(self) -> None:
+        self._store: dict[str, tuple[str, float]] = {}
+
+    def put(self, pending_token: str, ttl: int = 120) -> str:
+        challenge_id = secrets.token_urlsafe(32)
+        self._store[challenge_id] = (pending_token, time.monotonic() + ttl)
+        return challenge_id
+
+    def pop(self, challenge_id: str) -> str | None:
+        entry = self._store.pop(challenge_id, None)
+        if entry is None:
+            return None
+        token, expires_at = entry
+        if time.monotonic() > expires_at:
+            return None
+        return token
+
+    def sweep(self) -> None:
+        now = time.monotonic()
+        expired = [k for k, (_, exp) in self._store.items() if exp < now]
+        for k in expired:
+            del self._store[k]
+
+
+_oidc_mfa_challenges = _OidcMfaChallengeStore()
+
+
+@router.get("/mfa/challenge/{challenge_id}")
+async def exchange_mfa_challenge(challenge_id: str):
+    """One-time exchange: challenge_id → pending_token.
+
+    Called by the SPA immediately after an OIDC redirect that requires MFA.
+    The pending_token is returned once and then deleted from the store.
+    Returns 404 if the challenge_id is unknown or expired.
+    """
+    pending_token = _oidc_mfa_challenges.pop(challenge_id)
+    if pending_token is None:
+        raise HTTPException(status_code=404, detail="Challenge not found or expired")
+    return {"pending_token": pending_token}
 
 
 async def _issue_session_or_mfa_challenge(
@@ -325,7 +380,7 @@ class LDAPLoginRequest(BaseModel):
     @field_validator("password")
     @classmethod
     def val_password(cls, v: str) -> str:
-        if not v or len(v) > 1024:
+        if not v or v.strip() == "" or len(v) > 1024:
             raise ValueError("password must be 1–1024 characters")
         return v
 
@@ -582,11 +637,10 @@ async def oidc_callback(
     )
 
     if result.get("mfa_required"):
-        # MFA required — redirect to a special page that reads pending_token from a query param.
-        # The pending_token is short-lived (90 s) so passing it in the URL is acceptable
-        # here; it carries no session privileges on its own.
-        import urllib.parse
-        mfa_url = "/?mfa_pending=" + urllib.parse.quote(result["pending_token"])
+        # Store pending_token server-side; redirect with an opaque challenge_id only.
+        # This prevents the token from appearing in nginx access logs or browser history.
+        challenge_id = _oidc_mfa_challenges.put(result["pending_token"])
+        mfa_url = "/?mfa_challenge=" + challenge_id
         return RedirectResponse(url=mfa_url, status_code=302)
 
     # Copy session cookies from temp_response to the redirect response

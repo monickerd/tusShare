@@ -1,4 +1,4 @@
-"""SSRF-prevention helpers shared by admin_storage and admin_notifications."""
+"""SSRF-prevention helpers shared by admin_storage, admin_notifications, OIDC, and AV scanner."""
 
 from __future__ import annotations
 
@@ -25,12 +25,22 @@ BLOCKED_NETWORKS = [
 ]
 
 
-async def validate_endpoint_url(url: str, *, allowed_schemes: tuple[str, ...] = ("http", "https")) -> None:
+async def validate_endpoint_url(
+    url: str,
+    *,
+    allowed_schemes: tuple[str, ...] = ("http", "https"),
+    allow_http: bool | None = None,
+) -> None:
     """Reject URLs that point to private/internal networks (SSRF prevention).
 
-    Enforces HTTPS in non-debug mode and resolves the hostname to verify it
-    does not fall within RFC 1918, link-local, loopback, or other reserved
-    ranges.  Raises HTTPException(422) on any violation.
+    Resolves the hostname and verifies it does not fall within RFC 1918,
+    link-local, loopback, or other reserved ranges.
+    Raises HTTPException(422) on any violation.
+
+    allow_http: override the HTTP-in-production check.
+      None  → use settings.DEBUG (default: block HTTP in production)
+      True  → allow HTTP (e.g. when ALLOW_HTTP_IDP=true for OIDC)
+      False → always block HTTP
     """
     try:
         parsed = urllib.parse.urlparse(url)
@@ -41,7 +51,8 @@ async def validate_endpoint_url(url: str, *, allowed_schemes: tuple[str, ...] = 
         schemes = " or ".join(allowed_schemes)
         raise HTTPException(status_code=422, detail=f"endpoint_url must use {schemes} scheme")
 
-    if parsed.scheme == "http" and not settings.DEBUG:
+    http_ok = settings.DEBUG if allow_http is None else allow_http
+    if parsed.scheme == "http" and not http_ok:
         raise HTTPException(
             status_code=422,
             detail="endpoint_url must use https in production (set DEBUG=true to allow plain http)",

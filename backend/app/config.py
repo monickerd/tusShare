@@ -107,6 +107,14 @@ class Settings(BaseSettings):
     # Trusted proxy header (set to X-Real-IP or X-Forwarded-For if behind nginx)
     TRUSTED_IP_HEADER: str = "X-Real-IP"
 
+    # Set CLOUDFLARE_PROXY_ENABLED=true ONLY when the origin port is locked down
+    # at the firewall/network level to accept connections exclusively from known
+    # Cloudflare IP ranges.  When False (default), CF-Connecting-IP is ignored
+    # and rate-limit keys are derived from TRUSTED_IP_HEADER or the socket peer.
+    # Trusting CF-Connecting-IP without firewall enforcement lets any client spoof
+    # its apparent IP and bypass per-IP rate limits.
+    CLOUDFLARE_PROXY_ENABLED: bool = False
+
     # Storage abstraction
     # STORAGE_ENCRYPTION_KEY: 32-byte base64url key for AES-GCM encryption of
     # storage volume credentials (endpoint URLs, bucket names, access keys).

@@ -231,10 +231,13 @@ async def run_rate_limit_cleanup(interval: float = RATE_LIMIT_CLEANUP_MAX_AGE) -
 
 
 def _get_client_ip(request: Request) -> str:
-    # Cloudflare sets CF-Connecting-IP; nginx/haproxy set X-Real-IP (or TRUSTED_IP_HEADER).
-    cf = request.headers.get("CF-Connecting-IP", "").strip()
-    if cf:
-        return cf
+    # CF-Connecting-IP is only trusted when CLOUDFLARE_PROXY_ENABLED=true, which must
+    # be set only after confirming the origin port is locked to Cloudflare IPs at the
+    # firewall/network layer.  Without that enforcement any client can spoof this header.
+    if settings.CLOUDFLARE_PROXY_ENABLED:
+        cf = request.headers.get("CF-Connecting-IP", "").strip()
+        if cf:
+            return cf
     trusted_header = settings.TRUSTED_IP_HEADER
     if trusted_header:
         forwarded = request.headers.get(trusted_header, "")
@@ -260,9 +263,12 @@ _ROUTE_LIMITS = [
     ("/api/v1/auth/opaque/password-change/", {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # Invite validation — tighter window to slow token enumeration
     ("/api/v1/auth/invite/",    {"GET"},          20,                        60),
-    # Public share/short-link resolution — keyed by IP to slow token enumeration
+    # Public share resolution — keyed by IP to slow token enumeration
     ("/s/",                     {"GET"},          60,                        60),
-    ("/l/",                     {"GET"},          60,                        60),
+    # Share uploads — prevent disk-exhaustion DoS from a single IP
+    ("/s/",                     {"POST"},         10,                        60),
+    # Bootstrap status — rate-limit to reduce first-run oracle exposure
+    ("/api/v1/auth/opaque/bootstrap/", {"GET"},   10,                        60),
 ]
 
 

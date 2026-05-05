@@ -23,7 +23,7 @@ from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_share_session_token, verify_share_session_token
 from app.database import db_session, get_db
 import app.storage.manager as storage
-from app.middleware.rate_limit import check_management_rate_limit
+from app.middleware.rate_limit import check_management_rate_limit, _counter
 from app.models.file import FileChunk
 from app.validation.sanitizers import (
     sanitize_filename,
@@ -938,7 +938,7 @@ async def get_shared_file_chunks(
     await _verify_file_in_share(db, share["id"], file_id)
 
     cursor = await db.execute(
-        "SELECT * FROM files WHERE id = ? AND upload_complete = 1", (file_id,)
+        "SELECT * FROM files WHERE id = ? AND upload_complete = 1 AND deleted_at IS NULL", (file_id,)
     )
     row = await cursor.fetchone()
     if row is None:
@@ -1030,11 +1030,13 @@ async def download_shared_file(
     status_code = 206 if range_header else 200
 
     # --- max_downloads: atomic increment on first chunk for non-owners ---
+    # Ranged requests below _DOWNLOAD_COUNT_MIN_BYTES (e.g. Range: bytes=0-0) do not
+    # count as a download — prevents exhausting the counter without actually downloading.
     is_owner = user is not None and user.id == share["created_by"]
     if (
         not is_owner
         and share["max_downloads"] is not None
-        and (not range_header or start == 0)
+        and (not range_header or (start == 0 and content_length > _DOWNLOAD_COUNT_MIN_BYTES))
     ):
         result = await db.execute(
             "UPDATE shares SET download_count = download_count + 1 "
@@ -1146,6 +1148,8 @@ async def resolve_short_link(
 
 # Maximum encrypted size accepted for share uploads (100 MB)
 _SHARE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
+# Minimum bytes for a ranged download to count against max_downloads
+_DOWNLOAD_COUNT_MIN_BYTES = 1024
 
 
 @router.post("/s/{share_id}/upload")
@@ -1175,6 +1179,9 @@ async def upload_to_share(
     """
     share_id = validate_uuid(share_id)
     await _require_share_access(request, share_id, user)
+
+    if not await _counter.is_allowed(f"share_upload:{share_id}", 20, 60):
+        raise HTTPException(status_code=429, detail="Too many uploads to this share. Please try again later.")
 
     now = datetime.now(timezone.utc).isoformat()
     cursor = await db.execute(

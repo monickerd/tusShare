@@ -26,7 +26,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-import tusshare_opaque
+import tusshare_opaque # type: ignore
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 

@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.config import settings
+from app.util.ssrf import validate_endpoint_url
 import app.storage.manager as storage
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,16 @@ async def scan_file(db, file_id: str) -> None:
     max_attempts = int(rows.get("av_scan_retry_attempts", settings.AV_SCAN_RETRY_ATTEMPTS))
 
     if not endpoint:
+        return
+
+    try:
+        await validate_endpoint_url(endpoint)
+    except Exception as exc:
+        logger.error(
+            "AV scan endpoint %r failed SSRF validation: %s — scan aborted for file %s",
+            endpoint, exc, file_id,
+        )
+        await _write_status(db, file_id, "error")
         return
 
     priv_key = _load_escrow_private_key()

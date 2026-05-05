@@ -49,7 +49,6 @@ CSRF_EXEMPT_PREFIXES = (
     # and the attacker gains no access to the victim's data.
     "/api/v1/auth/ldap/login",
     "/s/",
-    "/l/",
 )
 
 # --- Rate limiting ---
