@@ -11,7 +11,6 @@ Includes:
 import asyncio
 import logging
 import secrets
-import urllib.parse
 import uuid
 from datetime import datetime, timezone
 
@@ -36,6 +35,7 @@ from app.validation.sanitizers import (
 )
 from app.config import settings
 from app.routes._access import is_in_shared_tree, is_team_folder_member
+from app.util.http import content_disposition, parse_range_header
 from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
 from app.wordlist import insert_short_link_with_unique_slug
 
@@ -1021,27 +1021,10 @@ async def download_shared_file(
     end = encrypted_size - 1
 
     if range_header:
-        if not range_header.startswith("bytes="):
-            raise HTTPException(status_code=400, detail="Only bytes ranges are supported")
-        spec = range_header[6:]
-        parts = spec.split("-", 1)
-        try:
-            if parts[0] == "" and len(parts) == 2 and parts[1]:
-                suffix = int(parts[1])
-                start = max(0, encrypted_size - suffix)
-                end = encrypted_size - 1
-            else:
-                start = int(parts[0]) if parts[0] else 0
-                end = int(parts[1]) if (len(parts) > 1 and parts[1]) else encrypted_size - 1
-        except (ValueError, OverflowError):
-            raise HTTPException(status_code=400, detail="Invalid Range header")
-
-        if start < 0 or end < start or start >= encrypted_size:
-            return Response(
-                status_code=416,
-                headers={"Content-Range": f"bytes */{encrypted_size}"},
-            )
-        end = min(end, encrypted_size - 1)
+        result = parse_range_header(range_header, encrypted_size)
+        if isinstance(result, Response):
+            return result
+        start, end = result
 
     content_length = end - start + 1
     status_code = 206 if range_header else 200
@@ -1070,10 +1053,8 @@ async def download_shared_file(
         user_id = user.id if user else None
         await _log_share_access(db, request, user_id, share["id"], file_id, username=user.username if user else None)
 
-    # --- Content-Disposition: RFC 5987 UTF-8 encoded filename ---
-    safe_name = row["sanitized_name"] or "download"
-    encoded_name = urllib.parse.quote(safe_name, safe="")
-    disposition = f"attachment; filename*=UTF-8''{encoded_name}"
+    # --- Content-Disposition ---
+    disposition = content_disposition(row["sanitized_name"] or "download")
 
     resp_headers = {
         "Accept-Ranges": "bytes",

@@ -36,6 +36,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import FLAG_MANAGE_ESCROW, ROLE_TIER, admin_best_tier
+from app.routes._access import require_flag
 from app.services.escrow import resolve_effective_escrow_agents
 from app.validation.sanitizers import validate_uuid
 
@@ -49,11 +50,6 @@ _STEPUP = "policy.escrow.*"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _require_escrow_flag(admin: AuthenticatedUser) -> None:
-    if not admin.has_flag(FLAG_MANAGE_ESCROW):
-        raise HTTPException(status_code=403, detail="can_manage_escrow permission required")
-
 
 def _admin_tier(admin: AuthenticatedUser) -> int:
     return admin_best_tier(admin.roles)
@@ -115,7 +111,7 @@ async def get_escrow_settings(
     db=Depends(get_db),
 ):
     """Return org-level escrow defaults and lock state."""
-    _require_escrow_flag(admin)
+    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
     cursor = await db.execute(
         "SELECT key, value, is_locked, locked_min_tier FROM admin_settings "
         "WHERE key IN ('escrow_default_user_ids', 'escrow_default_role_ids', 'escrow_require_coverage')"
@@ -143,7 +139,7 @@ async def update_escrow_settings(
     db=Depends(get_db),
 ):
     """Update org-level escrow defaults."""
-    _require_escrow_flag(admin)
+    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
     my_tier = _admin_tier(admin)
 
     cursor = await db.execute(
@@ -273,7 +269,7 @@ async def list_folder_policies(
     db=Depends(get_db),
 ):
     """List all folder-level escrow policy overrides."""
-    _require_escrow_flag(admin)
+    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
     cursor = await db.execute(
         "SELECT fep.*, f.name as folder_name FROM folder_escrow_policies fep "
         "JOIN folders f ON f.id = fep.folder_id "
@@ -309,7 +305,7 @@ async def get_folder_policy(
     db=Depends(get_db),
 ):
     """Get the policy override for a specific folder, including full agent list."""
-    _require_escrow_flag(admin)
+    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
     folder_id = validate_uuid(folder_id)
 
     cursor = await db.execute(
@@ -358,7 +354,7 @@ async def upsert_folder_policy(
     db=Depends(get_db),
 ):
     """Create or replace the escrow policy for a folder."""
-    _require_escrow_flag(admin)
+    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
     folder_id = validate_uuid(folder_id)
     my_tier = _admin_tier(admin)
     _validate_policy_body(body)
@@ -439,7 +435,7 @@ async def delete_folder_policy(
     db=Depends(get_db),
 ):
     """Delete the escrow policy override for a folder."""
-    _require_escrow_flag(admin)
+    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
     folder_id = validate_uuid(folder_id)
     my_tier = _admin_tier(admin)
 
@@ -475,7 +471,7 @@ async def get_coverage_report(
     An "unprotected" team is one where no member in user_team_keys holds the
     can_act_as_escrow permission.
     """
-    _require_escrow_flag(admin)
+    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
 
     # A team is "unprotected" if no explicitly-added escrow member (team_member scoped
     # role, not the owner's team_admin) currently holds can_act_as_escrow.

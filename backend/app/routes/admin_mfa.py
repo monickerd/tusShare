@@ -23,15 +23,16 @@ from app.auth.stepup import log_security_event, verify_step_up_token
 from app.database import get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.models.role import FLAG_MANAGE_USER_MFA
+from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _require_mfa_flag(admin: AuthenticatedUser) -> None:
-    if not admin.has_flag(FLAG_MANAGE_USER_MFA):
-        raise HTTPException(status_code=403, detail="can_manage_user_mfa permission required")
+def _request_info(request: Request) -> tuple[str, str]:
+    """Return (client_ip, user_agent) from a request for audit logging."""
+    return _get_client_ip(request), request.headers.get("user-agent", "")
 
 
 async def _resolve_user(db, user_id: str) -> None:
@@ -52,7 +53,7 @@ async def admin_list_mfa(
     db=Depends(get_db),
 ):
     """List active MFA credentials for a user."""
-    _require_mfa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
@@ -83,7 +84,7 @@ async def admin_wipe_mfa(
     db=Depends(get_db),
 ):
     """Wipe all MFA credentials for a user.  Requires step-up."""
-    _require_mfa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
@@ -97,8 +98,7 @@ async def admin_wipe_mfa(
     await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
     await db.commit()
 
-    client_ip = _get_client_ip(request)
-    ua = request.headers.get("user-agent", "")
+    client_ip, ua = _request_info(request)
     await log_security_event(
         db, "mfa_admin_removed", admin.id, client_ip, ua,
         detail={"target_user_id": user_id},
@@ -119,7 +119,7 @@ async def admin_remove_credential(
     db=Depends(get_db),
 ):
     """Remove a specific MFA credential for a user.  Requires step-up."""
-    _require_mfa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
     try:
         user_id = validate_uuid(user_id)
         cred_id = validate_uuid(cred_id)
@@ -145,8 +145,7 @@ async def admin_remove_credential(
     await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
     await db.commit()
 
-    client_ip = _get_client_ip(request)
-    ua = request.headers.get("user-agent", "")
+    client_ip, ua = _request_info(request)
     await log_security_event(
         db, "mfa_admin_removed", admin.id, client_ip, ua,
         detail={"target_user_id": user_id, "credential_id": cred_id, "method": row["method"]},
@@ -166,7 +165,7 @@ async def admin_reset_mfa(
     db=Depends(get_db),
 ):
     """Wipe all MFA credentials and force re-enrollment on next login.  Requires step-up."""
-    _require_mfa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
@@ -180,8 +179,7 @@ async def admin_reset_mfa(
     await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
     await db.commit()
 
-    client_ip = _get_client_ip(request)
-    ua = request.headers.get("user-agent", "")
+    client_ip, ua = _request_info(request)
     await log_security_event(
         db, "mfa_admin_reset", admin.id, client_ip, ua,
         detail={"target_user_id": user_id},

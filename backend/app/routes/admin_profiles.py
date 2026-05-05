@@ -31,6 +31,7 @@ from app.middleware.stepup import require_step_up
 from app.models.role import admin_best_tier
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
+from app.util.db import get_admin_setting
 
 router = APIRouter()
 
@@ -455,13 +456,10 @@ async def export_settings(
     warnings: list[str] = []
 
     # Check for user IDs in escrow defaults — strip and warn
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'escrow_default_user_ids'"
-    )
-    row = await cursor.fetchone()
-    if row:
+    escrow_raw = await get_admin_setting(db, "escrow_default_user_ids")
+    if escrow_raw is not None:
         try:
-            user_ids = _json.loads(row["value"] or "[]")
+            user_ids = _json.loads(escrow_raw or "[]")
         except Exception:
             user_ids = []
         if user_ids:
@@ -527,10 +525,7 @@ async def apply_profile(
     # Determine whether step-up must be enforced.
     # During first-run setup the admin has just bootstrapped and has no active
     # session key to complete OPAQUE step-up, so we skip it.
-    row = await (await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'first_run_completed'"
-    )).fetchone()
-    is_wizard_call = row is None  # step-up not yet possible before first-run completes
+    is_wizard_call = (await get_admin_setting(db, "first_run_completed")) is None
 
     if not is_wizard_call and sensitive_config.is_sensitive(_STEPUP_ACTION):
         token = request.headers.get("X-Step-Up-Token", "")

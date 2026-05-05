@@ -43,6 +43,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, field_validator
 
+from app.auth.cookies import set_auth_cookies
 from app.auth.dependencies import get_current_user
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
 from app.auth.ldap_provider import ldap_authenticate, _validate_ldap_username
@@ -56,7 +57,6 @@ from app.auth.mfa import (
     load_mfa_settings,
 )
 from app.auth.stepup import log_security_event
-from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import get_db, DuplicateError
 from app.models.role import ROLE_USER, grant_role
@@ -70,35 +70,6 @@ router = APIRouter()
 _LDAP_LOGIN_RATE_LIMIT  = 5
 _LDAP_LOGIN_RATE_WINDOW = 900   # 5 attempts per 15 minutes per IP
 
-
-# ---------------------------------------------------------------------------
-# Shared session-issuance helpers
-# ---------------------------------------------------------------------------
-
-def _set_auth_cookies(
-    response: Response,
-    access_token: str,
-    refresh_token: str,
-    csrf_token: str,
-    refresh_max_age: int | None = None,
-) -> None:
-    rt_max_age = refresh_max_age if refresh_max_age is not None else settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
-    response.set_cookie(
-        key=COOKIE_ACCESS, value=access_token,
-        httponly=True, secure=True, samesite="strict", path="/",
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )
-    response.set_cookie(
-        key=COOKIE_REFRESH, value=refresh_token,
-        httponly=True, secure=True, samesite="strict",
-        path=REFRESH_TOKEN_COOKIE_PATH,
-        max_age=rt_max_age,
-    )
-    response.set_cookie(
-        key=COOKIE_CSRF, value=csrf_token,
-        httponly=False, secure=True, samesite="strict", path="/",
-        max_age=rt_max_age,
-    )
 
 
 async def _issue_session_or_mfa_challenge(
@@ -170,7 +141,7 @@ async def _finish_with_cookies(
     )
     access_token = create_access_token(user_id, session_id=token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token, refresh_max_age=rt_max_age)
+    set_auth_cookies(response, access_token, raw_refresh, csrf_token, max_age=rt_max_age)
 
     # Load the user record for the response
     cursor = await db.execute(

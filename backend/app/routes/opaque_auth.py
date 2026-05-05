@@ -31,13 +31,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 import app.sensitive_config as sensitive_config
+from app.auth.cookies import clear_auth_cookies, set_auth_cookies, user_response_dict
+from app.util.db import get_admin_setting
 from app.auth.stepup import log_security_event, verify_step_up_token
 from app.auth.dependencies import get_current_user, require_user_role
 from app.middleware.rate_limit import _counter, _get_client_ip
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
 from app.auth.opaque_provider import OPAQUEAuthProvider
-from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import DuplicateError, get_db
 from app.models.role import ROLE_USER, grant_role
@@ -46,62 +47,6 @@ from app.validation.sanitizers import sanitize_username, validate_base64, valida
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# ---------------------------------------------------------------------------
-# Shared helpers (mirrors auth.py — kept local to avoid circular imports)
-# ---------------------------------------------------------------------------
-
-def _set_auth_cookies(
-    response: Response,
-    access_token: str,
-    refresh_token: str,
-    csrf_token: str,
-    refresh_max_age: int | None = None,
-) -> None:
-    rt_max_age = refresh_max_age if refresh_max_age is not None else settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
-    response.set_cookie(
-        key=COOKIE_ACCESS, value=access_token,
-        httponly=True, secure=True, samesite="strict", path="/",
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )
-    response.set_cookie(
-        key=COOKIE_REFRESH, value=refresh_token,
-        httponly=True, secure=True, samesite="strict",
-        path=REFRESH_TOKEN_COOKIE_PATH,
-        max_age=rt_max_age,
-    )
-    response.set_cookie(
-        key=COOKIE_CSRF, value=csrf_token,
-        httponly=False, secure=True, samesite="strict", path="/",
-        max_age=rt_max_age,
-    )
-
-
-def _clear_auth_cookies(response: Response) -> None:
-    response.delete_cookie(key=COOKIE_ACCESS, path="/", secure=True, samesite="strict")
-    response.delete_cookie(key=COOKIE_REFRESH, path=REFRESH_TOKEN_COOKIE_PATH, secure=True, samesite="strict")
-    response.delete_cookie(key=COOKIE_CSRF, path="/", secure=True, samesite="strict")
-
-
-def _user_response_dict(user: AuthenticatedUser) -> dict:
-    return {
-        "id": user.id,
-        "username": user.username,
-        "auth_method": user.auth_method,
-        "is_admin": user.is_admin,
-        "is_admin_only": user.is_admin_only,
-        "roles": sorted(user.roles),
-        "flags": user.flags,
-        "wrapped_master_key": user.wrapped_master_key,
-        "wrapped_master_key_iv": user.wrapped_master_key_iv,
-        "recovery_key_wrapped": user.recovery_key_wrapped,
-        "recovery_key_iv": user.recovery_key_iv,
-        "x25519_public_key": getattr(user, "x25519_public_key", None),
-        "mlkem768_public_key": getattr(user, "mlkem768_public_key", None),
-        "x25519_private_wrapped": getattr(user, "x25519_private_wrapped", None),
-        "mlkem768_private_wrapped": getattr(user, "mlkem768_private_wrapped", None),
-        "asymmetric_key_iv": getattr(user, "asymmetric_key_iv", None),
-    }
 
 
 def _decode_b64_field(value: str, field_name: str) -> bytes:
@@ -484,7 +429,7 @@ async def opaque_register_finish(
     raw_refresh, rt_hash = create_refresh_token()
     await store_refresh_token(db, user.id, rt_hash)
     csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token)
+    set_auth_cookies(response, access_token, raw_refresh, csrf_token)
 
     logger.info("New OPAQUE user registered: %s (id=%s)", user.username, user.id)
 
@@ -494,7 +439,7 @@ async def opaque_register_finish(
     mfa_settings = await _load_mfa(db)
     mfa_enrollment_required = mfa_settings["mfa_enforcement"] == "required"
 
-    return {"user": _user_response_dict(user), "mfa_enrollment_required": mfa_enrollment_required}
+    return {"user": user_response_dict(user), "mfa_enrollment_required": mfa_enrollment_required}
 
 
 # ---------------------------------------------------------------------------
@@ -666,7 +611,7 @@ async def opaque_login_finish(
     )
     access_token = create_access_token(user.id, session_id=token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token, refresh_max_age=rt_max_age)
+    set_auth_cookies(response, access_token, raw_refresh, csrf_token, max_age=rt_max_age)
 
     logger.info(
         "OPAQUE login: user=%s (id=%s) public_device=%s",
@@ -704,7 +649,7 @@ async def opaque_login_finish(
     except Exception:
         pass  # policy engine must not block authentication
 
-    resp_body = {"user": _user_response_dict(user)}
+    resp_body = {"user": user_response_dict(user)}
     if mfa_enrollment_required:
         resp_body["mfa_enrollment_required"] = True
     return resp_body
@@ -866,7 +811,7 @@ async def opaque_migrate_finish(
         # Already migrated — return current user record (idempotent)
         provider = OPAQUEAuthProvider(db)
         current = await provider.get_user_by_id(user.id)
-        return {"user": _user_response_dict(current or user)}
+        return {"user": user_response_dict(current or user)}
 
     reg_upload_bytes = _decode_b64_field(body.client_registration_record, "client_registration_record")
 
@@ -907,7 +852,7 @@ async def opaque_migrate_finish(
     if updated is None:
         raise HTTPException(status_code=500, detail="Failed to load updated user record")
 
-    return {"user": _user_response_dict(updated)}
+    return {"user": user_response_dict(updated)}
 
 
 # ---------------------------------------------------------------------------
@@ -1130,7 +1075,7 @@ async def opaque_recover_finish(
 
     # Clear any existing auth cookies so a stale access-token JWT doesn't leave
     # the user stranded on the key-prompt screen after reset.
-    _clear_auth_cookies(response)
+    clear_auth_cookies(response)
 
     client_ip = _get_client_ip(request)
     user_agent = request.headers.get("user-agent", "")[:512]
@@ -1422,11 +1367,8 @@ class OpaqueBootstrapFinishRequest(BaseModel):
 async def _validate_bootstrap_token(token: str, db) -> None:
     """Raise 400 if the bootstrap token is absent, already used, or wrong."""
     token_hash = hashlib.sha256(token.encode()).hexdigest()
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'bootstrap_token_hash'"
-    )
-    row = await cursor.fetchone()
-    if row is None or row["value"] != token_hash:
+    stored = await get_admin_setting(db, "bootstrap_token_hash")
+    if stored is None or stored != token_hash:
         raise HTTPException(status_code=400, detail="Invalid or already-used bootstrap token")
 
 
@@ -1582,7 +1524,7 @@ async def opaque_bootstrap_finish(
     raw_refresh, rt_hash = create_refresh_token()
     await store_refresh_token(db, user.id, rt_hash)
     csrf_token = generate_csrf_token()
-    _set_auth_cookies(response, access_token, raw_refresh, csrf_token)
+    set_auth_cookies(response, access_token, raw_refresh, csrf_token)
 
     logger.info("Bootstrap admin registered: %s (id=%s)", user.username, user.id)
-    return {"user": _user_response_dict(user)}
+    return {"user": user_response_dict(user)}

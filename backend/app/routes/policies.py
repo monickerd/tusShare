@@ -40,6 +40,7 @@ from app.models.policy import (
     sweep_policy_for_all_users,
 )
 from app.models.role import FLAG_MANAGE_POLICIES
+from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
 
 router = APIRouter()
@@ -52,9 +53,6 @@ _MAX_VALUE_LEN       = 500
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _check_can_manage(user: AuthenticatedUser):
-    if not user.has_flag(FLAG_MANAGE_POLICIES):
-        raise HTTPException(status_code=403, detail="can_manage_policies required")
 
 
 async def _bg_sweep(policy_id: str) -> None:
@@ -79,6 +77,13 @@ async def _load_policy(db, policy_id: str) -> Policy:
     return Policy.from_row(row)
 
 
+async def _field_exists(db, field_name: str) -> bool:
+    cursor = await db.execute(
+        "SELECT 1 FROM policy_field_definitions WHERE name = ?", (field_name,)
+    )
+    return await cursor.fetchone() is not None
+
+
 async def _load_conditions(db, policy_id: str) -> list[PolicyCondition]:
     cursor = await db.execute(
         "SELECT * FROM policy_conditions WHERE policy_id = ? ORDER BY field",
@@ -98,11 +103,6 @@ async def _load_condition(db, policy_id: str, cond_id: str) -> PolicyCondition:
     return PolicyCondition.from_row(row)
 
 
-async def _field_exists(db, field_name: str) -> bool:
-    cursor = await db.execute(
-        "SELECT 1 FROM policy_field_definitions WHERE name = ?", (field_name,)
-    )
-    return await cursor.fetchone() is not None
 
 
 def _policy_with_conditions(policy: Policy, conditions: list[PolicyCondition]) -> dict:
@@ -153,7 +153,7 @@ async def list_policies(
     db=Depends(get_db),
 ):
     """List all policies with their conditions."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
 
     cursor = await db.execute("SELECT * FROM policies ORDER BY scope_type, name")
     policy_rows = await cursor.fetchall()
@@ -193,7 +193,7 @@ async def create_policy(
 
     For team-scoped policies, scope_id must be a valid team UUID.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
 
     if len(body.name) < 1 or len(body.name) > _MAX_POLICY_NAME_LEN:
         raise HTTPException(
@@ -234,7 +234,7 @@ async def get_policy(
     db=Depends(get_db),
 ):
     """Get a single policy with its conditions."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     policy    = await _load_policy(db, policy_id)
     conditions = await _load_conditions(db, policy_id)
@@ -253,7 +253,7 @@ async def update_policy(
     db=Depends(get_db),
 ):
     """Rename a policy."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -295,7 +295,7 @@ async def delete_policy(
     db=Depends(get_db),
 ):
     """Delete a policy and all its conditions and grants (CASCADE)."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -324,7 +324,7 @@ async def create_condition(
     After adding the condition, Trigger 2 fires: the policy is immediately
     re-evaluated against all applicable users.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -384,7 +384,7 @@ async def list_conditions(
     db=Depends(get_db),
 ):
     """List all conditions on a policy."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id  = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
     conditions = await _load_conditions(db, policy_id)
@@ -410,7 +410,7 @@ async def update_condition(
 
     After update, Trigger 2 fires.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     cond_id   = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
@@ -478,7 +478,7 @@ async def delete_condition(
 
     After deletion, Trigger 2 fires.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     cond_id   = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
@@ -537,7 +537,7 @@ async def list_effects(
     db=Depends(get_db),
 ):
     """List all effects defined on a policy."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -568,7 +568,7 @@ async def create_effect(
     After creating the effect, Trigger 2 fires to immediately apply the new effect
     to all users currently matching this policy.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -669,7 +669,7 @@ async def delete_effect(
 
     Manual rows (policy_effect_id IS NULL) are not affected.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     policy_id = validate_uuid(policy_id)
     effect_id = validate_uuid(effect_id)
     await _load_policy(db, policy_id)   # 404 guard

@@ -17,15 +17,11 @@ DELETE /admin/api-keys/{id}                       [step-up]
 """
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import ipaddress
 import json
 import logging
 import re
 import secrets
-import socket
-import urllib.parse
 import uuid
 from datetime import datetime, timezone
 
@@ -34,10 +30,10 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.config import settings
 from app.database import get_db
 from app.middleware.stepup import require_step_up
 from app.services.notification_crypto import decrypt_channel_secret, encrypt_channel_secret
+from app.util.ssrf import validate_endpoint_url
 from app.validation.sanitizers import validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -48,59 +44,6 @@ _STEPUP_NOTIF = "admin.notifications.configure"
 _STEPUP_KEYS  = "admin.api_keys.manage"
 _REDACTED     = "••••••••"
 _FILTER_RE    = re.compile(r"^[a-z][a-z0-9._:*-]{0,127}$")
-
-# SSRF-blocked networks (same as admin_storage.py)
-_BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
-    ipaddress.ip_network("169.254.0.0/16"),
-    ipaddress.ip_network("100.64.0.0/10"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("fc00::/7"),
-    ipaddress.ip_network("fe80::/10"),
-]
-
-
-async def _validate_endpoint_url(url: str) -> None:
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception:
-        raise HTTPException(status_code=422, detail="endpoint_url is not a valid URL")
-
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=422, detail="endpoint_url must use http or https scheme")
-    if parsed.scheme == "http" and not settings.DEBUG:
-        raise HTTPException(
-            status_code=422,
-            detail="endpoint_url must use https in production",
-        )
-
-    hostname = parsed.hostname
-    if not hostname:
-        raise HTTPException(status_code=422, detail="endpoint_url must include a hostname")
-
-    try:
-        addr_infos = await asyncio.to_thread(socket.getaddrinfo, hostname, None)
-    except socket.gaierror:
-        raise HTTPException(status_code=422, detail="Cannot resolve the hostname in endpoint_url")
-
-    for _, _, _, _, sockaddr in addr_infos:
-        ip_str = sockaddr[0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        for net in _BLOCKED_NETWORKS:
-            try:
-                if ip in net:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="endpoint_url resolves to a private or reserved address.",
-                    )
-            except TypeError:
-                continue
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +178,7 @@ async def create_channel(
     db=Depends(get_db),
     _stepup=Depends(require_step_up(_STEPUP_NOTIF)),
 ):
-    await _validate_endpoint_url(body.endpoint_url)
+    await validate_endpoint_url(body.endpoint_url)
     secret_enc = encrypt_channel_secret(body.secret) if body.secret else None
     ch_id = str(uuid.uuid4())
     now   = datetime.now(timezone.utc).isoformat()
@@ -304,7 +247,7 @@ async def update_channel(
     if existing is None:
         raise HTTPException(status_code=404, detail="Channel not found")
 
-    await _validate_endpoint_url(body.endpoint_url)
+    await validate_endpoint_url(body.endpoint_url)
 
     if body.secret == _REDACTED or body.secret is None:
         # Keep existing secret

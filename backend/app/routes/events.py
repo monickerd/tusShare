@@ -31,21 +31,12 @@ router = APIRouter()
 _HEARTBEAT_INTERVAL = 25  # seconds
 
 
-@router.get("/events")
-async def folder_events(
-    folder_id: str | None = None,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
-):
-    """Stream folder change events as Server-Sent Events."""
-    if folder_id is not None:
-        try:
-            folder_id = validate_uuid(folder_id)
-        except ValueError:
-            folder_id = None
+def _sse_response(topic: str) -> StreamingResponse:
+    """Return a StreamingResponse that forwards broker events on *topic* as SSE.
 
-    topic = folder_id if folder_id else f"root:{user.id}"
-
+    Sends a heartbeat comment every _HEARTBEAT_INTERVAL seconds to keep the
+    connection alive through proxies that would otherwise time out a silent stream.
+    """
     async def event_stream():
         q = sse_broker.subscribe(topic)
         try:
@@ -70,6 +61,23 @@ async def folder_events(
     )
 
 
+@router.get("/events")
+async def folder_events(
+    folder_id: str | None = None,
+    user: AuthenticatedUser = Depends(require_user_role),
+    db=Depends(get_db),
+):
+    """Stream folder change events as Server-Sent Events."""
+    if folder_id is not None:
+        try:
+            folder_id = validate_uuid(folder_id)
+        except ValueError:
+            folder_id = None
+
+    topic = folder_id if folder_id else f"root:{user.id}"
+    return _sse_response(topic)
+
+
 @router.get("/events/identity")
 async def identity_events(
     user: AuthenticatedUser = Depends(require_user_role),
@@ -84,27 +92,4 @@ async def identity_events(
 
     Event shape: {"type": "identity_changed", "reason": "<reason>"}
     """
-    topic = f"identity:{user.id}"
-
-    async def event_stream():
-        q = sse_broker.subscribe(topic)
-        try:
-            while True:
-                try:
-                    event = await asyncio.wait_for(q.get(), timeout=_HEARTBEAT_INTERVAL)
-                    yield f"data: {json.dumps(event)}\n\n"
-                except asyncio.TimeoutError:
-                    yield ": heartbeat\n\n"
-        except (asyncio.CancelledError, GeneratorExit):
-            pass
-        finally:
-            sse_broker.unsubscribe(topic, q)
-
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return _sse_response(f"identity:{user.id}")

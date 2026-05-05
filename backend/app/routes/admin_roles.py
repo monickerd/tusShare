@@ -31,6 +31,7 @@ from app.models.role import (
     SENSITIVE_FLAGS,
     admin_best_tier,
 )
+from app.routes._access import require_flag
 
 router = APIRouter()
 
@@ -102,16 +103,6 @@ def _role_to_dict(row, permissions: dict[str, str]) -> dict:
     }
 
 
-def _check_manage_roles(user: AuthenticatedUser):
-    """Raise 403 if the user lacks can_manage_roles."""
-    if not user.has_flag(FLAG_MANAGE_ROLES):
-        raise HTTPException(status_code=403, detail="can_manage_roles required")
-
-
-def _check_create_roles(user: AuthenticatedUser):
-    """Raise 403 if the user lacks can_create_roles."""
-    if not user.has_flag(FLAG_CREATE_ROLES):
-        raise HTTPException(status_code=403, detail="can_create_roles required")
 
 
 def _check_sensitive_flag_authority(user: AuthenticatedUser):
@@ -163,7 +154,7 @@ async def list_roles(
     Also returns the full flag registry so the UI can render toggles without
     a second round-trip.
     """
-    _check_manage_roles(admin)
+    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
     cursor = await db.execute(
         "SELECT * FROM roles ORDER BY is_system DESC, id"
     )
@@ -207,7 +198,7 @@ async def create_role(
     permission set must be a strict subset of the creator's effective permissions.
     Sensitive flags cannot be activated unless the creator holds server_admin or org_admin.
     """
-    _check_create_roles(admin)
+    require_flag(admin, FLAG_CREATE_ROLES, "can_create_roles required")
 
     # Validate role ID
     if not _ROLE_ID_RE.match(body.id):
@@ -297,7 +288,7 @@ async def update_role(
     db=Depends(get_db),
 ):
     """Update a role's name and/or description. System roles can be renamed."""
-    _check_manage_roles(admin)
+    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
 
     row = await _load_role(db, role_id)
 
@@ -334,7 +325,7 @@ async def delete_role(
     db=Depends(get_db),
 ):
     """Delete a custom role. System roles (is_system=1) cannot be deleted."""
-    _check_manage_roles(admin)
+    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
 
     row = await _load_role(db, role_id)
     if row["is_system"]:
@@ -368,7 +359,7 @@ async def update_role_permissions(
     tier may modify its value or lock state.  An admin may not lock a flag at a
     tier lower (higher privilege) than their own.
     """
-    _check_manage_roles(admin)
+    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
     my_tier = admin_best_tier(admin.roles)
 
     await _load_role(db, role_id)  # 404 if missing

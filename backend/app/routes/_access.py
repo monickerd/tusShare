@@ -2,6 +2,20 @@
 
 import uuid
 
+from fastapi import HTTPException
+
+from app.auth.interface import AuthenticatedUser
+
+
+def require_flag(user: AuthenticatedUser, flag: str, detail: str | None = None) -> None:
+    """Raise 403 if *user* does not hold *flag*.
+
+    Consolidates the per-file ``_require_X_flag`` one-liners used across admin
+    route modules into a single shared call site.
+    """
+    if not user.has_flag(flag):
+        raise HTTPException(status_code=403, detail=detail or f"{flag} permission required")
+
 
 async def is_team_folder_member(db, folder_id: str, user_id: str) -> bool:
     """Walk the folder ancestry to check if any ancestor (or self) is a team folder,

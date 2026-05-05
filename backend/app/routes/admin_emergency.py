@@ -28,6 +28,7 @@ from app.models.role import FLAG_MANAGE_USERS
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
 from app.middleware.rate_limit import _get_client_ip
+from app.util.db import get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.validation.validators import validate_pagination
 
@@ -197,11 +198,7 @@ async def emergency_revoke(
     # 6. Notify escrow agents (optional, gated on admin_settings)
     # ------------------------------------------------------------------
     if body.notify_escrow and team_ids:
-        cfg_cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'notify_escrow_on_revocation'",
-        )
-        cfg_row = await cfg_cursor.fetchone()
-        notify_enabled = cfg_row and cfg_row["value"] == "1"
+        notify_enabled = (await get_admin_setting(db, "notify_escrow_on_revocation")) == "1"
 
         if notify_enabled:
             # Find users holding the escrow_agent role

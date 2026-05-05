@@ -107,6 +107,56 @@ def _apply_key_filters(rows: list, key_row: dict | None) -> list:
     return rows
 
 
+async def _build_audit_filter(
+    db,
+    severity: str,
+    user_id: str = "",
+    since: str = "",
+    until: str = "",
+    after: str = "",
+    event_types: str = "",
+) -> tuple[list, list, list]:
+    """Build (clauses, params, et_patterns) for security_events WHERE clauses.
+
+    Returns SQL clause fragments, their positional params, and the list of
+    glob patterns extracted from *event_types*.  The *after* cursor requires
+    a DB lookup and is only used by the paginated list endpoint.
+    """
+    clauses: list = []
+    params: list = []
+
+    if severity != "info":
+        sev_values = [k for k, v in _SEVERITY_ORDER.items() if v >= _SEVERITY_ORDER[severity]]
+        placeholders = ",".join("?" * len(sev_values))
+        clauses.append(f"severity IN ({placeholders})")
+        params.extend(sev_values)
+
+    if user_id.strip():
+        clauses.append("user_id = ?")
+        params.append(validate_uuid(user_id.strip()))
+
+    if since.strip():
+        clauses.append("timestamp >= ?")
+        params.append(since.strip())
+
+    if until.strip():
+        clauses.append("timestamp <= ?")
+        params.append(until.strip())
+
+    if after.strip():
+        cur = await db.execute(
+            "SELECT timestamp FROM security_events WHERE id = ?",
+            (validate_uuid(after.strip()),),
+        )
+        cursor_row = await cur.fetchone()
+        if cursor_row:
+            clauses.append("timestamp > ?")
+            params.append(str(cursor_row["timestamp"]))
+
+    et_patterns = [p.strip() for p in event_types.split(",") if p.strip()]
+    return clauses, params, et_patterns
+
+
 def _row_to_dict(r) -> dict:
     return {
         "event_id":         r["id"],
@@ -147,43 +197,12 @@ async def list_audit_logs(
     if severity not in _SEVERITY_ORDER:
         raise HTTPException(status_code=400, detail="severity must be info, warning, or critical")
 
-    clauses = []
-    params: list = []
-
-    if severity != "info":
-        sev_values = [k for k, v in _SEVERITY_ORDER.items() if v >= _SEVERITY_ORDER[severity]]
-        placeholders = ",".join("?" * len(sev_values))
-        clauses.append(f"severity IN ({placeholders})")
-        params.extend(sev_values)
-
-    if user_id.strip():
-        clauses.append("user_id = ?")
-        params.append(validate_uuid(user_id.strip()))
-
-    if since.strip():
-        clauses.append("timestamp >= ?")
-        params.append(since.strip())
-
-    if until.strip():
-        clauses.append("timestamp <= ?")
-        params.append(until.strip())
-
-    if after.strip():
-        # cursor-based pagination: find the timestamp of the cursor row, then filter
-        cur = await db.execute(
-            "SELECT timestamp FROM security_events WHERE id = ?",
-            (validate_uuid(after.strip()),),
-        )
-        cursor_row = await cur.fetchone()
-        if cursor_row:
-            clauses.append("timestamp > ?")
-            params.append(str(cursor_row["timestamp"]))
-
     # event_types glob filtering is applied post-fetch because SQL LIKE doesn't
     # support the glob patterns well enough (e.g. auth.* with dots).
-    # For very large result sets this could be optimised with a prefix index;
-    # at typical audit log volumes it's fine.
-    et_patterns = [p.strip() for p in event_types.split(",") if p.strip()]
+    clauses, params, et_patterns = await _build_audit_filter(
+        db, severity, user_id=user_id, since=since, until=until,
+        after=after, event_types=event_types,
+    )
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     query = f"""
@@ -225,28 +244,9 @@ async def export_audit_logs(
     if severity not in _SEVERITY_ORDER:
         raise HTTPException(status_code=400, detail="severity must be info, warning, or critical")
 
-    clauses = []
-    params: list = []
-
-    if severity != "info":
-        sev_values = [k for k, v in _SEVERITY_ORDER.items() if v >= _SEVERITY_ORDER[severity]]
-        placeholders = ",".join("?" * len(sev_values))
-        clauses.append(f"severity IN ({placeholders})")
-        params.extend(sev_values)
-
-    if user_id.strip():
-        clauses.append("user_id = ?")
-        params.append(validate_uuid(user_id.strip()))
-
-    if since.strip():
-        clauses.append("timestamp >= ?")
-        params.append(since.strip())
-
-    if until.strip():
-        clauses.append("timestamp <= ?")
-        params.append(until.strip())
-
-    et_patterns = [p.strip() for p in event_types.split(",") if p.strip()]
+    clauses, params, et_patterns = await _build_audit_filter(
+        db, severity, user_id=user_id, since=since, until=until, event_types=event_types,
+    )
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     query = f"""

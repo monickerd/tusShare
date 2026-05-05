@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
+from app.auth.cookies import clear_auth_cookies, set_auth_cookies, user_response_dict
+from app.util.db import get_admin_setting
 from app.auth.dependencies import get_current_user, require_user_role, _get_auth_provider
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import (
@@ -40,82 +42,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _user_response_dict(user) -> dict:
-    """Build the user dict returned to the client, including key wrapping blobs and roles."""
-    return {
-        "id": user.id,
-        "username": user.username,
-        "auth_method": user.auth_method,
-        "is_admin": user.is_admin,
-        "is_admin_only": user.is_admin_only,
-        "is_public_device": getattr(user, "is_public_device", False),
-        "roles": sorted(user.roles),
-        "flags": user.flags,
-        "wrapped_master_key": user.wrapped_master_key,
-        "wrapped_master_key_iv": user.wrapped_master_key_iv,
-        "recovery_key_wrapped": user.recovery_key_wrapped,
-        "recovery_key_iv": user.recovery_key_iv,
-        # Asymmetric PQ key material (Phase 5b)
-        "x25519_public_key": getattr(user, "x25519_public_key", None),
-        "mlkem768_public_key": getattr(user, "mlkem768_public_key", None),
-        "x25519_private_wrapped": getattr(user, "x25519_private_wrapped", None),
-        "mlkem768_private_wrapped": getattr(user, "mlkem768_private_wrapped", None),
-        "asymmetric_key_iv": getattr(user, "asymmetric_key_iv", None),
-    }
-
-
-def _set_auth_cookies(
-    response: Response,
-    access_token: str,
-    refresh_token: str,
-    csrf_token: str,
-    max_age: int | None = None,
-) -> None:
-    """Set authentication cookies on a response.
-
-    max_age overrides the default refresh-token / CSRF max-age (seconds).
-    Pass a shorter value for public-device sessions.
-    """
-    rt_max_age = max_age if max_age is not None else settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
-    response.set_cookie(
-        key=COOKIE_ACCESS,
-        value=access_token,
-        httponly=True,
-        secure=True,
-        samesite="strict",
-        path="/",
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
-    )
-    response.set_cookie(
-        key=COOKIE_REFRESH,
-        value=refresh_token,
-        httponly=True,
-        secure=True,
-        samesite="strict",
-        path=REFRESH_TOKEN_COOKIE_PATH,
-        max_age=rt_max_age,
-    )
-    response.set_cookie(
-        key=COOKIE_CSRF,
-        value=csrf_token,
-        httponly=False,
-        secure=True,
-        samesite="strict",
-        path="/",
-        max_age=rt_max_age,
-    )
-
-
-def _clear_auth_cookies(response: Response) -> None:
-    """Clear all authentication cookies.
-
-    secure=True and samesite="strict" must be repeated here — delete_cookie
-    defaults secure=False, which causes browsers to reject the Set-Cookie header
-    for __Host- and __Secure- prefixed cookies (both require the Secure flag).
-    """
-    response.delete_cookie(key=COOKIE_ACCESS, path="/", secure=True, samesite="strict")
-    response.delete_cookie(key=COOKIE_REFRESH, path=REFRESH_TOKEN_COOKIE_PATH, secure=True, samesite="strict")
-    response.delete_cookie(key=COOKIE_CSRF, path="/", secure=True, samesite="strict")
 
 
 @router.post("/logout")
@@ -135,7 +61,7 @@ async def logout(
         )
         await db.commit()
 
-    _clear_auth_cookies(response)
+    clear_auth_cookies(response)
     return {"message": "Logged out"}
 
 
@@ -171,7 +97,7 @@ async def refresh(
         row = await cursor.fetchone()
         if row is None:
             await db.rollback()
-            _clear_auth_cookies(response)
+            clear_auth_cookies(response)
             raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
         token_id = row["id"]
@@ -194,7 +120,7 @@ async def refresh(
                 (user_id,),
             )
             await db.commit()
-            _clear_auth_cookies(response)
+            clear_auth_cookies(response)
             logger.warning(
                 "Refresh token reuse detected for user %s — all sessions revoked (possible theft)",
                 user_id,
@@ -205,7 +131,7 @@ async def refresh(
         user = await auth_provider.get_user_by_id(user_id)
         if user is None:
             await db.rollback()
-            _clear_auth_cookies(response)
+            clear_auth_cookies(response)
             raise HTTPException(status_code=401, detail="User not found or inactive")
 
         # Issue new tokens inside same transaction — preserve is_public_device
@@ -236,7 +162,7 @@ async def refresh(
     access_token = create_access_token(user.id, session_id=new_token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
     rt_max_age = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES * 60 if is_public_device else None
-    _set_auth_cookies(response, access_token, new_raw_refresh, csrf_token, max_age=rt_max_age)
+    set_auth_cookies(response, access_token, new_raw_refresh, csrf_token, max_age=rt_max_age)
 
     return {"message": "Token refreshed"}
 
@@ -277,7 +203,7 @@ async def me(
     )
     row = await cursor.fetchone()
     escrow_active = bool(row["escrow_active"]) if row else False
-    return {"user": {**_user_response_dict(user), "escrow_active": escrow_active}}
+    return {"user": {**user_response_dict(user), "escrow_active": escrow_active}}
 
 
 # ---------------------------------------------------------------------------
@@ -432,11 +358,8 @@ async def get_public_settings(db=Depends(get_db)):
     Exposes the server-enforced upload chunk size so the client uses the correct
     value when creating a new tus upload.  No auth required.
     """
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'default_chunk_size'"
-    )
-    row = await cursor.fetchone()
-    chunk_size = int(row["value"]) if row else settings.DEFAULT_CHUNK_SIZE
+    cs_val = await get_admin_setting(db, "default_chunk_size")
+    chunk_size = int(cs_val) if cs_val is not None else settings.DEFAULT_CHUNK_SIZE
     return {"chunk_size": chunk_size}
 
 

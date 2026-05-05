@@ -18,6 +18,7 @@ from app.config import settings
 from app.models.role import FLAG_MANAGE_INVITES
 from app.database import get_db
 import app.storage.manager as storage
+from app.util.db import get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.wordlist import insert_invite_short_link_with_unique_slug
 
@@ -154,11 +155,8 @@ async def get_disk_usage(
         fs_total = 0
         fs_free  = 0
 
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'disk_warning_threshold'"
-    )
-    threshold_row = await cursor.fetchone()
-    threshold_pct = int(threshold_row["value"]) if threshold_row else settings.DISK_WARNING_THRESHOLD
+    thr_val = await get_admin_setting(db, "disk_warning_threshold")
+    threshold_pct = int(thr_val) if thr_val is not None else settings.DISK_WARNING_THRESHOLD
 
     usage_pct = ((fs_total - fs_free) / fs_total * 100) if fs_total > 0 else 0
     warning   = usage_pct >= threshold_pct

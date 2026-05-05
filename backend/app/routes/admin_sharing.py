@@ -43,6 +43,7 @@ from app.models.role import (
     ROLE_TIER,
     admin_best_tier,
 )
+from app.routes._access import require_flag
 from app.services.sharing_rules import simulate_sharing_rules
 from app.validation.sanitizers import validate_uuid
 
@@ -73,9 +74,6 @@ _VALID_SHARE_TYPES = frozenset({"link", "user"})
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _require_sharing_flag(admin: AuthenticatedUser) -> None:
-    if not admin.has_flag(FLAG_MANAGE_SHARING):
-        raise HTTPException(status_code=403, detail="can_manage_sharing permission required")
 
 
 def _admin_tier(admin: AuthenticatedUser) -> int:
@@ -319,7 +317,7 @@ async def get_sharing_flags(
     db=Depends(get_db),
 ):
     """Return sharing capability flag assignments for every role that has any of the 4 flags."""
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
 
     placeholders = ",".join(["?" for _ in _SHARING_CAPABILITY_FLAGS])
     cursor = await db.execute(
@@ -366,7 +364,7 @@ async def update_sharing_flags(
     Body: { role_id, flags: { flag_name: true|false, ... } }
     Only the specified flags are updated; others are untouched.
     """
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
 
     # Verify role exists
     cursor = await db.execute("SELECT id FROM roles WHERE id = ?", (body.role_id,))
@@ -398,7 +396,7 @@ async def list_sharing_rules(
     active_only: bool = Query(False),
 ):
     """List all sharing rules ordered by priority."""
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
 
     where = "WHERE is_active = TRUE" if active_only else ""
     cursor = await db.execute(
@@ -430,7 +428,7 @@ async def test_sharing_rules(
     Returns the list of rules that would fire, in evaluation order.
     No state is changed; no security events are emitted.
     """
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
 
     # Verify sender exists
     cursor = await db.execute("SELECT id FROM users WHERE id = ?", (body.sender_user_id,))
@@ -469,7 +467,7 @@ async def create_sharing_rule(
     db=Depends(get_db),
 ):
     """Create a sharing rule with its conditions."""
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
 
     my_tier = _admin_tier(admin)
 
@@ -538,7 +536,7 @@ async def get_sharing_rule(
     db=Depends(get_db),
 ):
     """Get a single sharing rule with its conditions."""
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
     rule_id = validate_uuid(rule_id)
 
     cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))
@@ -558,7 +556,7 @@ async def update_sharing_rule(
     db=Depends(get_db),
 ):
     """Update a sharing rule's metadata and/or replace its conditions."""
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
     rule_id = validate_uuid(rule_id)
 
     cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))
@@ -655,7 +653,7 @@ async def delete_sharing_rule(
     db=Depends(get_db),
 ):
     """Delete a sharing rule and all its conditions."""
-    _require_sharing_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
     rule_id = validate_uuid(rule_id)
 
     cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))

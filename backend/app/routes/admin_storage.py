@@ -19,11 +19,7 @@ they expose or modify provider credentials (access keys, bucket names).
 
 from __future__ import annotations
 
-import asyncio
-import ipaddress
 import logging
-import socket
-import urllib.parse
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -31,11 +27,11 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.config import settings
 from app.database import get_db
 from app.middleware.stepup import require_step_up
 from app.storage.crypto import decrypt_volume_config, encrypt_volume_config
 import app.storage.manager as storage
+from app.util.ssrf import validate_endpoint_url
 from app.validation.sanitizers import validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -48,70 +44,6 @@ _SECRET_FIELDS = {"access_key_id", "secret_access_key", "bind_password", "client
 
 _VALID_PROVIDERS = {"local", "s3", "b2"}
 _VALID_TIERS = {"hot", "warm", "cold"}
-
-# Networks that must never be targets of server-side outbound connections.
-_BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),      # loopback
-    ipaddress.ip_network("10.0.0.0/8"),       # RFC 1918
-    ipaddress.ip_network("172.16.0.0/12"),    # RFC 1918
-    ipaddress.ip_network("192.168.0.0/16"),   # RFC 1918
-    ipaddress.ip_network("169.254.0.0/16"),   # link-local / AWS metadata (169.254.169.254)
-    ipaddress.ip_network("100.64.0.0/10"),    # CGNAT shared space
-    ipaddress.ip_network("::1/128"),           # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),          # IPv6 ULA
-    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
-]
-
-
-async def _validate_endpoint_url(url: str) -> None:
-    """Reject endpoint URLs that point to private/internal networks (SSRF prevention).
-
-    Enforces HTTPS in non-debug mode and resolves the hostname to check for
-    RFC 1918, link-local (including the AWS/GCP metadata IP), and loopback ranges.
-    Raises HTTPException(422) on any violation.
-    """
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception:
-        raise HTTPException(status_code=422, detail="endpoint_url is not a valid URL")
-
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=422, detail="endpoint_url must use http or https scheme")
-    if parsed.scheme == "http" and not settings.DEBUG:
-        raise HTTPException(
-            status_code=422,
-            detail="endpoint_url must use https in production (set DEBUG=true to allow plain http)",
-        )
-
-    hostname = parsed.hostname
-    if not hostname:
-        raise HTTPException(status_code=422, detail="endpoint_url must include a hostname")
-
-    try:
-        addr_infos = await asyncio.to_thread(socket.getaddrinfo, hostname, None)
-    except socket.gaierror:
-        raise HTTPException(
-            status_code=422, detail="Cannot resolve the hostname in endpoint_url"
-        )
-
-    for _, _, _, _, sockaddr in addr_infos:
-        ip_str = sockaddr[0]
-        try:
-            ip = ipaddress.ip_address(ip_str)
-        except ValueError:
-            continue
-        for net in _BLOCKED_NETWORKS:
-            try:
-                if ip in net:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            "endpoint_url resolves to a private or reserved address. "
-                            "Direct access to internal networks is not permitted."
-                        ),
-                    )
-            except TypeError:
-                pass  # IPv4 address checked against IPv6 network (or vice-versa) — skip
 
 
 def _redact_config(cfg: dict) -> dict:
@@ -202,7 +134,7 @@ async def create_volume(
     db=Depends(get_db),
 ):
     if body.provider in ("s3", "b2") and body.config.get("endpoint_url"):
-        await _validate_endpoint_url(body.config["endpoint_url"])
+        await validate_endpoint_url(body.config["endpoint_url"])
 
     vol_id = str(uuid.uuid4())
     config_enc = encrypt_volume_config(body.config) if body.config else None
@@ -280,7 +212,7 @@ async def update_volume(
             merged[k] = v
 
     if body.provider in ("s3", "b2") and merged.get("endpoint_url"):
-        await _validate_endpoint_url(merged["endpoint_url"])
+        await validate_endpoint_url(merged["endpoint_url"])
 
     config_enc = encrypt_volume_config(merged) if merged else None
 

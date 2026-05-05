@@ -27,6 +27,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import get_db
 from app.models.policy import AdminScopeCondition, VALID_OPERATORS
 from app.models.role import FLAG_MANAGE_POLICIES
+from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
 
 router = APIRouter()
@@ -37,10 +38,6 @@ _MAX_VALUE_LEN = 500
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _check_can_manage(user: AuthenticatedUser):
-    if not user.has_flag(FLAG_MANAGE_POLICIES):
-        raise HTTPException(status_code=403, detail="can_manage_policies required")
 
 
 async def _load_scope_cond(db, cond_id: str) -> AdminScopeCondition:
@@ -90,7 +87,7 @@ async def list_scope_conditions(
 
     Returns all conditions across all holders.  The UI groups them by holder.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     cursor = await db.execute(
         "SELECT * FROM admin_scope_conditions ORDER BY holder_type, holder_id, field"
     )
@@ -110,7 +107,7 @@ async def list_scope_conditions_for_holder(
     db=Depends(get_db),
 ):
     """List scope conditions for a specific user or role."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
 
     if holder_type not in ("user", "role"):
         raise HTTPException(status_code=400, detail="holder_type must be 'user' or 'role'")
@@ -142,7 +139,7 @@ async def create_scope_condition(
     holder_type='user'  → holder_id must be a valid user UUID.
     holder_type='role'  → holder_id is a role name (e.g. 'org_admin').
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
 
     if body.holder_type not in ("user", "role"):
         raise HTTPException(status_code=400, detail="holder_type must be 'user' or 'role'")
@@ -195,7 +192,7 @@ async def get_scope_condition(
     db=Depends(get_db),
 ):
     """Get a single scope condition by ID."""
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     cond_id = validate_uuid(cond_id)
     cond = await _load_scope_cond(db, cond_id)
     return {"condition": cond.to_dict()}
@@ -217,7 +214,7 @@ async def update_scope_condition(
     Changing operator/value may propagate through inherited policy conditions
     (they will be re-evaluated on next user login/step-up).
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     cond_id = validate_uuid(cond_id)
     await _load_scope_cond(db, cond_id)  # 404 guard
 
@@ -266,7 +263,7 @@ async def delete_scope_condition(
     inherited_scope_id set to NULL and scope_detached set to 1 (via DB trigger).
     Affected policies will show a review banner in the UI.
     """
-    _check_can_manage(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     cond_id = validate_uuid(cond_id)
     await _load_scope_cond(db, cond_id)  # 404 guard
 

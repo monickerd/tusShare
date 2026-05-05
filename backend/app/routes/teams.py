@@ -72,6 +72,7 @@ from app.models.team import (
     get_user_teams,
 )
 from app.routes._access import get_folder_team_id
+from app.util.db import get_admin_setting
 from app.validation.sanitizers import (
     sanitize_team_name,
     sanitize_username,
@@ -496,11 +497,8 @@ async def create_team(
             )
 
     # enforce escrow_require_coverage
-    cov_cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'escrow_require_coverage'"
-    )
-    cov_row = await cov_cursor.fetchone()
-    if cov_row and cov_row["value"] == "1" and not body.escrow_members:
+    cov_val = await get_admin_setting(db, "escrow_require_coverage")
+    if cov_val == "1" and not body.escrow_members:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -597,11 +595,7 @@ async def get_team_detail(
     members = await get_team_members(db, team_id)
     folders = await get_team_folders(db, team_id)
 
-    flag_cur = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'allow_multi_team_owner'"
-    )
-    flag_row = await flag_cur.fetchone()
-    allow_multi_owner = flag_row["value"] == "true" if flag_row else False
+    allow_multi_owner = (await get_admin_setting(db, "allow_multi_team_owner")) == "true"
 
     return {
         "team": team.to_dict(),
@@ -794,11 +788,7 @@ async def update_member_role(
 
     # Promoting to owner requires the admin flag
     if body.role == TEAM_ROLE_OWNER:
-        flag_cur = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'allow_multi_team_owner'"
-        )
-        flag_row = await flag_cur.fetchone()
-        if not flag_row or flag_row["value"] != "true":
+        if (await get_admin_setting(db, "allow_multi_team_owner")) != "true":
             raise HTTPException(
                 status_code=403,
                 detail="Multi-owner teams are not enabled by the administrator",
@@ -1560,11 +1550,7 @@ async def create_ephemeral_slot(
     await _require_team_role(db, team_id, user, TEAM_ROLE_SUPERVISOR)
 
     # Check org setting
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'allow_ephemeral_team_invites'"
-    )
-    row = await cursor.fetchone()
-    if not row or row["value"] != "true":
+    if (await get_admin_setting(db, "allow_ephemeral_team_invites")) != "true":
         raise HTTPException(
             status_code=403,
             detail="Ephemeral team invite links are disabled. "

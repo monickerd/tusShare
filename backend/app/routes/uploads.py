@@ -26,6 +26,7 @@ from app.database import get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.services import sse_broker
 import app.storage.manager as storage
+from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -146,11 +147,8 @@ async def create_upload(
     # Enforce admin-configured chunk size.  Clients fetch the current value from
     # /auth/public-settings on startup; a mismatch means the setting changed since
     # the client last loaded — tell the client to refresh and retry.
-    cs_cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'default_chunk_size'"
-    )
-    cs_row = await cs_cursor.fetchone()
-    admin_chunk_size = int(cs_row["value"]) if cs_row else settings.DEFAULT_CHUNK_SIZE
+    cs_val = await get_admin_setting(db, "default_chunk_size")
+    admin_chunk_size = int(cs_val) if cs_val is not None else settings.DEFAULT_CHUNK_SIZE
     if chunk_size != admin_chunk_size:
         raise HTTPException(
             status_code=400,
@@ -183,11 +181,8 @@ async def create_upload(
         raise HTTPException(status_code=404, detail="User not found")
 
     # Global max file size (admin setting; 0 = no limit)
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'global_max_file_size'"
-    )
-    setting_row = await cursor.fetchone()
-    global_max = int(setting_row["value"]) if setting_row else settings.GLOBAL_MAX_FILE_SIZE
+    gmax_val = await get_admin_setting(db, "global_max_file_size")
+    global_max = int(gmax_val) if gmax_val is not None else settings.GLOBAL_MAX_FILE_SIZE
 
     if global_max > 0 and total_encrypted_size > global_max:
         raise HTTPException(status_code=413, detail="File exceeds the server's maximum allowed size")
@@ -203,11 +198,8 @@ async def create_upload(
         # Fires on every upload attempt in that range — the deduplication gate in
         # op_bus suppresses repeat notifications until the user drops below the threshold.
         try:
-            quota_cursor = await db.execute(
-                "SELECT value FROM admin_settings WHERE key = 'upload_quota_warn_pct'"
-            )
-            quota_row = await quota_cursor.fetchone()
-            warn_pct = int(quota_row["value"]) if quota_row and quota_row["value"] else 90
+            warn_val = await get_admin_setting(db, "upload_quota_warn_pct")
+            warn_pct = int(warn_val) if warn_val else 90
             used_pct = user_row["disk_used"] / user_row["disk_quota"] * 100
             if used_pct >= warn_pct:
                 from app.services import op_bus

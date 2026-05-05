@@ -13,6 +13,7 @@ from app.models.file import File, Folder
 from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
+from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
 
 router = APIRouter(dependencies=[Depends(check_management_rate_limit)])
@@ -432,11 +433,7 @@ async def delete_folder(
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot delete the shared folder")
 
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'trash_enabled'"
-    )
-    setting = await cursor.fetchone()
-    trash_enabled = (setting["value"] if setting else "true") == "true"
+    trash_enabled = (await get_admin_setting(db, "trash_enabled", default="true")) == "true"
 
     if trash_enabled:
         await db.execute("BEGIN")

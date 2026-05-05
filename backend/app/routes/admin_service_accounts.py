@@ -30,6 +30,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import FLAG_MANAGE_SERVICE_ACCOUNTS
+from app.routes._access import require_flag
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
@@ -62,9 +63,6 @@ def _key_prefix_display(raw: str) -> str:
 # Permission guard
 # ---------------------------------------------------------------------------
 
-def _require_sa_flag(admin: AuthenticatedUser) -> None:
-    if not admin.has_flag(FLAG_MANAGE_SERVICE_ACCOUNTS):
-        raise HTTPException(status_code=403, detail="Service account management permission required")
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +129,7 @@ async def list_service_accounts(
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
 ):
-    _require_sa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
 
     cursor = await db.execute(
         """
@@ -172,7 +170,7 @@ async def create_service_account(
     db=Depends(get_db),
     _stepup=Depends(require_step_up(_STEPUP)),
 ):
-    _require_sa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
 
     sa_id  = str(uuid.uuid4())
     raw_key = _generate_raw_key()
@@ -235,7 +233,7 @@ async def get_service_account(
     admin: AuthenticatedUser = Depends(require_admin),
     db=Depends(get_db),
 ):
-    _require_sa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -289,7 +287,7 @@ async def update_service_account(
     db=Depends(get_db),
     _stepup=Depends(require_step_up(_STEPUP)),
 ):
-    _require_sa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -354,7 +352,7 @@ async def delete_service_account(
     db=Depends(get_db),
     _stepup=Depends(require_step_up(_STEPUP)),
 ):
-    _require_sa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -393,7 +391,7 @@ async def rotate_service_account_key(
     db=Depends(get_db),
     _stepup=Depends(require_step_up(_STEPUP)),
 ):
-    _require_sa_flag(admin)
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(

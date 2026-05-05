@@ -6,7 +6,6 @@ Phase 4. Encrypted bytes are served verbatim — the server never decrypts.
 
 import asyncio
 import logging
-import urllib.parse
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -22,6 +21,8 @@ from app.models.file import File, FileChunk
 from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import event_bus, sse_broker
 import app.storage.manager as storage
+from app.util.db import get_admin_setting
+from app.util.http import content_disposition, parse_range_header
 from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -377,9 +378,8 @@ async def batch_copy_files(
     dest_team_id = await get_folder_team_id(db, dest_id)
 
     # Fetch copy_boundary admin setting
-    cursor = await db.execute("SELECT value FROM admin_settings WHERE key = 'copy_boundary'")
-    boundary_row = await cursor.fetchone()
-    copy_boundary = (boundary_row["value"] if boundary_row else "any").lower()
+    boundary_val = await get_admin_setting(db, "copy_boundary", default="any")
+    copy_boundary = boundary_val.lower()
 
     if copy_boundary == "disabled":
         event_bus.emit(SecurityEvent(
@@ -737,11 +737,7 @@ async def delete_file(
         raise HTTPException(status_code=403, detail="Access denied")
 
     # Check whether trash is enabled.
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'trash_enabled'",
-    )
-    setting = await cursor.fetchone()
-    trash_enabled = (setting["value"] if setting else "true") == "true"
+    trash_enabled = (await get_admin_setting(db, "trash_enabled", default="true")) == "true"
 
     if trash_enabled:
         await db.execute(
@@ -891,28 +887,10 @@ async def get_file_content(
     end = encrypted_size - 1
 
     if range_header:
-        if not range_header.startswith("bytes="):
-            raise HTTPException(status_code=400, detail="Only bytes ranges are supported")
-        spec = range_header[6:]  # strip "bytes="
-        parts = spec.split("-", 1)
-        try:
-            if parts[0] == "" and len(parts) == 2 and parts[1]:
-                # Suffix range: bytes=-N  →  last N bytes
-                suffix = int(parts[1])
-                start = max(0, encrypted_size - suffix)
-                end = encrypted_size - 1
-            else:
-                start = int(parts[0]) if parts[0] else 0
-                end = int(parts[1]) if (len(parts) > 1 and parts[1]) else encrypted_size - 1
-        except (ValueError, OverflowError):
-            raise HTTPException(status_code=400, detail="Invalid Range header")
-
-        if start < 0 or end < start or start >= encrypted_size:
-            return Response(
-                status_code=416,
-                headers={"Content-Range": f"bytes */{encrypted_size}"},
-            )
-        end = min(end, encrypted_size - 1)
+        result = parse_range_header(range_header, encrypted_size)
+        if isinstance(result, Response):
+            return result
+        start, end = result
 
     content_length = end - start + 1
     status_code = 206 if range_header else 200
@@ -925,10 +903,8 @@ async def get_file_content(
         await _log_download(db, request, user, file_id)
         asyncio.create_task(_update_last_accessed(file_id))
 
-    # --- Content-Disposition: RFC 5987 UTF-8 encoded filename ---
-    safe_name = row["sanitized_name"] or "download"
-    encoded_name = urllib.parse.quote(safe_name, safe="")
-    disposition = f"attachment; filename*=UTF-8''{encoded_name}"
+    # --- Content-Disposition ---
+    disposition = content_disposition(row["sanitized_name"] or "download")
 
     resp_headers = {
         "Accept-Ranges": "bytes",

@@ -27,6 +27,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import get_db
 from app.models.policy import PolicyFieldDef, VALID_OPERATORS
 from app.models.role import FLAG_MANAGE_POLICIES
+from app.routes._access import require_flag
 
 router = APIRouter()
 
@@ -45,14 +46,6 @@ _VALID_DATA_TYPES = frozenset({"string", "boolean"})
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _check_can_read(user: AuthenticatedUser):
-    if not user.has_flag(FLAG_MANAGE_POLICIES):
-        raise HTTPException(status_code=403, detail="can_manage_policies required")
-
-
-def _check_can_write(user: AuthenticatedUser):
-    if not user.has_flag(FLAG_DEFINE_POLICY_FIELDS):
-        raise HTTPException(status_code=403, detail="can_define_policy_fields required")
 
 
 async def _load_field(db, name: str) -> PolicyFieldDef:
@@ -96,7 +89,7 @@ async def list_policy_fields(
     Returns internal (non-editable) and admin-registered fields.
     Any admin with can_manage_policies can view the registry.
     """
-    _check_can_read(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     cursor = await db.execute(
         "SELECT * FROM policy_field_definitions ORDER BY source, name"
     )
@@ -119,7 +112,7 @@ async def create_policy_field(
     Requires can_define_policy_fields.  Internal fields cannot be created via
     the API — they are seeded by the migration.
     """
-    _check_can_write(user)
+    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, "can_define_policy_fields required")
 
     if not _FIELD_NAME_RE.match(body.name):
         raise HTTPException(
@@ -161,7 +154,7 @@ async def get_policy_field(
     db=Depends(get_db),
 ):
     """Get a single policy field definition."""
-    _check_can_read(user)
+    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
     field = await _load_field(db, name)
     return {"field": field.to_dict()}
 
@@ -182,7 +175,7 @@ async def update_policy_field(
     Internal fields (source='internal') cannot be edited.
     Requires can_define_policy_fields.
     """
-    _check_can_write(user)
+    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, "can_define_policy_fields required")
 
     field = await _load_field(db, name)
     if field.source == "internal":
@@ -230,7 +223,7 @@ async def delete_policy_field(
         admin_scope_condition (RESTRICT FK prevents orphaned conditions).
     Requires can_define_policy_fields.
     """
-    _check_can_write(user)
+    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, "can_define_policy_fields required")
 
     field = await _load_field(db, name)
     if field.source == "internal":
