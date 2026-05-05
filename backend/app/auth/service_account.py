@@ -11,7 +11,6 @@ get_current_user checks for the 'sa_' prefix automatically.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from datetime import datetime, timezone
 
@@ -20,15 +19,12 @@ from fastapi import HTTPException
 from app.auth.interface import AuthenticatedUser
 from app.database import db_session
 from app.models.role import get_user_global_flags, get_user_global_role_ids
+from app.util.crypto import sha256_hex
 
 logger = logging.getLogger(__name__)
 
 _PREFIX = "sa_"
 _MIN_LEN = len(_PREFIX) + 20  # prefix + at least 20 chars of entropy
-
-
-def _hash_key(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 async def _update_last_used(key_id: str) -> None:
@@ -52,7 +48,7 @@ async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
     if len(raw_token) < _MIN_LEN:
         raise HTTPException(status_code=401, detail="Invalid service account token")
 
-    key_hash = _hash_key(raw_token)
+    key_hash = sha256_hex(raw_token)
     now_iso  = datetime.now(timezone.utc).isoformat()
 
     async with db_session() as db:

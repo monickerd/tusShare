@@ -120,6 +120,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
         except Exception:
             pass
 
+    challenge_id, challenge_bytes = await _create_challenge(db, user_id, "registration")
     options = webauthn.generate_registration_options(
         rp_id=settings.WEBAUTHN_RP_ID,
         rp_name=settings.WEBAUTHN_RP_NAME,
@@ -132,16 +133,8 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
             user_verification=UserVerificationRequirement.PREFERRED,
         ),
         exclude_credentials=exclude_ids,
+        challenge=challenge_bytes,
     )
-
-    challenge_id, _ = await _create_challenge(db, user_id, "registration")
-    # Override the challenge in the DB with what py-webauthn generated
-    challenge_b64 = bytes_to_base64url(options.challenge)
-    await db.execute(
-        "UPDATE webauthn_challenges SET challenge = ? WHERE id = ?",
-        (challenge_b64, challenge_id),
-    )
-    await db.commit()
 
     options_dict = json.loads(webauthn.options_to_json(options))
     return challenge_id, options_dict
@@ -228,19 +221,13 @@ async def begin_authentication(db, user_id: str, purpose: str) -> tuple[str, dic
         except Exception:
             pass
 
+    challenge_id, challenge_bytes = await _create_challenge(db, user_id, purpose)
     options = webauthn.generate_authentication_options(
         rp_id=settings.WEBAUTHN_RP_ID,
         allow_credentials=allow_credentials,
         user_verification=UserVerificationRequirement.PREFERRED,
+        challenge=challenge_bytes,
     )
-
-    challenge_id, _ = await _create_challenge(db, user_id, purpose)
-    challenge_b64 = bytes_to_base64url(options.challenge)
-    await db.execute(
-        "UPDATE webauthn_challenges SET challenge = ? WHERE id = ?",
-        (challenge_b64, challenge_id),
-    )
-    await db.commit()
 
     options_dict = json.loads(webauthn.options_to_json(options))
     return challenge_id, options_dict

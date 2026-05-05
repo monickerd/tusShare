@@ -12,6 +12,7 @@ import jwt
 from app.conf.auth import CSRF_TOKEN_BYTES, REFRESH_TOKEN_BYTES
 from app.config import settings
 from app.database import db_session
+from app.util.crypto import sha256_hex
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ def create_refresh_token() -> tuple[str, str]:
 
 def hash_refresh_token(raw_token: str) -> str:
     """Hash a raw refresh token for database lookup."""
-    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    return sha256_hex(raw_token)
 
 
 async def store_refresh_token(

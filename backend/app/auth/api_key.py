@@ -21,7 +21,6 @@ For dual-auth (JWT or API key) routes, call check_api_key() directly:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -29,14 +28,11 @@ from datetime import datetime, timezone
 from fastapi import Header, HTTPException
 
 from app.database import db_session
+from app.util.crypto import sha256_hex
 
 logger = logging.getLogger(__name__)
 
 _PREFIX = "tss_"
-
-
-def _hash_key(raw: str) -> str:
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 async def _update_last_used(key_id: str) -> None:
@@ -56,7 +52,7 @@ async def _check_key(raw_key: str, accepted_scopes: tuple[str, ...]) -> dict:
     if not raw_key.startswith(_PREFIX) or len(raw_key) < 20:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-    key_hash = _hash_key(raw_key)
+    key_hash = sha256_hex(raw_key)
     now_iso  = datetime.now(timezone.utc).isoformat()
 
     async with db_session() as db:

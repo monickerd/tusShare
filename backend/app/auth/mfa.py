@@ -26,17 +26,16 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import secrets
 import time
 import uuid
 from typing import Any
 
 import jwt
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.auth.stepup import hkdf_sha256
 from app.config import settings
+from app.util.crypto import aesgcm_decrypt_blob, aesgcm_encrypt_blob
 
 # ---------------------------------------------------------------------------
 # Credential encryption
@@ -64,27 +63,12 @@ def _get_mfa_key() -> bytes:
 
 def encrypt_credential(payload: dict[str, Any]) -> str:
     """AES-256-GCM encrypt a credential dict; return base64url-encoded blob."""
-    key = _get_mfa_key()
-    iv = os.urandom(12)
-    plaintext = json.dumps(payload, separators=(",", ":")).encode()
-    aesgcm = AESGCM(key)
-    ct_and_tag = aesgcm.encrypt(iv, plaintext, None)  # includes 16-byte tag at end
-    blob = iv + ct_and_tag
-    return base64.urlsafe_b64encode(blob).rstrip(b"=").decode()
+    return aesgcm_encrypt_blob(_get_mfa_key(), payload)
 
 
 def decrypt_credential(blob: str) -> dict[str, Any]:
     """Decrypt a credential blob produced by encrypt_credential."""
-    key = _get_mfa_key()
-    padded = blob + "=" * (-len(blob) % 4)
-    raw = base64.urlsafe_b64decode(padded)
-    if len(raw) < 28:  # 12 iv + 16 tag minimum (zero-length plaintext)
-        raise ValueError("Credential blob too short")
-    iv = raw[:12]
-    ct_and_tag = raw[12:]
-    aesgcm = AESGCM(key)
-    plaintext = aesgcm.decrypt(iv, ct_and_tag, None)
-    return json.loads(plaintext)
+    return aesgcm_decrypt_blob(_get_mfa_key(), blob)
 
 
 # ---------------------------------------------------------------------------
