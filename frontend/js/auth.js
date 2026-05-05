@@ -2150,11 +2150,12 @@ const StepUp = (() => {
                     client_step_up_start: startLoginRequest,
                 });
 
+                const canonicalUsername = round1.username || user.username;
                 const loginResult = opaque.client.finishLogin({
                     clientLoginState,
                     loginResponse: round1.login_response,
                     password,
-                    identifiers: { client: user.username, server: 'tusshare' },
+                    identifiers: { client: canonicalUsername, server: 'tusshare' },
                 });
                 if (!loginResult) throw new Error('Invalid credentials');
 

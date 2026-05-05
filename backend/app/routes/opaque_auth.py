@@ -771,6 +771,7 @@ async def opaque_step_up_start(
     return {
         "login_response": base64.urlsafe_b64encode(login_response_bytes).decode().rstrip("="),
         "session_id": session_id,
+        "username": user.username,
     }
 
 

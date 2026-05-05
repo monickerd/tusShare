@@ -783,7 +783,10 @@ const Crypto = (() => {
  */
 async function computeOpaqueStepUpHmac(sessionKeyB64, actionKey, payloadHash, timestampBucket) {
     const enc = new TextEncoder();
-    const binary = atob(sessionKeyB64);
+    // serenity-kit/opaque returns base64url (- and _); atob() only accepts standard
+    // base64 (+ and /) and throws "String contains an invalid character" in Firefox.
+    const b64std = sessionKeyB64.replace(/-/g, '+').replace(/_/g, '/');
+    const binary = atob(b64std + '==='.slice(0, (4 - b64std.length % 4) % 4));
     const keyBytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) keyBytes[i] = binary.charCodeAt(i);
 

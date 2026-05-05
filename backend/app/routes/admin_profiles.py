@@ -18,12 +18,14 @@ import json as _json
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 
+import app.sensitive_config as sensitive_config
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
+from app.auth.stepup import verify_step_up_token
 from app.database import get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import admin_best_tier
@@ -87,7 +89,7 @@ _PROFILES: dict[str, dict] = {
         ),
         "admin_settings": {
             "escrow_require_coverage":     {"value": "0", "is_locked": True,  "locked_min_tier": 2},
-            "notify_escrow_on_revocation": {"value": "1", "is_locked": True,  "locked_min_tier": 2},
+            "notify_escrow_on_revocation": {"value": "0", "is_locked": True,  "locked_min_tier": 2},
         },
         "role_flag_overrides": {
             "role_user": {
@@ -507,8 +509,8 @@ async def export_settings(
 @router.post("/settings/apply-profile")
 async def apply_profile(
     body: ApplyProfileRequest,
+    request: Request,
     admin: AuthenticatedUser = Depends(require_admin),
-    _: None = Depends(require_step_up(_STEPUP_ACTION)),
     db=Depends(get_db),
 ):
     """Apply a built-in security profile.
@@ -516,8 +518,41 @@ async def apply_profile(
     Without confirm=True: returns a diff preview (no changes made).
     With confirm=True and (for replace mode) confirmation_text='REPLACE':
       applies the profile atomically and emits a SIEM event.
+
+    Step-up is bypassed during the first-run wizard (mark_first_run=True before
+    first_run_completed is set).  All post-setup calls require step-up as normal.
     """
     _require_server_admin(admin)
+
+    # Determine whether step-up must be enforced.
+    # During first-run setup the admin has just bootstrapped and has no active
+    # session key to complete OPAQUE step-up, so we skip it.
+    row = await (await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'first_run_completed'"
+    )).fetchone()
+    is_wizard_call = row is None  # step-up not yet possible before first-run completes
+
+    if not is_wizard_call and sensitive_config.is_sensitive(_STEPUP_ACTION):
+        token = request.headers.get("X-Step-Up-Token", "")
+        if not token:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "step_up_required",
+                    "action": _STEPUP_ACTION,
+                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+                },
+            )
+        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION,
+                                    session_id=admin.session_id):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "step_up_invalid",
+                    "action": _STEPUP_ACTION,
+                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+                },
+            )
 
     if body.profile not in _PROFILES:
         raise HTTPException(

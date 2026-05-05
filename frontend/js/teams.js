@@ -450,9 +450,14 @@ const Teams = (() => {
     async function renderTeamDetailPage(container, teamId) {
         _clearEl(container);
 
-        let data;
+        let data, allowEphemeralInvites = true;
         try {
-            data = await Api.get(`${_api}/teams/${teamId}`);
+            [data] = await Promise.all([
+                Api.get(`${_api}/teams/${teamId}`),
+                Api.get(`${_api}/admin/settings`).then(s => {
+                    allowEphemeralInvites = s.settings?.allow_ephemeral_team_invites !== '0';
+                }).catch(() => {}),
+            ]);
         } catch (err) {
             container.appendChild(Utils.el('p', { textContent: 'Failed to load team: ' + err.message }));
             return;
@@ -507,11 +512,14 @@ const Teams = (() => {
                 textContent: 'Invite Member',
                 onClick: () => _openInviteMemberDialog(teamId, members, container),
             }));
-            membersSection.appendChild(Utils.el('button', {
+            const inviteLinkBtn = Utils.el('button', {
                 className: 'btn btn-secondary btn-sm',
                 textContent: 'Create Invite Link',
-                onClick: () => _openCreateInviteLinkDialog(teamId),
-            }));
+                disabled: !allowEphemeralInvites,
+                title: allowEphemeralInvites ? '' : 'Ephemeral invite links are disabled by an administrator',
+                onClick: allowEphemeralInvites ? () => _openCreateInviteLinkDialog(teamId) : null,
+            });
+            membersSection.appendChild(inviteLinkBtn);
         }
         container.appendChild(membersSection);
 
@@ -1251,6 +1259,13 @@ const Teams = (() => {
         modal.appendChild(usernameInput);
         modal.appendChild(roleSelect);
 
+        // Populate custom roles asynchronously
+        Api.get(`${_api}/teams/${teamId}/custom-roles`).then(data => {
+            (data.roles || []).forEach(r => {
+                roleSelect.appendChild(Utils.el('option', { value: r.id, textContent: r.name }));
+            });
+        }).catch(() => { /* non-critical; built-in roles still available */ });
+
         const errEl = Utils.el('p', { className: 'form-error', textContent: '' });
         modal.appendChild(errEl);
 
@@ -1319,11 +1334,22 @@ const Teams = (() => {
                         recipientPub.mlkem768_public_key
                     );
 
-                    await Api.post(`${_api}/teams/${teamId}/members`, {
+                    const builtInRoles = new Set(['team_member', 'team_manager']);
+                    const isCustomRole = !builtInRoles.has(role);
+                    const baseRole = isCustomRole ? 'team_member' : role;
+
+                    const inviteResult = await Api.post(`${_api}/teams/${teamId}/members`, {
                         username,
-                        role,
+                        role: baseRole,
                         ...wrappedKey,
                     });
+
+                    if (isCustomRole) {
+                        await Api.post(
+                            `${_api}/teams/${teamId}/custom-roles/${encodeURIComponent(role)}/assignments`,
+                            { user_id: inviteResult.user_id },
+                        );
+                    }
 
                     overlay.remove();
                     Utils.showToast(`${username} invited`, 'success');

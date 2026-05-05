@@ -399,7 +399,7 @@ const Wizard = (() => {
                 _hideErr(err);
                 const settings = {};
                 const chunk = parseInt(chunkInp.value, 10);
-                if (!isNaN(chunk) && chunk >= 1) settings.default_chunk_size = String(chunk);
+                if (!isNaN(chunk) && chunk >= 1) settings.default_chunk_size = String(chunk * _MB);
                 const maxMb = parseInt(maxInp.value, 10);
                 if (!isNaN(maxMb) && maxMb >= 0) settings.global_max_file_size = String(maxMb * _MB);
                 const bwMbs = parseInt(bwInp.value, 10);

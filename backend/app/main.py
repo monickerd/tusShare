@@ -406,13 +406,20 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(403)
     async def _on_403(request: Request, exc: HTTPException):
-        event_bus.emit(SecurityEvent(
-            event_type="auth.forbidden",
-            severity="warning",
-            outcome="failure",
-            actor=_actor_from_request(request),
-            detail={"path": request.url.path, "method": request.method},
-        ))
+        # Step-up challenge responses are expected 403s — the client retries with a
+        # token, and a successful step-up already emits step_up_granted.  Logging
+        # these as auth.forbidden would create misleading noise in the SIEM.
+        is_step_up_challenge = (
+            isinstance(exc.detail, dict) and exc.detail.get("error") == "step_up_required"
+        )
+        if not is_step_up_challenge:
+            event_bus.emit(SecurityEvent(
+                event_type="auth.forbidden",
+                severity="warning",
+                outcome="failure",
+                actor=_actor_from_request(request),
+                detail={"path": request.url.path, "method": request.method},
+            ))
         return JSONResponse({"detail": exc.detail}, status_code=403)
 
     @app.exception_handler(404)
