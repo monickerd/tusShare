@@ -38,8 +38,8 @@ router = APIRouter()
 
 _TUS_VERSION        = "1.0.0"
 _CONTENT_TYPE_PATCH = "application/offset+octet-stream"
-_ERR_UPLOAD_NOT_FOUND = _ERR_UPLOAD_NOT_FOUND
-_SQL_DELETE_UPLOAD    = _SQL_DELETE_UPLOAD
+_ERR_UPLOAD_NOT_FOUND = "Upload not found"
+_SQL_DELETE_UPLOAD    = "DELETE FROM tus_uploads WHERE id = ?"
 # Maximum single-chunk body: chunkSize (default 5 MB) + AES-GCM tag (16 B) + headroom
 _MAX_CHUNK_BYTES = 21 * 1024 * 1024  # 21 MB
 
