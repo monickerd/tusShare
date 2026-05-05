@@ -42,7 +42,7 @@ from app.util.ssrf import validate_endpoint_url
 logger = logging.getLogger(__name__)
 
 _OIDC_STATE_TTL = 600  # 10 minutes
-_ERR_AUTHLIB_MISSING = _ERR_AUTHLIB_MISSING
+_ERR_AUTHLIB_MISSING = "authlib is not installed"
 
 
 # ---------------------------------------------------------------------------

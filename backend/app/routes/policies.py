@@ -50,9 +50,9 @@ router = APIRouter()
 
 _MAX_POLICY_NAME_LEN  = 80
 _MAX_VALUE_LEN        = 500
-_ERR_PERM_POLICIES    = _ERR_PERM_POLICIES
-_SQL_TEAM_EXISTS      = _SQL_TEAM_EXISTS
-_ERR_TEAM_NOT_FOUND   = _ERR_TEAM_NOT_FOUND
+_ERR_PERM_POLICIES    = "can_manage_policies required"
+_SQL_TEAM_EXISTS      = "SELECT 1 FROM teams WHERE id = ?"
+_ERR_TEAM_NOT_FOUND   = "Team not found"
 
 
 # ---------------------------------------------------------------------------

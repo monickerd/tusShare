@@ -18,7 +18,7 @@ from app.util.theme import get_logo_filename_re, get_theme_config, get_ui_flags
 
 router = APIRouter()
 
-_NOT_FOUND = _NOT_FOUND
+_NOT_FOUND = "Logo file not found on disk"
 
 # Only serve recognised image MIME types for the logo.
 _ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset({

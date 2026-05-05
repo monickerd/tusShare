@@ -33,7 +33,7 @@ MANIFEST_PATH = BACKEND / "app" / "manifest.json"
 # Tracked file sets
 # ---------------------------------------------------------------------------
 
-_CSS_GLOB = _CSS_GLOB
+_CSS_GLOB = "*.css"
 
 # Glob patterns relative to ROOT.  The manifest key equals the path relative
 # to ROOT (which matches the runtime path relative to /app/ in Docker).

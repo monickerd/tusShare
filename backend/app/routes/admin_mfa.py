@@ -30,9 +30,9 @@ from typing import Annotated
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_ERR_PERM_MANAGE_MFA = _ERR_PERM_MANAGE_MFA
-_ERR_INVALID_USER_ID = _ERR_INVALID_USER_ID
-_SQL_REVOKE_TOKENS   = _SQL_REVOKE_TOKENS
+_ERR_PERM_MANAGE_MFA = "can_manage_user_mfa permission required"
+_ERR_INVALID_USER_ID = "Invalid user ID"
+_SQL_REVOKE_TOKENS   = "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?"
 
 
 def _request_info(request: Request) -> tuple[str, str]:

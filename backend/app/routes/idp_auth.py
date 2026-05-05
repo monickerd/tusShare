@@ -73,7 +73,7 @@ router = APIRouter()
 
 _LDAP_LOGIN_RATE_LIMIT  = 5
 _LDAP_LOGIN_RATE_WINDOW = 900   # 5 attempts per 15 minutes per IP
-_OIDC_ERROR_URL = _OIDC_ERROR_URL
+_OIDC_ERROR_URL = "/?oidc_error=1"
 
 # ---------------------------------------------------------------------------
 # OIDC MFA challenge store (RT-07)

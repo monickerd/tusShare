@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _LDAP_USERNAME_RE = re.compile(r'^[a-zA-Z0-9._@\-]{1,64}$')
-_LDAPS_SCHEME = _LDAPS_SCHEME
+_LDAPS_SCHEME = "ldaps://"
 
 # Minimum attribute set fetched on every LDAP auth/fetch.
 # Covers common AD and OpenLDAP schemas without pulling sensitive fields.

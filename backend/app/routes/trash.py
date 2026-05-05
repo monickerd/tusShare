@@ -17,7 +17,7 @@ from typing import Annotated
 
 router = APIRouter()
 
-_ERR_ACCESS_DENIED = _ERR_ACCESS_DENIED
+_ERR_ACCESS_DENIED = "Access denied"
 
 
 # ---------------------------------------------------------------------------
