@@ -45,7 +45,7 @@ info "Waiting for app to be healthy..."
 MAX_WAIT=120
 ELAPSED=0
 until docker inspect --format='{{.State.Health.Status}}' "${PROJECT_NAME}_app" 2>/dev/null | grep -q "healthy"; do
-    if [ $ELAPSED -ge $MAX_WAIT ]; then
+    if [[ $ELAPSED -ge $MAX_WAIT ]]; then
         error "App did not become healthy within ${MAX_WAIT}s"
         docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" logs app
         exit 1
@@ -64,7 +64,7 @@ python -m playwright install chromium --with-deps -q 2>/dev/null || python -m pl
 PYTEST_ARGS=("${@:-tests/e2e/}")
 
 # Optional: skip LDAP/OIDC groups (they need external IdP health)
-if [ "${SKIP_LDAP:-0}" = "1" ]; then
+if [[ "${SKIP_LDAP:-0}" = "1" ]]; then
     PYTEST_ARGS+=("--ignore=tests/e2e/groups/test_09_ldap_integration.py")
     PYTEST_ARGS+=("--ignore=tests/e2e/groups/test_10_oidc_integration.py")
     warn "Skipping LDAP/OIDC groups (SKIP_LDAP=1)"
@@ -88,7 +88,7 @@ EXIT_CODE=$?
 set -e
 
 # ---- Report ----
-if [ $EXIT_CODE -eq 0 ]; then
+if [[ $EXIT_CODE -eq 0 ]]; then
     info "All tests passed."
 else
     error "Tests failed (exit code $EXIT_CODE)."

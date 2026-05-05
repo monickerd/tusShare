@@ -40,7 +40,7 @@ def _probe_pbkdf2() -> dict:
     salt = os.urandom(16)
 
     t0 = time.perf_counter()
-    hashlib.pbkdf2_hmac("sha256", key, salt, _CALIB_ITERS)
+    hashlib.pbkdf2_hmac("sha256", key, salt, _CALIB_ITERS)  # NOSONAR — calibration benchmark, not key derivation
     calib_ms = (time.perf_counter() - t0) * 1000.0
 
     ms_per_iter = calib_ms / _CALIB_ITERS
@@ -144,7 +144,7 @@ def _probe_disk(local_volumes: list) -> list[dict]:
     return results
 
 
-def _probe_pre_batch(cpu: dict) -> dict:
+def _probe_pre_batch(_cpu: dict) -> dict:
     """Estimate a safe PRE re-encryption batch size.
 
     BLS12-381 pairing is client-side; the server's cost per batch is DB I/O.

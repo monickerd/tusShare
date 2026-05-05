@@ -20,7 +20,7 @@ import json
 import logging
 import secrets
 import uuid
-from typing import AsyncGenerator
+from typing import Annotated, AsyncGenerator
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -30,7 +30,7 @@ from app.auth.api_key import check_api_key, make_api_key_dep
 from app.auth.dependencies import get_optional_user, require_admin
 from app.auth.interface import AuthenticatedUser
 from app.auth.idp_crypto import encrypt_token, decrypt_token
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.models.role import FLAG_MANAGE_USERS, FLAG_VIEW_ADMIN_PANEL
 from app.services.siem_filters import PROFILE_META
@@ -38,6 +38,10 @@ from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
 from app.validation.validators import validate_pagination
+
+
+_EVT_SIEM_CONFIG_CHANGED = "admin.siem.config_changed"
+_ERR_SIEM_NOT_FOUND = "SIEM destination not found"
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -56,7 +60,7 @@ _require_audit_key = make_api_key_dep("audit_read")
 
 async def _require_audit_read(
     request: Request,
-    optional_user: AuthenticatedUser | None = Depends(get_optional_user),
+    optional_user: Annotated[AuthenticatedUser | None, Depends(get_optional_user)],
 ) -> dict | None:
     """Accept either an admin JWT or an audit_read API key.
 
@@ -180,7 +184,7 @@ def _row_to_dict(r) -> dict:
 # GET /admin/audit/logs — paginated pull API
 # ---------------------------------------------------------------------------
 
-@router.get("/logs")
+@router.get("/logs", responses={400: {"description": "Bad Request"}})
 async def list_audit_logs(
     limit:       int   = Query(100, ge=1, le=500),
     offset:      int   = Query(0,   ge=0),
@@ -190,8 +194,8 @@ async def list_audit_logs(
     since:       str   = Query("",  description="ISO timestamp lower bound"),
     until:       str   = Query("",  description="ISO timestamp upper bound"),
     after:       str   = Query("",  description="Cursor — event_id to page from (exclusive)"),
-    _auth=Depends(_require_audit_read),
-    db=Depends(get_db),
+    _auth: Annotated[None, Depends(_require_audit_read)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Paginated query over security_events. Suitable for gap-fill after SIEM reconnect."""
     if severity not in _SEVERITY_ORDER:
@@ -230,15 +234,15 @@ async def list_audit_logs(
 # GET /admin/audit/logs/export — CSV download
 # ---------------------------------------------------------------------------
 
-@router.get("/logs/export")
+@router.get("/logs/export", responses={400: {"description": "Bad Request"}})
 async def export_audit_logs(
     event_types: str = Query(""),
     severity:    str = Query("info"),
     user_id:     str = Query(""),
     since:       str = Query(""),
     until:       str = Query(""),
-    _auth=Depends(_require_audit_read),
-    db=Depends(get_db),
+    _auth: Annotated[None, Depends(_require_audit_read)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Download security_events as a CSV file (max 50 000 rows)."""
     if severity not in _SEVERITY_ORDER:
@@ -296,12 +300,12 @@ async def export_audit_logs(
 # GET /admin/audit/logs/stream — SSE live stream
 # ---------------------------------------------------------------------------
 
-@router.get("/logs/stream")
+@router.get("/logs/stream", responses={400: {"description": "Bad Request"}})
 async def stream_audit_logs(
     event_types: str = Query(""),
     severity:    str = Query("info"),
     user_id:     str = Query(""),
-    _key: dict = Depends(_require_audit_key),
+    _key: Annotated[dict, Depends(_require_audit_key)],
 ):
     """Stream security events in real-time via Server-Sent Events.
 
@@ -419,7 +423,7 @@ def _validate_destination(body: SiemDestinationRequest) -> None:
             )
 
 
-def _dest_row_to_dict(r, redact_secret: bool = True) -> dict:
+def _dest_row_to_dict(r) -> dict:
     return {
         "id":                 r["id"],
         "name":               r["name"],
@@ -442,8 +446,8 @@ def _dest_row_to_dict(r, redact_secret: bool = True) -> dict:
 
 @router.get("/siem")
 async def list_siem_destinations(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
         "SELECT * FROM siem_destinations ORDER BY created_at ASC"
@@ -459,8 +463,8 @@ async def list_siem_destinations(
 async def create_siem_destination(
     request: Request,
     body: SiemDestinationRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     _validate_destination(body)
     dest_id = str(uuid.uuid4())
@@ -483,7 +487,7 @@ async def create_siem_destination(
     await db.commit()
 
     event_bus.emit(SecurityEvent(
-        event_type="admin.siem.config_changed",
+        event_type=_EVT_SIEM_CONFIG_CHANGED,
         severity="info",
         outcome="success",
         actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
@@ -493,13 +497,13 @@ async def create_siem_destination(
     return {"ok": True, "id": dest_id}
 
 
-@router.put("/siem/{dest_id}")
+@router.put("/siem/{dest_id}", responses={404: {"description": "Not Found"}})
 async def update_siem_destination(
     request: Request,
     dest_id: str,
     body: SiemDestinationRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     dest_id = validate_uuid(dest_id)
     _validate_destination(body)
@@ -507,7 +511,7 @@ async def update_siem_destination(
     cur = await db.execute("SELECT secret_enc FROM siem_destinations WHERE id = ?", (dest_id,))
     existing = await cur.fetchone()
     if existing is None:
-        raise HTTPException(status_code=404, detail="SIEM destination not found")
+        raise HTTPException(status_code=404, detail=_ERR_SIEM_NOT_FOUND)
 
     # Keep existing encrypted secret if none provided
     secret_enc = encrypt_token(body.secret) if body.secret else existing["secret_enc"]
@@ -531,7 +535,7 @@ async def update_siem_destination(
     await db.commit()
 
     event_bus.emit(SecurityEvent(
-        event_type="admin.siem.config_changed",
+        event_type=_EVT_SIEM_CONFIG_CHANGED,
         severity="info",
         outcome="success",
         actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
@@ -541,24 +545,24 @@ async def update_siem_destination(
     return {"ok": True}
 
 
-@router.delete("/siem/{dest_id}")
+@router.delete("/siem/{dest_id}", responses={404: {"description": "Not Found"}})
 async def delete_siem_destination(
     request: Request,
     dest_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     dest_id = validate_uuid(dest_id)
     cur = await db.execute("SELECT name FROM siem_destinations WHERE id = ?", (dest_id,))
     row = await cur.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="SIEM destination not found")
+        raise HTTPException(status_code=404, detail=_ERR_SIEM_NOT_FOUND)
 
     await db.execute("DELETE FROM siem_destinations WHERE id = ?", (dest_id,))
     await db.commit()
 
     event_bus.emit(SecurityEvent(
-        event_type="admin.siem.config_changed",
+        event_type=_EVT_SIEM_CONFIG_CHANGED,
         severity="info",
         outcome="success",
         actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
@@ -568,12 +572,12 @@ async def delete_siem_destination(
     return {"ok": True}
 
 
-@router.post("/siem/{dest_id}/test")
+@router.post("/siem/{dest_id}/test", responses={404: {"description": "Not Found"}})
 async def test_siem_destination(
     request: Request,
     dest_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Send a synthetic admin.siem.test event to the destination to verify connectivity."""
     from app.services import siem_syslog, siem_webhook
@@ -582,7 +586,7 @@ async def test_siem_destination(
     cur = await db.execute("SELECT * FROM siem_destinations WHERE id = ?", (dest_id,))
     row = await cur.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="SIEM destination not found")
+        raise HTTPException(status_code=404, detail=_ERR_SIEM_NOT_FOUND)
 
     test_event = SecurityEvent(
         event_type="admin.siem.test",

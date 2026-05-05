@@ -26,12 +26,13 @@ import app.sensitive_config as sensitive_config
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.auth.stepup import verify_step_up_token
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import admin_best_tier
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
 from app.util.db import get_admin_setting
+from typing import Annotated
 
 router = APIRouter()
 
@@ -431,7 +432,7 @@ def _validate_profile_structure(profile_json: dict) -> None:
 
 @router.get("/settings/profiles")
 async def list_profiles(
-    admin: AuthenticatedUser = Depends(require_admin),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
 ):
     """List available built-in profile names and descriptions."""
     _require_server_admin(admin)
@@ -445,9 +446,9 @@ async def list_profiles(
 
 @router.get("/settings/export")
 async def export_settings(
-    admin: AuthenticatedUser = Depends(require_admin),
-    _: None = Depends(require_step_up(_STEPUP_ACTION)),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    _: Annotated[None, Depends(require_step_up(_STEPUP_ACTION))],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Download current profile-managed settings as a JSON attachment."""
     _require_server_admin(admin)
@@ -504,12 +505,12 @@ async def export_settings(
     )
 
 
-@router.post("/settings/apply-profile")
+@router.post("/settings/apply-profile", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def apply_profile(
     body: ApplyProfileRequest,
     request: Request,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Apply a built-in security profile.
 
@@ -601,12 +602,12 @@ async def apply_profile(
     return {"message": "Profile applied", "profile": body.profile, "mode": body.mode}
 
 
-@router.post("/settings/import")
+@router.post("/settings/import", responses={400: {"description": "Bad Request"}})
 async def import_profile(
     body: ImportProfileRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    _: None = Depends(require_step_up(_STEPUP_ACTION)),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    _: Annotated[None, Depends(require_step_up(_STEPUP_ACTION))],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Import a profile JSON.
 

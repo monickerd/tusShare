@@ -158,7 +158,7 @@ const Upload = (() => {
             const chunkHash = await _sha256Hex(ciphertext);
 
             const { newOffset, fileId, committed } = await _patchChunk(
-                location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, i, integrityTracker, true,
+                location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, i, { integrityTracker, handle409: true },
             );
             encryptedOffset = newOffset;
             if (committed) {
@@ -240,7 +240,7 @@ const Upload = (() => {
             const chunkHash = await _sha256Hex(ciphertext);
 
             const { newOffset, fileId, committed } = await _patchChunk(
-                location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, i, integrityTracker,
+                location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, i, { integrityTracker },
             );
             encryptedOffset = newOffset;
             if (committed) {
@@ -382,7 +382,8 @@ const Upload = (() => {
      * @returns {Promise<{newOffset:number, fileId:string|null, committed:boolean}>}
      *   committed=false when 409 revealed the chunk was already on the server.
      */
-    async function _patchChunk(location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, chunkIndex, integrityTracker, handle409 = false) {
+    async function _patchChunk(location, ciphertext, chunkIvB64, chunkHash, encryptedOffset, chunkIndex, opts = {}) {
+        const { integrityTracker, handle409 = false } = opts;
         let attempt = 0;
         while (true) {
             const patchResp = await fetch(location, {

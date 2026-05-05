@@ -671,7 +671,7 @@ const Files = (() => {
 
     function _dismissContextMenu() {
         if (_activeMenu) {
-            if (_activeMenu.menu.parentNode) _activeMenu.menu.parentNode.removeChild(_activeMenu.menu);
+            if (_activeMenu.menu.parentNode) _activeMenu.menu.remove();
             document.removeEventListener('click', _activeMenu.dismiss);
             _activeMenu = null;
         }
@@ -720,7 +720,7 @@ const Files = (() => {
 
         try {
             const res = await Api.put(`${Config.app.apiPrefix}/files/${file.id}`, { original_name: name });
-            if (res.removed_chars && res.removed_chars.length) {
+            if (res.removed_chars?.length) {
                 const chars = res.removed_chars.map(c => c === ' ' ? '(space)' : c).join('  ');
                 Utils.showToast(`File renamed. Removed invalid characters: ${chars}`, 'warning');
             } else {
@@ -848,7 +848,6 @@ const Files = (() => {
             ? `${annotated[0].name} (ZIP)`
             : `${annotated.length} items (ZIP)`;
 
-        let totalFiles = 0;
         const transfer = TransferManager.start(label, 'download', {
             onStop:   abortDownload,
             onLogout: abortDownload,
@@ -859,7 +858,6 @@ const Files = (() => {
                 annotated,
                 masterKey,
                 (done, total) => {
-                    totalFiles = total;
                     transfer.update(Math.round(done / total * 100));
                 },
                 abortCtrl.signal,
@@ -1798,7 +1796,7 @@ const Files = (() => {
                 }
             },
             remove() {
-                if (bar.parentNode) bar.parentNode.removeChild(bar);
+                if (bar.parentNode) bar.remove();
             },
             onCancel(fn) { onCancelFn = fn; },
         };
@@ -1826,7 +1824,7 @@ const Files = (() => {
                 if (pctEl)   pctEl.textContent  = `${pct}%`;
             },
             remove() {
-                if (bar.parentNode) bar.parentNode.removeChild(bar);
+                if (bar.parentNode) bar.remove();
             },
         };
     }
@@ -1908,7 +1906,7 @@ const Files = (() => {
                 const children = await new Promise((res, rej) => {
                     const all = [];
                     function readBatch() {
-                        reader.readEntries((batch) => {
+                        reader.readEntries((batch) => { // NOSONAR — callback inside readBatch inside Promise; nesting is required by the FileSystem API
                             if (batch.length === 0) { res(all); return; }
                             all.push(...batch);
                             readBatch();
@@ -1967,7 +1965,7 @@ const Files = (() => {
             },
 
             async waitIfPaused() {
-                while (_paused) {
+                while (_paused) { // NOSONAR — _paused is set by resume() via the controller closure
                     await new Promise(resolve => _resumeResolvers.push(resolve));
                 }
             },
@@ -1988,7 +1986,7 @@ const Files = (() => {
     /** Remove all child nodes properly instead of innerHTML = '' */
     function _clearContainer(el) {
         while (el.firstChild) {
-            el.removeChild(el.firstChild);
+            el.firstChild.remove();
         }
     }
 

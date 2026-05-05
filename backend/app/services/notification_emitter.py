@@ -23,6 +23,8 @@ from app.schemas.op_event import OperationalEvent
 from app.services import op_bus
 from app.util.crypto import hmac_sha256_hex
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 _db_session_factory = None
@@ -239,10 +241,12 @@ def _update_sec_subscription(
     from app.services import event_bus
     if needs_sec and sec_sub_q is None:
         sec_sub_q = event_bus.subscribe()
-        asyncio.create_task(
+        _t = asyncio.create_task(
             _forward_security_events(sec_sub_q, channel_queues_local),
             name="notif_sec_forwarder",
         )
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
     elif not needs_sec and sec_sub_q is not None:
         event_bus.unsubscribe(sec_sub_q)
         sec_sub_q = None
@@ -345,7 +349,7 @@ async def _forward_security_events(
                     except asyncio.QueueFull:
                         logger.debug("notif: security forwarder queue full for ch %s", ch_id)
     except asyncio.CancelledError:
-        pass
+        raise
     except Exception:
         logger.exception("notif: security forwarder crashed")
 
@@ -389,15 +393,18 @@ async def _channel_loop(channel: dict, q: asyncio.Queue) -> None:
             count_trigger = batch_size and len(accumulated) >= batch_size
             timer_trigger = interval_s and (now - last_flush) >= interval_s and accumulated
             if count_trigger or timer_trigger:
-                asyncio.create_task(_send_with_retry(channel, list(accumulated)))
+                _t = asyncio.create_task(_send_with_retry(channel, list(accumulated)))
+                _bg_tasks.add(_t)
+                _t.add_done_callback(_bg_tasks.discard)
                 accumulated.clear()
                 last_flush = now
     except asyncio.CancelledError:
         if accumulated:
-            asyncio.create_task(_send_with_retry(channel, list(accumulated)))
+            _t = asyncio.create_task(_send_with_retry(channel, list(accumulated)))
+            _bg_tasks.add(_t)
+            _t.add_done_callback(_bg_tasks.discard)
         op_bus.unsubscribe(q)
-
-
+        raise
 # ---------------------------------------------------------------------------
 # HTTP delivery
 # ---------------------------------------------------------------------------

@@ -28,6 +28,8 @@ from app.schemas.security_event import SecurityEvent
 from app.services.siem_filters import matches_destination_filter
 from app.util.crypto import hmac_sha256_hex
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 _RELOAD_INTERVAL_SECS = 60
@@ -67,9 +69,11 @@ def _flush_pending(
     for dest in destinations:
         did = dest["id"]
         if overflow.get(did):
-            asyncio.create_task(
+            _t = asyncio.create_task(
                 _send_with_retry(dest, overflow[did], secrets_cache.get(did, ""))
             )
+            _bg_tasks.add(_t)
+            _t.add_done_callback(_bg_tasks.discard)
 
 
 async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
@@ -110,15 +114,16 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
                 if len(overflow[did]) >= batch_size:
                     batch = overflow[did][:batch_size]
                     overflow[did] = overflow[did][batch_size:]
-                    asyncio.create_task(
+                    _t = asyncio.create_task(
                         _send_with_retry(dest, batch, secrets_cache.get(did, ""))
                     )
+                    _bg_tasks.add(_t)
+                    _t.add_done_callback(_bg_tasks.discard)
 
     except asyncio.CancelledError:
         event_bus.unsubscribe(q)
         _flush_pending(destinations, overflow, secrets_cache)
-
-
+        raise
 async def _load_destinations() -> tuple[list[dict], dict[str, str]]:
     from app.auth.idp_crypto import decrypt_token
     if _db_session_factory is None:

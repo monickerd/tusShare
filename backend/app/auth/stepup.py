@@ -130,9 +130,8 @@ def verify_step_up_token(
         return False
 
     token_sid = payload.get("sid")
-    if token_sid is not None:
-        if session_id is None or token_sid != session_id:
-            return False
+    if token_sid is not None and (session_id is None or token_sid != session_id):
+        return False
 
     scope = payload.get("scope", "")
     if scope != "*":

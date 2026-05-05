@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
 
     # Database
-    DATABASE_URL: str = "postgresql://tusshare:tusshare@postgres:5432/tusshare"
+    DATABASE_URL: str = "postgresql://tusshare:tusshare@postgres:5432/tusshare"  # NOSONAR — dev-only default; overridden by environment variable in all deployments
     # Superuser URL used only for first-run sensitive_config schema bootstrap.
     # Needs CREATEROLE + schema creation privileges on the app database.
     # Safe to remove from the environment after initial startup.

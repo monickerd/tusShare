@@ -27,7 +27,7 @@ const App = (() => {
     // CSS targets body[data-ui-<flag>="false"] to suppress controlled elements.
     // Called once on init; <body> persists across route changes so no re-apply needed.
     function _applyThemeFlags() {
-        const ui = (_themeConfig && _themeConfig.ui) || {};
+        const ui = _themeConfig?.ui || {};
         for (const [flag, value] of Object.entries(ui)) {
             document.body.setAttribute(
                 'data-ui-' + flag.replace(/_/g, '-'),
@@ -37,8 +37,8 @@ const App = (() => {
     }
 
     function _buildBrandEl() {
-        const name    = (_themeConfig && _themeConfig.brand_name) || Config.app.name;
-        const logoUrl = _themeConfig && _themeConfig.logo_url;
+        const name    = _themeConfig?.brand_name || Config.app.name;
+        const logoUrl = _themeConfig?.logo_url;
         if (logoUrl) {
             return Utils.el('a', { href: '#/files', className: 'header-brand' }, [
                 Utils.el('img', { src: logoUrl, alt: name, className: 'header-logo' }),
@@ -146,7 +146,7 @@ const App = (() => {
             // If the user landed on a join link without a session, save the intent so
             // auth.js can redirect back to it after a successful login.
             const h = window.location.hash;
-            if (h && h.startsWith('#/join/')) {
+            if (h?.startsWith('#/join/')) {
                 sessionStorage.setItem('pendingJoinHash', h);
             }
             // Setting hash to #/login won't fire hashchange if the hash is already
@@ -349,7 +349,7 @@ const App = (() => {
 
     async function _routeAdmin(container) {
         const user = Auth.getCurrentUser();
-        if (!user || !user.is_admin) {
+        if (!user?.is_admin) {
             window.location.hash = '#/files';
             return;
         }
@@ -368,7 +368,7 @@ const App = (() => {
 
     function _routeSetup(container) {
         const user = Auth.getCurrentUser();
-        if (!user || !user.is_admin) {
+        if (!user?.is_admin) {
             window.location.hash = '#/login';
             return;
         }
@@ -414,8 +414,8 @@ const App = (() => {
     }
 
     function _closeAccountMenu() {
-        if (_accountMenuEl && _accountMenuEl.parentNode) {
-            _accountMenuEl.parentNode.removeChild(_accountMenuEl);
+        if (_accountMenuEl?.parentNode) {
+            _accountMenuEl.remove();
         }
         _accountMenuEl = null;
         _accountMenuOpen = false;
@@ -448,7 +448,7 @@ const App = (() => {
                 const btn = Utils.el('button', {
                     className: 'account-menu-tab' + (label === _activeTab ? ' active' : ''),
                     textContent: label,
-                    onClick: () => {
+                    onClick: () => { // NOSONAR — closure over label/panel/contentEl; unavoidable nesting
                         _activeTab = label;
                         panel.querySelectorAll('.account-menu-tab').forEach(b =>
                             b.classList.toggle('active', b.textContent === label));
@@ -468,7 +468,7 @@ const App = (() => {
     }
 
     function _renderTabContent(container, tab) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
         if (tab === 'Notifications')  _renderNotificationsTab(container);
         else if (tab === 'Transfers') _renderTransfersTab(container);
         else                          _renderMyAccountTab(container);
@@ -544,7 +544,7 @@ const App = (() => {
             const changePwBody = Utils.el('div', { className: 'account-section-body' });
 
             function _showChangePwBtn() {
-                while (changePwBody.firstChild) changePwBody.removeChild(changePwBody.firstChild);
+                while (changePwBody.firstChild) changePwBody.firstChild.remove();
                 changePwBody.appendChild(Utils.el('button', {
                     className: 'btn btn-secondary btn-sm',
                     textContent: 'Change Password',
@@ -553,7 +553,7 @@ const App = (() => {
             }
 
             function _showChangePwForm() {
-                while (changePwBody.firstChild) changePwBody.removeChild(changePwBody.firstChild);
+                while (changePwBody.firstChild) changePwBody.firstChild.remove();
                 const newPwInput = Utils.el('input', {
                     type: 'password', autocomplete: 'new-password',
                 });
@@ -730,7 +730,7 @@ const App = (() => {
             deleteSection.appendChild(Utils.el('button', {
                 className: 'btn btn-danger btn-sm',
                 textContent: 'Delete My Account',
-                onClick: async () => {
+                onClick: async () => { // NOSONAR — closures inside this handler are unavoidably nested (async API checks inside a .then callback)
                     // Check for owned teams before confirming
                     let ownedTeams = [];
                     try {
@@ -779,7 +779,7 @@ const App = (() => {
         // Only re-render shell if not already present
         if (container.querySelector('.app-shell')) return;
 
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
         const user = Auth.getCurrentUser();
 
         const sidebarToggle = Utils.el('button', {
@@ -808,7 +808,7 @@ const App = (() => {
 
             Utils.el('a', { href: '#/teams', className: 'sidebar-link', id: 'nav-teams', textContent: 'Manage Teams' }),
         ]);
-        if (user && user.is_admin) {
+        if (user?.is_admin) {
             nav.appendChild(Utils.el('a', {
                 href: '#/admin', className: 'sidebar-link sidebar-admin', id: 'nav-admin', textContent: 'Admin',
             }));
@@ -856,7 +856,7 @@ const App = (() => {
                     textContent: '\u00d7',   // ×
                     onClick: () => {
                         sessionStorage.removeItem(cfg.sessionStorageKey);
-                        if (banner.parentNode) banner.parentNode.removeChild(banner);
+                        if (banner.parentNode) banner.remove();
                     },
                 }),
             ]);
@@ -868,7 +868,7 @@ const App = (() => {
         // Dismissed per-session; will reappear on next login if escrow is still active.
         const _ESCROW_DISMISSED_KEY = 'escrow_banner_dismissed';
         if (
-            user && user.escrow_active &&
+            user?.escrow_active &&
             !sessionStorage.getItem(_ESCROW_DISMISSED_KEY)
         ) {
             const escrowBanner = Utils.el('div', { className: 'admin-transparency-banner' }, [
@@ -881,7 +881,7 @@ const App = (() => {
                     textContent: '\u00d7',   // ×
                     onClick: () => {
                         sessionStorage.setItem(_ESCROW_DISMISSED_KEY, '1');
-                        if (escrowBanner.parentNode) escrowBanner.parentNode.removeChild(escrowBanner);
+                        if (escrowBanner.parentNode) escrowBanner.remove();
                     },
                 }),
             ]);

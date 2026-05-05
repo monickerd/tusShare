@@ -21,6 +21,8 @@ from app.database import db_session
 from app.models.role import get_user_global_flags, get_user_global_role_ids
 from app.util.crypto import sha256_hex
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 _PREFIX = "sa_"
@@ -82,7 +84,9 @@ async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
         roles = await get_user_global_role_ids(db, row["user_id"])
         flags = await get_user_global_flags(db, row["user_id"])
 
-    asyncio.create_task(_update_last_used(row["key_id"]))
+    _t = asyncio.create_task(_update_last_used(row["key_id"]))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
     return AuthenticatedUser(
         id=row["user_id"],

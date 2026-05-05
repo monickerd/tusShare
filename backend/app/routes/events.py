@@ -21,9 +21,10 @@ from fastapi.responses import StreamingResponse
 
 from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.services import sse_broker
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -64,8 +65,8 @@ def _sse_response(topic: str) -> StreamingResponse:
 @router.get("/events")
 async def folder_events(
     folder_id: str | None = None,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Stream folder change events as Server-Sent Events."""
     if folder_id is not None:
@@ -80,8 +81,8 @@ async def folder_events(
 
 @router.get("/events/identity")
 async def identity_events(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Stream identity-change events for the authenticated user.
 

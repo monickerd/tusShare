@@ -818,12 +818,13 @@
 
 .input-xs {
     width: 80px;
-    padding: 2px var(--space-1);
+    padding: 2px var(--space-2);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-sm);
     background: var(--color-surface);
     color: var(--color-text);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-xs);
+    height: auto;
 }
 
 /* --- Disk usage --- */
@@ -900,12 +901,6 @@
 .btn-xs {
     padding: 2px var(--space-2);
     font-size: var(--font-size-xs);
-}
-
-.input-xs {
-    padding: 2px var(--space-2);
-    font-size: var(--font-size-xs);
-    height: auto;
 }
 
 .member-role-change {
@@ -1603,13 +1598,6 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-}
-
-/* Modal action row */
-.modal-actions {
-    display: flex;
-    gap: var(--space-2);
-    justify-content: flex-end;
 }
 
 /* ===== E2: Team Custom Roles ===== */

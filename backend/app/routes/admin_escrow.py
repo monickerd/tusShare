@@ -33,12 +33,17 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import FLAG_MANAGE_ESCROW, ROLE_TIER, admin_best_tier
 from app.routes._access import require_flag
 from app.services.escrow import resolve_effective_escrow_agents
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+
+_ERR_PERM_MANAGE_ESCROW = "can_manage_escrow permission required"
+_SQL_ESCROW_BY_FOLDER = "SELECT * FROM folder_escrow_policies WHERE folder_id = ?"
 
 logger = logging.getLogger(__name__)
 
@@ -107,11 +112,11 @@ class EscrowSettingsUpdate(BaseModel):
 
 @router.get("/settings")
 async def get_escrow_settings(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return org-level escrow defaults and lock state."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
+    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
     cursor = await db.execute(
         "SELECT key, value, is_locked, locked_min_tier FROM admin_settings "
         "WHERE key IN ('escrow_default_user_ids', 'escrow_default_role_ids', 'escrow_require_coverage')"
@@ -132,14 +137,14 @@ async def get_escrow_settings(
     }
 
 
-@router.put("/settings", dependencies=[Depends(require_step_up(_STEPUP))])
+@router.put("/settings", dependencies=[Depends(require_step_up(_STEPUP))], responses={400: {"description": "Bad Request"}})
 async def update_escrow_settings(
     body: EscrowSettingsUpdate,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update org-level escrow defaults."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
+    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
     my_tier = _admin_tier(admin)
 
     cursor = await db.execute(
@@ -265,11 +270,11 @@ async def _get_ancestor_policies(db, folder_id: str) -> tuple[list[str], dict]:
 
 @router.get("/folder-policies")
 async def list_folder_policies(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all folder-level escrow policy overrides."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
+    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
     cursor = await db.execute(
         "SELECT fep.*, f.name as folder_name FROM folder_escrow_policies fep "
         "JOIN folders f ON f.id = fep.folder_id "
@@ -298,18 +303,18 @@ async def list_folder_policies(
     return {"policies": policies}
 
 
-@router.get("/folder-policies/{folder_id}")
+@router.get("/folder-policies/{folder_id}", responses={404: {"description": "Not Found"}})
 async def get_folder_policy(
     folder_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get the policy override for a specific folder, including full agent list."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
+    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
     folder_id = validate_uuid(folder_id)
 
     cursor = await db.execute(
-        "SELECT * FROM folder_escrow_policies WHERE folder_id = ?", (folder_id,)
+        _SQL_ESCROW_BY_FOLDER, (folder_id,)
     )
     policy = await cursor.fetchone()
     if not policy:
@@ -346,15 +351,15 @@ async def get_folder_policy(
     }
 
 
-@router.put("/folder-policies/{folder_id}", dependencies=[Depends(require_step_up(_STEPUP))])
+@router.put("/folder-policies/{folder_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def upsert_folder_policy(
     folder_id: str,
     body: FolderEscrowPolicyRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create or replace the escrow policy for a folder."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
+    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
     folder_id = validate_uuid(folder_id)
     my_tier = _admin_tier(admin)
     _validate_policy_body(body)
@@ -369,7 +374,7 @@ async def upsert_folder_policy(
 
     # Check existing policy lock (only for updates, not initial creation)
     cursor = await db.execute(
-        "SELECT * FROM folder_escrow_policies WHERE folder_id = ?", (folder_id,)
+        _SQL_ESCROW_BY_FOLDER, (folder_id,)
     )
     existing = await cursor.fetchone()
     if existing:
@@ -428,19 +433,19 @@ async def upsert_folder_policy(
     return {"message": "Policy saved", "policy_id": policy_id}
 
 
-@router.delete("/folder-policies/{folder_id}", dependencies=[Depends(require_step_up(_STEPUP))])
+@router.delete("/folder-policies/{folder_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}})
 async def delete_folder_policy(
     folder_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete the escrow policy override for a folder."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
+    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
     folder_id = validate_uuid(folder_id)
     my_tier = _admin_tier(admin)
 
     cursor = await db.execute(
-        "SELECT * FROM folder_escrow_policies WHERE folder_id = ?", (folder_id,)
+        _SQL_ESCROW_BY_FOLDER, (folder_id,)
     )
     policy = await cursor.fetchone()
     if not policy:
@@ -461,17 +466,17 @@ async def delete_folder_policy(
 
 @router.get("/coverage-report")
 async def get_coverage_report(
-    admin: AuthenticatedUser = Depends(require_admin),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return teams with no escrow agent key slot currently filled.
 
     An "unprotected" team is one where no member in user_team_keys holds the
     can_act_as_escrow permission.
     """
-    require_flag(admin, FLAG_MANAGE_ESCROW, "can_manage_escrow permission required")
+    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
 
     # A team is "unprotected" if no explicitly-added escrow member (team_member scoped
     # role, not the owner's team_admin) currently holds can_act_as_escrow.

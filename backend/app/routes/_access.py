@@ -147,9 +147,8 @@ async def has_folder_permission(db, folder_id: str, user_id: str) -> bool:
             (current_id, user_id),
         )
         row = await cursor.fetchone()
-        if row:
-            if current_id == folder_id or row["recursive"]:
-                return True
+        if row and (current_id == folder_id or row["recursive"]):
+            return True
         cursor = await db.execute(
             "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (current_id,)
         )

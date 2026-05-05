@@ -31,11 +31,14 @@ from app.auth.stepup import (
 )
 from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
-from app.database import db_session, get_db
+from app.database import Database, db_session, get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 import app.sensitive_config as sensitive_config
 import app.storage.manager as storage
+from typing import Annotated
+
+_bg_tasks: set = set()
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +51,8 @@ router = APIRouter()
 async def logout(
     response: Response,
     request: Request,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Revoke refresh token and clear cookies."""
     refresh_token = request.cookies.get(COOKIE_REFRESH)
@@ -65,12 +68,12 @@ async def logout(
     return {"message": "Logged out"}
 
 
-@router.post("/refresh")
+@router.post("/refresh", responses={401: {"description": "Unauthorized"}})
 async def refresh(
     request: Request,
     response: Response,
-    db=Depends(get_db),
-    auth_provider=Depends(_get_auth_provider),
+    db: Annotated[Database, Depends(get_db)],
+    auth_provider: Annotated[None, Depends(_get_auth_provider)],
 ):
     """Issue a new access token from a valid refresh token. Rotates the refresh token.
 
@@ -169,8 +172,8 @@ async def refresh(
 
 @router.get("/me")
 async def me(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return the current user's profile including key wrapping blobs."""
     # check whether any team the user belongs to is covered by an active
@@ -212,8 +215,8 @@ async def me(
 
 @router.get("/me/prefs")
 async def get_my_prefs(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return the current user's UI preferences blob."""
     cursor = await db.execute("SELECT ui_prefs FROM users WHERE id = ?", (user.id,))
@@ -229,8 +232,8 @@ class UpdatePrefsRequest(BaseModel):
 @router.patch("/me/prefs")
 async def update_my_prefs(
     body: UpdatePrefsRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Merge the supplied preference keys into the user's ui_prefs blob."""
     cursor = await db.execute("SELECT ui_prefs FROM users WHERE id = ?", (user.id,))
@@ -297,8 +300,8 @@ class RegisterAsymmetricKeysRequest(BaseModel):
 @router.post("/me/asymmetric-keys")
 async def register_asymmetric_keys(
     body: RegisterAsymmetricKeysRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Register or update the current user's hybrid X25519 + ML-KEM-768 key pair.
 
@@ -327,7 +330,7 @@ async def register_asymmetric_keys(
 # Invite validation (consumed during OPAQUE register/finish)
 # ---------------------------------------------------------------------------
 
-@router.get("/invite/{token}")
+@router.get("/invite/{token}", responses={404: {"description": "Not Found"}})
 async def validate_invite(token: str, db=Depends(get_db)):
     """Validate a registration invite token.
 
@@ -363,11 +366,11 @@ async def get_public_settings(db=Depends(get_db)):
     return {"chunk_size": chunk_size}
 
 
-@router.get("/users/{username}/public-keys")
+@router.get("/users/{username}/public-keys", responses={404: {"description": "Not Found"}})
 async def get_user_public_keys(
     username: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Look up another user's X25519 + ML-KEM-768 public keys.
 
@@ -482,12 +485,12 @@ async def _count_step_up_failures(db, user_id: str) -> int:
     return int(row[0]) if row else 0
 
 
-@router.post("/step-up")
+@router.post("/step-up", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 422: {"description": "Unprocessable Entity"}})
 async def step_up(
     body: StepUpRequest,
     request: Request,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Issue a step-up token after verifying OPAQUE re-authentication credentials.
 
@@ -584,7 +587,9 @@ async def step_up(
                     await _eval_policies(_bg_db, _uid)
             except Exception:
                 pass
-        asyncio.create_task(_bg_step_up_eval())
+        _t = asyncio.create_task(_bg_step_up_eval())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
     except Exception:
         pass  # policy engine must not block step-up
 
@@ -597,8 +602,8 @@ async def step_up(
 
 @router.get("/me/sessions")
 async def list_my_sessions(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all active sessions for the current user. The current session is flagged."""
     cursor = await db.execute(
@@ -626,11 +631,11 @@ async def list_my_sessions(
     }
 
 
-@router.delete("/me/sessions/{token_id}")
+@router.delete("/me/sessions/{token_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def revoke_session(
     token_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Revoke a specific session. Cannot revoke the current session."""
     token_id = validate_uuid(token_id)
@@ -648,8 +653,8 @@ async def revoke_session(
 
 @router.delete("/me/sessions")
 async def revoke_other_sessions(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Revoke all sessions except the current one."""
     result = await db.execute(
@@ -666,8 +671,8 @@ async def revoke_other_sessions(
 
 @router.get("/me/activity")
 async def my_activity(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return the last 50 security events for the calling user.
 
@@ -710,8 +715,8 @@ async def my_activity(
 
 @router.get("/me/owned-shared")
 async def get_owned_shared(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return teams the calling user is the sole owner of.
 
@@ -728,11 +733,11 @@ async def get_owned_shared(
     }
 
 
-@router.delete("/me")
+@router.delete("/me", responses={403: {"description": "Forbidden"}, 409: {"description": "Conflict"}})
 async def delete_my_account(
     request: Request,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete the calling user's own account and all associated files.
 
@@ -807,6 +812,8 @@ async def delete_my_account(
                 except Exception as exc:
                     logger.warning("Failed to delete blob %s during self-delete: %s", row["storage_key"], exc)
 
-    asyncio.create_task(_cleanup_blobs())
+    _t = asyncio.create_task(_cleanup_blobs())
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "Account deleted"}

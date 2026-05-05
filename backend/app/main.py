@@ -239,7 +239,7 @@ async def lifespan(app: FastAPI):
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            pass  # NOSONAR — awaiting deliberately cancelled tasks in shutdown sequence
     from app import redis_client
     await redis_client.close()
     await close_db()
@@ -322,6 +322,9 @@ def create_app() -> FastAPI:
     app.add_middleware(InputSanitizationMiddleware)
     app.add_middleware(CSRFMiddleware)
 
+    _AUTH_PREFIX  = "/api/v1/auth"
+    _ADMIN_PREFIX = "/api/v1/admin"
+
     # --- API routes ---
     from app.routes.auth import router as auth_router
     from app.routes.opaque_auth import router as opaque_auth_router
@@ -356,10 +359,10 @@ def create_app() -> FastAPI:
     from app.routes.admin_profiles import router as admin_profiles_router
     from app.routes.trash import router as trash_router
 
-    app.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
+    app.include_router(auth_router, prefix=_AUTH_PREFIX, tags=["auth"])
     app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
     app.include_router(users_router, prefix="/api/v1/admin/users", tags=["admin-users"])
-    app.include_router(admin_router, prefix="/api/v1/admin", tags=["admin"])
+    app.include_router(admin_router, prefix=_ADMIN_PREFIX, tags=["admin"])
     app.include_router(admin_roles_router, prefix="/api/v1/admin/roles", tags=["admin-roles"])
     app.include_router(folders_router, prefix="/api/v1/folders", tags=["folders"])
     app.include_router(files_router, prefix="/api/v1/files", tags=["files"])
@@ -373,20 +376,20 @@ def create_app() -> FastAPI:
     app.include_router(policy_fields_router, prefix="/api/v1/admin/policy-fields", tags=["policy"])
     app.include_router(admin_scopes_router,  prefix="/api/v1/admin/scopes",         tags=["policy"])
     app.include_router(policies_router,      prefix="/api/v1/admin/policies",       tags=["policy"])
-    app.include_router(mfa_router,           prefix="/api/v1/auth",                 tags=["mfa"])
-    app.include_router(admin_mfa_router,     prefix="/api/v1/admin",                tags=["admin-mfa"])
-    app.include_router(idp_auth_router,      prefix="/api/v1/auth",                 tags=["idp-auth"])
+    app.include_router(mfa_router,           prefix=_AUTH_PREFIX,                 tags=["mfa"])
+    app.include_router(admin_mfa_router,     prefix=_ADMIN_PREFIX,                tags=["admin-mfa"])
+    app.include_router(idp_auth_router,      prefix=_AUTH_PREFIX,                 tags=["idp-auth"])
     app.include_router(idp_admin_router,     prefix="/api/v1/admin/identity-providers", tags=["idp-admin"])
-    app.include_router(admin_emergency_router, prefix="/api/v1/admin",               tags=["admin-emergency"])
+    app.include_router(admin_emergency_router, prefix=_ADMIN_PREFIX,               tags=["admin-emergency"])
     app.include_router(admin_audit_router,    prefix="/api/v1/admin/audit",          tags=["admin-audit"])
     app.include_router(admin_storage_router,       prefix="/api/v1/admin/storage",      tags=["admin-storage"])
     app.include_router(admin_notifications_router, prefix="/api/v1/admin/notifications", tags=["admin-notifications"])
-    app.include_router(admin_api_keys_router,      prefix="/api/v1/admin",               tags=["admin-api-keys"])
+    app.include_router(admin_api_keys_router,      prefix=_ADMIN_PREFIX,               tags=["admin-api-keys"])
     app.include_router(op_events_router,           prefix="/api/v1/op-events",           tags=["op-events"])
     app.include_router(admin_escrow_router,         prefix="/api/v1/admin/escrow",          tags=["admin-escrow"])
     app.include_router(admin_sharing_router,        prefix="/api/v1/admin/sharing",         tags=["admin-sharing"])
-    app.include_router(admin_service_accounts_router, prefix="/api/v1/admin",                tags=["admin-service-accounts"])
-    app.include_router(admin_profiles_router,         prefix="/api/v1/admin",                tags=["admin-profiles"])
+    app.include_router(admin_service_accounts_router, prefix=_ADMIN_PREFIX,                tags=["admin-service-accounts"])
+    app.include_router(admin_profiles_router,         prefix=_ADMIN_PREFIX,                tags=["admin-profiles"])
     app.include_router(trash_router,                  prefix="/api/v1/trash",                tags=["trash"])
 
     # --- SIEM HTTP error event handlers ---

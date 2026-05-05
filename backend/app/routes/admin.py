@@ -16,11 +16,14 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.models.role import FLAG_MANAGE_INVITES
-from app.database import get_db
+from app.database import Database, get_db
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.wordlist import insert_invite_short_link_with_unique_slug
+from typing import Annotated
+
+_bg_tasks: set = set()
 
 router = APIRouter()
 
@@ -83,8 +86,8 @@ class UpdateSettingsRequest(BaseModel):
 
 @router.get("/settings")
 async def get_settings(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get all admin settings."""
     cursor = await db.execute("SELECT key, value FROM admin_settings")
@@ -92,11 +95,11 @@ async def get_settings(
     return {"settings": {row["key"]: row["value"] for row in rows}}
 
 
-@router.put("/settings")
+@router.put("/settings", responses={400: {"description": "Bad Request"}})
 async def update_settings(
     body: UpdateSettingsRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update admin settings. All updates are applied atomically."""
     for key, value in body.settings.items():
@@ -127,8 +130,8 @@ async def update_settings(
 
 @router.get("/disk-usage")
 async def get_disk_usage(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get disk usage breakdown: per-user stats + filesystem totals."""
     cursor = await db.execute(
@@ -178,7 +181,7 @@ async def get_disk_usage(
 
 @router.get("/hw-scan")
 async def get_hw_scan(
-    admin: AuthenticatedUser = Depends(require_admin),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
 ):
     """Run a hardware capability scan and return tuning recommendations.
 
@@ -200,10 +203,10 @@ _INVITE_EXPIRE_HOURS  = 24
 _INVITE_TOKEN_BYTES   = 16   # 128-bit = 22 URL-safe base64 chars
 
 
-@router.post("/invites")
+@router.post("/invites", responses={403: {"description": "Forbidden"}})
 async def create_invite(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a single-use registration invite (24-hour expiry).
 
@@ -233,8 +236,8 @@ async def create_invite(
 
 @router.get("/invites")
 async def list_invites(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all invites (pending and used), most recent first."""
     cursor = await db.execute(
@@ -264,11 +267,11 @@ async def list_invites(
     }
 
 
-@router.delete("/invites/{invite_id}")
+@router.delete("/invites/{invite_id}", responses={404: {"description": "Not Found"}})
 async def revoke_invite(
     invite_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Revoke a pending (unused) invite."""
     invite_id = validate_uuid(invite_id)
@@ -291,7 +294,7 @@ async def revoke_invite(
 
 @router.post("/theme/reload")
 async def reload_theme(
-    admin: AuthenticatedUser = Depends(require_admin),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
 ):
     """Hot-reload DATA_DIR/theme.json without restarting the server.
 
@@ -318,10 +321,10 @@ class UpdateThemeRequest(BaseModel):
     ui: dict[str, bool] | None = None
 
 
-@router.patch("/theme")
+@router.patch("/theme", responses={400: {"description": "Bad Request"}, 500: {"description": "Internal Server Error"}})
 async def update_theme(
     body: UpdateThemeRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
 ):
     """Update theme.json brand_name and/or ui flags and hot-reload.
 
@@ -382,10 +385,10 @@ _LOGO_ALLOWED_MIME: frozenset[str] = frozenset({
 })
 
 
-@router.post("/theme/logo")
+@router.post("/theme/logo", responses={400: {"description": "Bad Request"}, 413: {"description": "413"}, 500: {"description": "Internal Server Error"}})
 async def upload_theme_logo(
     file: UploadFile = File(...),
-    admin: AuthenticatedUser = Depends(require_admin),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
 ):
     """Upload an org logo to DATA_DIR and wire it into theme.json.
 
@@ -453,12 +456,12 @@ class CreateInviteShortLinkRequest(BaseModel):
     expires_at: str
 
 
-@router.post("/invites/{invite_id}/short-link")
+@router.post("/invites/{invite_id}/short-link", responses={404: {"description": "Not Found"}, 503: {"description": "503"}})
 async def create_invite_short_link(
     invite_id: str,
     body: CreateInviteShortLinkRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Generate a memorable 3-word short link for an existing pending invite.
 
@@ -500,8 +503,8 @@ async def create_invite_short_link(
 
 @router.get("/files/av-status")
 async def get_av_status(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return per-status counts of files for the AV status dashboard."""
     cursor = await db.execute(
@@ -525,10 +528,10 @@ async def get_av_status(
     }
 
 
-@router.post("/files/av-rescan")
+@router.post("/files/av-rescan", responses={501: {"description": "501"}})
 async def bulk_av_rescan(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Queue background AV scan tasks for all null/error-status files.
 
@@ -550,7 +553,9 @@ async def bulk_av_rescan(
     rows = await cursor.fetchall()
     queued = 0
     for row in rows:
-        asyncio.create_task(_bg_scan(row["id"]))
+        _t = asyncio.create_task(_bg_scan(row["id"]))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
         queued += 1
 
     return {"queued": queued}

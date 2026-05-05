@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.models.role import FLAG_CREATE_ROLES, FLAG_CREATE_CROSS_TEAM_ROLES, FLAG_MANAGE_ROLES
 from app.models.team import get_team, get_team_member_role
 from app.models.team_role import (
@@ -35,6 +35,7 @@ from app.models.team_role import (
 )
 from app.conf.teams import TEAM_ROLE_OWNER
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
 
 router = APIRouter()
 
@@ -157,8 +158,8 @@ class AssignRoleRequest(BaseModel):
 @router.get("/{team_id}/custom-roles")
 async def list_team_roles(
     team_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all custom roles for a team with their permission flags."""
     team_id = validate_uuid(team_id)
@@ -194,12 +195,12 @@ async def list_team_roles(
 # POST /{team_id}/custom-roles
 # ---------------------------------------------------------------------------
 
-@router.post("/{team_id}/custom-roles")
+@router.post("/{team_id}/custom-roles", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def create_team_role(
     team_id: str,
     body: CreateTeamRoleRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a custom role for a team.
 
@@ -269,8 +270,8 @@ async def create_team_role(
 async def get_team_role(
     team_id: str,
     role_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single custom team role with its permission flags."""
     team_id = validate_uuid(team_id)
@@ -288,13 +289,13 @@ async def get_team_role(
 # PATCH /{team_id}/custom-roles/{role_id}
 # ---------------------------------------------------------------------------
 
-@router.patch("/{team_id}/custom-roles/{role_id}")
+@router.patch("/{team_id}/custom-roles/{role_id}", responses={400: {"description": "Bad Request"}})
 async def update_team_role(
     team_id: str,
     role_id: str,
     body: UpdateTeamRoleRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update a custom team role's name and/or description."""
     team_id = validate_uuid(team_id)
@@ -341,8 +342,8 @@ async def update_team_role(
 async def delete_team_role(
     team_id: str,
     role_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a custom team role. Cascades to permissions and assignments."""
     team_id = validate_uuid(team_id)
@@ -362,13 +363,13 @@ async def delete_team_role(
 # PUT /{team_id}/custom-roles/{role_id}/permissions
 # ---------------------------------------------------------------------------
 
-@router.put("/{team_id}/custom-roles/{role_id}/permissions")
+@router.put("/{team_id}/custom-roles/{role_id}/permissions", responses={400: {"description": "Bad Request"}})
 async def update_team_role_permissions(
     team_id: str,
     role_id: str,
     body: UpdateTeamRolePermissionsRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Set permission flag values for a custom team role.
 
@@ -410,8 +411,8 @@ async def update_team_role_permissions(
 async def list_role_assignments(
     team_id: str,
     role_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all users assigned to a custom team role."""
     team_id = validate_uuid(team_id)
@@ -447,13 +448,13 @@ async def list_role_assignments(
 # POST /{team_id}/custom-roles/{role_id}/assignments
 # ---------------------------------------------------------------------------
 
-@router.post("/{team_id}/custom-roles/{role_id}/assignments")
+@router.post("/{team_id}/custom-roles/{role_id}/assignments", responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}})
 async def assign_team_role(
     team_id: str,
     role_id: str,
     body: AssignRoleRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Assign a user to a custom team role. The target user must be a team member."""
     team_id = validate_uuid(team_id)
@@ -493,13 +494,13 @@ async def assign_team_role(
 # DELETE /{team_id}/custom-roles/{role_id}/assignments/{user_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{team_id}/custom-roles/{role_id}/assignments/{target_user_id}")
+@router.delete("/{team_id}/custom-roles/{role_id}/assignments/{target_user_id}", responses={404: {"description": "Not Found"}})
 async def revoke_team_role(
     team_id: str,
     role_id: str,
     target_user_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Remove a user from a custom team role."""
     team_id = validate_uuid(team_id)

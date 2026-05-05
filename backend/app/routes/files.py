@@ -14,7 +14,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import get_current_user, get_optional_user, require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.database import db_session, get_db
+from app.database import Database, db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import _get_client_ip
 from app.models.file import File, FileChunk
@@ -24,6 +24,14 @@ import app.storage.manager as storage
 from app.util.db import get_admin_setting
 from app.util.http import content_disposition, parse_range_header
 from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
+from typing import Annotated
+
+
+_ERR_ACCESS_DENIED = "Access denied"
+_SQL_FILE_BY_ID = "SELECT * FROM files WHERE id = ? AND deleted_at IS NULL"
+_ERR_FILE_NOT_FOUND = "File not found"
+
+_bg_tasks: set = set()
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +51,7 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
         return
     if file_row["folder_id"] and await has_folder_permission(db, file_row["folder_id"], user.id):
         return
-    raise HTTPException(status_code=403, detail="Access denied")
+    raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
 router = APIRouter()
 
@@ -145,11 +153,11 @@ class BatchMoveRequest(BaseModel):
         return v
 
 
-@router.post("/batch-move")
+@router.post("/batch-move", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def batch_move_files(
     body: BatchMoveRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Move up to 50 files to a destination folder in a single request.
 
@@ -336,12 +344,12 @@ class BatchCopyRequest(BaseModel):
         return v
 
 
-@router.post("/batch-copy")
+@router.post("/batch-copy", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def batch_copy_files(
     body: BatchCopyRequest,
     request: Request,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Copy up to 50 files to a destination folder, sharing the encrypted blob.
 
@@ -595,42 +603,42 @@ async def batch_copy_files(
     return {"copied": copied, "failed": failed}
 
 
-@router.get("/{file_id}")
+@router.get("/{file_id}", responses={404: {"description": "Not Found"}})
 async def get_file_metadata(
     file_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get file metadata (not content)."""
     file_id = validate_uuid(file_id)
 
-    cursor = await db.execute("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,))
+    cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
 
     file = File.from_row(row)
     await check_file_access(db, row, user)
     return {"file": file.to_dict()}
 
 
-@router.put("/{file_id}")
+@router.put("/{file_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_file(
     file_id: str,
     body: UpdateFileRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update file metadata (rename, move)."""
     file_id = validate_uuid(file_id)
 
-    cursor = await db.execute("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,))
+    cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
 
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     if body.move_to_root and body.folder_id is not None:
         raise HTTPException(status_code=400, detail="Cannot specify both folder_id and move_to_root")
@@ -710,11 +718,11 @@ async def update_file(
     return result
 
 
-@router.delete("/{file_id}")
+@router.delete("/{file_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def delete_file(
     file_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a file.
 
@@ -731,10 +739,10 @@ async def delete_file(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
 
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # Check whether trash is enabled.
     trash_enabled = (await get_admin_setting(db, "trash_enabled", default="true")) == "true"
@@ -784,7 +792,9 @@ async def delete_file(
             except Exception:
                 pass
 
-        asyncio.create_task(_bg_delete(file_id, storage_key))
+        _t = asyncio.create_task(_bg_delete(file_id, storage_key))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "File deleted"}
 
@@ -830,12 +840,12 @@ async def _log_download(
         logger.warning("Failed to write access log for file %s", file_id)
 
 
-@router.get("/{file_id}/content")
+@router.get("/{file_id}/content", responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}, 423: {"description": "423"}, 503: {"description": "503"}})
 async def get_file_content(
     file_id: str,
     request: Request,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Stream encrypted file bytes with HTTP Range support.
 
@@ -856,7 +866,7 @@ async def get_file_content(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
 
     if not row["upload_complete"]:
         raise HTTPException(status_code=409, detail="File upload is not complete")
@@ -901,7 +911,9 @@ async def get_file_content(
     # --- Access log + last_accessed_at update (on first chunk request) ---
     if not range_header or start == 0:
         await _log_download(db, request, user, file_id)
-        asyncio.create_task(_update_last_accessed(file_id))
+        _t = asyncio.create_task(_update_last_accessed(file_id))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
 
     # --- Content-Disposition ---
     disposition = content_disposition(row["sanitized_name"] or "download")
@@ -924,11 +936,11 @@ async def get_file_content(
     )
 
 
-@router.get("/{file_id}/chunks")
+@router.get("/{file_id}/chunks", responses={404: {"description": "Not Found"}})
 async def get_file_chunks(
     file_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=5000),
 ):
@@ -938,10 +950,10 @@ async def get_file_chunks(
     """
     file_id = validate_uuid(file_id)
 
-    cursor = await db.execute("SELECT * FROM files WHERE id = ? AND deleted_at IS NULL", (file_id,))
+    cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
 
     await check_file_access(db, row, user)
 

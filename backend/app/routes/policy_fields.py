@@ -24,10 +24,14 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.models.policy import PolicyFieldDef, VALID_OPERATORS
 from app.models.role import FLAG_MANAGE_POLICIES
 from app.routes._access import require_flag
+from typing import Annotated
+
+
+_ERR_PERM_POLICY_FIELDS = "can_define_policy_fields required"
 
 router = APIRouter()
 
@@ -81,8 +85,8 @@ class UpdateFieldRequest(BaseModel):
 
 @router.get("")
 async def list_policy_fields(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all registered policy field definitions.
 
@@ -101,18 +105,18 @@ async def list_policy_fields(
 # POST /policy-fields — register a new LDAP/OIDC field
 # ---------------------------------------------------------------------------
 
-@router.post("")
+@router.post("", responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}})
 async def create_policy_field(
     body: CreateFieldRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Register a new LDAP or OIDC attribute field for use in policy conditions.
 
     Requires can_define_policy_fields.  Internal fields cannot be created via
     the API — they are seeded by the migration.
     """
-    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, "can_define_policy_fields required")
+    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, _ERR_PERM_POLICY_FIELDS)
 
     if not _FIELD_NAME_RE.match(body.name):
         raise HTTPException(
@@ -150,8 +154,8 @@ async def create_policy_field(
 @router.get("/{name}")
 async def get_policy_field(
     name: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single policy field definition."""
     require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
@@ -163,19 +167,19 @@ async def get_policy_field(
 # PATCH /policy-fields/{name} — update display_label or claim_path
 # ---------------------------------------------------------------------------
 
-@router.patch("/{name}")
+@router.patch("/{name}", responses={400: {"description": "Bad Request"}})
 async def update_policy_field(
     name: str,
     body: UpdateFieldRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update the display label and/or claim_path of an LDAP/OIDC field.
 
     Internal fields (source='internal') cannot be edited.
     Requires can_define_policy_fields.
     """
-    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, "can_define_policy_fields required")
+    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, _ERR_PERM_POLICY_FIELDS)
 
     field = await _load_field(db, name)
     if field.source == "internal":
@@ -209,11 +213,11 @@ async def update_policy_field(
 # DELETE /policy-fields/{name}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{name}")
+@router.delete("/{name}", responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}})
 async def delete_policy_field(
     name: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete an LDAP/OIDC field definition.
 
@@ -223,7 +227,7 @@ async def delete_policy_field(
         admin_scope_condition (RESTRICT FK prevents orphaned conditions).
     Requires can_define_policy_fields.
     """
-    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, "can_define_policy_fields required")
+    require_flag(user, FLAG_DEFINE_POLICY_FIELDS, _ERR_PERM_POLICY_FIELDS)
 
     field = await _load_field(db, name)
     if field.source == "internal":

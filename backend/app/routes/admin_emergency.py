@@ -16,14 +16,14 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.models.role import FLAG_MANAGE_USERS
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
@@ -53,13 +53,13 @@ class EmergencyRevokeRequest(BaseModel):
 # POST /admin/users/{user_id}/emergency-revoke
 # ---------------------------------------------------------------------------
 
-@router.post("/users/{user_id}/emergency-revoke")
+@router.post("/users/{user_id}/emergency-revoke", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def emergency_revoke(
     request: Request,
     user_id: str,
     body: EmergencyRevokeRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Perform an emergency account revocation.
 
@@ -266,8 +266,8 @@ async def list_transfer_locks(
     user_id: str,
     limit: int = 50,
     offset: int = 0,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List files currently under a transfer lock applied to this user's account."""
     user_id = validate_uuid(user_id)
@@ -313,12 +313,12 @@ async def list_transfer_locks(
 # DELETE /admin/files/{file_id}/transfer-lock
 # ---------------------------------------------------------------------------
 
-@router.delete("/files/{file_id}/transfer-lock")
+@router.delete("/files/{file_id}/transfer-lock", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
 async def clear_transfer_lock(
     request: Request,
     file_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Explicitly clear the transfer lock on a single file.
 

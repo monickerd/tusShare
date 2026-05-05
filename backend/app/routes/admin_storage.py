@@ -27,12 +27,16 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.storage.crypto import decrypt_volume_config, encrypt_volume_config
 import app.storage.manager as storage
 from app.util.ssrf import validate_endpoint_url
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+
+_ERR_VOLUME_NOT_FOUND = "Volume not found"
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +120,8 @@ class TieringPolicyModel(BaseModel):
 
 @router.get("/volumes")
 async def list_volumes(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
         "SELECT id, name, provider, tier, is_default, priority, created_at "
@@ -127,11 +131,11 @@ async def list_volumes(
     return [dict(row) for row in rows]
 
 
-@router.post("/volumes", dependencies=[Depends(require_step_up(_STEPUP))])
+@router.post("/volumes", dependencies=[Depends(require_step_up(_STEPUP))], responses={409: {"description": "Conflict"}})
 async def create_volume(
     body: VolumeCreateModel,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     if body.provider in ("s3", "b2") and body.config.get("endpoint_url"):
         await validate_endpoint_url(body.config["endpoint_url"])
@@ -155,11 +159,11 @@ async def create_volume(
     return {"id": vol_id, "message": "Volume created"}
 
 
-@router.get("/volumes/{volume_id}")
+@router.get("/volumes/{volume_id}", responses={404: {"description": "Not Found"}})
 async def get_volume(
     volume_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     volume_id = validate_uuid(volume_id)
     cursor = await db.execute(
@@ -169,7 +173,7 @@ async def get_volume(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Volume not found")
+        raise HTTPException(status_code=404, detail=_ERR_VOLUME_NOT_FOUND)
 
     result = dict(row)
     if result.get("config_enc"):
@@ -184,19 +188,19 @@ async def get_volume(
     return result
 
 
-@router.put("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))])
+@router.put("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}})
 async def update_volume(
     volume_id: str,
     body: VolumeCreateModel,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     volume_id = validate_uuid(volume_id)
 
     cursor = await db.execute("SELECT config_enc FROM storage_volumes WHERE id = ?", (volume_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Volume not found")
+        raise HTTPException(status_code=404, detail=_ERR_VOLUME_NOT_FOUND)
 
     # If the client sent redacted values, keep the existing encrypted config for those fields
     existing_config: dict = {}
@@ -225,11 +229,11 @@ async def update_volume(
     return {"message": "Volume updated"}
 
 
-@router.delete("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))])
+@router.delete("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
 async def delete_volume(
     volume_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     volume_id = validate_uuid(volume_id)
 
@@ -238,7 +242,7 @@ async def delete_volume(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Volume not found")
+        raise HTTPException(status_code=404, detail=_ERR_VOLUME_NOT_FOUND)
     if row["is_default"]:
         raise HTTPException(
             status_code=409,
@@ -262,17 +266,17 @@ async def delete_volume(
     return {"message": "Volume deleted"}
 
 
-@router.post("/volumes/{volume_id}/default", dependencies=[Depends(require_step_up(_STEPUP))])
+@router.post("/volumes/{volume_id}/default", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}})
 async def set_default_volume(
     volume_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     volume_id = validate_uuid(volume_id)
 
     cursor = await db.execute("SELECT id FROM storage_volumes WHERE id = ?", (volume_id,))
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Volume not found")
+        raise HTTPException(status_code=404, detail=_ERR_VOLUME_NOT_FOUND)
 
     await db.execute("BEGIN")
     try:
@@ -287,11 +291,11 @@ async def set_default_volume(
     return {"message": "Default volume updated"}
 
 
-@router.post("/volumes/{volume_id}/test")
+@router.post("/volumes/{volume_id}/test", responses={404: {"description": "Not Found"}})
 async def test_volume(
     volume_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     volume_id = validate_uuid(volume_id)
     mgr = storage.get_manager()
@@ -314,8 +318,8 @@ async def test_volume(
 
 @router.get("/usage")
 async def get_storage_usage(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
         "SELECT key, value FROM admin_settings WHERE key IN (?, ?)",
@@ -341,8 +345,8 @@ async def get_storage_usage(
 
 @router.get("/tiers")
 async def get_tiering_policy(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     keys = [
         "storage_tiering_enabled",
@@ -379,8 +383,8 @@ async def get_tiering_policy(
 
 @router.post("/tiering/trigger")
 async def trigger_tiering_pass(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Run a tiering pass immediately without waiting for the scheduled interval.
 
@@ -396,8 +400,8 @@ async def trigger_tiering_pass(
 @router.put("/tiers", dependencies=[Depends(require_step_up(_STEPUP))])
 async def update_tiering_policy(
     body: TieringPolicyModel,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     updates = {
         "storage_tiering_enabled":      "1" if body.enabled else "0",

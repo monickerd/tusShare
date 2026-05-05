@@ -136,7 +136,18 @@ async def _drain_loop() -> None:
                     break
                 except Exception:
                     logger.exception("Event bus: error flushing event on shutdown")
-            return
+            # Flush remaining events before exiting so nothing is silently lost.
+            while not _write_queue.empty():
+                try:
+                    event, should_persist = _write_queue.get_nowait()
+                    if should_persist:
+                        await _persist(event)
+                    _fanout(event)
+                except asyncio.QueueEmpty:
+                    break
+                except Exception:
+                    logger.exception("Event bus: error flushing event on shutdown")
+            raise
         except Exception:
             logger.exception("Event bus: unhandled error in drain loop")
 

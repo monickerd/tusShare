@@ -20,20 +20,24 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import FLAG_MANAGE_SERVICE_ACCOUNTS
 from app.routes._access import require_flag
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
+
+
+_ERR_PERM_SERVICE_ACCOUNTS = "Service account management permission required"
+_ERR_SERVICE_ACCOUNT_NOT_FOUND = "Service account not found"
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -126,10 +130,10 @@ def _sa_row_to_dict(row, key_row=None) -> dict:
 
 @router.get("/service-accounts")
 async def list_service_accounts(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
 
     cursor = await db.execute(
         """
@@ -163,14 +167,14 @@ async def list_service_accounts(
 # POST /service-accounts  [step-up]
 # ---------------------------------------------------------------------------
 
-@router.post("/service-accounts")
+@router.post("/service-accounts", responses={409: {"description": "Conflict"}})
 async def create_service_account(
     body: CreateServiceAccountRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP)),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
 
     sa_id  = str(uuid.uuid4())
     raw_key = _generate_raw_key()
@@ -227,13 +231,13 @@ async def create_service_account(
 # GET /service-accounts/{id}
 # ---------------------------------------------------------------------------
 
-@router.get("/service-accounts/{sa_id}")
+@router.get("/service-accounts/{sa_id}", responses={404: {"description": "Not Found"}})
 async def get_service_account(
     sa_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -249,7 +253,7 @@ async def get_service_account(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Service account not found")
+        raise HTTPException(status_code=404, detail=_ERR_SERVICE_ACCOUNT_NOT_FOUND)
 
     # Load role assignments
     rc = await db.execute(
@@ -279,15 +283,15 @@ async def get_service_account(
 # PATCH /service-accounts/{id}  [step-up]
 # ---------------------------------------------------------------------------
 
-@router.patch("/service-accounts/{sa_id}")
+@router.patch("/service-accounts/{sa_id}", responses={404: {"description": "Not Found"}})
 async def update_service_account(
     sa_id: str,
     body: UpdateServiceAccountRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP)),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -296,7 +300,7 @@ async def update_service_account(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Service account not found")
+        raise HTTPException(status_code=404, detail=_ERR_SERVICE_ACCOUNT_NOT_FOUND)
 
     now = datetime.now(timezone.utc).isoformat()
     updates: list[str] = ["updated_at = ?"]
@@ -345,14 +349,14 @@ async def update_service_account(
 # DELETE /service-accounts/{id}  [step-up]
 # ---------------------------------------------------------------------------
 
-@router.delete("/service-accounts/{sa_id}")
+@router.delete("/service-accounts/{sa_id}", responses={404: {"description": "Not Found"}})
 async def delete_service_account(
     sa_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP)),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -361,7 +365,7 @@ async def delete_service_account(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Service account not found")
+        raise HTTPException(status_code=404, detail=_ERR_SERVICE_ACCOUNT_NOT_FOUND)
 
     # CASCADE on service_account_keys handles key deletion
     await db.execute("DELETE FROM users WHERE id = ?", (sa_id,))
@@ -384,14 +388,14 @@ async def delete_service_account(
 # POST /service-accounts/{id}/rotate-key  [step-up]
 # ---------------------------------------------------------------------------
 
-@router.post("/service-accounts/{sa_id}/rotate-key")
+@router.post("/service-accounts/{sa_id}/rotate-key", responses={404: {"description": "Not Found"}})
 async def rotate_service_account_key(
     sa_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP)),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, "Service account management permission required")
+    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -400,7 +404,7 @@ async def rotate_service_account_key(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Service account not found")
+        raise HTTPException(status_code=404, detail=_ERR_SERVICE_ACCOUNT_NOT_FOUND)
 
     raw_key    = _generate_raw_key()
     key_hash   = _hash_key(raw_key)

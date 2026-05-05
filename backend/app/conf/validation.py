@@ -85,7 +85,7 @@ CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0a-\x1f\x7f-\x9f]")
 # Detects percent-encoded CR, LF, or null bytes in raw (not yet decoded) strings.
 # Used to catch log-injection and CRLF injection attempts before URL decoding.
 # Matches: %0a %0A (LF), %0d %0D (CR), %00 (null)
-ENCODED_CONTROL_PATTERN = re.compile(r"%0[adAD0]", re.IGNORECASE)
+ENCODED_CONTROL_PATTERN = re.compile(r"%0[ad0]", re.IGNORECASE)
 
 # Maximum number of URL-decode rounds to attempt when checking for nested encoding.
 MAX_URL_DECODE_ROUNDS = 3

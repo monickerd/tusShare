@@ -38,6 +38,7 @@ _config_values: dict[str, str] = {}
 _loaded = False
 
 _HASH_FILENAME = ".sensitive_config.hash"
+_ERR_NOT_LOADED = _ERR_NOT_LOADED
 
 # Sensitive config key for the OPAQUE server setup blob (base64-encoded bytes).
 OPAQUE_SERVER_SETUP_KEY = "opaque.server_setup"
@@ -382,7 +383,7 @@ def is_sensitive(function_key: str) -> bool:
     specific, then default (False = not sensitive).
     """
     if not _loaded:
-        raise RuntimeError("sensitive_config.load() has not been called")
+        raise RuntimeError(_ERR_NOT_LOADED)
 
     entry = _config.get(function_key)
     if entry is not None:
@@ -404,7 +405,7 @@ def get_challenge_type(function_key: str) -> str:
     Falls back to 'password' if the key is not found.
     """
     if not _loaded:
-        raise RuntimeError("sensitive_config.load() has not been called")
+        raise RuntimeError(_ERR_NOT_LOADED)
 
     entry = _config.get(function_key)
     if entry is not None:
@@ -427,7 +428,7 @@ def get_config_value(key: str) -> str | None:
     Raises RuntimeError if called before load().
     """
     if not _loaded:
-        raise RuntimeError("sensitive_config.load() has not been called")
+        raise RuntimeError(_ERR_NOT_LOADED)
     return _config_values.get(key)
 
 

@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _LDAP_USERNAME_RE = re.compile(r'^[a-zA-Z0-9._@\-]{1,64}$')
+_LDAPS_SCHEME = _LDAPS_SCHEME
 
 # Minimum attribute set fetched on every LDAP auth/fetch.
 # Covers common AD and OpenLDAP schemas without pulling sensitive fields.
@@ -96,7 +97,7 @@ def validate_ldap_config(cfg: dict[str, Any]) -> None:
             raise ValueError(f"LDAP config missing required field: {field}")
 
     uri = cfg["server_uri"]
-    if not (uri.startswith("ldap://") or uri.startswith("ldaps://")):
+    if not (uri.startswith("ldap://") or uri.startswith(_LDAPS_SCHEME)):
         raise ValueError("server_uri must begin with ldap:// or ldaps://")
 
     filt = cfg["user_filter"]
@@ -196,7 +197,7 @@ def _ldap_authenticate_sync(
     else:
         tls_obj = Tls(validate=ssl.CERT_REQUIRED)
 
-    use_ssl = server_uri.startswith("ldaps://")
+    use_ssl = server_uri.startswith(_LDAPS_SCHEME)
     # get_info=NONE suppresses schema-discovery round-trips on every connection,
     # which eliminates two extra LDAP ops and the associated log noise.
     server = Server(server_uri, use_ssl=use_ssl, tls=tls_obj, connect_timeout=5, get_info=GET_INFO_NONE)
@@ -259,8 +260,12 @@ def _ldap_authenticate_sync(
         # Collect attribute values; unwrap single-item lists for scalar fields
         raw_attrs: dict[str, Any] = {}
         for attr_name, attr_val in result_entries[0].get("attributes", {}).items():
-            raw_attrs[attr_name] = str(attr_val[0]) if isinstance(attr_val, list) and len(attr_val) == 1 \
-                else ([str(v) for v in attr_val] if isinstance(attr_val, list) else str(attr_val))
+            if isinstance(attr_val, list) and len(attr_val) == 1:
+                raw_attrs[attr_name] = str(attr_val[0])
+            elif isinstance(attr_val, list):
+                raw_attrs[attr_name] = [str(v) for v in attr_val]
+            else:
+                raw_attrs[attr_name] = str(attr_val)
 
         logger.debug(
             "LDAP found user=%s dn=%s attrs=%s",
@@ -334,7 +339,7 @@ def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | Non
     user_filter_tpl = cfg["user_filter"]
     tls_mode = cfg.get("tls", "verify")
 
-    use_ssl = server_uri.startswith("ldaps://")
+    use_ssl = server_uri.startswith(_LDAPS_SCHEME)
     tls_obj = Tls(validate=ssl.CERT_NONE if tls_mode == "skip_verify" else ssl.CERT_REQUIRED)
     server = Server(server_uri, use_ssl=use_ssl, tls=tls_obj, connect_timeout=5, get_info=GET_INFO_NONE)
 
@@ -373,8 +378,12 @@ def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | Non
 
         raw_attrs: dict[str, Any] = {}
         for attr_name, attr_val in result_entries[0].get("attributes", {}).items():
-            raw_attrs[attr_name] = str(attr_val[0]) if isinstance(attr_val, list) and len(attr_val) == 1 \
-                else ([str(v) for v in attr_val] if isinstance(attr_val, list) else str(attr_val))
+            if isinstance(attr_val, list) and len(attr_val) == 1:
+                raw_attrs[attr_name] = str(attr_val[0])
+            elif isinstance(attr_val, list):
+                raw_attrs[attr_name] = [str(v) for v in attr_val]
+            else:
+                raw_attrs[attr_name] = str(attr_val)
 
         logger.debug("LDAP fetch succeeded — user=%s attrs=%s", username, sorted(raw_attrs.keys()))
         return raw_attrs
@@ -414,7 +423,7 @@ def _ldap_test_sync(cfg: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": "ldap3 not installed"}
 
     tls_mode = cfg.get("tls", "verify")
-    use_ssl = cfg["server_uri"].startswith("ldaps://")
+    use_ssl = cfg["server_uri"].startswith(_LDAPS_SCHEME)
     tls_obj = Tls(validate=ssl.CERT_NONE if tls_mode == "skip_verify" else ssl.CERT_REQUIRED)
     server = Server(cfg["server_uri"], use_ssl=use_ssl, tls=tls_obj, connect_timeout=5, get_info=GET_INFO_NONE)
 

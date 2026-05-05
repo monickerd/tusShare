@@ -17,7 +17,7 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.models.role import FLAG_MANAGE_USERS, FLAG_MANAGE_ROLES
-from app.database import db_session, get_db
+from app.database import Database, db_session, get_db
 from app.models.role import ADMIN_ROLE_IDS, ROLE_ADMIN, ROLE_USER, ROLE_TIER, admin_best_tier, grant_role, revoke_role
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
@@ -26,6 +26,13 @@ from app.models.user import User
 from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 from app.validation.validators import validate_pagination
+from typing import Annotated
+
+
+_ERR_PERM_MANAGE_USERS = "can_manage_users permission required"
+_ERR_USER_NOT_FOUND = "User not found"
+
+_bg_tasks: set = set()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -92,16 +99,16 @@ class UpdateUserRequest(BaseModel):
 # Endpoints
 # ---------------------------------------------------------------------------
 
-@router.get("")
+@router.get("", responses={403: {"description": "Forbidden"}})
 async def list_users(
     page: int = 1,
     limit: int = 20,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all users with pagination."""
     if not admin.has_flag(FLAG_MANAGE_USERS):
-        raise HTTPException(status_code=403, detail="can_manage_users permission required")
+        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     pagination = validate_pagination(page, limit)
     cursor = await db.execute(
         "SELECT * FROM users ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -136,11 +143,11 @@ async def list_users(
     }
 
 
-@router.post("")
+@router.post("", responses={410: {"description": "Gone"}})
 async def create_user(
     body: CreateUserRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a regular user — use the invite flow instead.
 
@@ -158,11 +165,11 @@ async def create_user(
     )
 
 
-@router.post("/admins")
+@router.post("/admins", responses={410: {"description": "Gone"}})
 async def create_admin(
     body: CreateAdminRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create an admin-only account — use the invite+role-grant flow instead.
 
@@ -182,18 +189,18 @@ async def create_admin(
     )
 
 
-@router.get("/{user_id}")
+@router.get("/{user_id}", responses={404: {"description": "Not Found"}})
 async def get_user(
     user_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single user's details including roles."""
     user_id = validate_uuid(user_id)
     cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
     # Load roles
     role_cursor = await db.execute(
@@ -217,17 +224,17 @@ async def get_user(
     return {"user": user_dict}
 
 
-@router.put("/{user_id}")
+@router.put("/{user_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_user(
     request: Request,
     user_id: str,
     body: UpdateUserRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update a user's settings (quotas, active status)."""
     if not admin.has_flag(FLAG_MANAGE_USERS):
-        raise HTTPException(status_code=403, detail="can_manage_users permission required")
+        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     user_id = validate_uuid(user_id)
 
     # Prevent admin from deactivating themselves
@@ -260,7 +267,7 @@ async def update_user(
     await db.commit()
 
     if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
     if body.is_active is not None:
         event_bus.emit(SecurityEvent(
@@ -298,18 +305,18 @@ async def update_user(
     return {"message": "User updated"}
 
 
-@router.get("/{user_id}/roles")
+@router.get("/{user_id}/roles", responses={404: {"description": "Not Found"}})
 async def list_user_roles(
     user_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all role assignments for a user (global + scoped)."""
     user_id = validate_uuid(user_id)
 
     cursor = await db.execute("SELECT id FROM users WHERE id = ?", (user_id,))
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
     cursor = await db.execute(
         "SELECT ur.id, ur.role_id, ur.scope_type, ur.scope_id, ur.granted_by, "
@@ -338,13 +345,13 @@ async def list_user_roles(
     }
 
 
-@router.post("/{user_id}/roles/{role_id}")
+@router.post("/{user_id}/roles/{role_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def add_role_to_user(
     request: Request,
     user_id: str,
     role_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Grant a global role to a user.
 
@@ -377,7 +384,7 @@ async def add_role_to_user(
     cursor = await db.execute("SELECT id, username FROM users WHERE id = ?", (user_id,))
     target_row = await cursor.fetchone()
     if target_row is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
     await grant_role(db, user_id, role_id, granted_by=admin.id)
 
@@ -399,13 +406,13 @@ async def add_role_to_user(
     return {"message": f"Role {role_id} granted to user {user_id}"}
 
 
-@router.delete("/{user_id}/roles/{role_id}")
+@router.delete("/{user_id}/roles/{role_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def remove_role_from_user(
     request: Request,
     user_id: str,
     role_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Revoke a global role from a user.
 
@@ -465,12 +472,12 @@ async def remove_role_from_user(
     return {"message": f"Role {role_id} revoked from user {user_id}"}
 
 
-@router.delete("/{user_id}")
+@router.delete("/{user_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def delete_user(
     request: Request,
     user_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a user and all their data.
 
@@ -478,7 +485,7 @@ async def delete_user(
     then cleans up blobs from disk in a background thread.
     """
     if not admin.has_flag(FLAG_MANAGE_USERS):
-        raise HTTPException(status_code=403, detail="can_manage_users permission required")
+        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
 
     user_id = validate_uuid(user_id)
 
@@ -499,7 +506,7 @@ async def delete_user(
     await db.commit()
 
     if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
     event_bus.emit(SecurityEvent(
         event_type="admin.user.deleted",
@@ -526,16 +533,18 @@ async def delete_user(
         if cleaned:
             logger.info("Cleaned up %d file blobs for deleted user %s", cleaned, uid_snapshot)
 
-    asyncio.create_task(_cleanup_blobs())
+    _t = asyncio.create_task(_cleanup_blobs())
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "User deleted"}
 
 
-@router.delete("/{user_id}/asymmetric-keys")
+@router.delete("/{user_id}/asymmetric-keys", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def clear_user_asymmetric_keys(
     user_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Admin: clear a user's asymmetric public/private key material.
 
@@ -548,7 +557,7 @@ async def clear_user_asymmetric_keys(
     compromise, or resetting a test user's key state.
     """
     if not admin.has_flag(FLAG_MANAGE_USERS):
-        raise HTTPException(status_code=403, detail="can_manage_users permission required")
+        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
 
     user_id = validate_uuid(user_id)
 
@@ -563,6 +572,6 @@ async def clear_user_asymmetric_keys(
     await db.commit()
 
     if result.rowcount == 0:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
     return {"message": "Asymmetric keys cleared"}

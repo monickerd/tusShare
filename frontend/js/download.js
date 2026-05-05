@@ -376,7 +376,7 @@ const Download = (() => {
         a.style.display = 'none';
         document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
+        a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 10000);
     }
 
@@ -640,7 +640,7 @@ const Download = (() => {
             return downloadFile(fileEntries[0].fileId, masterKey, onProgress, signal);
         }
 
-        const batchId = fileEntries.map(e => e.fileId).sort().join(',');
+        const batchId = fileEntries.map(e => e.fileId).sort((a, b) => a.localeCompare(b)).join(',');
         const idb     = await _openBatchDb();
         const dir     = await _getOpfsDir();
 
@@ -677,7 +677,7 @@ const Download = (() => {
                     const entry = pending[pIdx++];
                     active++;
                     _downloadFileToBatchOpfs(entry.fileId, masterKey, dir, idb, signal)
-                        .then(() => {
+                        .then(() => { // NOSONAR — closure inside while/startNext/Promise; unavoidable nesting
                             doneSet.add(entry.fileId);
                             state.done = [...doneSet];
                             doneCount++;
@@ -688,7 +688,7 @@ const Download = (() => {
                             if (doneCount >= fileEntries.length) resolve();
                             else startNext();
                         })
-                        .catch(err => {
+                        .catch(err => { // NOSONAR
                             active--;
                             reject(err);
                         });

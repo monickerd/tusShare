@@ -237,7 +237,7 @@ def _split_statements(sql: str) -> list[str]:
     return stmts
 
 
-async def _run_migrations(db: Database, conn: asyncpg.Connection) -> None:
+async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
     """Initialise the schema on a fresh install.
 
     Runs setup/schema.sql once and records 'schema_v1' in _migrations.

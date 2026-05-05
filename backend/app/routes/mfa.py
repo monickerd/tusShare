@@ -50,7 +50,7 @@ from app.auth.webauthn_helper import (
 from app.auth.stepup import log_security_event
 from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import validate_uuid
 
@@ -59,6 +59,11 @@ router = APIRouter()
 
 # Re-use cookie helpers from auth.py to avoid duplication
 from app.auth.cookies import set_auth_cookies, clear_auth_cookies
+from typing import Annotated
+
+
+_ERR_INVALID_MFA_TOKEN = "Invalid or expired MFA token"
+_ERR_INVALID_CHALLENGE_ID = "challenge_id must be a valid UUID"
 
 
 # ---------------------------------------------------------------------------
@@ -90,8 +95,8 @@ class TotpEnrollStartResponse(BaseModel):
 
 @router.post("/totp/enroll/start")
 async def totp_enroll_start(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Begin TOTP enrollment: generate secret, store inactive credential, return QR URI."""
     totp_uri, secret_b32, cred_id = await enroll_start(
@@ -127,11 +132,11 @@ class TotpEnrollFinishRequest(BaseModel):
         return _check_name(v)
 
 
-@router.post("/totp/enroll/finish")
+@router.post("/totp/enroll/finish", responses={400: {"description": "Bad Request"}})
 async def totp_enroll_finish(
     body: TotpEnrollFinishRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Confirm the TOTP code, activate credential, return one-time recovery codes."""
     recovery_codes = await enroll_finish(db, user.id, body.cred_id, body.totp_code, body.name)
@@ -165,17 +170,17 @@ class TotpVerifyRequest(BaseModel):
         return v
 
 
-@router.post("/totp/verify")
+@router.post("/totp/verify", responses={401: {"description": "Unauthorized"}})
 async def totp_verify(
     body: TotpVerifyRequest,
     response: Response,
     request: Request,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Verify a TOTP code after OPAQUE login. Issues session cookies on success."""
     result = await consume_pending_token(db, body.pending_token)
     if result is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
     user_id, is_public_device = result
 
@@ -197,8 +202,8 @@ async def totp_verify(
 
 @router.post("/webauthn/register/begin")
 async def webauthn_register_begin(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Begin WebAuthn credential registration for an authenticated user."""
     challenge_id, options_dict = await begin_registration(db, user.id)
@@ -216,7 +221,7 @@ class WebAuthnRegisterFinishRequest(BaseModel):
         try:
             return validate_uuid(v)
         except ValueError:
-            raise ValueError("challenge_id must be a valid UUID")
+            raise ValueError(_ERR_INVALID_CHALLENGE_ID)
 
     @field_validator("name")
     @classmethod
@@ -224,11 +229,11 @@ class WebAuthnRegisterFinishRequest(BaseModel):
         return _check_name(v)
 
 
-@router.post("/webauthn/register/finish")
+@router.post("/webauthn/register/finish", responses={400: {"description": "Bad Request"}})
 async def webauthn_register_finish(
     body: WebAuthnRegisterFinishRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Complete WebAuthn registration and store the new credential."""
     try:
@@ -253,16 +258,16 @@ class WebAuthnAuthBeginRequest(BaseModel):
         return _check_pending_token(v)
 
 
-@router.post("/webauthn/authenticate/begin")
+@router.post("/webauthn/authenticate/begin", responses={401: {"description": "Unauthorized"}})
 async def webauthn_authenticate_begin(
     body: WebAuthnAuthBeginRequest,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Begin a WebAuthn authentication challenge for a pending-token login."""
     from app.auth.mfa import _decode_pending_token
     payload = _decode_pending_token(body.pending_token)
     if payload is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
     user_id = payload.get("sub")
     if not user_id:
@@ -288,20 +293,20 @@ class WebAuthnAuthFinishRequest(BaseModel):
         try:
             return validate_uuid(v)
         except ValueError:
-            raise ValueError("challenge_id must be a valid UUID")
+            raise ValueError(_ERR_INVALID_CHALLENGE_ID)
 
 
-@router.post("/webauthn/authenticate/finish")
+@router.post("/webauthn/authenticate/finish", responses={401: {"description": "Unauthorized"}})
 async def webauthn_authenticate_finish(
     body: WebAuthnAuthFinishRequest,
     response: Response,
     request: Request,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Verify a WebAuthn assertion and issue session cookies."""
     result = await consume_pending_token(db, body.pending_token)
     if result is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
     user_id, is_public_device = result
 
@@ -345,17 +350,17 @@ class RecoveryVerifyRequest(BaseModel):
         return v
 
 
-@router.post("/mfa/verify-recovery")
+@router.post("/mfa/verify-recovery", responses={401: {"description": "Unauthorized"}})
 async def verify_recovery(
     body: RecoveryVerifyRequest,
     response: Response,
     request: Request,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Verify a recovery code after OPAQUE login. Issues session cookies on success."""
     result = await consume_pending_token(db, body.pending_token)
     if result is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired MFA token")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
     user_id, is_public_device = result
 
@@ -375,10 +380,10 @@ async def verify_recovery(
 # Session unlock via WebAuthn (tab still open, grace period expired)
 # ---------------------------------------------------------------------------
 
-@router.post("/mfa/unlock/webauthn/begin")
+@router.post("/mfa/unlock/webauthn/begin", responses={400: {"description": "Bad Request"}})
 async def unlock_webauthn_begin(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Begin a WebAuthn challenge for session unlock (grace period re-auth)."""
     methods = await get_active_methods(db, user.id)
@@ -399,15 +404,15 @@ class UnlockWebAuthnFinishRequest(BaseModel):
         try:
             return validate_uuid(v)
         except ValueError:
-            raise ValueError("challenge_id must be a valid UUID")
+            raise ValueError(_ERR_INVALID_CHALLENGE_ID)
 
 
-@router.post("/mfa/unlock/webauthn/finish")
+@router.post("/mfa/unlock/webauthn/finish", responses={401: {"description": "Unauthorized"}})
 async def unlock_webauthn_finish(
     body: UnlockWebAuthnFinishRequest,
     request: Request,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Verify WebAuthn assertion for session unlock. Returns {unlocked: true} on success."""
     client_ip = _get_client_ip(request)
@@ -433,20 +438,20 @@ async def unlock_webauthn_finish(
 
 @router.get("/mfa/credentials")
 async def list_credentials(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List the current user's active MFA credentials (no secrets)."""
     credentials = await list_active_credentials(db, user.id)
     return {"credentials": credentials}
 
 
-@router.delete("/mfa/credentials/{cred_id}")
+@router.delete("/mfa/credentials/{cred_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def delete_credential(
     cred_id: str,
     request: Request,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Remove an MFA credential (self-service).
 
@@ -506,8 +511,8 @@ async def delete_credential(
 
 @router.get("/mfa/status")
 async def mfa_status(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return MFA enrollment status and enforcement policy for the current user."""
     from app.auth.mfa import load_mfa_settings
@@ -535,8 +540,8 @@ async def mfa_status(
 
 @router.post("/mfa/banner/dismiss")
 async def dismiss_mfa_banner(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Dismiss the MFA enrollment nudge banner (optional-mode only)."""
     await db.execute(
@@ -554,10 +559,10 @@ class PendingInfoRequest(BaseModel):
     pending_token: str
 
 
-@router.post("/mfa/pending-info")
+@router.post("/mfa/pending-info", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}})
 async def mfa_pending_info(
     body: PendingInfoRequest,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return the MFA methods available for a pending_token without consuming it.
 

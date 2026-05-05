@@ -6,15 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.database import db_session, get_db
+from app.database import Database, db_session, get_db
 from app.models.file import File, Folder
 from app.models.role import FLAG_ACCESS_ALL_FILES
 from app.services import sse_broker
 from app.services.trash import get_trash_settings, purge_file
 import app.storage.manager as storage
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
 
 router = APIRouter()
+
+_ERR_ACCESS_DENIED = _ERR_ACCESS_DENIED
 
 
 # ---------------------------------------------------------------------------
@@ -23,8 +26,8 @@ router = APIRouter()
 
 @router.get("")
 async def list_trash(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return all soft-deleted files and folders owned by the current user."""
     cursor = await db.execute(
@@ -48,11 +51,11 @@ async def list_trash(
 # Restore
 # ---------------------------------------------------------------------------
 
-@router.post("/files/{file_id}/restore")
+@router.post("/files/{file_id}/restore", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def restore_file(
     file_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Restore a soft-deleted file. If its parent folder is also deleted, moves it to root."""
     file_id = validate_uuid(file_id)
@@ -66,7 +69,7 @@ async def restore_file(
         raise HTTPException(status_code=404, detail="File not found in trash")
 
     if row["owner_id"] != user.id and not user.has_flag(FLAG_ACCESS_ALL_FILES):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # If the parent folder is also deleted, move the file to root so it's visible.
     new_folder_id = row["folder_id"]
@@ -88,11 +91,11 @@ async def restore_file(
     return {"message": "File restored"}
 
 
-@router.post("/folders/{folder_id}/restore")
+@router.post("/folders/{folder_id}/restore", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def restore_folder(
     folder_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Restore a soft-deleted folder and all its contents recursively.
 
@@ -109,7 +112,7 @@ async def restore_folder(
         raise HTTPException(status_code=404, detail="Folder not found in trash")
 
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # If the parent folder is also deleted, detach to root.
     new_parent_id = row["parent_id"]
@@ -168,11 +171,11 @@ async def restore_folder(
 # Permanent delete
 # ---------------------------------------------------------------------------
 
-@router.delete("/files/{file_id}")
+@router.delete("/files/{file_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def permanently_delete_file(
     file_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Permanently delete a file that is currently in the trash."""
     file_id = validate_uuid(file_id)
@@ -187,17 +190,17 @@ async def permanently_delete_file(
         raise HTTPException(status_code=404, detail="File not found in trash")
 
     if row["owner_id"] != user.id and not user.has_flag(FLAG_ACCESS_ALL_FILES):
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     await purge_file(db, row["id"], row["storage_key"], row["encrypted_size"], row["owner_id"])
     return {"message": "File permanently deleted"}
 
 
-@router.delete("/folders/{folder_id}")
+@router.delete("/folders/{folder_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def permanently_delete_folder(
     folder_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Permanently delete a folder and all its contents from the trash."""
     folder_id = validate_uuid(folder_id)
@@ -211,7 +214,7 @@ async def permanently_delete_folder(
         raise HTTPException(status_code=404, detail="Folder not found in trash")
 
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # Purge all files in the subtree first (quota + blob cleanup).
     cursor = await db.execute(
@@ -243,8 +246,8 @@ async def permanently_delete_folder(
 
 @router.delete("")
 async def empty_trash(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Permanently delete all items in the current user's trash."""
     cursor = await db.execute(

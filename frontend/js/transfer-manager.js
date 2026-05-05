@@ -71,7 +71,7 @@ const TransferManager = (() => {
     function _removeTransfer(id, rowEl, delay) {
         setTimeout(() => {
             _transfers.delete(id);
-            if (rowEl.parentNode) rowEl.parentNode.removeChild(rowEl);
+            if (rowEl.parentNode) rowEl.remove();
             _refreshVisibility();
         }, delay);
     }
@@ -226,7 +226,7 @@ const TransferManager = (() => {
      */
     function dismissAll() {
         for (const t of _transfers.values()) {
-            if (t.rowEl.parentNode) t.rowEl.parentNode.removeChild(t.rowEl);
+            if (t.rowEl.parentNode) t.rowEl.remove();
         }
         _transfers.clear();
         _refreshVisibility();
@@ -244,7 +244,7 @@ const TransferManager = (() => {
             return {
                 id,
                 label:  nameEl ? nameEl.textContent : '',
-                type:   icon && icon.textContent === '↑' ? 'upload' : 'download',
+                type:   icon?.textContent === '↑' ? 'upload' : 'download',
                 status: t.status,
                 pct:    pctEl ? pctEl.textContent : '',
             };

@@ -21,7 +21,7 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import get_optional_user, require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_share_session_token, verify_share_session_token
-from app.database import db_session, get_db
+from app.database import Database, db_session, get_db
 import app.storage.manager as storage
 from app.middleware.rate_limit import check_management_rate_limit, _counter
 from app.models.file import FileChunk
@@ -38,6 +38,13 @@ from app.routes._access import is_in_shared_tree, is_team_folder_member
 from app.util.http import content_disposition, parse_range_header
 from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
 from app.wordlist import insert_short_link_with_unique_slug
+from typing import Annotated
+
+
+_UTC_OFFSET = "+00:00"
+_ERR_SHARE_NOT_FOUND = "Share not found or expired"
+
+_bg_tasks: set = set()
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +134,7 @@ class CreateShareRequest(BaseModel):
     def validate_expires_at(cls, v: str | None) -> str | None:
         if v is not None:
             try:
-                dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(v.replace("Z", _UTC_OFFSET))
                 if dt <= datetime.now(timezone.utc):
                     raise ValueError("expires_at must be in the future")
             except ValueError as exc:
@@ -159,7 +166,7 @@ class UpdateShareRequest(BaseModel):
     def validate_expires_at(cls, v: str | None) -> str | None:
         if v is not None:
             try:
-                datetime.fromisoformat(v.replace("Z", "+00:00"))
+                datetime.fromisoformat(v.replace("Z", _UTC_OFFSET))
             except ValueError as exc:
                 raise ValueError(f"Invalid expires_at: {exc}")
         return v
@@ -180,7 +187,7 @@ class CreateShortLinkRequest(BaseModel):
     @classmethod
     def validate_expires_at(cls, v: str) -> str:
         try:
-            dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(v.replace("Z", _UTC_OFFSET))
             if dt <= datetime.now(timezone.utc):
                 raise ValueError("expires_at must be in the future")
         except ValueError as exc:
@@ -218,7 +225,7 @@ async def _get_active_share_by_token(db, token: str):
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Share not found or expired")
+        raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND)
     return row
 
 
@@ -396,11 +403,11 @@ async def _require_share_access(
 
 @router.get("/api/v1/shares/received")
 async def list_received_shares(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    _rl=Depends(check_management_rate_limit),
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """List active user shares sent directly to the current user.
 
@@ -459,9 +466,9 @@ class _CheckSharesRequest(BaseModel):
 @router.post("/api/v1/shares/active-for-items")
 async def check_active_shares_for_items(
     body: _CheckSharesRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
-    _rl=Depends(check_management_rate_limit),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """Return which of the given resource IDs have at least one active share (by any user).
 
@@ -485,11 +492,11 @@ async def check_active_shares_for_items(
 
 @router.get("/api/v1/shares")
 async def list_shares(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    _rl=Depends(check_management_rate_limit),
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """List all active and inactive shares created by the current user."""
     cursor = await db.execute(
@@ -532,13 +539,13 @@ async def list_shares(
     return {"shares": result, "total": total, "offset": offset, "limit": limit}
 
 
-@router.post("/api/v1/shares")
+@router.post("/api/v1/shares", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
 async def create_share(
     body: CreateShareRequest,
     request: Request,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
-    _rl=Depends(check_management_rate_limit),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """Create a link or user share containing one or more files.
 
@@ -721,9 +728,9 @@ async def create_share(
 @router.get("/api/v1/shares/{share_id}")
 async def get_share(
     share_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
-    _rl=Depends(check_management_rate_limit),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """Get a single share with its items and short links."""
     share_id = validate_uuid(share_id)
@@ -757,13 +764,13 @@ async def get_share(
     }
 
 
-@router.put("/api/v1/shares/{share_id}")
+@router.put("/api/v1/shares/{share_id}", responses={400: {"description": "Bad Request"}})
 async def update_share(
     share_id: str,
     body: UpdateShareRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
-    _rl=Depends(check_management_rate_limit),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """Update share settings (active state, expiry, download limit)."""
     share_id = validate_uuid(share_id)
@@ -795,9 +802,9 @@ async def update_share(
 @router.delete("/api/v1/shares/{share_id}")
 async def delete_share(
     share_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
-    _rl=Depends(check_management_rate_limit),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """Delete a share and all its items/short links.
 
@@ -810,13 +817,13 @@ async def delete_share(
     return {"message": "Share deleted"}
 
 
-@router.post("/api/v1/shares/{share_id}/short-link")
+@router.post("/api/v1/shares/{share_id}/short-link", responses={400: {"description": "Bad Request"}, 503: {"description": "503"}})
 async def create_short_link(
     share_id: str,
     body: CreateShortLinkRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
-    _rl=Depends(check_management_rate_limit),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """Generate a memorable 3-word slug short link for an existing share."""
     share_id = validate_uuid(share_id)
@@ -848,12 +855,12 @@ async def create_short_link(
 # Public share access (no authentication required)
 # ---------------------------------------------------------------------------
 
-@router.get("/api/v1/s/{token}")
+@router.get("/api/v1/s/{token}", responses={404: {"description": "Not Found"}})
 async def resolve_share(
     token: str,
     request: Request,
-    user: AuthenticatedUser | None = Depends(get_optional_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser | None, Depends(get_optional_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Resolve a share token.
 
@@ -868,7 +875,7 @@ async def resolve_share(
     try:
         token = validate_share_token(token)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Share not found or expired")
+        raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND)
 
     try:
         share = await _get_active_share_by_token(db, token)
@@ -876,7 +883,7 @@ async def resolve_share(
         # User-type shares are gated on the intended recipient being authenticated.
         if share["share_type"] == "user" and share["target_user_id"] is not None:
             if user is None or user.id != share["target_user_id"]:
-                raise HTTPException(status_code=404, detail="Share not found or expired")
+                raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND)
 
         await _verify_creator_still_has_access(db, share["id"], share["created_by"])
         items = await _get_items_with_files(db, share["id"])
@@ -907,13 +914,13 @@ async def resolve_share(
         raise
 
 
-@router.get("/s/{token}/files/{file_id}/chunks")
+@router.get("/s/{token}/files/{file_id}/chunks", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def get_shared_file_chunks(
     token: str,
     file_id: str,
     request: Request,
-    user: AuthenticatedUser | None = Depends(get_optional_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser | None, Depends(get_optional_user)],
+    db: Annotated[Database, Depends(get_db)],
     offset: int = Query(0, ge=0),
     limit: int = Query(500, ge=1, le=5000),
 ):
@@ -964,13 +971,13 @@ async def get_shared_file_chunks(
     }
 
 
-@router.get("/s/{token}/files/{file_id}/content")
+@router.get("/s/{token}/files/{file_id}/content", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 422: {"description": "Unprocessable Entity"}, 503: {"description": "503"}})
 async def download_shared_file(
     token: str,
     file_id: str,
     request: Request,
-    user: AuthenticatedUser | None = Depends(get_optional_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser | None, Depends(get_optional_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Stream an encrypted file from a share (public, no auth required).
 
@@ -1076,11 +1083,11 @@ async def download_shared_file(
     )
 
 
-@router.get("/api/v1/l/{slug}")
+@router.get("/api/v1/l/{slug}", responses={404: {"description": "Not Found"}})
 async def resolve_short_link(
     slug: str,
     request: Request,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Resolve a memorable short link slug to its share data.
 
@@ -1121,7 +1128,7 @@ async def resolve_short_link(
     )
     share = await share_cursor.fetchone()
     if share is None:
-        raise HTTPException(status_code=404, detail="Share not found or expired")
+        raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND)
 
     items = await _get_items_with_files(db, share["id"])
 
@@ -1152,7 +1159,7 @@ _SHARE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
 _DOWNLOAD_COUNT_MIN_BYTES = 1024
 
 
-@router.post("/s/{share_id}/upload")
+@router.post("/s/{share_id}/upload", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 413: {"description": "413"}, 422: {"description": "Unprocessable Entity"}, 429: {"description": "Too Many Requests"}})
 async def upload_to_share(
     share_id: str,
     request: Request,
@@ -1162,8 +1169,8 @@ async def upload_to_share(
     key_iv: str = Form(...),
     chunk_iv: str = Form(...),
     size_bytes: int = Form(...),
-    user: AuthenticatedUser | None = Depends(get_optional_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser | None, Depends(get_optional_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Accept an encrypted file uploaded by a share-link visitor.
 
@@ -1191,7 +1198,7 @@ async def upload_to_share(
     )
     share = await cursor.fetchone()
     if share is None:
-        raise HTTPException(status_code=404, detail="Share not found or expired")
+        raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND)
 
     if not share["allow_upload"]:
         raise HTTPException(status_code=403, detail="This share does not allow uploads")
@@ -1275,7 +1282,9 @@ async def upload_to_share(
                     await storage.get_manager().delete_blob(_db, fid, key)
             except Exception:
                 pass
-        asyncio.create_task(_bg_delete(file_id, storage_key))
+        _t = asyncio.create_task(_bg_delete(file_id, storage_key))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
         raise
 
     return {"file_id": file_id, "file_name": safe_name, "size_bytes": size_bytes}

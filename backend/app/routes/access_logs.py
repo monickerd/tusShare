@@ -4,21 +4,22 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.models.access_log import AccessLog
 from app.validation.sanitizers import validate_uuid
 from app.validation.validators import validate_pagination
+from typing import Annotated
 
 router = APIRouter()
 
 
-@router.get("/file/{file_id}")
+@router.get("/file/{file_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def get_file_access_logs(
     file_id: str,
     page: int = 1,
     limit: int = 20,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get access logs for a specific file. Requires ownership or admin."""
     file_id = validate_uuid(file_id)
@@ -50,13 +51,13 @@ async def get_file_access_logs(
     return {"logs": logs, "total": total, "page": pagination.page, "limit": pagination.limit}
 
 
-@router.get("/share/{share_id}")
+@router.get("/share/{share_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def get_share_access_logs(
     share_id: str,
     page: int = 1,
     limit: int = 20,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get access logs for a specific share. Requires ownership or admin."""
     share_id = validate_uuid(share_id)

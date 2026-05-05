@@ -30,11 +30,15 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.services.notification_crypto import decrypt_channel_secret, encrypt_channel_secret
 from app.util.ssrf import validate_endpoint_url
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+
+_ERR_CHANNEL_NOT_FOUND = "Channel not found"
 
 logger = logging.getLogger(__name__)
 router = APIRouter()           # mounted at /api/v1/admin/notifications
@@ -160,8 +164,8 @@ class ApiKeyCreateModel(BaseModel):
 
 @router.get("/channels")
 async def list_channels(
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
         "SELECT id, name, endpoint_url, event_filter, batch_size, batch_interval_s, enabled, created_at "
@@ -174,9 +178,9 @@ async def list_channels(
 @router.post("/channels", status_code=201)
 async def create_channel(
     body: ChannelCreateModel,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP_NOTIF)),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_NOTIF))],
 ):
     await validate_endpoint_url(body.endpoint_url)
     secret_enc = encrypt_channel_secret(body.secret) if body.secret else None
@@ -209,11 +213,11 @@ async def create_channel(
     return {"id": ch_id, "name": body.name}
 
 
-@router.get("/channels/{channel_id}")
+@router.get("/channels/{channel_id}", responses={404: {"description": "Not Found"}})
 async def get_channel(
     channel_id: str,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     channel_id = validate_uuid(channel_id)
     cursor = await db.execute(
@@ -224,20 +228,20 @@ async def get_channel(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Channel not found")
+        raise HTTPException(status_code=404, detail=_ERR_CHANNEL_NOT_FOUND)
     d = dict(row)
     if d.get("secret_enc"):
         d["secret_enc"] = _REDACTED
     return d
 
 
-@router.put("/channels/{channel_id}")
+@router.put("/channels/{channel_id}", responses={404: {"description": "Not Found"}})
 async def update_channel(
     channel_id: str,
     body: ChannelCreateModel,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP_NOTIF)),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_NOTIF))],
 ):
     channel_id = validate_uuid(channel_id)
     cursor = await db.execute(
@@ -245,7 +249,7 @@ async def update_channel(
     )
     existing = await cursor.fetchone()
     if existing is None:
-        raise HTTPException(status_code=404, detail="Channel not found")
+        raise HTTPException(status_code=404, detail=_ERR_CHANNEL_NOT_FOUND)
 
     await validate_endpoint_url(body.endpoint_url)
 
@@ -276,19 +280,19 @@ async def update_channel(
     return {"ok": True}
 
 
-@router.delete("/channels/{channel_id}")
+@router.delete("/channels/{channel_id}", responses={404: {"description": "Not Found"}})
 async def delete_channel(
     channel_id: str,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP_NOTIF)),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_NOTIF))],
 ):
     channel_id = validate_uuid(channel_id)
     cursor = await db.execute(
         "SELECT id FROM notification_channels WHERE id = ?", (channel_id,)
     )
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Channel not found")
+        raise HTTPException(status_code=404, detail=_ERR_CHANNEL_NOT_FOUND)
 
     await db.execute("DELETE FROM notification_channels WHERE id = ?", (channel_id,))
     await db.commit()
@@ -298,11 +302,11 @@ async def delete_channel(
     return {"ok": True}
 
 
-@router.post("/channels/{channel_id}/test")
+@router.post("/channels/{channel_id}/test", responses={404: {"description": "Not Found"}})
 async def test_channel(
     channel_id: str,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     channel_id = validate_uuid(channel_id)
     cursor = await db.execute(
@@ -313,7 +317,7 @@ async def test_channel(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Channel not found")
+        raise HTTPException(status_code=404, detail=_ERR_CHANNEL_NOT_FOUND)
 
     from app.schemas.op_event import OperationalEvent
     from app.services.notification_emitter import _event_to_dict, _send_one
@@ -341,8 +345,8 @@ async def list_op_events(
     limit: int = 50,
     since: str | None = None,
     types: str | None = None,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     type_filters = [t.strip() for t in types.split(",")] if types else []
     params: list = []
@@ -390,8 +394,8 @@ async def list_op_events(
 
 @router.get("/settings")
 async def get_notif_settings(
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     keys = ["server_id", "op_event_retention_days", "api_key_expiry_warn_days", "upload_quota_warn_pct"]
     cursor = await db.execute(
@@ -408,12 +412,12 @@ async def get_notif_settings(
     }
 
 
-@router.put("/settings")
+@router.put("/settings", responses={404: {"description": "Not Found"}})
 async def update_notif_settings(
     body: NotifSettingsModel,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP_NOTIF)),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_NOTIF))],
 ):
     pairs = [
         ("server_id",               body.server_id or ""),
@@ -437,8 +441,8 @@ async def update_notif_settings(
 
 @api_keys_router.get("/api-keys")
 async def list_api_keys(
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
         "SELECT id, name, scopes, created_at, last_used_at, expires_at "
@@ -451,9 +455,9 @@ async def list_api_keys(
 @api_keys_router.post("/api-keys", status_code=201)
 async def create_api_key(
     body: ApiKeyCreateModel,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP_KEYS)),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_KEYS))],
 ):
     raw      = "tss_" + secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
@@ -494,9 +498,9 @@ async def create_api_key(
 @api_keys_router.post("/api-keys/{key_id}/rotate", status_code=200)
 async def rotate_api_key(
     key_id: str,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP_KEYS)),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_KEYS))],
 ):
     """Issue a new raw key for an existing API key entry (old key is immediately invalidated)."""
     key_id = validate_uuid(key_id)
@@ -532,9 +536,9 @@ async def rotate_api_key(
 @api_keys_router.delete("/api-keys/{key_id}")
 async def delete_api_key(
     key_id: str,
-    user: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
-    _stepup=Depends(require_step_up(_STEPUP_KEYS)),
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_KEYS))],
 ):
     key_id = validate_uuid(key_id)
     cursor = await db.execute("SELECT id FROM api_keys WHERE id = ?", (key_id,))

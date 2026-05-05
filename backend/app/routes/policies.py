@@ -31,7 +31,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
-from app.database import db_session, get_db
+from app.database import Database, db_session, get_db
 from app.models.policy import (
     Policy,
     PolicyCondition,
@@ -42,11 +42,17 @@ from app.models.policy import (
 from app.models.role import FLAG_MANAGE_POLICIES
 from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+_bg_tasks: set = set()
 
 router = APIRouter()
 
-_MAX_POLICY_NAME_LEN = 80
-_MAX_VALUE_LEN       = 500
+_MAX_POLICY_NAME_LEN  = 80
+_MAX_VALUE_LEN        = 500
+_ERR_PERM_POLICIES    = _ERR_PERM_POLICIES
+_SQL_TEAM_EXISTS      = _SQL_TEAM_EXISTS
+_ERR_TEAM_NOT_FOUND   = _ERR_TEAM_NOT_FOUND
 
 
 # ---------------------------------------------------------------------------
@@ -149,11 +155,11 @@ class UpdateConditionRequest(BaseModel):
 
 @router.get("")
 async def list_policies(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all policies with their conditions."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
 
     cursor = await db.execute("SELECT * FROM policies ORDER BY scope_type, name")
     policy_rows = await cursor.fetchall()
@@ -183,17 +189,17 @@ async def list_policies(
 # POST /admin/policies — create a policy
 # ---------------------------------------------------------------------------
 
-@router.post("")
+@router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def create_policy(
     body: CreatePolicyRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a new policy (no conditions yet).
 
     For team-scoped policies, scope_id must be a valid team UUID.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
 
     if len(body.name) < 1 or len(body.name) > _MAX_POLICY_NAME_LEN:
         raise HTTPException(
@@ -206,9 +212,9 @@ async def create_policy(
         if not body.scope_id:
             raise HTTPException(status_code=400, detail="scope_id (team_id) is required for team-scoped policies")
         scope_id = validate_uuid(body.scope_id)
-        cursor = await db.execute("SELECT 1 FROM teams WHERE id = ?", (scope_id,))
+        cursor = await db.execute(_SQL_TEAM_EXISTS, (scope_id,))
         if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail="Team not found")
+            raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
     else:
         scope_id = None
 
@@ -230,11 +236,11 @@ async def create_policy(
 @router.get("/{policy_id}")
 async def get_policy(
     policy_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single policy with its conditions."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     policy    = await _load_policy(db, policy_id)
     conditions = await _load_conditions(db, policy_id)
@@ -245,15 +251,15 @@ async def get_policy(
 # PATCH /admin/policies/{policy_id} — rename a policy
 # ---------------------------------------------------------------------------
 
-@router.patch("/{policy_id}")
+@router.patch("/{policy_id}", responses={400: {"description": "Bad Request"}})
 async def update_policy(
     policy_id: str,
     body: UpdatePolicyRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Rename a policy."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -279,7 +285,9 @@ async def update_policy(
 
     # If escrow_enabled changed, re-sweep so escrow grants are written / cleared
     if body.escrow_enabled is not None:
-        asyncio.create_task(_bg_sweep(policy_id))
+        _t = asyncio.create_task(_bg_sweep(policy_id))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "Policy updated"}
 
@@ -291,11 +299,11 @@ async def update_policy(
 @router.delete("/{policy_id}")
 async def delete_policy(
     policy_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a policy and all its conditions and grants (CASCADE)."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -308,12 +316,12 @@ async def delete_policy(
 # POST /admin/policies/{policy_id}/conditions — add a condition
 # ---------------------------------------------------------------------------
 
-@router.post("/{policy_id}/conditions")
+@router.post("/{policy_id}/conditions", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def create_condition(
     policy_id: str,
     body: CreateConditionRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Add a condition to a policy.
 
@@ -324,7 +332,7 @@ async def create_condition(
     After adding the condition, Trigger 2 fires: the policy is immediately
     re-evaluated against all applicable users.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -367,7 +375,9 @@ async def create_condition(
     await db.commit()
 
     # Trigger 2 — fire-and-forget sweep
-    asyncio.create_task(_bg_sweep(policy_id))
+    _t = asyncio.create_task(_bg_sweep(policy_id))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
     new_cond = await _load_condition(db, policy_id, cond_id)
     return new_cond.to_dict()
@@ -380,11 +390,11 @@ async def create_condition(
 @router.get("/{policy_id}/conditions")
 async def list_conditions(
     policy_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all conditions on a policy."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id  = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
     conditions = await _load_conditions(db, policy_id)
@@ -395,13 +405,13 @@ async def list_conditions(
 # PATCH /admin/policies/{policy_id}/conditions/{cond_id} — update a condition
 # ---------------------------------------------------------------------------
 
-@router.patch("/{policy_id}/conditions/{cond_id}")
+@router.patch("/{policy_id}/conditions/{cond_id}", responses={400: {"description": "Bad Request"}})
 async def update_condition(
     policy_id: str,
     cond_id:   str,
     body: UpdateConditionRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update a non-inherited policy condition.
 
@@ -410,7 +420,7 @@ async def update_condition(
 
     After update, Trigger 2 fires.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     cond_id   = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
@@ -454,7 +464,9 @@ async def update_condition(
     await db.commit()
 
     # Trigger 2
-    asyncio.create_task(_bg_sweep(policy_id))
+    _t = asyncio.create_task(_bg_sweep(policy_id))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
     updated_cond = await _load_condition(db, policy_id, cond_id)
     return updated_cond.to_dict()
@@ -464,12 +476,12 @@ async def update_condition(
 # DELETE /admin/policies/{policy_id}/conditions/{cond_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{policy_id}/conditions/{cond_id}")
+@router.delete("/{policy_id}/conditions/{cond_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def delete_condition(
     policy_id: str,
     cond_id:   str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Remove a condition from a policy.
 
@@ -478,7 +490,7 @@ async def delete_condition(
 
     After deletion, Trigger 2 fires.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     cond_id   = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
@@ -494,7 +506,9 @@ async def delete_condition(
     await db.commit()
 
     # Trigger 2
-    asyncio.create_task(_bg_sweep(policy_id))
+    _t = asyncio.create_task(_bg_sweep(policy_id))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "Condition deleted"}
 
@@ -533,11 +547,11 @@ async def _load_effect(db, policy_id: str, effect_id: str) -> PolicyEffect:
 @router.get("/{policy_id}/effects")
 async def list_effects(
     policy_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all effects defined on a policy."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -550,12 +564,12 @@ async def list_effects(
 
 
 # POST /admin/policies/{policy_id}/effects — create an effect
-@router.post("/{policy_id}/effects")
+@router.post("/{policy_id}/effects", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
 async def create_effect(
     policy_id: str,
     body: CreateEffectRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Add an effect to a policy.
 
@@ -568,7 +582,7 @@ async def create_effect(
     After creating the effect, Trigger 2 fires to immediately apply the new effect
     to all users currently matching this policy.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -582,9 +596,9 @@ async def create_effect(
 
     if body.effect_type == "team_member":
         # Validate team exists
-        cursor = await db.execute("SELECT 1 FROM teams WHERE id = ?", (target_id,))
+        cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
         if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail="Team not found")
+            raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
         if not body.role_level:
             raise HTTPException(status_code=400, detail="role_level is required for team_member effects")
         # Validate role exists
@@ -611,9 +625,9 @@ async def create_effect(
 
     else:  # team_escrow — per-team escrow override
         # Validate team exists
-        cursor = await db.execute("SELECT 1 FROM teams WHERE id = ?", (target_id,))
+        cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
         if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail="Team not found")
+            raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
         if body.escrow_override not in (0, 1):
             raise HTTPException(
                 status_code=400,
@@ -647,7 +661,9 @@ async def create_effect(
 
     # Trigger 2 — immediately apply new effect to all currently matching users.
     # For team_escrow effects this re-writes or suppresses escrow grants for the target team.
-    asyncio.create_task(_bg_sweep(policy_id))
+    _t = asyncio.create_task(_bg_sweep(policy_id))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "Effect added", "id": effect_id}
 
@@ -657,8 +673,8 @@ async def create_effect(
 async def delete_effect(
     policy_id:  str,
     effect_id:  str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Remove an effect from a policy.
 
@@ -669,7 +685,7 @@ async def delete_effect(
 
     Manual rows (policy_effect_id IS NULL) are not affected.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     effect_id = validate_uuid(effect_id)
     await _load_policy(db, policy_id)   # 404 guard

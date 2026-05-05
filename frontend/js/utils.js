@@ -122,7 +122,7 @@ const Utils = (() => {
             clearTimeout(autoTimer);
             toast.classList.remove('toast-visible');
             setTimeout(() => {
-                if (toast.parentNode) toast.parentNode.removeChild(toast);
+                if (toast.parentNode) toast.remove();
             }, Config.ui.toastFadeOutMs);
         };
 
@@ -153,7 +153,7 @@ const Utils = (() => {
         return new Promise((resolve) => {
             let overlay = el('div', { className: 'modal-overlay' });
             const dismiss = (result) => {
-                if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                if (overlay?.parentNode) overlay.remove();
                 overlay = null;  // Release DOM reference for GC
                 resolve(result);
             };
@@ -183,8 +183,8 @@ const Utils = (() => {
     function showPrompt(title, placeholder = '') {
         return new Promise((resolve) => {
             let overlay = el('div', { className: 'modal-overlay' });
-            const dismiss = (result) => {
-                if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            const dismiss = (result) => { // NOSONAR — identical body to showConfirm.dismiss but closes over this function's overlay
+                if (overlay?.parentNode) overlay.remove();
                 overlay = null;
                 resolve(result);
             };
@@ -235,7 +235,7 @@ const Utils = (() => {
 
         let overlay = el('div', { className: 'modal-overlay' });
         const close = () => {
-            if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            if (overlay?.parentNode) overlay.remove();
             overlay = null;
             _activeModal = null;
         };

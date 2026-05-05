@@ -8,6 +8,7 @@ via AUTH_PROVIDER config — no route changes needed.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -22,8 +23,8 @@ class AuthenticatedUser:
     id: str
     username: str
     auth_method: str  # 'opaque'
-    roles: set[str] = None   # set of global role IDs
-    flags: dict[str, str] = None  # effective permission flags from global roles {flag: value}
+    roles: Optional[set[str]] = None   # set of global role IDs
+    flags: Optional[dict[str, str]] = None  # effective permission flags from global roles {flag: value}
     wrapped_master_key: str | None = None
     wrapped_master_key_iv: str | None = None
     recovery_key_wrapped: str | None = None

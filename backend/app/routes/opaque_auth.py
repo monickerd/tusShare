@@ -40,9 +40,19 @@ from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
 from app.auth.opaque_provider import OPAQUEAuthProvider
 from app.config import settings
-from app.database import DuplicateError, get_db
+from app.database import Database, DuplicateError, get_db
 from app.models.role import ROLE_USER, grant_role
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
+from typing import Annotated
+
+
+_ERR_INVALID_TOKEN = "Invalid token"
+_ERR_INVALID_REG_REQUEST = "Invalid registration request"
+_ERR_INVALID_REG_UPLOAD = "Invalid registration upload"
+_ERR_INVALID_CREDENTIALS = "Invalid credentials"
+_SQL_COUNT_USERS = "SELECT COUNT(*) FROM users"
+
+_bg_tasks: set = set()
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +105,7 @@ class OpaqueRegisterStartRequest(BaseModel):
     @classmethod
     def val_token(cls, v: str) -> str:
         if not v or len(v) > 200:
-            raise ValueError("Invalid token")
+            raise ValueError(_ERR_INVALID_TOKEN)
         return v
 
     @field_validator("username")
@@ -129,7 +139,7 @@ class OpaqueRegisterFinishRequest(BaseModel):
     @classmethod
     def val_token(cls, v: str) -> str:
         if not v or len(v) > 200:
-            raise ValueError("Invalid token")
+            raise ValueError(_ERR_INVALID_TOKEN)
         return v
 
     @field_validator("username")
@@ -293,10 +303,10 @@ class OpaqueStepUpStartRequest(BaseModel):
 # Registration routes
 # ---------------------------------------------------------------------------
 
-@router.post("/register/start")
+@router.post("/register/start", responses={400: {"description": "Bad Request"}})
 async def opaque_register_start(
     body: OpaqueRegisterStartRequest,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """OPAQUE registration round 1.
 
@@ -325,17 +335,17 @@ async def opaque_register_start(
         )
     except ValueError as exc:
         logger.warning("OPAQUE register/start failed: %s", exc)
-        raise HTTPException(status_code=400, detail="Invalid registration request")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_REQUEST)
 
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
-@router.post("/register/finish")
+@router.post("/register/finish", responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}})
 async def opaque_register_finish(
     body: OpaqueRegisterFinishRequest,
     request: Request,
     response: Response,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """OPAQUE registration round 2.
 
@@ -358,7 +368,7 @@ async def opaque_register_finish(
         )
     except ValueError as exc:
         logger.warning("OPAQUE register/finish failed: %s", exc)
-        raise HTTPException(status_code=400, detail="Invalid registration upload")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_UPLOAD)
 
     # Atomically consume invite + create user in a single transaction.
     # Rolling back here also reverts the invite consumption, so a failed
@@ -446,10 +456,10 @@ async def opaque_register_finish(
 # Login routes
 # ---------------------------------------------------------------------------
 
-@router.post("/login/start")
+@router.post("/login/start", responses={400: {"description": "Bad Request"}})
 async def opaque_login_start(
     body: OpaqueLoginStartRequest,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """OPAQUE login round 1.
 
@@ -490,11 +500,11 @@ async def opaque_login_start(
     }
 
 
-@router.post("/login/finish")
+@router.post("/login/finish", responses={401: {"description": "Unauthorized"}})
 async def opaque_login_finish(
     body: OpaqueLoginFinishRequest,
     response: Response,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """OPAQUE login round 2.
 
@@ -507,13 +517,13 @@ async def opaque_login_finish(
     if session is None:
         # Session expired, not found, or already consumed — uniform error to
         # prevent distinguishing between "wrong password" and "no session"
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     stored_username, server_state_bytes = session
 
     # Username in the finish request must match what was used at start
     if stored_username.lower() != body.username.lower():
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     login_finish_bytes = _decode_b64_field(body.client_login_finish, "client_login_finish")
     # Use the canonical username stored in the session (set at login/start) so
@@ -527,17 +537,17 @@ async def opaque_login_finish(
         )
     except ValueError as exc:
         logger.warning("OPAQUE login/finish error: %s", exc)
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     if session_key is None:
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     # Auth succeeded — load the full user record and issue tokens
     user = await provider.get_user_by_username(body.username)
     if user is None:
         # Should never happen if get_registration_record and consume_login_session
         # both succeeded, but guard anyway
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     # MFA gate — check for active MFA credentials and enforcement policy.
     # If MFA is required, return a pending_token instead of session cookies so
@@ -581,7 +591,9 @@ async def opaque_login_finish(
                         await _eval_mfa_policies(_bg_db, _mfa_uid)
                 except Exception:
                     pass
-            asyncio.create_task(_bg_mfa_eval())
+            _t = asyncio.create_task(_bg_mfa_eval())
+            _bg_tasks.add(_t)
+            _t.add_done_callback(_bg_tasks.discard)
         except Exception:
             pass
 
@@ -645,7 +657,9 @@ async def opaque_login_finish(
                     await _eval_policies(_bg_db, _uid)
             except Exception:
                 pass
-        asyncio.create_task(_bg_eval())
+        _t = asyncio.create_task(_bg_eval())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
     except Exception:
         pass  # policy engine must not block authentication
 
@@ -659,11 +673,11 @@ async def opaque_login_finish(
 # Step-up start (Phase 6 — OPAQUE step-up challenge)
 # ---------------------------------------------------------------------------
 
-@router.post("/step-up/start")
+@router.post("/step-up/start", responses={400: {"description": "Bad Request"}, 500: {"description": "Internal Server Error"}})
 async def opaque_step_up_start(
     body: OpaqueStepUpStartRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Initiate an OPAQUE step-up challenge for an already-authenticated user.
 
@@ -750,11 +764,11 @@ class OpaqueMigrateFinishRequest(BaseModel):
         return v
 
 
-@router.post("/migrate/start")
+@router.post("/migrate/start", responses={400: {"description": "Bad Request"}})
 async def opaque_migrate_start(
     body: OpaqueMigrateStartRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """OPAQUE migration round 1 — initiate OPAQUE registration for an existing legacy user.
 
@@ -776,16 +790,16 @@ async def opaque_migrate_start(
         )
     except ValueError as exc:
         logger.warning("OPAQUE migrate/start failed for user %s: %s", user.id, exc)
-        raise HTTPException(status_code=400, detail="Invalid registration request")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_REQUEST)
 
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
-@router.post("/migrate/finish")
+@router.post("/migrate/finish", responses={400: {"description": "Bad Request"}, 429: {"description": "Too Many Requests"}, 500: {"description": "Internal Server Error"}})
 async def opaque_migrate_finish(
     body: OpaqueMigrateFinishRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """OPAQUE migration round 2 — atomically upgrade a legacy account to OPAQUE.
 
@@ -822,7 +836,7 @@ async def opaque_migrate_finish(
         )
     except ValueError as exc:
         logger.warning("OPAQUE migrate/finish failed for user %s: %s", user.id, exc)
-        raise HTTPException(status_code=400, detail="Invalid registration upload")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_UPLOAD)
 
     # Atomic upgrade: only proceeds if still legacy (double-submit safe)
     result = await db.execute(
@@ -954,10 +968,10 @@ def _fake_recovery_iv(username: str) -> str:
     return base64.urlsafe_b64encode(iv).rstrip(b"=").decode()
 
 
-@router.post("/recover/start")
+@router.post("/recover/start", responses={400: {"description": "Bad Request"}})
 async def opaque_recover_start(
     body: OpaqueRecoverStartRequest,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Password recovery round 1.
 
@@ -983,7 +997,7 @@ async def opaque_recover_start(
         )
     except ValueError as exc:
         logger.warning("OPAQUE recover/start failed: %s", exc)
-        raise HTTPException(status_code=400, detail="Invalid registration request")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_REQUEST)
 
     provider = OPAQUEAuthProvider(db)
     user_fields = await provider.get_recovery_key_fields(body.username)
@@ -999,12 +1013,12 @@ async def opaque_recover_start(
     }
 
 
-@router.post("/recover/finish")
+@router.post("/recover/finish", responses={400: {"description": "Bad Request"}})
 async def opaque_recover_finish(
     body: OpaqueRecoverFinishRequest,
     request: Request,
     response: Response,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Password recovery round 2.
 
@@ -1128,11 +1142,11 @@ class OpaquePasswordChangeFinishRequest(BaseModel):
         return v
 
 
-@router.post("/password-change/start")
+@router.post("/password-change/start", responses={400: {"description": "Bad Request"}})
 async def opaque_password_change_start(
     body: OpaquePasswordChangeStartRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Password change round 1 — initiate OPAQUE re-registration.
 
@@ -1156,17 +1170,17 @@ async def opaque_password_change_start(
         )
     except ValueError as exc:
         logger.warning("OPAQUE password-change/start failed for user %s: %s", user.id, exc)
-        raise HTTPException(status_code=400, detail="Invalid registration request")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_REQUEST)
 
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
-@router.post("/password-change/finish")
+@router.post("/password-change/finish", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def opaque_password_change_finish(
     body: OpaquePasswordChangeFinishRequest,
     request: Request,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Password change round 2 — commit new OPAQUE record.
 
@@ -1260,7 +1274,7 @@ class OpaqueBootstrapStartRequest(BaseModel):
     @classmethod
     def val_token(cls, v: str) -> str:
         if not v or len(v) > 200:
-            raise ValueError("Invalid token")
+            raise ValueError(_ERR_INVALID_TOKEN)
         return v
 
     @field_validator("username")
@@ -1294,7 +1308,7 @@ class OpaqueBootstrapFinishRequest(BaseModel):
     @classmethod
     def val_token(cls, v: str) -> str:
         if not v or len(v) > 200:
-            raise ValueError("Invalid token")
+            raise ValueError(_ERR_INVALID_TOKEN)
         return v
 
     @field_validator("username")
@@ -1382,7 +1396,7 @@ async def opaque_bootstrap_status(db=Depends(get_db)):
 
     The frontend uses this to show the bootstrap UI instead of the login form.
     """
-    cursor = await db.execute("SELECT COUNT(*) FROM users")
+    cursor = await db.execute(_SQL_COUNT_USERS)
     user_count = (await cursor.fetchone())[0]
     if user_count > 0:
         return {"needs_bootstrap": False}
@@ -1394,10 +1408,10 @@ async def opaque_bootstrap_status(db=Depends(get_db)):
     return {"needs_bootstrap": token_pending}
 
 
-@router.post("/bootstrap/start")
+@router.post("/bootstrap/start", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def opaque_bootstrap_start(
     body: OpaqueBootstrapStartRequest,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Bootstrap registration round 1.
 
@@ -1406,7 +1420,7 @@ async def opaque_bootstrap_start(
     This endpoint is only usable while the users table is empty.
     """
     # Refuse if any user already exists — bootstrap is first-run only
-    cursor = await db.execute("SELECT COUNT(*) FROM users")
+    cursor = await db.execute(_SQL_COUNT_USERS)
     row = await cursor.fetchone()
     if row[0] > 0:
         raise HTTPException(status_code=403, detail="Bootstrap already complete")
@@ -1424,16 +1438,16 @@ async def opaque_bootstrap_start(
         )
     except ValueError as exc:
         logger.warning("OPAQUE bootstrap/start failed: %s", exc)
-        raise HTTPException(status_code=400, detail="Invalid registration request")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_REQUEST)
 
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
-@router.post("/bootstrap/finish")
+@router.post("/bootstrap/finish", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 409: {"description": "Conflict"}})
 async def opaque_bootstrap_finish(
     body: OpaqueBootstrapFinishRequest,
     response: Response,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Bootstrap registration round 2.
 
@@ -1444,7 +1458,7 @@ async def opaque_bootstrap_finish(
     from app.models.role import ROLE_ADMIN
 
     # Refuse if any user already exists
-    cursor = await db.execute("SELECT COUNT(*) FROM users")
+    cursor = await db.execute(_SQL_COUNT_USERS)
     row = await cursor.fetchone()
     if row[0] > 0:
         raise HTTPException(status_code=403, detail="Bootstrap already complete")
@@ -1459,7 +1473,7 @@ async def opaque_bootstrap_finish(
         )
     except ValueError as exc:
         logger.warning("OPAQUE bootstrap/finish failed: %s", exc)
-        raise HTTPException(status_code=400, detail="Invalid registration upload")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_UPLOAD)
 
     user_id = str(uuid.uuid4())
     token_hash = hashlib.sha256(body.token.encode()).hexdigest()

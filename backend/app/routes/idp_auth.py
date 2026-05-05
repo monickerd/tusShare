@@ -59,10 +59,13 @@ from app.auth.mfa import (
 )
 from app.auth.stepup import log_security_event
 from app.config import settings
-from app.database import get_db, DuplicateError
+from app.database import Database, DuplicateError, get_db
 from app.models.role import ROLE_USER, grant_role
 from app.middleware.rate_limit import _counter, _get_client_ip
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+_bg_tasks: set = set()
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +73,7 @@ router = APIRouter()
 
 _LDAP_LOGIN_RATE_LIMIT  = 5
 _LDAP_LOGIN_RATE_WINDOW = 900   # 5 attempts per 15 minutes per IP
+_OIDC_ERROR_URL = _OIDC_ERROR_URL
 
 # ---------------------------------------------------------------------------
 # OIDC MFA challenge store (RT-07)
@@ -113,7 +117,7 @@ class _OidcMfaChallengeStore:
 _oidc_mfa_challenges = _OidcMfaChallengeStore()
 
 
-@router.get("/mfa/challenge/{challenge_id}")
+@router.get("/mfa/challenge/{challenge_id}", responses={404: {"description": "Not Found"}, 500: {"description": "Internal Server Error"}})
 async def exchange_mfa_challenge(challenge_id: str):
     """One-time exchange: challenge_id → pending_token.
 
@@ -131,7 +135,7 @@ async def _issue_session_or_mfa_challenge(
     db,
     response: Response,
     user_id: str,
-    identity_provider_id: str,
+    _identity_provider_id: str,
     is_public_device: bool = False,
 ) -> dict:
     """Issue session cookies or return an MFA pending_token, depending on user's MFA state.
@@ -385,12 +389,12 @@ class LDAPLoginRequest(BaseModel):
         return v
 
 
-@router.post("/ldap/login")
+@router.post("/ldap/login", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}, 429: {"description": "Too Many Requests"}})
 async def ldap_login(
     body: LDAPLoginRequest,
     request: Request,
     response: Response,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Authenticate with LDAP username + password.
 
@@ -460,7 +464,9 @@ async def ldap_login(
                     await _eval(_bg_db, _uid)
             except Exception:
                 pass
-        _asyncio.create_task(_bg())
+        _t = _asyncio.create_task(_bg())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
     except Exception:
         pass
 
@@ -473,12 +479,12 @@ async def ldap_login(
 # OIDC begin
 # ---------------------------------------------------------------------------
 
-@router.get("/oidc/{provider_id}/begin")
+@router.get("/oidc/{provider_id}/begin", responses={404: {"description": "Not Found"}, 500: {"description": "Internal Server Error"}})
 async def oidc_begin(
     provider_id: str,
     request: Request,
     redirect_to: str | None = None,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Begin an OIDC authorization flow.
 
@@ -530,7 +536,7 @@ async def oidc_callback(
     error_description: str | None = None,
     request: Request = None,
     response: Response = None,
-    db=Depends(get_db),
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Handle the IdP redirect after user authentication.
 
@@ -545,14 +551,14 @@ async def oidc_callback(
         logger.warning("OIDC callback error: %s — %s", error, error_description)
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
                                  f"IdP error: {error}")
-        return RedirectResponse(url="/?oidc_error=1", status_code=302)
+        return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     if not code or not state:
-        return RedirectResponse(url="/?oidc_error=1", status_code=302)
+        return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     # Validate state length to prevent abuse
     if len(state) > 128:
-        return RedirectResponse(url="/?oidc_error=1", status_code=302)
+        return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     # Look up state to find provider — we need this before consuming it
     cursor = await db.execute(
@@ -565,7 +571,7 @@ async def oidc_callback(
         logger.warning("OIDC callback: unknown/expired state")
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
                                  "unknown or expired state nonce")
-        return RedirectResponse(url="/?oidc_error=1", status_code=302)
+        return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     provider_id = state_row["provider_id"]
     redirect_to = state_row["redirect_to"] or "/"
@@ -578,7 +584,7 @@ async def oidc_callback(
     prov_row = await cursor.fetchone()
     if prov_row is None:
         logger.warning("OIDC callback: provider %s not found or inactive", provider_id)
-        return RedirectResponse(url="/?oidc_error=1", status_code=302)
+        return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     try:
         identity = await handle_oidc_callback(
@@ -588,10 +594,10 @@ async def oidc_callback(
         logger.error("OIDC callback exchange error provider=%s: %s", provider_id, exc)
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
                                  f"token exchange error provider={provider_id}")
-        return RedirectResponse(url="/?oidc_error=1", status_code=302)
+        return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     if identity is None:
-        return RedirectResponse(url="/?oidc_error=1", status_code=302)
+        return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     claims_json = json.dumps(identity["claims"], default=str)
 
@@ -622,7 +628,9 @@ async def oidc_callback(
                     await _eval(_bg_db, _uid)
             except Exception:
                 pass
-        _asyncio.create_task(_bg())
+        _t = _asyncio.create_task(_bg())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
     except Exception:
         pass
 

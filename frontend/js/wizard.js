@@ -87,14 +87,16 @@ const Wizard = (() => {
         for (let i = 0; i < n; i++) {
             const done   = i < currentStep;
             const active = i === currentStep;
+            let dotBg;
+            if (active)     dotBg = 'background:var(--color-primary);color:#fff';
+            else if (done)  dotBg = 'background:var(--color-success);color:#fff';
+            else            dotBg = 'background:var(--color-surface-active);color:var(--color-text-muted)';
             const dot = Utils.el('div', {
                 style: [
                     'width:28px;height:28px;border-radius:50%;flex-shrink:0',
                     'display:flex;align-items:center;justify-content:center',
                     'font-size:12px;font-weight:700',
-                    active ? 'background:var(--color-primary);color:#fff'
-                    : done  ? 'background:var(--color-success);color:#fff'
-                    : 'background:var(--color-surface-active);color:var(--color-text-muted)',
+                    dotBg,
                 ].join(';'),
                 textContent: done ? '✓' : String(i + 1),
             });

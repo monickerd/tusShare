@@ -16,9 +16,10 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.auth.api_key import require_api_key
-from app.database import get_db
+from app.database import Database, get_db
 from app.services import op_bus
 from app.services.notification_emitter import _matches_filter
+from typing import Annotated
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,7 +34,7 @@ _KEEPALIVE_INTERVAL = 25  # seconds
 @router.get("/stream")
 async def op_events_stream(
     types: str | None = Query(default=None, description="Comma-separated prefix filter"),
-    _key: dict = Depends(require_api_key),
+    _key: Annotated[dict, Depends(require_api_key)],
 ):
     """Stream operational events as Server-Sent Events."""
     type_filters = [t.strip() for t in types.split(",")] if types else []
@@ -87,8 +88,8 @@ async def op_events_log(
     limit:  int        = Query(default=100, ge=1, le=1000),
     types:  str | None = Query(default=None, description="Comma-separated prefix filter"),
     cursor: str | None = Query(default=None, description="Opaque pagination cursor"),
-    _key: dict = Depends(require_api_key),
-    db=Depends(get_db),
+    _key: Annotated[dict, Depends(require_api_key)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return a page of operational events from the persisted log."""
     type_filters = [t.strip() for t in types.split(",")] if types else []

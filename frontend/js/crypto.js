@@ -211,11 +211,7 @@ const Crypto = (() => {
     // ===================================================================
 
     async function generateShareKey() {
-        return crypto.subtle.generateKey(
-            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
-            true,
-            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
-        );
+        return generateMasterKey();
     }
 
     async function exportKeyToBase64url(key) {
@@ -325,7 +321,7 @@ const Crypto = (() => {
     async function _getMLKEM768() {
         if (!_mlkem768Module) {
             try {
-                const mod = await import('/js/lib/noble-post-quantum.js');
+                const mod = await import('/js/lib/noble-post-quantum.js'); // NOSONAR — web-root-relative URL, not a filesystem path
                 _mlkem768Module = mod.ml_kem768;
                 if (!_mlkem768Module) {
                     throw new Error('ml_kem768 export not found in noble-post-quantum.js');
@@ -433,7 +429,7 @@ const Crypto = (() => {
         x25519PrivWrappedB64, mlkem768PrivWrappedB64, asymKeyIvB64, masterKey,
         x25519PublicKeyB64
     ) {
-        const mlkem = await _getMLKEM768();
+        await _getMLKEM768();
         await _ensureX25519Algo();
         const ivBytes = new Uint8Array(_base64ToArrayBuf(asymKeyIvB64));
         const ivLen = _cfg().ivLength;

@@ -14,6 +14,8 @@ import json
 import logging
 from collections import defaultdict
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 _CHANNEL_PREFIX = "sse:"
@@ -75,7 +77,9 @@ def publish(topic: str, event: dict) -> None:
     """
     from app.redis_client import get_redis
     if get_redis() is not None:
-        asyncio.create_task(_redis_publish(topic, event))
+        _t = asyncio.create_task(_redis_publish(topic, event))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
     else:
         _fanout_local(topic, event)
 

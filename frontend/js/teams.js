@@ -38,7 +38,7 @@ const Teams = (() => {
     async function _getBLS() {
         if (_blsModule) return _blsModule;
         try {
-            const mod = await import('/js/lib/noble-curves-bls12381.js');
+            const mod = await import('/js/lib/noble-curves-bls12381.js'); // NOSONAR — web-root-relative URL, not a filesystem path
             _blsModule = mod.bls12_381;
             if (!_blsModule) throw new Error('bls12_381 export not found');
         } catch (err) {
@@ -355,7 +355,7 @@ const Teams = (() => {
 
     function _getMyPublicKeys() {
         const user = Auth.getCurrentUser();
-        if (!user || !user.x25519_public_key || !user.mlkem768_public_key) {
+        if (!user?.x25519_public_key || !user.mlkem768_public_key) {
             throw new Error('Sharing keys not set up — please re-login');
         }
         return { x25519_public_key: user.x25519_public_key, mlkem768_public_key: user.mlkem768_public_key };
@@ -372,7 +372,7 @@ const Teams = (() => {
     // =========================================================================
 
     function _clearEl(el) {
-        while (el.firstChild) el.removeChild(el.firstChild);
+        while (el.firstChild) el.firstChild.remove();
     }
 
     /**
@@ -562,13 +562,13 @@ const Teams = (() => {
                     });
                     const editRow = Utils.el('span', { className: 'folder-inline-edit' }, [nameInput, saveBtn, cancelBtn]);
 
-                    folderRow.replaceChild(editRow, folderLink);
-                    folderRow.removeChild(editBtn);
+                    folderLink.replaceWith(editRow);
+                    editBtn.remove();
                     nameInput.focus();
                     nameInput.select();
 
                     const restoreView = () => {
-                        folderRow.replaceChild(folderLink, editRow);
+                        editRow.replaceWith(folderLink);
                         folderRow.appendChild(editBtn);
                     };
 

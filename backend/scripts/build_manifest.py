@@ -33,14 +33,16 @@ MANIFEST_PATH = BACKEND / "app" / "manifest.json"
 # Tracked file sets
 # ---------------------------------------------------------------------------
 
+_CSS_GLOB = _CSS_GLOB
+
 # Glob patterns relative to ROOT.  The manifest key equals the path relative
 # to ROOT (which matches the runtime path relative to /app/ in Docker).
 TRACKED_GLOBS: list[tuple[str, str]] = [
     ("frontend/js",         "*.js"),
     ("frontend/js/lib",     "*.js"),
-    ("frontend/css",        "*.css"),
-    ("frontend/themes/default", "*.css"),
-    ("frontend/themes/light",   "*.css"),
+    ("frontend/css",        _CSS_GLOB),
+    ("frontend/themes/default", _CSS_GLOB),
+    ("frontend/themes/light",   _CSS_GLOB),
 ]
 
 # Files whose Docker destination differs from their source path.

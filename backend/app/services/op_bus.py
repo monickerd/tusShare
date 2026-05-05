@@ -26,6 +26,8 @@ from datetime import datetime, timedelta, timezone
 from app.schemas.op_event import OperationalEvent
 from app.util.db import get_admin_setting
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 _SUBSCRIBER_MAXSIZE = 2000
@@ -167,10 +169,14 @@ def _tick_background_tasks(
     now: float, last_cleanup: float, last_key_check: float
 ) -> tuple[float, float]:
     if now - last_cleanup > 3600:
-        asyncio.create_task(_cleanup_old_events())
+        _t = asyncio.create_task(_cleanup_old_events())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
         last_cleanup = now
     if now - last_key_check > 86400:
-        asyncio.create_task(_check_api_key_expiry())
+        _t = asyncio.create_task(_check_api_key_expiry())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
         last_key_check = now
     return last_cleanup, last_key_check
 
@@ -192,7 +198,7 @@ async def _drain_loop() -> None:
 
         except asyncio.CancelledError:
             await _flush_remaining()
-            return
+            raise
         except Exception:
             logger.exception("op_bus: unhandled error in drain loop")
 

@@ -9,7 +9,7 @@ class Permission:
     resource_type: str  # 'file', 'folder'
     resource_id: str
     user_id: str
-    permission: str  # 'read', 'write', 'admin'
+    access_level: str  # 'read', 'write', 'admin'
     recursive: bool
     granted_by: str
     created_at: str
@@ -21,7 +21,7 @@ class Permission:
             resource_type=row["resource_type"],
             resource_id=row["resource_id"],
             user_id=row["user_id"],
-            permission=row["permission"],
+            access_level=row["permission"],
             recursive=bool(row["recursive"]),
             granted_by=row["granted_by"],
             created_at=row["created_at"],
@@ -33,7 +33,7 @@ class Permission:
             "resource_type": self.resource_type,
             "resource_id": self.resource_id,
             "user_id": self.user_id,
-            "permission": self.permission,
+            "permission": self.access_level,
             "recursive": self.recursive,
             "granted_by": self.granted_by,
             "created_at": self.created_at,

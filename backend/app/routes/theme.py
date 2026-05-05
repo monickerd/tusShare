@@ -18,6 +18,8 @@ from app.util.theme import get_logo_filename_re, get_theme_config, get_ui_flags
 
 router = APIRouter()
 
+_NOT_FOUND = _NOT_FOUND
+
 # Only serve recognised image MIME types for the logo.
 _ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset({
     "image/png",
@@ -43,7 +45,7 @@ async def get_theme():
     }
 
 
-@router.get("/theme/logo")
+@router.get("/theme/logo", responses={404: {"description": "Not Found"}})
 async def get_theme_logo():
     """Serve the configured org logo from DATA_DIR.
 
@@ -57,7 +59,7 @@ async def get_theme_logo():
 
     # Re-validate at request time (defence-in-depth; load_theme validated at startup)
     if not get_logo_filename_re().match(filename):
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
     logo_path = settings.DATA_DIR / filename
     try:
@@ -65,14 +67,14 @@ async def get_theme_logo():
         # relative_to raises ValueError if resolved is outside DATA_DIR
         resolved.relative_to(settings.DATA_DIR.resolve())
     except (OSError, ValueError):
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="Logo file not found on disk")
 
     content_type, _ = mimetypes.guess_type(str(resolved))
     if content_type not in _ALLOWED_IMAGE_TYPES:
-        raise HTTPException(status_code=404, detail="Not found")
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
 
     return FileResponse(
         str(resolved),

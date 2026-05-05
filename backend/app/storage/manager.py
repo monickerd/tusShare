@@ -25,6 +25,8 @@ from app.storage.base import StorageProvider, VolumeConfig, validate_storage_key
 from app.storage.crypto import decrypt_volume_config
 from app.util.db import get_admin_setting
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 _manager: "StorageManager | None" = None
@@ -182,9 +184,11 @@ class StorageManager:
         )
 
         # Fire-and-forget async replication if any replica volumes are configured.
-        asyncio.create_task(
+        _t = asyncio.create_task(
             self._replicate_async(file_id, storage_key, self._default_volume_id)
         )
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
 
         return actual_size
 

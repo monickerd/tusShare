@@ -54,7 +54,7 @@ from app.conf.teams import (
     TEAM_ROLE_SUPERVISOR,
     VALID_TEAM_ROLES,
 )
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.util.bls_verify import (
     verify_rk_consistency,
@@ -74,7 +74,11 @@ from app.models.team import (
 from app.routes._access import get_folder_team_id
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import (
+from typing import Annotated
     sanitize_team_name,
+
+_ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
+
     sanitize_username,
     validate_base64,
     validate_g1_point,
@@ -438,8 +442,8 @@ async def _require_team_role(db, team_id: str, user: AuthenticatedUser, min_role
 
 @router.get("/escrow-agents")
 async def list_escrow_agents(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return all users holding the escrow_agent role with their public keys.
 
@@ -469,11 +473,11 @@ async def list_escrow_agents(
     }
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, responses={400: {"description": "Bad Request"}, 422: {"description": "Unprocessable Entity"}})
 async def create_team(
     body: CreateTeamRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a new team. Creator becomes team_owner automatically.
 
@@ -573,8 +577,8 @@ async def create_team(
 
 @router.get("")
 async def list_my_teams(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all teams the authenticated user belongs to."""
     teams = await get_user_teams(db, user.id)
@@ -584,8 +588,8 @@ async def list_my_teams(
 @router.get("/{team_id}")
 async def get_team_detail(
     team_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return team details including members and folders."""
     team_id = validate_uuid(team_id)
@@ -605,12 +609,12 @@ async def get_team_detail(
     }
 
 
-@router.put("/{team_id}")
+@router.put("/{team_id}", responses={409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
 async def update_team(
     team_id: str,
     body: UpdateTeamRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update team name and/or description. Requires owner or supervisor."""
     team_id = validate_uuid(team_id)
@@ -646,8 +650,8 @@ async def update_team(
 @router.delete("/{team_id}", status_code=204)
 async def delete_team(
     team_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a team and all associated data. Owner only."""
     team_id = validate_uuid(team_id)
@@ -682,8 +686,8 @@ async def delete_team(
 @router.get("/{team_id}/members")
 async def list_members(
     team_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     team_id = validate_uuid(team_id)
     await _get_team_or_404(db, team_id)
@@ -692,12 +696,12 @@ async def list_members(
     return {"members": [m.to_dict() for m in members]}
 
 
-@router.post("/{team_id}/members", status_code=201)
+@router.post("/{team_id}/members", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
 async def invite_member(
     team_id: str,
     body: InviteMemberRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Invite a user to the team with a pre-wrapped copy of the team key.
 
@@ -761,13 +765,13 @@ async def invite_member(
     return {"user_id": invitee_id}
 
 
-@router.put("/{team_id}/members/{target_user_id}")
+@router.put("/{team_id}/members/{target_user_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
 async def update_member_role(
     team_id: str,
     target_user_id: str,
     body: UpdateMemberRoleRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Change a member's role. Only owners may change roles.
 
@@ -822,12 +826,12 @@ async def update_member_role(
     return {"ok": True}
 
 
-@router.delete("/{team_id}/members/{target_user_id}", status_code=204)
+@router.delete("/{team_id}/members/{target_user_id}", status_code=204, responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
 async def remove_member(
     team_id: str,
     target_user_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Remove a member from the team.
 
@@ -874,11 +878,11 @@ async def remove_member(
 # My team key
 # ---------------------------------------------------------------------------
 
-@router.get("/{team_id}/my-key")
+@router.get("/{team_id}/my-key", responses={404: {"description": "Not Found"}})
 async def get_my_team_key(
     team_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return the calling user's KEM-wrapped team key entry."""
     team_id = validate_uuid(team_id)
@@ -909,8 +913,8 @@ async def get_my_team_key(
 @router.get("/{team_id}/folders")
 async def list_team_folders(
     team_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     team_id = validate_uuid(team_id)
     await _get_team_or_404(db, team_id)
@@ -919,12 +923,12 @@ async def list_team_folders(
     return {"folders": [f.to_dict() for f in folders]}
 
 
-@router.post("/{team_id}/folders", status_code=201)
+@router.post("/{team_id}/folders", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
 async def add_team_folder(
     team_id: str,
     body: AddTeamFolderRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Add a folder to the team. Caller must own the folder."""
     team_id = validate_uuid(team_id)
@@ -956,12 +960,12 @@ async def add_team_folder(
     return {"ok": True}
 
 
-@router.delete("/{team_id}/folders/{folder_id}", status_code=204)
+@router.delete("/{team_id}/folders/{folder_id}", status_code=204, responses={404: {"description": "Not Found"}})
 async def remove_team_folder(
     team_id: str,
     folder_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Remove a folder from the team."""
     team_id   = validate_uuid(team_id)
@@ -985,8 +989,8 @@ async def remove_team_folder(
 @router.get("/{team_id}/file-keys")
 async def list_file_keys(
     team_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return all PRE-encrypted file keys for the team.
 
@@ -1016,12 +1020,12 @@ async def list_file_keys(
     }
 
 
-@router.post("/{team_id}/file-keys", status_code=201)
+@router.post("/{team_id}/file-keys", status_code=201, responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def add_file_keys(
     team_id: str,
     body: AddFileKeysRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Add or replace PRE-encrypted file keys for the team.
 
@@ -1083,12 +1087,12 @@ async def add_file_keys(
 # PRE key rotation
 # ---------------------------------------------------------------------------
 
-@router.post("/{team_id}/rotate")
+@router.post("/{team_id}/rotate", responses={422: {"description": "Unprocessable Entity"}})
 async def rotate_team_keys(
     team_id: str,
     body: RotateKeysRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Apply a client-computed PRE key rotation.
 
@@ -1254,12 +1258,12 @@ class KeyConfirmationRequest(BaseModel):
         return validate_base64(v, max_length=60)
 
 
-@router.post("/{team_id}/key-confirmation")
+@router.post("/{team_id}/key-confirmation", responses={422: {"description": "Unprocessable Entity"}})
 async def confirm_team_key(
     team_id: str,
     body: KeyConfirmationRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Record that the caller has successfully decrypted their post-rotation team key.
 
@@ -1342,8 +1346,8 @@ class CompleteKeyGrantsRequest(BaseModel):
 @router.get("/{team_id}/pending-key-grants")
 async def get_pending_key_grants(
     team_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return users waiting for sk_team delivery (policy_team_grants.key_wrapped=0).
 
@@ -1383,12 +1387,12 @@ async def get_pending_key_grants(
     return {"pending_grants": pending}
 
 
-@router.post("/{team_id}/pending-key-grants/complete", status_code=201)
+@router.post("/{team_id}/pending-key-grants/complete", status_code=201, responses={422: {"description": "Unprocessable Entity"}})
 async def complete_pending_key_grants(
     team_id: str,
     body: CompleteKeyGrantsRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Fulfil pending key grants by writing user_team_keys for each grantee.
 
@@ -1525,12 +1529,12 @@ class EphemeralJoinRequest(BaseModel):
         return v
 
 
-@router.post("/{team_id}/ephemeral-slots", status_code=201)
+@router.post("/{team_id}/ephemeral-slots", status_code=201, responses={403: {"description": "Forbidden"}})
 async def create_ephemeral_slot(
     team_id: str,
     body: CreateEphemeralSlotRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a one-time invite slot for a new team member.
 
@@ -1559,8 +1563,8 @@ async def create_ephemeral_slot(
 
     slot_id    = str(uuid.uuid4())
     now        = datetime.now(timezone.utc)
-    expires_at = (now + timedelta(hours=body.expires_hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    created_at = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    expires_at = (now + timedelta(hours=body.expires_hours)).strftime(_ISO_FMT)
+    created_at = now.strftime(_ISO_FMT)
 
     await db.execute(
         "INSERT INTO team_ephemeral_slots "
@@ -1576,12 +1580,12 @@ async def create_ephemeral_slot(
     return {"slot_id": slot_id, "expires_at": expires_at}
 
 
-@router.get("/{team_id}/ephemeral-slots/{slot_id}")
+@router.get("/{team_id}/ephemeral-slots/{slot_id}", responses={404: {"description": "Not Found"}, 410: {"description": "Gone"}})
 async def get_ephemeral_slot(
     team_id: str,
     slot_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Fetch a slot's wrapped sk_team blob without consuming the slot.
 
@@ -1605,19 +1609,19 @@ async def get_ephemeral_slot(
     if slot["consumed"]:
         raise HTTPException(status_code=410, detail="Invite slot has already been used")
 
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_str = datetime.now(timezone.utc).strftime(_ISO_FMT)
     if slot["expires_at"] < now_str:
         raise HTTPException(status_code=410, detail="Invite slot has expired")
 
     return {"sk_wrapped": slot["sk_wrapped"], "sk_iv": slot["sk_iv"]}
 
 
-@router.post("/{team_id}/ephemeral-join", status_code=201)
+@router.post("/{team_id}/ephemeral-join", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 422: {"description": "Unprocessable Entity"}})
 async def ephemeral_join(
     team_id: str,
     body: EphemeralJoinRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Complete an ephemeral slot join with immediate key rotation.
 
@@ -1664,7 +1668,7 @@ async def ephemeral_join(
         raise HTTPException(status_code=404, detail="Invite slot not found")
     if slot["consumed"]:
         raise HTTPException(status_code=410, detail="Invite slot has already been used")
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_str = datetime.now(timezone.utc).strftime(_ISO_FMT)
     if slot["expires_at"] < now_str:
         raise HTTPException(status_code=410, detail="Invite slot has expired")
 

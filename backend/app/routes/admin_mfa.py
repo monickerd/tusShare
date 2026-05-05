@@ -20,14 +20,19 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.auth.mfa import list_active_credentials
 from app.auth.stepup import log_security_event, verify_step_up_token
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.models.role import FLAG_MANAGE_USER_MFA
 from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_ERR_PERM_MANAGE_MFA = _ERR_PERM_MANAGE_MFA
+_ERR_INVALID_USER_ID = _ERR_INVALID_USER_ID
+_SQL_REVOKE_TOKENS   = _SQL_REVOKE_TOKENS
 
 
 def _request_info(request: Request) -> tuple[str, str]:
@@ -46,18 +51,18 @@ async def _resolve_user(db, user_id: str) -> None:
 # List credentials for a user
 # ---------------------------------------------------------------------------
 
-@router.get("/users/{user_id}/mfa")
+@router.get("/users/{user_id}/mfa", responses={400: {"description": "Bad Request"}})
 async def admin_list_mfa(
     user_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List active MFA credentials for a user."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
+    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_USER_ID)
 
     await _resolve_user(db, user_id)
 
@@ -76,26 +81,26 @@ async def admin_list_mfa(
 # Wipe all MFA data (remove credentials, clear reset flag)
 # ---------------------------------------------------------------------------
 
-@router.delete("/users/{user_id}/mfa")
+@router.delete("/users/{user_id}/mfa", responses={400: {"description": "Bad Request"}})
 async def admin_wipe_mfa(
     user_id: str,
     request: Request,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Wipe all MFA credentials for a user.  Requires step-up."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
+    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_USER_ID)
 
     _check_step_up(request, admin, "auth.mfa.admin_remove")
     await _resolve_user(db, user_id)
     await _do_wipe_mfa(db, user_id, reset_flag=False)
 
     # Invalidate all sessions
-    await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+    await db.execute(_SQL_REVOKE_TOKENS, (user_id,))
     await db.commit()
 
     client_ip, ua = _request_info(request)
@@ -110,16 +115,16 @@ async def admin_wipe_mfa(
 # Remove a specific credential
 # ---------------------------------------------------------------------------
 
-@router.delete("/users/{user_id}/mfa/{cred_id}")
+@router.delete("/users/{user_id}/mfa/{cred_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def admin_remove_credential(
     user_id: str,
     cred_id: str,
     request: Request,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Remove a specific MFA credential for a user.  Requires step-up."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
+    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
         cred_id = validate_uuid(cred_id)
@@ -142,7 +147,7 @@ async def admin_remove_credential(
         "UPDATE user_mfa_credentials SET is_active = 0 WHERE id = ?", (cred_id,)
     )
     # Invalidate all sessions for the target user
-    await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+    await db.execute(_SQL_REVOKE_TOKENS, (user_id,))
     await db.commit()
 
     client_ip, ua = _request_info(request)
@@ -157,26 +162,26 @@ async def admin_remove_credential(
 # Force re-enrollment (wipe + set mfa_reset_required)
 # ---------------------------------------------------------------------------
 
-@router.post("/users/{user_id}/mfa/reset")
+@router.post("/users/{user_id}/mfa/reset", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def admin_reset_mfa(
     user_id: str,
     request: Request,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Wipe all MFA credentials and force re-enrollment on next login.  Requires step-up."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, "can_manage_user_mfa permission required")
+    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user ID")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_USER_ID)
 
     _check_step_up(request, admin, "auth.mfa.admin_reset")
     await _resolve_user(db, user_id)
     await _do_wipe_mfa(db, user_id, reset_flag=True)
 
     # Invalidate all sessions
-    await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+    await db.execute(_SQL_REVOKE_TOKENS, (user_id,))
     await db.commit()
 
     client_ip, ua = _request_info(request)

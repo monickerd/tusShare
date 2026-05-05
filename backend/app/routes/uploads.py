@@ -22,19 +22,24 @@ from app.auth.dependencies import require_user_role
 from app.routes._access import copy_folder_permissions
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.services import sse_broker
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
+from typing import Annotated
+
+_bg_tasks: set = set()
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_TUS_VERSION = "1.0.0"
+_TUS_VERSION        = "1.0.0"
 _CONTENT_TYPE_PATCH = "application/offset+octet-stream"
+_ERR_UPLOAD_NOT_FOUND = _ERR_UPLOAD_NOT_FOUND
+_SQL_DELETE_UPLOAD    = _SQL_DELETE_UPLOAD
 # Maximum single-chunk body: chunkSize (default 5 MB) + AES-GCM tag (16 B) + headroom
 _MAX_CHUNK_BYTES = 21 * 1024 * 1024  # 21 MB
 
@@ -74,11 +79,11 @@ def _parse_upload_metadata(raw: str) -> dict[str, str]:
 # POST /uploads  — create a new upload
 # ---------------------------------------------------------------------------
 
-@router.post("")
+@router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 413: {"description": "413"}})
 async def create_upload(
     request: Request,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a new tus upload. Returns 201 with Location header."""
 
@@ -286,17 +291,17 @@ async def create_upload(
 # HEAD /uploads/{upload_id}  — resume check
 # ---------------------------------------------------------------------------
 
-@router.head("/{upload_id}")
+@router.head("/{upload_id}", responses={404: {"description": "Not Found"}})
 async def head_upload(
     upload_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return current Upload-Offset and Upload-Length for a pending upload."""
     try:
         upload_id = validate_uuid(upload_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Upload not found")
+        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
 
     cursor = await db.execute(
         "SELECT current_offset, total_size FROM tus_uploads WHERE id = ? AND user_id = ?",
@@ -304,7 +309,7 @@ async def head_upload(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Upload not found")
+        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
 
     return Response(
         status_code=200,
@@ -320,18 +325,18 @@ async def head_upload(
 # PATCH /uploads/{upload_id}  — send a chunk
 # ---------------------------------------------------------------------------
 
-@router.patch("/{upload_id}")
+@router.patch("/{upload_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 413: {"description": "413"}, 415: {"description": "415"}, 423: {"description": "423"}, 500: {"description": "Internal Server Error"}})
 async def patch_upload(
     upload_id: str,
     request: Request,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Receive one encrypted chunk and append it to the upload."""
     try:
         upload_id = validate_uuid(upload_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Upload not found")
+        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
 
     if request.headers.get("Tus-Resumable", "") != _TUS_VERSION:
         raise HTTPException(status_code=400, detail="Unsupported Tus-Resumable version")
@@ -363,7 +368,7 @@ async def patch_upload(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Upload not found")
+        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     if row["expires_at"] < now_iso:
@@ -542,7 +547,7 @@ async def patch_upload(
                 "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
                 (new_offset, user.id),
             )
-            await db.execute("DELETE FROM tus_uploads WHERE id = ?", (upload_id,))
+            await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
             await db.commit()
         except HTTPException:
             raise
@@ -556,7 +561,9 @@ async def patch_upload(
 
         # Trigger async AV scan if escrow + endpoint are configured.
         # Runs in a background task so it never blocks the upload response.
-        asyncio.create_task(_maybe_scan_file(row["file_id"]))
+        _t = asyncio.create_task(_maybe_scan_file(row["file_id"]))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
 
     extra_headers: dict = {"Upload-Offset": str(new_offset)}
     if is_complete:
@@ -572,17 +579,17 @@ async def patch_upload(
 # DELETE /uploads/{upload_id}  — abort
 # ---------------------------------------------------------------------------
 
-@router.delete("/{upload_id}")
+@router.delete("/{upload_id}", responses={404: {"description": "Not Found"}})
 async def abort_upload(
     upload_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Abort an upload: delete the tus record, incomplete file record, and staging blob."""
     try:
         upload_id = validate_uuid(upload_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Upload not found")
+        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
 
     cursor = await db.execute(
         "SELECT tus_uploads.file_id "
@@ -592,14 +599,14 @@ async def abort_upload(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Upload not found")
+        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
 
     file_id = row["file_id"]
 
     await db.execute("BEGIN")
     try:
         # Deleting the file cascades to file_chunks via FK; tus_uploads also FKs to files.
-        await db.execute("DELETE FROM tus_uploads WHERE id = ?", (upload_id,))
+        await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
         await db.execute("DELETE FROM files WHERE id = ?", (file_id,))
         await db.commit()
     except Exception:
@@ -614,9 +621,9 @@ async def abort_upload(
 # Escrow public key endpoint
 # ---------------------------------------------------------------------------
 
-@router.get("/escrow-key")
+@router.get("/escrow-key", responses={404: {"description": "Not Found"}})
 async def get_escrow_public_key(
-    user: AuthenticatedUser = Depends(require_user_role),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
 ):
     """Return the server's escrow ECDH public key (SPKI, base64).
 
@@ -671,7 +678,7 @@ async def _cleanup_expired_uploads(db) -> int:
         file_id   = row["file_id"]
         try:
             await db.execute("BEGIN")
-            await db.execute("DELETE FROM tus_uploads WHERE id = ?", (upload_id,))
+            await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
             await db.execute("DELETE FROM files WHERE id = ?", (file_id,))
             await db.commit()
         except Exception:

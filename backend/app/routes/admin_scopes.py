@@ -24,11 +24,15 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.models.policy import AdminScopeCondition, VALID_OPERATORS
 from app.models.role import FLAG_MANAGE_POLICIES
 from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+
+_ERR_PERM_MANAGE_POLICIES = "can_manage_policies required"
 
 router = APIRouter()
 
@@ -80,14 +84,14 @@ class UpdateScopeCondRequest(BaseModel):
 
 @router.get("")
 async def list_scope_conditions(
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all admin scope conditions.
 
     Returns all conditions across all holders.  The UI groups them by holder.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
     cursor = await db.execute(
         "SELECT * FROM admin_scope_conditions ORDER BY holder_type, holder_id, field"
     )
@@ -99,15 +103,15 @@ async def list_scope_conditions(
 # GET /admin/scopes/{holder_type}/{holder_id} — list conditions for a holder
 # ---------------------------------------------------------------------------
 
-@router.get("/{holder_type}/{holder_id}")
+@router.get("/{holder_type}/{holder_id}", responses={400: {"description": "Bad Request"}})
 async def list_scope_conditions_for_holder(
     holder_type: str,
     holder_id:   str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List scope conditions for a specific user or role."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
 
     if holder_type not in ("user", "role"):
         raise HTTPException(status_code=400, detail="holder_type must be 'user' or 'role'")
@@ -128,18 +132,18 @@ async def list_scope_conditions_for_holder(
 # POST /admin/scopes — create a scope condition
 # ---------------------------------------------------------------------------
 
-@router.post("")
+@router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def create_scope_condition(
     body: CreateScopeCondRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Add a scope condition to a user or role.
 
     holder_type='user'  → holder_id must be a valid user UUID.
     holder_type='role'  → holder_id is a role name (e.g. 'org_admin').
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
 
     if body.holder_type not in ("user", "role"):
         raise HTTPException(status_code=400, detail="holder_type must be 'user' or 'role'")
@@ -188,11 +192,11 @@ async def create_scope_condition(
 @router.get("/conditions/{cond_id}")
 async def get_scope_condition(
     cond_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single scope condition by ID."""
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
     cond_id = validate_uuid(cond_id)
     cond = await _load_scope_cond(db, cond_id)
     return {"condition": cond.to_dict()}
@@ -202,19 +206,19 @@ async def get_scope_condition(
 # PATCH /admin/scopes/conditions/{cond_id} — update operator or value
 # ---------------------------------------------------------------------------
 
-@router.patch("/conditions/{cond_id}")
+@router.patch("/conditions/{cond_id}", responses={400: {"description": "Bad Request"}})
 async def update_scope_condition(
     cond_id: str,
     body: UpdateScopeCondRequest,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update the operator and/or value of a scope condition.
 
     Changing operator/value may propagate through inherited policy conditions
     (they will be re-evaluated on next user login/step-up).
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
     cond_id = validate_uuid(cond_id)
     await _load_scope_cond(db, cond_id)  # 404 guard
 
@@ -254,8 +258,8 @@ async def update_scope_condition(
 @router.delete("/conditions/{cond_id}")
 async def delete_scope_condition(
     cond_id: str,
-    user: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a scope condition.
 
@@ -263,7 +267,7 @@ async def delete_scope_condition(
     inherited_scope_id set to NULL and scope_detached set to 1 (via DB trigger).
     Affected policies will show a review banner in the UI.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, "can_manage_policies required")
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
     cond_id = validate_uuid(cond_id)
     await _load_scope_cond(db, cond_id)  # 404 guard
 

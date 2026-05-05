@@ -32,7 +32,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import (
     FLAG_MANAGE_SHARING,
@@ -46,6 +46,12 @@ from app.models.role import (
 from app.routes._access import require_flag
 from app.services.sharing_rules import simulate_sharing_rules
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+
+_ERR_PERM_MANAGE_SHARING = "can_manage_sharing permission required"
+_SQL_RULE_BY_ID = "SELECT * FROM sharing_rules WHERE id = ?"
+_ERR_RULE_NOT_FOUND = "Rule not found"
 
 logger = logging.getLogger(__name__)
 
@@ -313,11 +319,11 @@ class TestRulesRequest(BaseModel):
 
 @router.get("/flags")
 async def get_sharing_flags(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return sharing capability flag assignments for every role that has any of the 4 flags."""
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
 
     placeholders = ",".join(["?" for _ in _SHARING_CAPABILITY_FLAGS])
     cursor = await db.execute(
@@ -352,19 +358,19 @@ async def get_sharing_flags(
     }
 
 
-@router.put("/flags")
+@router.put("/flags", responses={404: {"description": "Not Found"}})
 async def update_sharing_flags(
     body: UpdateFlagsRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    _stepup=Depends(require_step_up(_STEPUP)),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update sharing capability flags for a role.
 
     Body: { role_id, flags: { flag_name: true|false, ... } }
     Only the specified flags are updated; others are untouched.
     """
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
 
     # Verify role exists
     cursor = await db.execute("SELECT id FROM roles WHERE id = ?", (body.role_id,))
@@ -389,14 +395,14 @@ async def update_sharing_flags(
 
 @router.get("/rules")
 async def list_sharing_rules(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     active_only: bool = Query(False),
 ):
     """List all sharing rules ordered by priority."""
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
 
     where = "WHERE is_active = TRUE" if active_only else ""
     cursor = await db.execute(
@@ -417,18 +423,18 @@ async def list_sharing_rules(
     return {"rules": result, "total": total, "offset": offset, "limit": limit}
 
 
-@router.post("/rules/test")
+@router.post("/rules/test", responses={404: {"description": "Not Found"}})
 async def test_sharing_rules(
     body: TestRulesRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Dry-run rule evaluation for a given sender + optional recipient + share_type.
 
     Returns the list of rules that would fire, in evaluation order.
     No state is changed; no security events are emitted.
     """
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
 
     # Verify sender exists
     cursor = await db.execute("SELECT id FROM users WHERE id = ?", (body.sender_user_id,))
@@ -459,15 +465,15 @@ async def test_sharing_rules(
     }
 
 
-@router.post("/rules")
+@router.post("/rules", responses={400: {"description": "Bad Request"}})
 async def create_sharing_rule(
     body: CreateRuleRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    _stepup=Depends(require_step_up(_STEPUP)),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a sharing rule with its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
 
     my_tier = _admin_tier(admin)
 
@@ -524,45 +530,45 @@ async def create_sharing_rule(
 
     await db.commit()
 
-    cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))
+    cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
     return await _rule_to_dict(db, dict(rule))
 
 
-@router.get("/rules/{rule_id}")
+@router.get("/rules/{rule_id}", responses={404: {"description": "Not Found"}})
 async def get_sharing_rule(
     rule_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single sharing rule with its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
     rule_id = validate_uuid(rule_id)
 
-    cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))
+    cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
     if rule is None:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail=_ERR_RULE_NOT_FOUND)
 
     return await _rule_to_dict(db, dict(rule))
 
 
-@router.put("/rules/{rule_id}")
+@router.put("/rules/{rule_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def update_sharing_rule(
     rule_id: str,
     body: UpdateRuleRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    _stepup=Depends(require_step_up(_STEPUP)),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update a sharing rule's metadata and/or replace its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
     rule_id = validate_uuid(rule_id)
 
-    cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))
+    cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     existing = await cursor.fetchone()
     if existing is None:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail=_ERR_RULE_NOT_FOUND)
 
     my_tier = _admin_tier(admin)
     _check_rule_lock(dict(existing), my_tier)
@@ -640,26 +646,26 @@ async def update_sharing_rule(
 
     await db.commit()
 
-    cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))
+    cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
     return await _rule_to_dict(db, dict(rule))
 
 
-@router.delete("/rules/{rule_id}")
+@router.delete("/rules/{rule_id}", responses={404: {"description": "Not Found"}})
 async def delete_sharing_rule(
     rule_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    _stepup=Depends(require_step_up(_STEPUP)),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a sharing rule and all its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, "can_manage_sharing permission required")
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
     rule_id = validate_uuid(rule_id)
 
-    cursor = await db.execute("SELECT * FROM sharing_rules WHERE id = ?", (rule_id,))
+    cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
     if rule is None:
-        raise HTTPException(status_code=404, detail="Rule not found")
+        raise HTTPException(status_code=404, detail=_ERR_RULE_NOT_FOUND)
 
     my_tier = _admin_tier(admin)
     _check_rule_lock(dict(rule), my_tier)

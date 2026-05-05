@@ -234,7 +234,7 @@ const Shares = (() => {
         a.download = fileInfo.file_name || 'download';
         document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
+        a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 10000);
     }
 
@@ -325,7 +325,7 @@ const Shares = (() => {
         const dialog  = Utils.el('div', { className: 'modal share-dialog' });
 
         function _closeDialog() {
-            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            if (overlay.parentNode) overlay.remove();
         }
 
         // --- File / folder list ---
@@ -681,7 +681,7 @@ const Shares = (() => {
             const urlBox = Utils.el('div', { className: 'share-url-box' });
             _renderShareUrlBox(urlBox, slUrl, resp.slug);
             const actionsEl = card.querySelector('.share-card-actions');
-            if (actionsEl) card.insertBefore(urlBox, actionsEl);
+            if (actionsEl) actionsEl.before(urlBox);
             else card.appendChild(urlBox);
         } catch (err) {
             Utils.showToast(`Failed: ${err.message}`, 'error');
@@ -980,7 +980,7 @@ const Shares = (() => {
     // -----------------------------------------------------------------------
 
     function _clearEl(el) {
-        while (el.firstChild) el.removeChild(el.firstChild);
+        while (el.firstChild) el.firstChild.remove();
     }
 
     /**
@@ -1087,7 +1087,7 @@ const Shares = (() => {
         const dialog  = Utils.el('div', { className: 'modal share-dialog' });
 
         function _closeDialog() {
-            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            if (overlay.parentNode) overlay.remove();
         }
 
         const fileList = Utils.el('ul', { className: 'share-file-list' });
@@ -1172,7 +1172,7 @@ const Shares = (() => {
                 `${Config.app.apiPrefix}/auth/users/${encodeURIComponent(recipientUsername)}/public-keys`
             );
         } catch (err) {
-            if (err.message && err.message.includes('404')) {
+            if (err.message?.includes('404')) {
                 throw new Error(
                     `User "${recipientUsername}" not found or hasn't set up sharing keys yet. ` +
                     'They need to log in at least once to activate sharing.'
@@ -1403,7 +1403,7 @@ const Shares = (() => {
         a.download = fileInfo.file_name || 'download';
         document.body.appendChild(a);
         a.click();
-        document.body.removeChild(a);
+        a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 10000);
     }
 

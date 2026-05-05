@@ -33,8 +33,13 @@ from app.auth.interface import AuthenticatedUser
 from app.auth.idp_crypto import encrypt_idp_config, decrypt_idp_config
 from app.auth.ldap_provider import validate_ldap_config, ldap_test_connection, ldap_fetch_attributes
 from app.auth.oidc_provider import validate_oidc_config
-from app.database import get_db, DuplicateError
+from app.database import Database, DuplicateError, get_db
 from app.validation.sanitizers import validate_uuid
+from typing import Annotated
+
+
+_ERR_PROVIDER_NOT_FOUND = "Provider not found"
+_SQL_PROVIDER_BY_ID = "SELECT provider_type, config_enc FROM identity_providers WHERE id = ?"
 
 logger = logging.getLogger(__name__)
 
@@ -184,8 +189,8 @@ def _validate_and_encrypt_config(provider_type: str, raw_config: dict) -> str:
 
 @router.get("")
 async def list_providers(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all identity providers.  Config secrets are never returned."""
     cursor = await db.execute(
@@ -200,11 +205,11 @@ async def list_providers(
 # Create
 # ---------------------------------------------------------------------------
 
-@router.post("")
+@router.post("", responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}})
 async def create_provider(
     body: CreateProviderRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a new identity provider.  Requires step-up (integration.ldap.configure)."""
     # Validate and encrypt config
@@ -247,17 +252,17 @@ async def create_provider(
 # Get one (redacted)
 # ---------------------------------------------------------------------------
 
-@router.get("/{provider_id}")
+@router.get("/{provider_id}", responses={404: {"description": "Not Found"}})
 async def get_provider(
     provider_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return a single provider.  Secret fields in config are replaced with ••••••••."""
     try:
         validate_uuid(provider_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     cursor = await db.execute(
         "SELECT id, provider_type, name, is_active, claim_mode, config_enc, created_at, updated_at "
@@ -266,7 +271,7 @@ async def get_provider(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     result = {k: row[k] for k in row if k != "config_enc"}
     try:
@@ -282,12 +287,12 @@ async def get_provider(
 # Update
 # ---------------------------------------------------------------------------
 
-@router.put("/{provider_id}")
+@router.put("/{provider_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
 async def update_provider(
     provider_id: str,
     body: UpdateProviderRequest,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update a provider.  If config is supplied it replaces the stored config entirely.
 
@@ -298,15 +303,15 @@ async def update_provider(
     try:
         validate_uuid(provider_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     cursor = await db.execute(
-        "SELECT provider_type, config_enc FROM identity_providers WHERE id = ?",
+        _SQL_PROVIDER_BY_ID,
         (provider_id,),
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     provider_type = row["provider_type"]
     now = int(time.time())
@@ -372,11 +377,11 @@ async def update_provider(
 # Delete
 # ---------------------------------------------------------------------------
 
-@router.delete("/{provider_id}")
+@router.delete("/{provider_id}", responses={404: {"description": "Not Found"}})
 async def delete_provider(
     provider_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a provider and all associated user mappings.
 
@@ -388,7 +393,7 @@ async def delete_provider(
     try:
         validate_uuid(provider_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     # De-link users before deleting the provider
     await db.execute(
@@ -402,7 +407,7 @@ async def delete_provider(
     row = await result.fetchone()
     if row is None:
         await db.rollback()
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
     await db.commit()
 
     logger.info("IdP deleted: id=%s by admin=%s", provider_id, admin.id)
@@ -413,11 +418,11 @@ async def delete_provider(
 # Test connection
 # ---------------------------------------------------------------------------
 
-@router.post("/{provider_id}/test")
+@router.post("/{provider_id}/test", responses={404: {"description": "Not Found"}})
 async def test_provider(
     provider_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Test an identity provider's connectivity.
 
@@ -429,15 +434,15 @@ async def test_provider(
     try:
         validate_uuid(provider_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     cursor = await db.execute(
-        "SELECT provider_type, config_enc FROM identity_providers WHERE id = ?",
+        _SQL_PROVIDER_BY_ID,
         (provider_id,),
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     if row["provider_type"] == "ldap":
         result = await ldap_test_connection(row["config_enc"])
@@ -470,11 +475,11 @@ async def _test_oidc_discovery(config_enc: str) -> dict:
 # Attribute/claim wizard
 # ---------------------------------------------------------------------------
 
-@router.get("/{provider_id}/wizard")
+@router.get("/{provider_id}/wizard", responses={404: {"description": "Not Found"}})
 async def provider_wizard(
     provider_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return the available attributes / claims for this provider.
 
@@ -489,15 +494,15 @@ async def provider_wizard(
     try:
         validate_uuid(provider_id)
     except ValueError:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     cursor = await db.execute(
-        "SELECT provider_type, config_enc FROM identity_providers WHERE id = ?",
+        _SQL_PROVIDER_BY_ID,
         (provider_id,),
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Provider not found")
+        raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
 
     if row["provider_type"] == "ldap":
         return await _ldap_wizard(row["config_enc"], admin.username)
@@ -522,7 +527,7 @@ async def _ldap_wizard(config_enc: str, admin_username: str) -> dict:
     }
 
 
-async def _oidc_wizard(config_enc: str, admin_user_id: str, db) -> dict:
+async def _oidc_wizard(_config_enc: str, admin_user_id: str, db) -> dict:
     """Return OIDC claim names from the admin's cached claims (if available)."""
     import json as _json
     cursor = await db.execute(

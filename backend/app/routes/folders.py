@@ -7,7 +7,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import get_current_user, require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
 from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
@@ -15,6 +15,12 @@ from app.services import sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
+from typing import Annotated
+
+
+_SQL_FOLDER_BY_ID = "SELECT * FROM folders WHERE id = ?"
+_ERR_FOLDER_NOT_FOUND = "Folder not found"
+_ERR_ACCESS_DENIED = "Access denied"
 
 router = APIRouter(dependencies=[Depends(check_management_rate_limit)])
 
@@ -52,8 +58,8 @@ class UpdateFolderRequest(BaseModel):
 
 @router.get("")
 async def list_root_folders(
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List user's root-level folders, root-level files, and the shared folder."""
     # User's own root folders (no parent), excluding team-owned folders and deleted folders
@@ -100,11 +106,11 @@ async def list_root_folders(
     return {"folders": own_folders, "files": own_files, "shared_folder": shared_folder, "pending_uploads": pending_uploads}
 
 
-@router.post("")
+@router.post("", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
 async def create_folder(
     body: CreateFolderRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a new folder."""
     folder_id = str(uuid.uuid4())
@@ -112,7 +118,7 @@ async def create_folder(
     # If parent_id is specified, verify it exists and user has write access
     if body.parent_id:
         cursor = await db.execute(
-            "SELECT * FROM folders WHERE id = ?", (body.parent_id,)
+            _SQL_FOLDER_BY_ID, (body.parent_id,)
         )
         parent = await cursor.fetchone()
         if parent is None:
@@ -142,11 +148,11 @@ async def create_folder(
     return {"folder": {"id": folder_id, "name": body.name, "parent_id": body.parent_id}}
 
 
-@router.get("/{folder_id}")
+@router.get("/{folder_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def get_folder_contents(
     folder_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a folder's contents (child folders and files).
 
@@ -159,7 +165,7 @@ async def get_folder_contents(
     )
     folder_row = await cursor.fetchone()
     if folder_row is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
     folder = Folder.from_row(folder_row)
 
@@ -168,7 +174,7 @@ async def get_folder_contents(
         if not await is_in_shared_tree(db, folder_id) and \
            not await is_team_folder_member(db, folder_id, user.id) and \
            not await has_folder_permission(db, folder_id, user.id):
-            raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # Child folders (excluding soft-deleted)
     cursor = await db.execute(
@@ -208,7 +214,7 @@ async def get_folder_contents(
     while current.parent_id and current.parent_id not in visited_bc:
         visited_bc.add(current.parent_id)
         cursor = await db.execute(
-            "SELECT * FROM folders WHERE id = ?", (current.parent_id,)
+            _SQL_FOLDER_BY_ID, (current.parent_id,)
         )
         parent_row = await cursor.fetchone()
         if not parent_row:
@@ -229,11 +235,11 @@ async def get_folder_contents(
     }
 
 
-@router.get("/{folder_id}/files")
+@router.get("/{folder_id}/files", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def list_folder_files_recursive(
     folder_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
@@ -252,10 +258,10 @@ async def list_folder_files_recursive(
     cursor = await db.execute("SELECT owner_id FROM folders WHERE id = ?", (folder_id,))
     folder_row = await cursor.fetchone()
     if folder_row is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
     if folder_row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # Recursive CTE shared by both the count and data queries.
     # Scoped to owner_id so we never traverse folders owned by other users
@@ -311,23 +317,23 @@ async def list_folder_files_recursive(
     return {"files": files, "total": total, "offset": offset, "limit": limit}
 
 
-@router.put("/{folder_id}")
+@router.put("/{folder_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_folder(
     folder_id: str,
     body: UpdateFolderRequest,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Rename or move a folder."""
     folder_id = validate_uuid(folder_id)
 
-    cursor = await db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    cursor = await db.execute(_SQL_FOLDER_BY_ID, (folder_id,))
     folder_row = await cursor.fetchone()
     if folder_row is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
     if folder_row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot modify the shared folder")
@@ -401,16 +407,16 @@ async def update_folder(
     if body.parent_id and body.parent_id != old_parent:
         sse_broker.publish(body.parent_id, {"type": "change"})
 
-    cursor = await db.execute("SELECT * FROM folders WHERE id = ?", (folder_id,))
+    cursor = await db.execute(_SQL_FOLDER_BY_ID, (folder_id,))
     updated_row = await cursor.fetchone()
     return {"folder": Folder.from_row(updated_row).to_dict()}
 
 
-@router.delete("/{folder_id}")
+@router.delete("/{folder_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def delete_folder(
     folder_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a folder and all its contents.
 
@@ -425,10 +431,10 @@ async def delete_folder(
     )
     folder_row = await cursor.fetchone()
     if folder_row is None:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
     if folder_row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot delete the shared folder")
@@ -500,11 +506,11 @@ async def delete_folder(
     return {"message": "Folder deleted"}
 
 
-@router.get("/{folder_id}/effective-escrow-agents")
+@router.get("/{folder_id}/effective-escrow-agents", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def get_effective_escrow_agents(
     folder_id: str,
-    user: AuthenticatedUser = Depends(require_user_role),
-    db=Depends(get_db),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return the resolved escrow agent list for the given folder.
 
@@ -524,7 +530,7 @@ async def get_effective_escrow_agents(
     )
     folder_row = await cursor.fetchone()
     if not folder_row:
-        raise HTTPException(status_code=404, detail="Folder not found")
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
     has_access = (
         folder_row["owner_id"] == user.id
@@ -533,6 +539,6 @@ async def get_effective_escrow_agents(
         or await is_team_folder_member(db, folder_id, user.id)
     )
     if not has_access:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     return await resolve_effective_escrow_agents(db, folder_id)

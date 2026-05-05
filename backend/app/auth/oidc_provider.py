@@ -42,6 +42,7 @@ from app.util.ssrf import validate_endpoint_url
 logger = logging.getLogger(__name__)
 
 _OIDC_STATE_TTL = 600  # 10 minutes
+_ERR_AUTHLIB_MISSING = _ERR_AUTHLIB_MISSING
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ async def _get_oidc_client(cfg: dict[str, Any]):
     try:
         from authlib.integrations.httpx_client import AsyncOAuth2Client
     except ImportError as exc:
-        raise RuntimeError("authlib is not installed") from exc
+        raise RuntimeError(_ERR_AUTHLIB_MISSING) from exc
 
     import httpx
     from app.config import settings as _s
@@ -201,7 +202,7 @@ async def handle_oidc_callback(
         from authlib.integrations.httpx_client import AsyncOAuth2Client
         from authlib.jose import JsonWebToken
     except ImportError as exc:
-        raise RuntimeError("authlib is not installed") from exc
+        raise RuntimeError(_ERR_AUTHLIB_MISSING) from exc
 
     client = await _get_oidc_client(cfg)
     try:
@@ -341,7 +342,7 @@ async def oidc_fetch_claims(
     try:
         from authlib.integrations.httpx_client import AsyncOAuth2Client
     except ImportError as exc:
-        raise RuntimeError("authlib is not installed") from exc
+        raise RuntimeError(_ERR_AUTHLIB_MISSING) from exc
 
     client = await _get_oidc_client(cfg)
     try:

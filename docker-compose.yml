@@ -37,10 +37,10 @@ services:
       # exists and safe to leave in if preferred (no effect after bootstrap).
       #
       # Example .env entry:
-      #   TUSSHARE_SUPERUSER_URL=postgresql://postgres:SUPERUSER_PW@postgres:5432/tusshare
+      #   TUSSHARE_SUPERUSER_URL=postgresql://postgres:SUPERUSER_PW@postgres:5432/tusshare  # NOSONAR
       #
       # To bootstrap without restarting a running stack:
-      #   TUSSHARE_SUPERUSER_URL=postgresql://postgres:SUPERUSER_PW@postgres:5432/tusshare \
+      #   TUSSHARE_SUPERUSER_URL=postgresql://postgres:SUPERUSER_PW@postgres:5432/tusshare \  # NOSONAR
       #   docker compose run --rm tusshare \
       #   python -c "import asyncio,os; from pathlib import Path; \
       #   from app.sensitive_config import _bootstrap; \

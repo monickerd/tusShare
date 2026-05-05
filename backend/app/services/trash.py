@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 import app.storage.manager as storage
 from app.database import db_session
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,7 +46,9 @@ async def purge_file(db, file_id: str, storage_key: str, encrypted_size: int, ow
         except Exception:
             pass
 
-    asyncio.create_task(_bg())
+    _t = asyncio.create_task(_bg())
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
 
 
 async def _purge_expired(db) -> None:

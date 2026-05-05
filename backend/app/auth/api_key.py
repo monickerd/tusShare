@@ -30,6 +30,8 @@ from fastapi import Header, HTTPException
 from app.database import db_session
 from app.util.crypto import sha256_hex
 
+_bg_tasks: set = set()
+
 logger = logging.getLogger(__name__)
 
 _PREFIX = "tss_"
@@ -72,7 +74,9 @@ async def _check_key(raw_key: str, accepted_scopes: tuple[str, ...]) -> dict:
         needed = ", ".join(sorted(accepted_scopes))
         raise HTTPException(status_code=403, detail=f"API key requires one of: {needed}")
 
-    asyncio.create_task(_update_last_used(row["id"]))
+    _t = asyncio.create_task(_update_last_used(row["id"]))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
     return dict(row)
 
 

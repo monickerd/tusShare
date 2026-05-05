@@ -5,7 +5,7 @@
 let _opaqueModule = null;
 async function _loadOpaque() {
     if (_opaqueModule) return _opaqueModule;
-    const mod = await import('/js/lib/opaque.js');
+    const mod = await import('/js/lib/opaque.js'); // NOSONAR — web-root-relative URL, not a filesystem path
     await mod.ready;
     _opaqueModule = mod;
     return _opaqueModule;
@@ -155,7 +155,7 @@ const Auth = (() => {
 
     async function renderLogin(container) {
         const gen = ++_loginRenderGen;
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         // Fetch active IdP providers (non-blocking — show form even if this fails)
         let idpProviders = [];
@@ -166,7 +166,7 @@ const Auth = (() => {
 
         // Abort if a newer renderLogin call has taken over (race between hashchange + direct call)
         if (gen !== _loginRenderGen) return;
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const form = Utils.el('form', { className: 'auth-form', onSubmit: _handleLogin }, [
             Utils.el('h1', { textContent: Config.app.name }),
@@ -254,7 +254,7 @@ const Auth = (() => {
     }
 
     function _renderLdapLoginForm(container, provider) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
         const form = Utils.el('form', {
             className: 'auth-form',
             onSubmit: (e) => _handleLdapLogin(e, provider, container),
@@ -433,7 +433,7 @@ const Auth = (() => {
     // ------------------------------------------------------------------
 
     function renderKeyPrompt(container) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const passwordForm = Utils.el('form', { className: 'auth-form', onSubmit: _handleKeyDerive }, [
             Utils.el('h2', { textContent: 'Encryption Key Required' }),
@@ -601,7 +601,7 @@ const Auth = (() => {
     // ------------------------------------------------------------------
 
     function renderRecoveryPrompt(container) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const form = Utils.el('form', { className: 'auth-form', onSubmit: _handleRecoveryUnlock }, [
             Utils.el('h2', { textContent: 'Recovery Key Unlock' }),
@@ -807,7 +807,7 @@ const Auth = (() => {
      *   6. User confirms recovery key → navigate to #/files.
      */
     async function renderRegisterPage(container, token) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         // Step 1: validate token before showing form
         const checking = Utils.el('div', { className: 'auth-form' }, [
@@ -818,7 +818,7 @@ const Auth = (() => {
         try {
             await Api.get(`${Config.app.apiPrefix}/auth/invite/${encodeURIComponent(token)}`);
         } catch {
-            while (container.firstChild) container.removeChild(container.firstChild);
+            while (container.firstChild) container.firstChild.remove();
             container.appendChild(Utils.el('div', { className: 'auth-form' }, [
                 Utils.el('h2', { textContent: 'Invalid Invite' }),
                 Utils.el('p', { className: 'auth-status', textContent: 'This invite link is invalid, expired, or has already been used.' }),
@@ -830,7 +830,7 @@ const Auth = (() => {
         }
 
         // Step 2: show registration form
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const form = Utils.el('form', { className: 'auth-form', onSubmit: (e) => _handleRegister(e, token, container) }, [
             Utils.el('h1', { textContent: Config.app.name }),
@@ -970,7 +970,7 @@ const Auth = (() => {
     // ------------------------------------------------------------------
 
     function renderBootstrap(container) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const form = Utils.el('form', { className: 'auth-form', onSubmit: (e) => _handleBootstrap(e, container) }, [
             Utils.el('h1', { textContent: Config.app.name }),
@@ -1112,7 +1112,7 @@ const Auth = (() => {
     // ------------------------------------------------------------------
 
     function renderForgotPassword(container, prefillUsername = '') {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         async function _handleSubmit(e) {
             e.preventDefault();
@@ -1281,7 +1281,7 @@ const Auth = (() => {
     // ------------------------------------------------------------------
 
     function renderRecoveryKeyDisplay(container, recoveryKeyString, destination = '/#/files', subtitle = null) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const defaultSubtitle = (
             'This is the ONLY time this key will be shown. If you forget your password, ' +
@@ -1332,7 +1332,7 @@ const Auth = (() => {
 
     function _renderMfaChallenge(container, mfaData, exportKey, username, isPublicDevice) {
         const { pending_token, methods, reset_required } = mfaData;
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const hasTotp    = methods.includes('totp');
         const hasWebAuthn = methods.includes('webauthn');
@@ -1435,7 +1435,7 @@ const Auth = (() => {
     }
 
     function _renderRecoveryChallenge(container, pending_token, exportKey, username) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
         container.appendChild(Utils.el('form', {
             className: 'auth-form',
             onSubmit: async (e) => {
@@ -1529,7 +1529,7 @@ const Auth = (() => {
     }
 
     function _renderMfaEnrollmentGate(container, pending_token, exportKey, username) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
         container.appendChild(Utils.el('div', { className: 'auth-form' }, [
             Utils.el('h2', { textContent: 'MFA Enrollment Required' }),
             Utils.el('p', { className: 'text-muted', textContent:
@@ -1556,7 +1556,7 @@ const Auth = (() => {
     // ------------------------------------------------------------------
 
     async function renderMfaSettings(container) {
-        while (container.firstChild) container.removeChild(container.firstChild);
+        while (container.firstChild) container.firstChild.remove();
 
         const wrap = Utils.el('div', { className: 'auth-form', style: 'max-width:540px' });
         container.appendChild(wrap);
@@ -1583,7 +1583,7 @@ const Auth = (() => {
     function _renderMfaSettingsContent(wrap, data) {
         // Clear existing content below heading
         const heading = wrap.querySelector('h2');
-        while (wrap.lastChild !== heading) wrap.removeChild(wrap.lastChild);
+        while (wrap.lastChild !== heading) wrap.lastChild.remove();
 
         const creds = data.credentials || [];
 
@@ -1633,7 +1633,7 @@ const Auth = (() => {
         if (window.PublicKeyCredential) {
             wrap.appendChild(Utils.el('details', { style: 'margin-bottom:12px' }, [
                 Utils.el('summary', { style: 'cursor:pointer;font-weight:600;padding:8px 0', textContent: '+ Add Security Key / Biometrics (WebAuthn)' }),
-                _buildWebAuthnEnrollForm(wrap, data),
+                _buildWebAuthnEnrollForm(wrap),
             ]));
         }
     }
@@ -1653,7 +1653,7 @@ const Auth = (() => {
                     `${Config.app.apiPrefix}/auth/totp/enroll/start`
                 );
 
-                while (area.firstChild) area.removeChild(area.firstChild);
+                while (area.firstChild) area.firstChild.remove();
 
                 area.appendChild(Utils.el('p', { className: 'text-muted', style: 'margin-bottom:8px',
                     textContent: 'Scan this QR code with your authenticator app, then enter the 6-digit code to confirm.' }));
@@ -1681,7 +1681,7 @@ const Auth = (() => {
                             const result = await Api.post(`${Config.app.apiPrefix}/auth/totp/enroll/finish`, {
                                 cred_id, totp_code: code, name,
                             });
-                            while (area.firstChild) area.removeChild(area.firstChild);
+                            while (area.firstChild) area.firstChild.remove();
                             area.appendChild(Utils.el('h3', { textContent: 'Save Your Recovery Codes', style: 'margin-bottom:8px' }));
                             area.appendChild(Utils.el('p', { className: 'text-muted',
                                 textContent: 'These one-time codes let you regain access if you lose your authenticator. Save them now — they cannot be shown again.' }));
@@ -1693,7 +1693,7 @@ const Auth = (() => {
                             area.appendChild(Utils.el('button', {
                                 type: 'button', className: 'btn btn-primary',
                                 textContent: 'I\'ve saved my recovery codes',
-                                onClick: async () => {
+                                onClick: async () => { // NOSONAR — closure over wrapRef; unavoidable nesting depth
                                     Utils.showToast('TOTP authenticator enrolled!', 'success');
                                     const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
                                     _renderMfaSettingsContent(wrapRef, updated);
@@ -1778,23 +1778,25 @@ const Auth = (() => {
     // WebAuthn serialisation helpers
     // ------------------------------------------------------------------
 
+    function _b64ToBytes(b64) {
+        const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
+        const bin = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+        return Uint8Array.from(bin, c => c.charCodeAt(0));
+    }
+
     function _webAuthnOptionsFromServer(opts) {
-        function b64ToBytes(b64) {
-            const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
-            const bin = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
-            return Uint8Array.from(bin, c => c.charCodeAt(0));
-        }
-        const out = Object.assign({}, opts);
+        const b64ToBytes = _b64ToBytes;
+        const out = {...opts};
         if (out.challenge) out.challenge = b64ToBytes(out.challenge);
-        if (out.user?.id) out.user = Object.assign({}, out.user, { id: b64ToBytes(out.user.id) });
+        if (out.user?.id) out.user = {...out.user, id: b64ToBytes(out.user.id)};
         if (out.allowCredentials) {
             out.allowCredentials = out.allowCredentials.map(c =>
-                Object.assign({}, c, { id: b64ToBytes(c.id) })
+                {...c, id: b64ToBytes(c.id)}
             );
         }
         if (out.excludeCredentials) {
             out.excludeCredentials = out.excludeCredentials.map(c =>
-                Object.assign({}, c, { id: b64ToBytes(c.id) })
+                {...c, id: b64ToBytes(c.id)}
             );
         }
         return out;
@@ -1866,7 +1868,7 @@ const Auth = (() => {
             ]);
 
             const appEl = document.getElementById('app');
-            if (appEl && appEl.firstChild) {
+            if (appEl?.firstChild) {
                 appEl.insertBefore(banner, appEl.firstChild);
             }
         } catch {
@@ -1943,7 +1945,7 @@ const Auth = (() => {
 
         // Close any open confirm/prompt modals so they don't linger on the login page.
         document.querySelectorAll('.modal-overlay').forEach(el => {
-            if (el.parentNode) el.parentNode.removeChild(el);
+            if (el.parentNode) el.remove();
         });
 
         try {

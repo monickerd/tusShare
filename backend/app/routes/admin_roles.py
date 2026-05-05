@@ -22,7 +22,7 @@ from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user, require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import get_db
+from app.database import Database, get_db
 from app.models.role import (
     FLAG_CREATE_ROLES,
     FLAG_MANAGE_ROLES,
@@ -32,6 +32,10 @@ from app.models.role import (
     admin_best_tier,
 )
 from app.routes._access import require_flag
+from typing import Annotated
+
+
+_ERR_PERM_MANAGE_ROLES = "can_manage_roles required"
 
 router = APIRouter()
 
@@ -146,15 +150,15 @@ class UpdatePermissionsRequest(BaseModel):
 
 @router.get("")
 async def list_roles(
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List all roles (system and custom) with their permission flag values.
 
     Also returns the full flag registry so the UI can render toggles without
     a second round-trip.
     """
-    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
+    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
     cursor = await db.execute(
         "SELECT * FROM roles ORDER BY is_system DESC, id"
     )
@@ -186,11 +190,11 @@ async def list_roles(
 # POST /roles — create a custom role
 # ---------------------------------------------------------------------------
 
-@router.post("")
+@router.post("", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 409: {"description": "Conflict"}})
 async def create_role(
     body: CreateRoleRequest,
-    admin: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Create a custom role.
 
@@ -266,8 +270,8 @@ async def create_role(
 @router.get("/{role_id}")
 async def get_role(
     role_id: str,
-    admin: AuthenticatedUser = Depends(require_admin),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single role with its permission flags."""
     row = await _load_role(db, role_id)
@@ -280,15 +284,15 @@ async def get_role(
 # PATCH /roles/{role_id} — update name / description
 # ---------------------------------------------------------------------------
 
-@router.patch("/{role_id}")
+@router.patch("/{role_id}", responses={400: {"description": "Bad Request"}})
 async def update_role(
     role_id: str,
     body: UpdateRoleRequest,
-    admin: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Update a role's name and/or description. System roles can be renamed."""
-    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
+    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
 
     row = await _load_role(db, role_id)
 
@@ -318,14 +322,14 @@ async def update_role(
 # DELETE /roles/{role_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{role_id}")
+@router.delete("/{role_id}", responses={400: {"description": "Bad Request"}})
 async def delete_role(
     role_id: str,
-    admin: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a custom role. System roles (is_system=1) cannot be deleted."""
-    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
+    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
 
     row = await _load_role(db, role_id)
     if row["is_system"]:
@@ -341,12 +345,12 @@ async def delete_role(
 # PUT /roles/{role_id}/permissions — replace all flag values for a role
 # ---------------------------------------------------------------------------
 
-@router.put("/{role_id}/permissions")
+@router.put("/{role_id}/permissions", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def update_role_permissions(
     role_id: str,
     body: UpdatePermissionsRequest,
-    admin: AuthenticatedUser = Depends(get_current_user),
-    db=Depends(get_db),
+    admin: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Set permission flag values and lock state for a role.
 
@@ -359,7 +363,7 @@ async def update_role_permissions(
     tier may modify its value or lock state.  An admin may not lock a flag at a
     tier lower (higher privilege) than their own.
     """
-    require_flag(admin, FLAG_MANAGE_ROLES, "can_manage_roles required")
+    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
     my_tier = admin_best_tier(admin.roles)
 
     await _load_role(db, role_id)  # 404 if missing
