@@ -12,14 +12,11 @@ Key precedence:
 from __future__ import annotations
 
 import base64
-import json
-import os
 from typing import Any
-
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from app.auth.stepup import hkdf_sha256
 from app.config import settings
+from app.util.crypto import aesgcm_decrypt_blob, aesgcm_encrypt_blob
 
 
 def _get_storage_key() -> bytes:
@@ -38,18 +35,8 @@ def _get_storage_key() -> bytes:
 
 
 def encrypt_volume_config(payload: dict[str, Any]) -> str:
-    key = _get_storage_key()
-    iv = os.urandom(12)
-    plaintext = json.dumps(payload, separators=(",", ":")).encode()
-    ct_and_tag = AESGCM(key).encrypt(iv, plaintext, None)
-    return base64.urlsafe_b64encode(iv + ct_and_tag).rstrip(b"=").decode()
+    return aesgcm_encrypt_blob(_get_storage_key(), payload)
 
 
 def decrypt_volume_config(blob: str) -> dict[str, Any]:
-    key = _get_storage_key()
-    padded = blob + "=" * (-len(blob) % 4)
-    raw = base64.urlsafe_b64decode(padded)
-    if len(raw) < 28:
-        raise ValueError("Storage config blob too short")
-    plaintext = AESGCM(key).decrypt(raw[:12], raw[12:], None)
-    return json.loads(plaintext)
+    return aesgcm_decrypt_blob(_get_storage_key(), blob)

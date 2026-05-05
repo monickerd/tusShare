@@ -20,6 +20,7 @@ from collections import defaultdict
 from fastapi import HTTPException
 
 from app.config import settings
+from app.util.db import get_admin_setting
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +54,9 @@ async def check_bandwidth(db, user_id: str, bytes_count: int) -> None:
     user_bw_bps: int = (row["bandwidth_limit"] or 0) if row else 0
 
     # Read global bandwidth limit
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'global_bandwidth_limit'"
+    global_bw_bps: int = await get_admin_setting(
+        db, "global_bandwidth_limit", settings.GLOBAL_BANDWIDTH_LIMIT, dtype=int
     )
-    row = await cursor.fetchone()
-    global_bw_bps: int = int(row["value"]) if row else settings.GLOBAL_BANDWIDTH_LIMIT
 
     user_window_limit   = user_bw_bps   * WINDOW_SECONDS
     global_window_limit = global_bw_bps * WINDOW_SECONDS

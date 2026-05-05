@@ -23,6 +23,7 @@ from typing import AsyncGenerator
 
 from app.storage.base import StorageProvider, VolumeConfig, validate_storage_key
 from app.storage.crypto import decrypt_volume_config
+from app.util.db import get_admin_setting
 
 logger = logging.getLogger(__name__)
 
@@ -298,13 +299,7 @@ class StorageManager:
                     "used_bytes": used,
                     "total_bytes": capacity,
                 }
-                if capacity and capacity > 0:
-                    pct_used = used / capacity
-                    free = capacity - used
-                    if warn_pct is not None and pct_used * 100 >= warn_pct:
-                        entry["warning"] = f"Volume is {pct_used:.0%} full"
-                    elif warn_bytes_remaining is not None and free < warn_bytes_remaining:
-                        entry["warning"] = f"{_human_bytes(free)} remaining on volume"
+                _set_volume_warning(entry, used, capacity, warn_pct, warn_bytes_remaining)
                 volumes.append(entry)
             except Exception as exc:
                 logger.warning("Usage check failed for volume %s: %s", vol_id, exc)
@@ -590,36 +585,13 @@ class StorageManager:
             logger.exception("Storage: failed to emit volume state events")
 
     async def _run_tiering_pass(self, db) -> None:
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'storage_tiering_enabled'"
-        )
-        row = await cursor.fetchone()
-        if not row or row["value"] != "1":
+        if await get_admin_setting(db, "storage_tiering_enabled") != "1":
             return
 
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'storage_hot_to_warm_days'"
-        )
-        row = await cursor.fetchone()
-        hot_to_warm_days = int(row["value"]) if row and row["value"] else None
-
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'storage_warm_to_cold_days'"
-        )
-        row = await cursor.fetchone()
-        warm_to_cold_days = int(row["value"]) if row and row["value"] else None
-
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'storage_warm_volume_id'"
-        )
-        row = await cursor.fetchone()
-        warm_volume_id = row["value"] if row and row["value"] else None
-
-        cursor = await db.execute(
-            "SELECT value FROM admin_settings WHERE key = 'storage_cold_volume_id'"
-        )
-        row = await cursor.fetchone()
-        cold_volume_id = row["value"] if row and row["value"] else None
+        hot_to_warm_days = await get_admin_setting(db, "storage_hot_to_warm_days", dtype=int)
+        warm_to_cold_days = await get_admin_setting(db, "storage_warm_to_cold_days", dtype=int)
+        warm_volume_id = await get_admin_setting(db, "storage_warm_volume_id")
+        cold_volume_id = await get_admin_setting(db, "storage_cold_volume_id")
 
         if hot_to_warm_days is not None and warm_volume_id:
             await self._tier_aged_files(db, "hot", warm_volume_id, hot_to_warm_days)
@@ -672,6 +644,23 @@ def _build_provider(vol: VolumeConfig) -> StorageProvider:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _set_volume_warning(
+    entry: dict,
+    used: int,
+    capacity: int | None,
+    warn_pct: float | None,
+    warn_bytes_remaining: int | None,
+) -> None:
+    if not capacity or capacity <= 0:
+        return
+    pct_used = used / capacity
+    free = capacity - used
+    if warn_pct is not None and pct_used * 100 >= warn_pct:
+        entry["warning"] = f"Volume is {pct_used:.0%} full"
+    elif warn_bytes_remaining is not None and free < warn_bytes_remaining:
+        entry["warning"] = f"{_human_bytes(free)} remaining on volume"
 
 
 def _human_bytes(n: int) -> str:

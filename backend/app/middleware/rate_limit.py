@@ -123,6 +123,8 @@ class _SlidingWindowCounter:
 
 _counter = _SlidingWindowCounter()
 
+_TOO_MANY_REQUESTS_MSG = "Too many requests. Please try again later."
+
 
 class _ErrorRateTracker:
     """Tracks per-IP error counts for brute-force and scanning detection.
@@ -293,7 +295,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     content={
                         "error": {
                             "code": "RATE_LIMITED",
-                            "message": "Too many requests. Please try again later.",
+                            "message": _TOO_MANY_REQUESTS_MSG,
                         }
                     },
                     headers={"Retry-After": str(settings.RATE_LIMIT_ESCALATED_WINDOW)},
@@ -319,7 +321,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         content={
                             "error": {
                                 "code": "RATE_LIMITED",
-                                "message": "Too many requests. Please try again later.",
+                                "message": _TOO_MANY_REQUESTS_MSG,
                             }
                         },
                         headers={"Retry-After": str(window)},
@@ -373,6 +375,6 @@ async def check_management_rate_limit(
         logger.warning("Management rate limited: user=%s", user.id)
         raise HTTPException(
             status_code=429,
-            detail="Too many requests. Please try again later.",
+            detail=_TOO_MANY_REQUESTS_MSG,
             headers={"Retry-After": str(RATE_LIMIT_MANAGEMENT_WINDOW)},
         )
