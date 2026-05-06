@@ -405,9 +405,9 @@ async def _require_share_access(
 async def list_received_shares(
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """List active user shares sent directly to the current user.
 
@@ -494,9 +494,9 @@ async def check_active_shares_for_items(
 async def list_shares(
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_management_rate_limit)],
     offset: int = Query(0, ge=0),
     limit: int = Query(20, ge=1, le=100),
-    _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
     """List all active and inactive shares created by the current user."""
     cursor = await db.execute(
@@ -1163,14 +1163,14 @@ _DOWNLOAD_COUNT_MIN_BYTES = 1024
 async def upload_to_share(
     share_id: str,
     request: Request,
+    user: Annotated[AuthenticatedUser | None, Depends(get_optional_user)],
+    db: Annotated[Database, Depends(get_db)],
     file: UploadFile = File(...),
     file_name: str = Form(...),
     encrypted_file_key: str = Form(...),
     key_iv: str = Form(...),
     chunk_iv: str = Form(...),
     size_bytes: int = Form(...),
-    user: Annotated[AuthenticatedUser | None, Depends(get_optional_user)],
-    db: Annotated[Database, Depends(get_db)],
 ):
     """Accept an encrypted file uploaded by a share-link visitor.
 

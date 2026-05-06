@@ -186,6 +186,8 @@ def _row_to_dict(r) -> dict:
 
 @router.get("/logs", responses={400: {"description": "Bad Request"}})
 async def list_audit_logs(
+    _auth: Annotated[None, Depends(_require_audit_read)],
+    db: Annotated[Database, Depends(get_db)],
     limit:       int   = Query(100, ge=1, le=500),
     offset:      int   = Query(0,   ge=0),
     event_types: str   = Query("",  description="Comma-separated glob patterns, e.g. auth.*,file.*"),
@@ -194,8 +196,6 @@ async def list_audit_logs(
     since:       str   = Query("",  description="ISO timestamp lower bound"),
     until:       str   = Query("",  description="ISO timestamp upper bound"),
     after:       str   = Query("",  description="Cursor — event_id to page from (exclusive)"),
-    _auth: Annotated[None, Depends(_require_audit_read)],
-    db: Annotated[Database, Depends(get_db)],
 ):
     """Paginated query over security_events. Suitable for gap-fill after SIEM reconnect."""
     if severity not in _SEVERITY_ORDER:
@@ -236,13 +236,13 @@ async def list_audit_logs(
 
 @router.get("/logs/export", responses={400: {"description": "Bad Request"}})
 async def export_audit_logs(
+    _auth: Annotated[None, Depends(_require_audit_read)],
+    db: Annotated[Database, Depends(get_db)],
     event_types: str = Query(""),
     severity:    str = Query("info"),
     user_id:     str = Query(""),
     since:       str = Query(""),
     until:       str = Query(""),
-    _auth: Annotated[None, Depends(_require_audit_read)],
-    db: Annotated[Database, Depends(get_db)],
 ):
     """Download security_events as a CSV file (max 50 000 rows)."""
     if severity not in _SEVERITY_ORDER:
@@ -302,10 +302,10 @@ async def export_audit_logs(
 
 @router.get("/logs/stream", responses={400: {"description": "Bad Request"}})
 async def stream_audit_logs(
+    _key: Annotated[dict, Depends(_require_audit_key)],
     event_types: str = Query(""),
     severity:    str = Query("info"),
     user_id:     str = Query(""),
-    _key: Annotated[dict, Depends(_require_audit_key)],
 ):
     """Stream security events in real-time via Server-Sent Events.
 
