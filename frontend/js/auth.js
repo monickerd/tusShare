@@ -1791,12 +1791,12 @@ const Auth = (() => {
         if (out.user?.id) out.user = {...out.user, id: b64ToBytes(out.user.id)};
         if (out.allowCredentials) {
             out.allowCredentials = out.allowCredentials.map(c =>
-                {...c, id: b64ToBytes(c.id)}
+                ({...c, id: b64ToBytes(c.id)})
             );
         }
         if (out.excludeCredentials) {
             out.excludeCredentials = out.excludeCredentials.map(c =>
-                {...c, id: b64ToBytes(c.id)}
+                ({...c, id: b64ToBytes(c.id)})
             );
         }
         return out;
