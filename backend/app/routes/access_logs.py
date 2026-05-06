@@ -16,10 +16,10 @@ router = APIRouter()
 @router.get("/file/{file_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def get_file_access_logs(
     file_id: str,
-    page: int = 1,
-    limit: int = 20,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
+    page: int = 1,
+    limit: int = 20,
 ):
     """Get access logs for a specific file. Requires ownership or admin."""
     file_id = validate_uuid(file_id)
@@ -54,10 +54,10 @@ async def get_file_access_logs(
 @router.get("/share/{share_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def get_share_access_logs(
     share_id: str,
-    page: int = 1,
-    limit: int = 20,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
+    page: int = 1,
+    limit: int = 20,
 ):
     """Get access logs for a specific share. Requires ownership or admin."""
     share_id = validate_uuid(share_id)

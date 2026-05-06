@@ -101,10 +101,10 @@ class UpdateUserRequest(BaseModel):
 
 @router.get("", responses={403: {"description": "Forbidden"}})
 async def list_users(
-    page: int = 1,
-    limit: int = 20,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
+    page: int = 1,
+    limit: int = 20,
 ):
     """List all users with pagination."""
     if not admin.has_flag(FLAG_MANAGE_USERS):

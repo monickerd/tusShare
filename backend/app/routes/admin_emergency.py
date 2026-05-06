@@ -264,10 +264,10 @@ async def emergency_revoke(
 @router.get("/users/{user_id}/transfer-locks")
 async def list_transfer_locks(
     user_id: str,
-    limit: int = 50,
-    offset: int = 0,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
+    limit: int = 50,
+    offset: int = 0,
 ):
     """List files currently under a transfer lock applied to this user's account."""
     user_id = validate_uuid(user_id)

@@ -342,11 +342,11 @@ async def test_channel(
 
 @router.get("/events")
 async def list_op_events(
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
     limit: int = 50,
     since: str | None = None,
     types: str | None = None,
-    user: Annotated[AuthenticatedUser, Depends(require_admin)],
-    db: Annotated[Database, Depends(get_db)],
 ):
     type_filters = [t.strip() for t in types.split(",")] if types else []
     params: list = []
