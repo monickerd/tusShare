@@ -483,8 +483,8 @@ async def ldap_login(
 async def oidc_begin(
     provider_id: str,
     request: Request,
-    redirect_to: str | None = None,
     db: Annotated[Database, Depends(get_db)],
+    redirect_to: str | None = None,
 ):
     """Begin an OIDC authorization flow.
 
@@ -530,13 +530,13 @@ async def oidc_begin(
 
 @router.get("/oidc/callback")
 async def oidc_callback(
+    db: Annotated[Database, Depends(get_db)],
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
     error_description: str | None = None,
     request: Request = None,
     response: Response = None,
-    db: Annotated[Database, Depends(get_db)],
 ):
     """Handle the IdP redirect after user authentication.
 

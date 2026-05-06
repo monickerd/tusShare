@@ -467,9 +467,9 @@ async def delete_folder_policy(
 @router.get("/coverage-report")
 async def get_coverage_report(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
-    db: Annotated[Database, Depends(get_db)],
 ):
     """Return teams with no escrow agent key slot currently filled.
 

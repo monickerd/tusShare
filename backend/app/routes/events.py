@@ -64,9 +64,9 @@ def _sse_response(topic: str) -> StreamingResponse:
 
 @router.get("/events")
 async def folder_events(
-    folder_id: str | None = None,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
+    folder_id: str | None = None,
 ):
     """Stream folder change events as Server-Sent Events."""
     if folder_id is not None:
