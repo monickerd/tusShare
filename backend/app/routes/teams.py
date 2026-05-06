@@ -37,6 +37,7 @@ Endpoints:
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -74,17 +75,15 @@ from app.models.team import (
 from app.routes._access import get_folder_team_id
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import (
-from typing import Annotated
     sanitize_team_name,
-
-_ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
-
     sanitize_username,
     validate_base64,
     validate_g1_point,
     validate_g2_point,
     validate_uuid,
 )
+
+_ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 logger = logging.getLogger(__name__)
 
