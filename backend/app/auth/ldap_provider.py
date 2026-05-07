@@ -82,6 +82,41 @@ def _validate_ldap_username(username: str) -> str:
     return username
 
 
+def _validate_extra_attrs(extra) -> None:
+    """Raise ValueError if extra_attrs is present but not a list of non-empty strings."""
+    if extra is None:
+        return
+    if not isinstance(extra, list):
+        raise ValueError("extra_attrs must be a list of attribute name strings")
+    for attr in extra:
+        if not isinstance(attr, str) or not attr.strip():
+            raise ValueError("extra_attrs entries must be non-empty strings")
+
+
+def _check_plaintext_ldap_tls(uri: str, tls: str) -> None:
+    """Raise ValueError if plaintext ldap:// is used without STARTTLS (unless env override)."""
+    import os
+    if uri.startswith("ldap://") and tls != "starttls":
+        if os.environ.get("TUSSHARE_ALLOW_HTTP_IDP", "").lower() not in ("1", "true", "yes"):
+            raise ValueError(
+                "Plaintext LDAP (ldap://) requires tls='starttls' to encrypt credentials in transit. "
+                "Use ldaps:// for implicit TLS, or set tls='starttls' for a STARTTLS upgrade."
+            )
+
+
+def _collect_ldap_attrs(entry: dict) -> dict[str, Any]:
+    """Build a flat attribute dict from an ldap3 searchResEntry."""
+    raw: dict[str, Any] = {}
+    for attr_name, attr_val in entry.get("attributes", {}).items():
+        if isinstance(attr_val, list) and len(attr_val) == 1:
+            raw[attr_name] = str(attr_val[0])
+        elif isinstance(attr_val, list):
+            raw[attr_name] = [str(v) for v in attr_val]
+        else:
+            raw[attr_name] = str(attr_val)
+    return raw
+
+
 def validate_ldap_config(cfg: dict[str, Any]) -> None:
     """Validate an LDAP config dict before saving.  Raises ValueError on problems.
 
@@ -112,25 +147,13 @@ def validate_ldap_config(cfg: dict[str, Any]) -> None:
     if tls not in ("verify", "starttls", "skip_verify"):
         raise ValueError("tls must be 'verify', 'starttls', or 'skip_verify'")
 
-    extra = cfg.get("extra_attrs")
-    if extra is not None:
-        if not isinstance(extra, list):
-            raise ValueError("extra_attrs must be a list of attribute name strings")
-        for attr in extra:
-            if not isinstance(attr, str) or not attr.strip():
-                raise ValueError("extra_attrs entries must be non-empty strings")
+    _validate_extra_attrs(cfg.get("extra_attrs"))
 
     # tls='verify' and tls='skip_verify' only activate on an ldaps:// socket — they
     # have no effect on a plaintext ldap:// connection and would silently transmit
     # credentials unencrypted.  Require starttls for plaintext-scheme URIs unless
     # TUSSHARE_ALLOW_HTTP_IDP=true (test environments where the LDAP server has no TLS).
-    import os
-    if uri.startswith("ldap://") and tls != "starttls":
-        if os.environ.get("TUSSHARE_ALLOW_HTTP_IDP", "").lower() not in ("1", "true", "yes"):
-            raise ValueError(
-                "Plaintext LDAP (ldap://) requires tls='starttls' to encrypt credentials in transit. "
-                "Use ldaps:// for implicit TLS, or set tls='starttls' for a STARTTLS upgrade."
-            )
+    _check_plaintext_ldap_tls(uri, tls)
 
 
 # ---------------------------------------------------------------------------
@@ -257,15 +280,7 @@ def _ldap_authenticate_sync(
             return None
 
         user_dn = result_entries[0]["dn"]
-        # Collect attribute values; unwrap single-item lists for scalar fields
-        raw_attrs: dict[str, Any] = {}
-        for attr_name, attr_val in result_entries[0].get("attributes", {}).items():
-            if isinstance(attr_val, list) and len(attr_val) == 1:
-                raw_attrs[attr_name] = str(attr_val[0])
-            elif isinstance(attr_val, list):
-                raw_attrs[attr_name] = [str(v) for v in attr_val]
-            else:
-                raw_attrs[attr_name] = str(attr_val)
+        raw_attrs: dict[str, Any] = _collect_ldap_attrs(result_entries[0])
 
         logger.debug(
             "LDAP found user=%s dn=%s attrs=%s",
@@ -376,14 +391,7 @@ def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | Non
             )
             return None
 
-        raw_attrs: dict[str, Any] = {}
-        for attr_name, attr_val in result_entries[0].get("attributes", {}).items():
-            if isinstance(attr_val, list) and len(attr_val) == 1:
-                raw_attrs[attr_name] = str(attr_val[0])
-            elif isinstance(attr_val, list):
-                raw_attrs[attr_name] = [str(v) for v in attr_val]
-            else:
-                raw_attrs[attr_name] = str(attr_val)
+        raw_attrs: dict[str, Any] = _collect_ldap_attrs(result_entries[0])
 
         logger.debug("LDAP fetch succeeded — user=%s attrs=%s", username, sorted(raw_attrs.keys()))
         return raw_attrs

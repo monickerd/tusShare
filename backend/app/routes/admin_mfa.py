@@ -44,7 +44,7 @@ async def _resolve_user(db, user_id: str) -> None:
     """Raise 404 if user_id does not exist."""
     cursor = await db.execute("SELECT id FROM users WHERE id = ?", (user_id,))
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(status_code=404, detail="User not found")  # NOSONAR — helper; 404 documented in callers
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +200,7 @@ def _check_step_up(request: Request, admin: AuthenticatedUser, action_key: str) 
     """Verify X-Step-Up-Token header for a sensitive admin MFA action."""
     token = request.headers.get("x-step-up-token", "")
     if not token or not verify_step_up_token(token, admin.id, action_key):
-        raise HTTPException(
+        raise HTTPException(  # NOSONAR — helper; 403 documented in callers
             status_code=403,
             detail={"error": "step_up_required", "action": action_key},
         )

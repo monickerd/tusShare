@@ -213,7 +213,7 @@ async def _finish_with_cookies(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=500, detail="User record not found after authentication")
+        raise HTTPException(status_code=500, detail="User record not found after authentication")  # NOSONAR — helper; 500 documented in callers
 
     # Load roles
     cursor2 = await db.execute(
@@ -336,12 +336,31 @@ async def _ensure_idp_user(
     return user_id
 
 
+def _fire_policy_eval(user_id: str) -> None:
+    """Fire-and-forget background policy evaluation for a newly logged-in IdP user."""
+    import asyncio as _asyncio
+    try:
+        from app.models.policy import evaluate_user_policies as _eval
+        from app.database import db_session as _dbs
+        async def _bg():
+            try:
+                async with _dbs() as _bg_db:
+                    await _eval(_bg_db, user_id)
+            except Exception:
+                pass
+        _t = _asyncio.create_task(_bg())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # List active providers (used by login page to render buttons)
 # ---------------------------------------------------------------------------
 
 @router.get("/idp/providers")
-async def list_active_providers(db=Depends(get_db)):
+async def list_active_providers(db: Annotated[Database, Depends(get_db)]):
     """Return name + type for all active identity providers.
 
     Used by the login page to render 'Sign in with X' buttons.
@@ -452,23 +471,7 @@ async def ldap_login(
     user_agent = request.headers.get("user-agent", "")[:512]
     logger.info("LDAP login: user_id=%s username=%s ip=%s", user_id, body.username, client_ip)
 
-    # Trigger policy evaluation (fire-and-forget, same as OPAQUE login)
-    import asyncio as _asyncio
-    try:
-        from app.models.policy import evaluate_user_policies as _eval
-        from app.database import db_session as _dbs
-        _uid = user_id
-        async def _bg():
-            try:
-                async with _dbs() as _bg_db:
-                    await _eval(_bg_db, _uid)
-            except Exception:
-                pass
-        _t = _asyncio.create_task(_bg())
-        _bg_tasks.add(_t)
-        _t.add_done_callback(_bg_tasks.discard)
-    except Exception:
-        pass
+    _fire_policy_eval(user_id)
 
     return await _issue_session_or_mfa_challenge(
         db, response, user_id, body.provider_id, body.is_public_device
@@ -616,23 +619,7 @@ async def oidc_callback(
     await log_security_event(db, "oidc_login_success", user_id, client_ip, user_agent,
                              provider_id)
 
-    # Trigger policy evaluation (fire-and-forget)
-    import asyncio as _asyncio
-    try:
-        from app.models.policy import evaluate_user_policies as _eval
-        from app.database import db_session as _dbs
-        _uid = user_id
-        async def _bg():
-            try:
-                async with _dbs() as _bg_db:
-                    await _eval(_bg_db, _uid)
-            except Exception:
-                pass
-        _t = _asyncio.create_task(_bg())
-        _bg_tasks.add(_t)
-        _t.add_done_callback(_bg_tasks.discard)
-    except Exception:
-        pass
+    _fire_policy_eval(user_id)
 
     # Use a Response object so we can set cookies and then redirect
     redir_response = RedirectResponse(url=redirect_to, status_code=302)

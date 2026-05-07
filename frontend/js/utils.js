@@ -35,6 +35,24 @@ const Utils = (() => {
         return formatDate(iso);
     }
 
+    const _BOOL_PROPS = new Set(['checked', 'disabled', 'readOnly', 'selected']);
+
+    function _applyDatasetAttr(elem, val) {
+        for (const [dk, dv] of Object.entries(val)) {
+            elem.dataset[dk] = dv;
+        }
+    }
+
+    function _applyStyleAttr(elem, val) {
+        for (const decl of String(val).split(';')) {
+            const sep = decl.indexOf(':');
+            if (sep < 1) continue;
+            const prop = decl.slice(0, sep).trim();
+            const value = decl.slice(sep + 1).trim();
+            if (prop) elem.style.setProperty(prop, value);
+        }
+    }
+
     /**
      * Create a DOM element with attributes and children.
      */
@@ -48,24 +66,11 @@ const Utils = (() => {
             } else if (key.startsWith('on') && typeof val === 'function') {
                 elem.addEventListener(key.slice(2).toLowerCase(), val);
             } else if (key === 'dataset') {
-                for (const [dk, dv] of Object.entries(val)) {
-                    elem.dataset[dk] = dv;
-                }
-            } else if (key === 'checked' || key === 'disabled' || key === 'readOnly' || key === 'selected') {
-                // Boolean DOM properties: must be set as properties, not attributes.
-                // setAttribute('checked', false) sets checked="false" which is still
-                // truthy in HTML — any attribute presence means checked/disabled/etc.
+                _applyDatasetAttr(elem, val);
+            } else if (_BOOL_PROPS.has(key)) {
                 elem[key] = val;
             } else if (key === 'style') {
-                // Set via individual CSSOM properties instead of setAttribute so that
-                // style-src 'unsafe-inline' is not required in the CSP.
-                for (const decl of String(val).split(';')) {
-                    const sep = decl.indexOf(':');
-                    if (sep < 1) continue;
-                    const prop = decl.slice(0, sep).trim();
-                    const value = decl.slice(sep + 1).trim();
-                    if (prop) elem.style.setProperty(prop, value);
-                }
+                _applyStyleAttr(elem, val);
             } else {
                 elem.setAttribute(key, val);
             }

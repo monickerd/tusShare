@@ -91,6 +91,7 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
 
     except asyncio.CancelledError:
         event_bus.unsubscribe(q)
+        raise
 
 
 async def _load_destinations() -> list[dict]:

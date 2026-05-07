@@ -103,37 +103,7 @@ const Upload = (() => {
             ...escrowMeta,
         });
 
-        // POST — create the upload (retry once on 401 to handle expired access tokens)
-        const _createHeaders = () => ({
-            'Tus-Resumable':   '1.0.0',
-            'Upload-Length':   String(totalEncryptedSize),
-            'Upload-Metadata': meta,
-            'X-CSRF-Token':    _csrf(),
-        });
-
-        let createResp = await fetch(`${_prefix()}/uploads`, {
-            method: 'POST',
-            headers: _createHeaders(),
-            credentials: 'same-origin',
-        });
-
-        if (createResp.status === 401) {
-            const refreshed = await Api.refreshTokens();
-            if (!refreshed) throw new Error('Session expired. Please log in and try again.');
-            createResp = await fetch(`${_prefix()}/uploads`, {
-                method: 'POST',
-                headers: _createHeaders(),
-                credentials: 'same-origin',
-            });
-        }
-
-        if (!createResp.ok) {
-            const body = await createResp.json().catch(() => ({}));
-            throw new Error(body.detail || `Upload create failed (${createResp.status})`);
-        }
-
-        const location = createResp.headers.get('Location');
-        if (!location) throw new Error('Server did not return an upload location');
+        const location = await _createUpload(meta, totalEncryptedSize);
 
         // Notify caller of the server-assigned upload ID so it can be tracked
         // (e.g., to suppress the static pending-upload row while active)
@@ -144,12 +114,7 @@ const Upload = (() => {
         const integrityTracker = _makeIntegrityTracker(totalChunks);
         let encryptedOffset = 0;
         for (let i = 0; i < totalChunks; i++) {
-            // Pause/stop checks happen at chunk boundaries (before encrypting the next chunk).
-            // Any in-flight PATCH is always allowed to finish before we abort.
-            if (ctrl) {
-                await ctrl.waitIfPaused?.();
-                if (ctrl.isStopped?.()) throw new UploadAbortedError(location);
-            }
+            await _checkCtrl(ctrl, location);
             const start = i * chunkSize;
             const end   = Math.min(start + chunkSize, file.size);
             const plain = await file.slice(start, end).arrayBuffer();
@@ -209,29 +174,13 @@ const Upload = (() => {
         }
         let encryptedOffset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
 
-        // Map encrypted offset → starting chunk index
-        let startChunk = 0;
-        let cumulativeEnc = 0;
-        for (let i = 0; i < totalChunks; i++) {
-            const plain = Math.min(chunkSize, file.size - i * chunkSize);
-            const enc   = plain + 16;
-            if (cumulativeEnc + enc > encryptedOffset) break;
-            cumulativeEnc += enc;
-            startChunk = i + 1;
-        }
-
-        if (startChunk >= totalChunks) {
-            // Already complete
-            return { fileId: null, location };
-        }
+        const startChunk = _findStartChunk(totalChunks, chunkSize, file.size, encryptedOffset);
+        if (startChunk >= totalChunks) return { fileId: null, location };
 
         // Continue from startChunk with fresh IVs (re-encrypt from plaintext offset)
         const integrityTracker = _makeIntegrityTracker(totalChunks);
         for (let i = startChunk; i < totalChunks; i++) {
-            if (ctrl) {
-                await ctrl.waitIfPaused?.();
-                if (ctrl.isStopped?.()) throw new UploadAbortedError(location);
-            }
+            await _checkCtrl(ctrl, location);
             const start = i * chunkSize;
             const end   = Math.min(start + chunkSize, file.size);
             const plain = await file.slice(start, end).arrayBuffer();
@@ -368,6 +317,76 @@ const Upload = (() => {
         return btoa(binary);
     }
 
+    async function _checkCtrl(ctrl, location) {
+        if (!ctrl) return;
+        await ctrl.waitIfPaused?.();
+        if (ctrl.isStopped?.()) throw new UploadAbortedError(location);
+    }
+
+    async function _createUpload(meta, totalEncryptedSize) {
+        const makeHeaders = () => ({
+            'Tus-Resumable':   '1.0.0',
+            'Upload-Length':   String(totalEncryptedSize),
+            'Upload-Metadata': meta,
+            'X-CSRF-Token':    _csrf(),
+        });
+        let resp = await fetch(`${_prefix()}/uploads`, {
+            method: 'POST', headers: makeHeaders(), credentials: 'same-origin',
+        });
+        if (resp.status === 401) {
+            const refreshed = await Api.refreshTokens();
+            if (!refreshed) throw new Error('Session expired. Please log in and try again.');
+            resp = await fetch(`${_prefix()}/uploads`, {
+                method: 'POST', headers: makeHeaders(), credentials: 'same-origin',
+            });
+        }
+        if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            throw new Error(body.detail || `Upload create failed (${resp.status})`);
+        }
+        const location = resp.headers.get('Location');
+        if (!location) throw new Error('Server did not return an upload location');
+        return location;
+    }
+
+    function _findStartChunk(totalChunks, chunkSize, fileSize, encryptedOffset) {
+        let cumulativeEnc = 0;
+        for (let i = 0; i < totalChunks; i++) {
+            const enc = Math.min(chunkSize, fileSize - i * chunkSize) + 16;
+            if (cumulativeEnc + enc > encryptedOffset) return i;
+            cumulativeEnc += enc;
+        }
+        return totalChunks;
+    }
+
+    async function _handle401Retry(resp) {
+        if (resp.status !== 401) return false;
+        const refreshed = await Api.refreshTokens();
+        if (!refreshed) throw new Error('Session expired during upload. Please log in and try again.');
+        return true;
+    }
+
+    async function _resync409(location, encryptedOffset) {
+        const headResp = await fetch(location, {
+            method: 'HEAD',
+            headers: { 'Tus-Resumable': '1.0.0' },
+            credentials: 'same-origin',
+        });
+        if (headResp.ok) {
+            const serverOffset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
+            if (serverOffset > encryptedOffset) {
+                return { newOffset: serverOffset, fileId: null, committed: false };
+            }
+        }
+        return null;
+    }
+
+    function _throwIfMaxRetries(attempt, chunkIndex, errBody) {
+        if (attempt >= _cfg().maxRetries) {
+            throw new Error(errBody.detail || `Chunk ${chunkIndex} failed after ${attempt} retries`);
+        }
+    }
+
     /**
      * Send one encrypted chunk to the server with retry, 401-refresh, and optional 409-resync.
      *
@@ -408,29 +427,15 @@ const Upload = (() => {
                 };
             }
 
-            // 401 — access token expired; refresh once and retry (not counted against maxRetries)
-            if (patchResp.status === 401) {
-                const refreshed = await Api.refreshTokens();
-                if (!refreshed) throw new Error('Session expired during upload. Please log in and try again.');
-                continue;
-            }
+            if (await _handle401Retry(patchResp)) continue;
 
             // Read body once — Response body can only be consumed once
             const errBody = await patchResp.json().catch(() => ({}));
 
             // 409 Conflict — server offset doesn't match; re-sync via HEAD
             if (handle409 && patchResp.status === 409) {
-                const headResp = await fetch(location, {
-                    method: 'HEAD',
-                    headers: { 'Tus-Resumable': '1.0.0' },
-                    credentials: 'same-origin',
-                });
-                if (headResp.ok) {
-                    const serverOffset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
-                    if (serverOffset > encryptedOffset) {
-                        return { newOffset: serverOffset, fileId: null, committed: false };
-                    }
-                }
+                const resolved = await _resync409(location, encryptedOffset);
+                if (resolved) return resolved;
             }
 
             // 400 hash mismatch — track repeated failures and abort if threshold exceeded
@@ -439,9 +444,7 @@ const Upload = (() => {
             }
 
             attempt++;
-            if (attempt >= _cfg().maxRetries) {
-                throw new Error(errBody.detail || `Chunk ${chunkIndex} failed after ${attempt} retries`);
-            }
+            _throwIfMaxRetries(attempt, chunkIndex, errBody);
             await _sleep(_cfg().retryBaseDelay * Math.pow(2, attempt - 1));
         }
     }

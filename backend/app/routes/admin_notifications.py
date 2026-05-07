@@ -495,7 +495,7 @@ async def create_api_key(
     }
 
 
-@api_keys_router.post("/api-keys/{key_id}/rotate", status_code=200)
+@api_keys_router.post("/api-keys/{key_id}/rotate", status_code=200, responses={404: {"description": "API key not found"}})
 async def rotate_api_key(
     key_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -533,7 +533,7 @@ async def rotate_api_key(
     }
 
 
-@api_keys_router.delete("/api-keys/{key_id}")
+@api_keys_router.delete("/api-keys/{key_id}", responses={404: {"description": "API key not found"}})
 async def delete_api_key(
     key_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_admin)],

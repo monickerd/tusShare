@@ -388,7 +388,7 @@ _LOGO_ALLOWED_MIME: frozenset[str] = frozenset({
 @router.post("/theme/logo", responses={400: {"description": "Bad Request"}, 413: {"description": "413"}, 500: {"description": "Internal Server Error"}})
 async def upload_theme_logo(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
-    file: UploadFile = File(...),
+    file: Annotated[UploadFile, File(...)],
 ):
     """Upload an org logo to DATA_DIR and wire it into theme.json.
 

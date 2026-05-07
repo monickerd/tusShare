@@ -59,6 +59,14 @@ async def reload(db) -> None:
         _reload_event.set()
 
 
+def _deliver_catch_up_events(channel_q, events: list, channel_id: str) -> None:
+    for e in events:
+        try:
+            channel_q.put_nowait(e)
+        except asyncio.QueueFull:
+            logger.warning("notif: catch-up queue full for channel %s", channel_id)
+
+
 async def catch_up(channel_id: str, db) -> None:
     """Deliver current warning states to a newly created channel."""
     catch_up_events: list[OperationalEvent] = []
@@ -146,11 +154,7 @@ async def catch_up(channel_id: str, db) -> None:
 
     channel_q = _channel_queues.get(channel_id)
     if channel_q:
-        for e in catch_up_events:
-            try:
-                channel_q.put_nowait(e)
-            except asyncio.QueueFull:
-                logger.warning("notif: catch-up queue full for channel %s", channel_id)
+        _deliver_catch_up_events(channel_q, catch_up_events, channel_id)
 
 
 # ---------------------------------------------------------------------------

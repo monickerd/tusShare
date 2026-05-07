@@ -79,7 +79,7 @@ async def _load_policy(db, policy_id: str) -> Policy:
     cursor = await db.execute("SELECT * FROM policies WHERE id = ?", (policy_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Policy not found")
+        raise HTTPException(status_code=404, detail="Policy not found")  # NOSONAR — helper; 404 documented in callers
     return Policy.from_row(row)
 
 
@@ -105,7 +105,7 @@ async def _load_condition(db, policy_id: str, cond_id: str) -> PolicyCondition:
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Policy condition not found")
+        raise HTTPException(status_code=404, detail="Policy condition not found")  # NOSONAR — helper; 404 documented in callers
     return PolicyCondition.from_row(row)
 
 
@@ -539,7 +539,7 @@ async def _load_effect(db, policy_id: str, effect_id: str) -> PolicyEffect:
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Policy effect not found")
+        raise HTTPException(status_code=404, detail="Policy effect not found")  # NOSONAR — helper; 404 documented in callers
     return PolicyEffect.from_row(row)
 
 
@@ -561,6 +561,52 @@ async def list_effects(
     )
     effects = [PolicyEffect.from_row(r).to_dict() for r in await cursor.fetchall()]
     return {"effects": effects}
+
+
+async def _resolve_effect_fields(db, policy_id: str, target_id: str, body) -> tuple:
+    """Validate effect-type-specific payload; return (permission, recursive, escrow_override)."""
+    if body.effect_type == "team_member":
+        cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
+        if not body.role_level:
+            raise HTTPException(status_code=400, detail="role_level is required for team_member effects")
+        cursor = await db.execute("SELECT 1 FROM roles WHERE id = ?", (body.role_level,))
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=400, detail=f"Role not found: {body.role_level!r}")
+        return None, 1, None
+
+    if body.effect_type == "folder_acl":
+        cursor = await db.execute("SELECT 1 FROM folders WHERE id = ?", (target_id,))
+        if await cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        if not body.permission or body.permission not in ("read", "write", "admin"):
+            raise HTTPException(
+                status_code=400,
+                detail="permission must be 'read', 'write', or 'admin' for folder_acl effects",
+            )
+        return body.permission, (1 if body.recursive else 0), None
+
+    # team_escrow — per-team escrow override
+    cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
+    if body.escrow_override not in (0, 1):
+        raise HTTPException(
+            status_code=400,
+            detail="escrow_override must be 0 (force-off) or 1 (force-on) for team_escrow effects",
+        )
+    cursor = await db.execute(
+        "SELECT 1 FROM policy_effects "
+        "WHERE policy_id = ? AND effect_type = 'team_escrow' AND target_id = ?",
+        (policy_id, target_id),
+    )
+    if await cursor.fetchone() is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A team_escrow override already exists for this team on this policy",
+        )
+    return None, 1, body.escrow_override
 
 
 # POST /admin/policies/{policy_id}/effects — create an effect
@@ -593,60 +639,7 @@ async def create_effect(
         )
 
     target_id = validate_uuid(body.target_id)
-
-    if body.effect_type == "team_member":
-        # Validate team exists
-        cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
-        if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
-        if not body.role_level:
-            raise HTTPException(status_code=400, detail="role_level is required for team_member effects")
-        # Validate role exists
-        cursor = await db.execute("SELECT 1 FROM roles WHERE id = ?", (body.role_level,))
-        if await cursor.fetchone() is None:
-            raise HTTPException(status_code=400, detail=f"Role not found: {body.role_level!r}")
-        permission      = None
-        recursive       = 1
-        escrow_override = None
-
-    elif body.effect_type == "folder_acl":
-        # Validate folder exists
-        cursor = await db.execute("SELECT 1 FROM folders WHERE id = ?", (target_id,))
-        if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail="Folder not found")
-        if not body.permission or body.permission not in ("read", "write", "admin"):
-            raise HTTPException(
-                status_code=400,
-                detail="permission must be 'read', 'write', or 'admin' for folder_acl effects",
-            )
-        permission      = body.permission
-        recursive       = 1 if body.recursive else 0
-        escrow_override = None
-
-    else:  # team_escrow — per-team escrow override
-        # Validate team exists
-        cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
-        if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
-        if body.escrow_override not in (0, 1):
-            raise HTTPException(
-                status_code=400,
-                detail="escrow_override must be 0 (force-off) or 1 (force-on) for team_escrow effects",
-            )
-        # Prevent duplicate team_escrow effect for the same (policy, team)
-        cursor = await db.execute(
-            "SELECT 1 FROM policy_effects "
-            "WHERE policy_id = ? AND effect_type = 'team_escrow' AND target_id = ?",
-            (policy_id, target_id),
-        )
-        if await cursor.fetchone() is not None:
-            raise HTTPException(
-                status_code=409,
-                detail="A team_escrow override already exists for this team on this policy",
-            )
-        permission      = None
-        recursive       = 1
-        escrow_override = body.escrow_override
+    permission, recursive, escrow_override = await _resolve_effect_fields(db, policy_id, target_id, body)
 
     effect_id = str(uuid.uuid4())
     await db.execute(

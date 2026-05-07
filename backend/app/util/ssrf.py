@@ -25,6 +25,16 @@ BLOCKED_NETWORKS = [
 ]
 
 
+def _is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    for net in BLOCKED_NETWORKS:
+        try:
+            if ip in net:
+                return True
+        except TypeError:
+            pass  # IPv4/IPv6 type mismatch — skip
+    return False
+
+
 async def validate_endpoint_url(
     url: str,
     *,
@@ -82,15 +92,11 @@ async def validate_endpoint_url(
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
             continue
-        for net in BLOCKED_NETWORKS:
-            try:
-                if ip in net:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=(
-                            "endpoint_url resolves to a private or reserved address. "
-                            "Direct access to internal networks is not permitted."
-                        ),
-                    )
-            except TypeError:
-                pass  # IPv4 address checked against IPv6 network (or vice-versa) — skip
+        if _is_blocked(ip):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "endpoint_url resolves to a private or reserved address. "
+                    "Direct access to internal networks is not permitted."
+                ),
+            )

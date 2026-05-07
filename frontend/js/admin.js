@@ -215,7 +215,7 @@ const Admin = (() => {
                 const sectionOrder = {};
                 tabOrder.forEach(tid => { // NOSONAR — closure over sectionOrder/paneEls; nesting depth is unavoidable
                     const pane = paneEls[tid];
-                    if (pane) sectionOrder[tid] = [...pane.querySelectorAll(':scope > .admin-section')].map(el => el.dataset.sectionId);
+                    if (pane) sectionOrder[tid] = [...pane.querySelectorAll(':scope > .admin-section')].map(el => el.dataset.sectionId); // NOSONAR — deep in drag handler; nesting unavoidable
                 });
                 _saveAdminPrefs({ tabOrder, sectionOrder });
             }
@@ -1064,7 +1064,7 @@ const Admin = (() => {
             .filter(cat => flagsByCategory[cat.key])
             .map(cat => {
                 const rows = (flagsByCategory[cat.key] || []).map(f => {
-                    const permData = (role.permissions || {})[f.flag] || { value: '0', is_locked: false, locked_min_tier: null };
+                    const permData = role.permissions?.[f.flag] || { value: '0', is_locked: false, locked_min_tier: null };
                     const isLocked  = permData.is_locked;
                     const lockTier  = permData.locked_min_tier;
                     // canEdit: flag is unlocked, OR this admin's tier is within the lock threshold
@@ -1616,6 +1616,46 @@ const Admin = (() => {
         return card;
     }
 
+    function _buildConditionRow(cond, policy, refreshFn) {
+        const isInherited = cond.inherited_scope_id !== null;
+        const isDetached  = cond.scope_detached;
+        const deleteCondBtn = isInherited ? null : Utils.el('button', {
+            className: 'btn btn-danger btn-xs',
+            textContent: 'Remove',
+            onClick: async () => {
+                try {
+                    await Api.del(`${_api()}/admin/policies/${policy.id}/conditions/${cond.id}`);
+                    Utils.showToast('Condition removed', 'success');
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Failed: ' + err.message, 'error');
+                }
+            },
+        });
+
+        let inheritedCell;
+        if (!isInherited) {
+            inheritedCell = Utils.el('span', { textContent: '—' });
+        } else if (isDetached) {
+            inheritedCell = Utils.el('span', { className: 'text-warn', textContent: 'detached' });
+        } else {
+            inheritedCell = Utils.el('span', { className: 'text-muted', textContent: 'locked' });
+        }
+
+        const tr = Utils.el('tr', { className: isDetached ? 'cond-row-detached' : '' });
+        const condFieldTd = Utils.el('td');
+        condFieldTd.appendChild(Utils.el('code', { textContent: cond.field }));
+        const condOpTd    = Utils.el('td', { textContent: cond.operator });
+        const condValueTd = Utils.el('td', { textContent: cond.value });
+        const condStrictTd = Utils.el('td', { textContent: cond.strict ? 'yes' : 'no' });
+        const inheritedTd = Utils.el('td');
+        inheritedTd.appendChild(inheritedCell);
+        const actionTd = Utils.el('td');
+        if (deleteCondBtn) actionTd.appendChild(deleteCondBtn);
+        tr.append(condFieldTd, condOpTd, condValueTd, condStrictTd, inheritedTd, actionTd);
+        return tr;
+    }
+
     function _populatePolicyBody(container, policy, fields, refreshFn) {
         container.innerHTML = '';
 
@@ -1632,45 +1672,7 @@ const Admin = (() => {
             </tr></thead>`;
             const tbody = Utils.el('tbody');
             for (const cond of policy.conditions) {
-                const isInherited = cond.inherited_scope_id !== null;
-                const isDetached  = cond.scope_detached;
-                const deleteCondBtn = isInherited ? null : Utils.el('button', {
-                    className: 'btn btn-danger btn-xs',
-                    textContent: 'Remove',
-                    onClick: async () => {
-                        try {
-                            await Api.del(`${_api()}/admin/policies/${policy.id}/conditions/${cond.id}`);
-                            Utils.showToast('Condition removed', 'success');
-                            refreshFn();
-                        } catch (err) {
-                            Utils.showToast('Failed: ' + err.message, 'error');
-                        }
-                    },
-                });
-
-                let inheritedCell;
-                if (!isInherited) {
-                    inheritedCell = Utils.el('span', { textContent: '—' });
-                } else if (isDetached) {
-                    inheritedCell = Utils.el('span', { className: 'text-warn', textContent: 'detached' });
-                } else {
-                    inheritedCell = Utils.el('span', { className: 'text-muted', textContent: 'locked' });
-                }
-
-                const tr = Utils.el('tr', { className: isDetached ? 'cond-row-detached' : '' });
-                const condFieldTd = Utils.el('td');
-                condFieldTd.appendChild(Utils.el('code', { textContent: cond.field }));
-                const condOpTd = Utils.el('td', { textContent: cond.operator });
-                const condValueTd = Utils.el('td', { textContent: cond.value });
-                const condStrictTd = Utils.el('td', { textContent: cond.strict ? 'yes' : 'no' });
-                const inheritedTd = Utils.el('td');
-                inheritedTd.appendChild(inheritedCell);
-                const actionTd = Utils.el('td');
-                if (deleteCondBtn) actionTd.appendChild(deleteCondBtn);
-                tr.append(condFieldTd, condOpTd, condValueTd, condStrictTd, inheritedTd, actionTd);
-                tr.appendChild(inheritedTd);
-                tr.appendChild(actionTd);
-                tbody.appendChild(tr);
+                tbody.appendChild(_buildConditionRow(cond, policy, refreshFn));
             }
             table.appendChild(tbody);
             container.appendChild(table);
@@ -1708,6 +1710,53 @@ const Admin = (() => {
         }
     }
 
+    function _effectDetailText(eff) {
+        if (eff.effect_type === 'team_member') return `role: ${eff.role_level}`;
+        if (eff.effect_type === 'team_escrow') {
+            if (eff.escrow_override === 1) return 'force-on';
+            if (eff.escrow_override === 0) return 'force-off';
+            return 'override';
+        }
+        return `${eff.permission}${eff.recursive ? ', recursive' : ''}`;
+    }
+
+    function _buildEffectRow(eff, policy, wrap, refreshFn) {
+        let badgeClass;
+        if (eff.effect_type === 'team_member') badgeClass = 'team';
+        else if (eff.effect_type === 'team_escrow') badgeClass = 'escrow';
+        else badgeClass = 'folder';
+        const typeBadge = Utils.el('span', {
+            className: `badge badge-effect-${badgeClass}`,
+            textContent: eff.effect_type,
+        });
+
+        const deleteBtn = Utils.el('button', {
+            className: 'btn btn-danger btn-xs',
+            textContent: 'Remove',
+            onClick: async () => {
+                if (!confirm('Remove this effect? Policy-sourced grants for this effect will be revoked for all users.')) return;
+                try {
+                    await Api.del(`${_api()}/admin/policies/${policy.id}/effects/${eff.id}`);
+                    Utils.showToast('Effect removed', 'success');
+                    _loadAndRenderEffects(wrap, policy, refreshFn);
+                } catch (err) {
+                    Utils.showToast('Failed: ' + err.message, 'error');
+                }
+            },
+        });
+
+        const tr = document.createElement('tr');
+        const typeTd = Utils.el('td');
+        typeTd.appendChild(typeBadge);
+        const targetTd = Utils.el('td');
+        targetTd.appendChild(Utils.el('code', { className: 'policy-uuid-cell', textContent: eff.target_id }));
+        const detailTd = Utils.el('td', { className: 'text-muted', textContent: _effectDetailText(eff) });
+        const actionTd = Utils.el('td');
+        actionTd.appendChild(deleteBtn);
+        tr.append(typeTd, targetTd, detailTd, actionTd);
+        return tr;
+    }
+
     function _renderEffects(wrap, policy, effects, refreshFn) {
         wrap.innerHTML = '';
 
@@ -1720,53 +1769,7 @@ const Admin = (() => {
             </tr></thead>`;
             const tbody = Utils.el('tbody');
             for (const eff of effects) {
-                let badgeClass;
-                if (eff.effect_type === 'team_member') badgeClass = 'team';
-                else if (eff.effect_type === 'team_escrow') badgeClass = 'escrow';
-                else badgeClass = 'folder';
-                const typeBadge = Utils.el('span', {
-                    className: `badge badge-effect-${badgeClass}`,
-                    textContent: eff.effect_type,
-                });
-                let detailText;
-                if (eff.effect_type === 'team_member') {
-                    detailText = `role: ${eff.role_level}`;
-                } else if (eff.effect_type === 'team_escrow') {
-                    if (eff.escrow_override === 1) detailText = 'force-on';
-                    else if (eff.escrow_override === 0) detailText = 'force-off';
-                    else detailText = 'override';
-                } else {
-                    detailText = `${eff.permission}${eff.recursive ? ', recursive' : ''}`;
-                }
-
-                const deleteBtn = Utils.el('button', {
-                    className: 'btn btn-danger btn-xs',
-                    textContent: 'Remove',
-                    onClick: async () => {
-                        if (!confirm('Remove this effect? Policy-sourced grants for this effect will be revoked for all users.')) return;
-                        try {
-                            await Api.del(`${_api()}/admin/policies/${policy.id}/effects/${eff.id}`);
-                            Utils.showToast('Effect removed', 'success');
-                            _loadAndRenderEffects(wrap, policy, refreshFn);
-                        } catch (err) {
-                            Utils.showToast('Failed: ' + err.message, 'error');
-                        }
-                    },
-                });
-
-                const tr = document.createElement('tr');
-                const typeTd = Utils.el('td');
-                typeTd.appendChild(typeBadge);
-                const targetTd = Utils.el('td');
-                targetTd.appendChild(Utils.el('code', { className: 'policy-uuid-cell', textContent: eff.target_id }));
-                const detailTd = Utils.el('td', { className: 'text-muted', textContent: detailText });
-                const actionTd = Utils.el('td');
-                actionTd.appendChild(deleteBtn);
-                tr.appendChild(typeTd);
-                tr.appendChild(targetTd);
-                tr.appendChild(detailTd);
-                tr.appendChild(actionTd);
-                tbody.appendChild(tr);
+                tbody.appendChild(_buildEffectRow(eff, policy, wrap, refreshFn));
             }
             table.appendChild(tbody);
             wrap.appendChild(table);
@@ -3409,6 +3412,52 @@ const Admin = (() => {
         }
     }
 
+    function _buildChannelRow(ch, container) {
+        const filters = (() => { try { return JSON.parse(ch.event_filter || '[]'); } catch { return []; } })();
+        const filterStr = filters.length ? filters.join(', ') : '(all)';
+        let batchStr;
+        if (ch.batch_size) batchStr = `${ch.batch_size} events`;
+        else if (ch.batch_interval_s) batchStr = `${ch.batch_interval_s}s`;
+        else batchStr = 'immediate';
+        const tr = Utils.el('tr');
+        tr.innerHTML = `
+          <td>${Utils.escHtml(ch.name)}</td>
+          <td class="td-url">${Utils.escHtml(ch.endpoint_url)}</td>
+          <td class="text-sm">${Utils.escHtml(filterStr)}</td>
+          <td class="text-sm">${batchStr}</td>
+          <td><span class="${ch.enabled ? 'badge-success' : 'badge-muted'}">${ch.enabled ? 'enabled' : 'disabled'}</span></td>
+          <td></td>
+        `;
+        const actionsTd = tr.cells[5];
+        const editBtn = Utils.el('button', { textContent: 'Edit', className: 'btn btn-sm', style: 'margin-right:4px' });
+        editBtn.addEventListener('click', async () => {
+            const full = await Api.get(`${_api()}/admin/notifications/channels/${ch.id}`);
+            _showChannelModal(full, container);
+        });
+        const testBtn = Utils.el('button', { textContent: 'Test', className: 'btn btn-sm', style: 'margin-right:4px' });
+        testBtn.addEventListener('click', async () => {
+            try {
+                const res = await Api.post(`${_api()}/admin/notifications/channels/${ch.id}/test`, {});
+                Utils.showToast(res.ok ? `Test OK (HTTP 200)` : `Test failed: ${res.error || 'unknown'}`, res.ok ? 'success' : 'error');
+            } catch (err) {
+                Utils.showToast('Test failed: ' + err.message, 'error');
+            }
+        });
+        const delBtn = Utils.el('button', { textContent: 'Delete', className: 'btn btn-sm btn-danger' });
+        delBtn.addEventListener('click', async () => {
+            if (!confirm(`Delete channel "${ch.name}"?`)) return;
+            try {
+                await Api.del(`${_api()}/admin/notifications/channels/${ch.id}`);
+                Utils.showToast('Channel deleted.');
+                await _renderNotificationsSection(container.closest('.admin-section-body') || container);
+            } catch (err) {
+                Utils.showToast('Delete failed: ' + err.message, 'error');
+            }
+        });
+        actionsTd.append(editBtn, testBtn, delBtn);
+        return tr;
+    }
+
     function _renderNotificationsPanel(container, channels, settings) {
         container.innerHTML = '';
         const wrap = Utils.el('div', { style: 'padding:16px' });
@@ -3472,49 +3521,7 @@ const Admin = (() => {
             table.appendChild(thead);
             const tbody = Utils.el('tbody');
             for (const ch of channels) {
-                const tr = Utils.el('tr');
-                const filters = (() => { try { return JSON.parse(ch.event_filter || '[]'); } catch { return []; } })();
-                const filterStr = filters.length ? filters.join(', ') : '(all)';
-                let batchStr;
-                if (ch.batch_size) batchStr = `${ch.batch_size} events`;
-                else if (ch.batch_interval_s) batchStr = `${ch.batch_interval_s}s`;
-                else batchStr = 'immediate';
-                tr.innerHTML = `
-                  <td>${Utils.escHtml(ch.name)}</td>
-                  <td class="td-url">${Utils.escHtml(ch.endpoint_url)}</td>
-                  <td class="text-sm">${Utils.escHtml(filterStr)}</td>
-                  <td class="text-sm">${batchStr}</td>
-                  <td><span class="${ch.enabled ? 'badge-success' : 'badge-muted'}">${ch.enabled ? 'enabled' : 'disabled'}</span></td>
-                  <td></td>
-                `;
-                const actionsTd = tr.cells[5];
-                const editBtn = Utils.el('button', { textContent: 'Edit', className: 'btn btn-sm', style: 'margin-right:4px' });
-                editBtn.addEventListener('click', async () => {
-                    const full = await Api.get(`${_api()}/admin/notifications/channels/${ch.id}`);
-                    _showChannelModal(full, container);
-                });
-                const testBtn = Utils.el('button', { textContent: 'Test', className: 'btn btn-sm', style: 'margin-right:4px' });
-                testBtn.addEventListener('click', async () => {
-                    try {
-                        const res = await Api.post(`${_api()}/admin/notifications/channels/${ch.id}/test`, {});
-                        Utils.showToast(res.ok ? `Test OK (HTTP 200)` : `Test failed: ${res.error || 'unknown'}`, res.ok ? 'success' : 'error');
-                    } catch (err) {
-                        Utils.showToast('Test failed: ' + err.message, 'error');
-                    }
-                });
-                const delBtn = Utils.el('button', { textContent: 'Delete', className: 'btn btn-sm btn-danger' });
-                delBtn.addEventListener('click', async () => {
-                    if (!confirm(`Delete channel "${ch.name}"?`)) return;
-                    try {
-                        await Api.del(`${_api()}/admin/notifications/channels/${ch.id}`);
-                        Utils.showToast('Channel deleted.');
-                        await _renderNotificationsSection(container.closest('.admin-section-body') || container);
-                    } catch (err) {
-                        Utils.showToast('Delete failed: ' + err.message, 'error');
-                    }
-                });
-                actionsTd.append(editBtn, testBtn, delBtn);
-                tbody.appendChild(tr);
+                tbody.appendChild(_buildChannelRow(ch, container));
             }
             table.appendChild(tbody);
             wrap.appendChild(table);
@@ -3676,6 +3683,47 @@ const Admin = (() => {
         { value: 'notification_write', label: 'notification_write', desc: 'Internal — channel delivery auth' },
     ];
 
+    function _buildApiKeyRow(k, container) {
+        const scopes = (() => { try { return JSON.parse(k.scopes || '[]'); } catch { return []; } })();
+        const filterParts = [];
+        if (k.filter_event_types)  filterParts.push(`types: ${k.filter_event_types}`);
+        if (k.filter_min_severity) filterParts.push(`sev≥${k.filter_min_severity}`);
+        const tr = Utils.el('tr');
+        tr.innerHTML = `
+          <td>${Utils.escHtml(k.name)}</td>
+          <td class="text-sm">${Utils.escHtml(scopes.join(', '))}</td>
+          <td class="text-muted-xs">${Utils.escHtml(filterParts.join(' · ') || '—')}</td>
+          <td class="text-sm">${k.created_at ? k.created_at.slice(0, 10) : ''}</td>
+          <td class="text-sm">${k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'}</td>
+          <td class="text-sm">${k.expires_at ? k.expires_at.slice(0, 10) : 'never'}</td>
+          <td class="text-nowrap"></td>
+        `;
+        const actionsCell = tr.cells[6];
+        const rotateBtn = Utils.el('button', { textContent: 'Rotate', className: 'btn btn-sm', style: 'margin-right:4px' });
+        rotateBtn.addEventListener('click', async () => {
+            if (!confirm(`Rotate key "${k.name}"? The current key will stop working immediately.`)) return;
+            try {
+                const result = await Api.post(`${_api()}/admin/api-keys/${k.id}/rotate`, {});
+                _showApiKeyReveal(result.key, result.name, container);
+            } catch (err) {
+                Utils.showToast('Rotate failed: ' + err.message, 'error');
+            }
+        });
+        const revokeBtn = Utils.el('button', { textContent: 'Revoke', className: 'btn btn-sm btn-danger' });
+        revokeBtn.addEventListener('click', async () => {
+            if (!confirm(`Revoke API key "${k.name}"? This cannot be undone.`)) return;
+            try {
+                await Api.del(`${_api()}/admin/api-keys/${k.id}`);
+                Utils.showToast('API key revoked.');
+                await _renderApiKeysSection(container.closest('.admin-section-body') || container);
+            } catch (err) {
+                Utils.showToast('Revoke failed: ' + err.message, 'error');
+            }
+        });
+        actionsCell.append(rotateBtn, revokeBtn);
+        return tr;
+    }
+
     function _renderApiKeysPanel(container, keys) {
         container.innerHTML = '';
         const wrap = Utils.el('div', { style: 'padding:16px' });
@@ -3694,44 +3742,7 @@ const Admin = (() => {
             table.innerHTML = '<thead><tr><th>Name</th><th>Scopes</th><th>Filters</th><th>Created</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead>';
             const tbody = Utils.el('tbody');
             for (const k of keys) {
-                const tr = Utils.el('tr');
-                const scopes = (() => { try { return JSON.parse(k.scopes || '[]'); } catch { return []; } })();
-                const filterParts = [];
-                if (k.filter_event_types)  filterParts.push(`types: ${k.filter_event_types}`);
-                if (k.filter_min_severity) filterParts.push(`sev≥${k.filter_min_severity}`);
-                tr.innerHTML = `
-                  <td>${Utils.escHtml(k.name)}</td>
-                  <td class="text-sm">${Utils.escHtml(scopes.join(', '))}</td>
-                  <td class="text-muted-xs">${Utils.escHtml(filterParts.join(' · ') || '—')}</td>
-                  <td class="text-sm">${k.created_at ? k.created_at.slice(0, 10) : ''}</td>
-                  <td class="text-sm">${k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'}</td>
-                  <td class="text-sm">${k.expires_at ? k.expires_at.slice(0, 10) : 'never'}</td>
-                  <td class="text-nowrap"></td>
-                `;
-                const actionsCell = tr.cells[6];
-                const rotateBtn = Utils.el('button', { textContent: 'Rotate', className: 'btn btn-sm', style: 'margin-right:4px' });
-                rotateBtn.addEventListener('click', async () => {
-                    if (!confirm(`Rotate key "${k.name}"? The current key will stop working immediately.`)) return;
-                    try {
-                        const result = await Api.post(`${_api()}/admin/api-keys/${k.id}/rotate`, {});
-                        _showApiKeyReveal(result.key, result.name, container);
-                    } catch (err) {
-                        Utils.showToast('Rotate failed: ' + err.message, 'error');
-                    }
-                });
-                const revokeBtn = Utils.el('button', { textContent: 'Revoke', className: 'btn btn-sm btn-danger' });
-                revokeBtn.addEventListener('click', async () => {
-                    if (!confirm(`Revoke API key "${k.name}"? This cannot be undone.`)) return;
-                    try {
-                        await Api.del(`${_api()}/admin/api-keys/${k.id}`);
-                        Utils.showToast('API key revoked.');
-                        await _renderApiKeysSection(container.closest('.admin-section-body') || container);
-                    } catch (err) {
-                        Utils.showToast('Revoke failed: ' + err.message, 'error');
-                    }
-                });
-                actionsCell.append(rotateBtn, revokeBtn);
-                tbody.appendChild(tr);
+                tbody.appendChild(_buildApiKeyRow(k, container));
             }
             table.appendChild(tbody);
             wrap.appendChild(table);
@@ -4463,7 +4474,7 @@ const Admin = (() => {
                         className: 'btn btn-danger btn-xs',
                         textContent: '×',
                         type: 'button',
-                        onClick: () => {
+                        onClick: () => { // NOSONAR — closure required; nesting depth unavoidable in sharing-rule condition editor
                             conditions.splice(idx, 1);
                             _renderCondTable();
                         },
@@ -4642,6 +4653,62 @@ const Admin = (() => {
         }
     }
 
+    function _buildServiceAccountRow(sa, container) {
+        const statusBadge = sa.is_active
+            ? '<span class="text-success">active</span>'
+            : '<span class="text-danger">inactive</span>';
+        const tr = Utils.el('tr');
+        tr.innerHTML = `
+          <td>${Utils.escHtml(sa.username)}</td>
+          <td class="text-muted-sm">${Utils.escHtml(sa.description || '—')}</td>
+          <td class="text-sm">${statusBadge}</td>
+          <td class="text-mono-sm">${Utils.escHtml(sa.key_prefix || '—')}</td>
+          <td class="text-sm">${sa.last_used_at ? sa.last_used_at.slice(0, 10) : 'never'}</td>
+          <td class="text-sm">${sa.key_expires_at ? sa.key_expires_at.slice(0, 10) : 'never'}</td>
+          <td class="text-nowrap"></td>
+        `;
+        const actionsCell = tr.cells[6];
+        const rotateBtn = Utils.el('button', { textContent: 'Rotate Key', className: 'btn btn-sm', style: 'margin-right:4px' });
+        rotateBtn.addEventListener('click', async () => {
+            if (!confirm(`Rotate the key for "${sa.username}"? The current key will stop working immediately.`)) return;
+            try {
+                const result = await Api.post(`${_api()}/admin/service-accounts/${sa.id}/rotate-key`, {});
+                _showSaKeyReveal(result.key, sa.username, container);
+            } catch (err) {
+                Utils.showToast('Rotate failed: ' + err.message, 'error');
+            }
+        });
+        const toggleBtn = Utils.el('button', {
+            textContent: sa.is_active ? 'Deactivate' : 'Activate',
+            className: 'btn btn-sm' + (sa.is_active ? ' btn-warning' : ''),
+            style: 'margin-right:4px',
+        });
+        toggleBtn.addEventListener('click', async () => {
+            const action = sa.is_active ? 'Deactivate' : 'Activate';
+            if (!confirm(`${action} service account "${sa.username}"?`)) return;
+            try {
+                await Api.patch(`${_api()}/admin/service-accounts/${sa.id}`, { is_active: !sa.is_active });
+                Utils.showToast(`${action}d "${sa.username}".`);
+                await _renderServiceAccountsSection(container.closest('.admin-section-body') || container);
+            } catch (err) {
+                Utils.showToast(`${action} failed: ` + err.message, 'error');
+            }
+        });
+        const deleteBtn = Utils.el('button', { textContent: 'Delete', className: 'btn btn-sm btn-danger' });
+        deleteBtn.addEventListener('click', async () => {
+            if (!confirm(`Permanently delete service account "${sa.username}"? This cannot be undone.`)) return;
+            try {
+                await Api.del(`${_api()}/admin/service-accounts/${sa.id}`);
+                Utils.showToast(`Service account "${sa.username}" deleted.`);
+                await _renderServiceAccountsSection(container.closest('.admin-section-body') || container);
+            } catch (err) {
+                Utils.showToast('Delete failed: ' + err.message, 'error');
+            }
+        });
+        actionsCell.append(rotateBtn, toggleBtn, deleteBtn);
+        return tr;
+    }
+
     function _renderServiceAccountsPanel(container, accounts) {
         container.innerHTML = '';
         const wrap = Utils.el('div', { style: 'padding:16px' });
@@ -4666,63 +4733,7 @@ const Admin = (() => {
             table.innerHTML = '<thead><tr><th>Name</th><th>Description</th><th>Status</th><th>Key prefix</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead>';
             const tbody = Utils.el('tbody');
             for (const sa of accounts) {
-                const tr = Utils.el('tr');
-                const statusBadge = sa.is_active
-                    ? '<span class="text-success">active</span>'
-                    : '<span class="text-danger">inactive</span>';
-                tr.innerHTML = `
-                  <td>${Utils.escHtml(sa.username)}</td>
-                  <td class="text-muted-sm">${Utils.escHtml(sa.description || '—')}</td>
-                  <td class="text-sm">${statusBadge}</td>
-                  <td class="text-mono-sm">${Utils.escHtml(sa.key_prefix || '—')}</td>
-                  <td class="text-sm">${sa.last_used_at ? sa.last_used_at.slice(0, 10) : 'never'}</td>
-                  <td class="text-sm">${sa.key_expires_at ? sa.key_expires_at.slice(0, 10) : 'never'}</td>
-                  <td class="text-nowrap"></td>
-                `;
-                const actionsCell = tr.cells[6];
-
-                const rotateBtn = Utils.el('button', { textContent: 'Rotate Key', className: 'btn btn-sm', style: 'margin-right:4px' });
-                rotateBtn.addEventListener('click', async () => {
-                    if (!confirm(`Rotate the key for "${sa.username}"? The current key will stop working immediately.`)) return;
-                    try {
-                        const result = await Api.post(`${_api()}/admin/service-accounts/${sa.id}/rotate-key`, {});
-                        _showSaKeyReveal(result.key, sa.username, container);
-                    } catch (err) {
-                        Utils.showToast('Rotate failed: ' + err.message, 'error');
-                    }
-                });
-
-                const toggleBtn = Utils.el('button', {
-                    textContent: sa.is_active ? 'Deactivate' : 'Activate',
-                    className: 'btn btn-sm' + (sa.is_active ? ' btn-warning' : ''),
-                    style: 'margin-right:4px',
-                });
-                toggleBtn.addEventListener('click', async () => {
-                    const action = sa.is_active ? 'Deactivate' : 'Activate';
-                    if (!confirm(`${action} service account "${sa.username}"?`)) return;
-                    try {
-                        await Api.patch(`${_api()}/admin/service-accounts/${sa.id}`, { is_active: !sa.is_active });
-                        Utils.showToast(`${action}d "${sa.username}".`);
-                        await _renderServiceAccountsSection(container.closest('.admin-section-body') || container);
-                    } catch (err) {
-                        Utils.showToast(`${action} failed: ` + err.message, 'error');
-                    }
-                });
-
-                const deleteBtn = Utils.el('button', { textContent: 'Delete', className: 'btn btn-sm btn-danger' });
-                deleteBtn.addEventListener('click', async () => {
-                    if (!confirm(`Permanently delete service account "${sa.username}"? This cannot be undone.`)) return;
-                    try {
-                        await Api.del(`${_api()}/admin/service-accounts/${sa.id}`);
-                        Utils.showToast(`Service account "${sa.username}" deleted.`);
-                        await _renderServiceAccountsSection(container.closest('.admin-section-body') || container);
-                    } catch (err) {
-                        Utils.showToast('Delete failed: ' + err.message, 'error');
-                    }
-                });
-
-                actionsCell.append(rotateBtn, toggleBtn, deleteBtn);
-                tbody.appendChild(tr);
+                tbody.appendChild(_buildServiceAccountRow(sa, container));
             }
             table.appendChild(tbody);
             wrap.appendChild(table);

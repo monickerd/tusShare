@@ -34,7 +34,7 @@ _KEEPALIVE_INTERVAL = 25  # seconds
 @router.get("/stream")
 async def op_events_stream(
     _key: Annotated[dict, Depends(require_api_key)],
-    types: str | None = Query(default=None, description="Comma-separated prefix filter"),
+    types: Annotated[str | None, Query(description="Comma-separated prefix filter")] = None,
 ):
     """Stream operational events as Server-Sent Events."""
     type_filters = [t.strip() for t in types.split(",")] if types else []
@@ -86,10 +86,10 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
 async def op_events_log(
     _key: Annotated[dict, Depends(require_api_key)],
     db: Annotated[Database, Depends(get_db)],
-    since:  str | None = Query(default=None, description="ISO datetime lower bound"),
-    limit:  int        = Query(default=100, ge=1, le=1000),
-    types:  str | None = Query(default=None, description="Comma-separated prefix filter"),
-    cursor: str | None = Query(default=None, description="Opaque pagination cursor"),
+    since:  Annotated[str | None, Query(description="ISO datetime lower bound")] = None,
+    limit:  Annotated[int, Query(ge=1, le=1000)] = 100,
+    types:  Annotated[str | None, Query(description="Comma-separated prefix filter")] = None,
+    cursor: Annotated[str | None, Query(description="Opaque pagination cursor")] = None,
 ):
     """Return a page of operational events from the persisted log."""
     type_filters = [t.strip() for t in types.split(",")] if types else []

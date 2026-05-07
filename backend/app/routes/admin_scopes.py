@@ -50,7 +50,7 @@ async def _load_scope_cond(db, cond_id: str) -> AdminScopeCondition:
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Admin scope condition not found")
+        raise HTTPException(status_code=404, detail="Admin scope condition not found")  # NOSONAR — helper; 404 documented in callers
     return AdminScopeCondition.from_row(row)
 
 

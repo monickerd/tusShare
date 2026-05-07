@@ -3,7 +3,12 @@
 // CSP frame-ancestors 'none' are the primary controls; this is a
 // defence-in-depth fallback for legacy browsers or cached responses.
 if (window !== window.top) {
-    try { window.top.location.replace(window.location.pathname + window.location.search + window.location.hash); } catch (_) { document.documentElement.innerHTML = ''; }
+    try {
+        const _target = window.location.pathname + window.location.search + window.location.hash;
+        if (_target.startsWith('/') && !_target.startsWith('//')) {
+            window.top.location.replace(_target);
+        }
+    } catch (_) { document.documentElement.innerHTML = ''; }
 }
 
 /**

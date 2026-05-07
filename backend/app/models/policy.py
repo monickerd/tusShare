@@ -23,6 +23,7 @@ conditions as non-matching (conservative default).
 from __future__ import annotations
 
 import logging
+import uuid as _uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -264,6 +265,46 @@ class PolicyFolderGrant:
 # Internal field resolver
 # ---------------------------------------------------------------------------
 
+async def _resolve_totp_field(db, user_id: str) -> str:
+    try:
+        cursor = await db.execute("SELECT totp_enabled FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return "1" if (row and row["totp_enabled"]) else "0"
+    except Exception:
+        return "0"
+
+
+async def _resolve_provider_fields(db, user_id: str, fields: set) -> dict[str, str]:
+    result: dict[str, str] = {}
+    try:
+        cursor = await db.execute(
+            "SELECT ip.provider_type, ip.name "
+            "FROM users u "
+            "LEFT JOIN identity_provider_users ipu ON ipu.user_id = u.id "
+            "LEFT JOIN identity_providers ip ON ip.id = ipu.provider_id "
+            "WHERE u.id = ?",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row["provider_type"] is None:
+            if "auth_provider" in fields:
+                result["auth_provider"] = "opaque"
+            if "identity_provider" in fields:
+                result["identity_provider"] = ""
+        else:
+            if "auth_provider" in fields:
+                result["auth_provider"] = row["provider_type"]
+            if "identity_provider" in fields:
+                result["identity_provider"] = row["name"] or ""
+    except Exception:
+        # identity_providers table not available — treat as opaque user
+        if "auth_provider" in fields:
+            result["auth_provider"] = "opaque"
+        if "identity_provider" in fields:
+            result["identity_provider"] = ""
+    return result
+
+
 async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[str, str]:
     """Resolve internal policy fields from the local DB for a user.
 
@@ -281,44 +322,10 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
     result: dict[str, str] = {}
 
     if "totp_enabled" in fields:
-        # TOTP: default to '0' if the column is absent
-        try:
-            cursor = await db.execute(
-                "SELECT totp_enabled FROM users WHERE id = ?", (user_id,)
-            )
-            row = await cursor.fetchone()
-            result["totp_enabled"] = "1" if (row and row["totp_enabled"]) else "0"
-        except Exception:
-            result["totp_enabled"] = "0"
+        result["totp_enabled"] = await _resolve_totp_field(db, user_id)
 
     if "auth_provider" in fields or "identity_provider" in fields:
-        # identity_providers table may be absent; gracefully degrade
-        try:
-            cursor = await db.execute(
-                "SELECT ip.provider_type, ip.name "
-                "FROM users u "
-                "LEFT JOIN identity_provider_users ipu ON ipu.user_id = u.id "
-                "LEFT JOIN identity_providers ip ON ip.id = ipu.provider_id "
-                "WHERE u.id = ?",
-                (user_id,),
-            )
-            row = await cursor.fetchone()
-            if row is None or row["provider_type"] is None:
-                if "auth_provider" in fields:
-                    result["auth_provider"] = "opaque"
-                if "identity_provider" in fields:
-                    result["identity_provider"] = ""
-            else:
-                if "auth_provider" in fields:
-                    result["auth_provider"] = row["provider_type"]   # 'ldap' or 'oidc'
-                if "identity_provider" in fields:
-                    result["identity_provider"] = row["name"] or ""
-        except Exception:
-            # identity_providers table not available — treat as opaque user
-            if "auth_provider" in fields:
-                result["auth_provider"] = "opaque"
-            if "identity_provider" in fields:
-                result["identity_provider"] = ""
+        result.update(await _resolve_provider_fields(db, user_id, fields))
 
     return result
 
@@ -326,6 +333,29 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
 # ---------------------------------------------------------------------------
 # LDAP filter builder
 # ---------------------------------------------------------------------------
+
+def _ldap_condition_to_filter(attr: str, val: str, op: str) -> str | None:
+    """Translate a single operator into an LDAP filter fragment.  Returns None to skip."""
+    if op == "=":
+        return f"({attr}={val})"
+    if op == "!=":
+        return f"(!({attr}={val}))"
+    if op == "contains":
+        return f"({attr}=*{val}*)"
+    if op == "starts_with":
+        return f"({attr}={val}*)"
+    if op == "ends_with":
+        return f"({attr}=*{val})"
+    if op == "in":
+        members = [m.strip() for m in val.split(",") if m.strip()]
+        if not members:
+            return None
+        if len(members) == 1:
+            return f"({attr}={members[0]})"
+        inner = "".join(f"({attr}={m})" for m in members)
+        return f"(|{inner})"
+    return None
+
 
 def build_ldap_filter(conditions: list[PolicyCondition], field_defs: dict[str, PolicyFieldDef]) -> str:
     """Translate a list of ldap-source conditions into a single LDAP filter string.
@@ -343,31 +373,9 @@ def build_ldap_filter(conditions: list[PolicyCondition], field_defs: dict[str, P
         if fdef is None or not fdef.claim_path:
             logger.warning("policy: skipping ldap condition for field %r — no claim_path", cond.field)
             continue
-
-        attr = fdef.claim_path
-        val  = cond.value
-        op   = cond.operator
-
-        if op == "=":
-            parts.append(f"({attr}={val})")
-        elif op == "!=":
-            parts.append(f"(!({attr}={val}))")
-        elif op == "contains":
-            parts.append(f"({attr}=*{val}*)")
-        elif op == "starts_with":
-            parts.append(f"({attr}={val}*)")
-        elif op == "ends_with":
-            parts.append(f"({attr}=*{val})")
-        elif op == "in":
-            # value is a comma-separated list; match any member
-            members = [m.strip() for m in val.split(",") if m.strip()]
-            if not members:
-                continue
-            if len(members) == 1:
-                parts.append(f"({attr}={members[0]})")
-            else:
-                inner = "".join(f"({attr}={m})" for m in members)
-                parts.append(f"(|{inner})")
+        part = _ldap_condition_to_filter(fdef.claim_path, cond.value, cond.operator)
+        if part is not None:
+            parts.append(part)
 
     if not parts:
         # No translatable conditions — caller should treat as no-match
@@ -438,6 +446,164 @@ async def get_user_effective_scope(db, user_id: str) -> list[AdminScopeCondition
     return [AdminScopeCondition.from_row(r) for r in await cursor.fetchall()]
 
 
+async def _resolve_all_policy_fields(
+    db,
+    user_id: str,
+    all_conditions: list,
+    field_defs: dict,
+) -> dict[str, str]:
+    internal_fields_needed = {
+        c.field for c in all_conditions
+        if field_defs.get(c.field) and field_defs[c.field].source == "internal"
+    }
+    internal_values = await resolve_internal_fields(db, user_id, internal_fields_needed)
+
+    ldap_conditions = [
+        c for c in all_conditions
+        if field_defs.get(c.field) and field_defs[c.field].source == "ldap"
+    ]
+    ldap_values: dict[str, str] = {}
+    if ldap_conditions:
+        ldap_values = await _resolve_ldap_fields(db, user_id, ldap_conditions, field_defs)
+
+    oidc_conditions = [
+        c for c in all_conditions
+        if field_defs.get(c.field) and field_defs[c.field].source == "oidc"
+    ]
+    oidc_values: dict[str, str] = {}
+    if oidc_conditions:
+        oidc_values = await _resolve_oidc_fields(db, user_id, oidc_conditions, field_defs)
+
+    return {**internal_values, **ldap_values, **oidc_values}
+
+
+async def _apply_team_member_effect(
+    db,
+    user_id: str,
+    effect_id: str,
+    target_id: str,
+    role_level: str | None,
+    policy_id: str,
+    policy_escrow_map: dict,
+    escrow_overrides: dict,
+    escrow_agent_ids: list[str],
+) -> None:
+    if not role_level:
+        logger.warning("policy: team_member effect %s has no role_level — skipping", effect_id)
+        return
+
+    ur_id = str(_uuid.uuid4())
+    await db.execute(
+        "INSERT INTO user_roles "
+        "(id, user_id, role_id, scope_type, scope_id, granted_by, policy_effect_id) "
+        "VALUES (?, ?, ?, 'team', ?, NULL, ?) "
+        "ON CONFLICT DO NOTHING",
+        (ur_id, user_id, role_level, target_id, effect_id),
+    )
+
+    cursor = await db.execute(_SQL_HAS_TEAM_KEY, (target_id, user_id))
+    has_key = await cursor.fetchone() is not None
+
+    tg_id = str(_uuid.uuid4())
+    await db.execute(
+        "INSERT INTO policy_team_grants "
+        "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT DO NOTHING",
+        (tg_id, effect_id, user_id, 1 if has_key else 0),
+    )
+    if has_key:
+        await db.execute(
+            "UPDATE policy_team_grants SET key_wrapped = 1 "
+            "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
+            (effect_id, user_id),
+        )
+
+    if not escrow_agent_ids:
+        return
+    policy_escrow = policy_escrow_map.get(policy_id, False)
+    team_override = escrow_overrides.get(policy_id, {}).get(target_id)
+    effective_escrow = (team_override == 1) if team_override is not None else policy_escrow
+    if not effective_escrow:
+        return
+
+    for ea_id in escrow_agent_ids:
+        ea_ur_id = str(_uuid.uuid4())
+        await db.execute(
+            "INSERT INTO user_roles "
+            "(id, user_id, role_id, scope_type, scope_id, granted_by, policy_effect_id) "
+            "VALUES (?, ?, 'team_member', 'team', ?, NULL, ?) "
+            "ON CONFLICT DO NOTHING",
+            (ea_ur_id, ea_id, target_id, effect_id),
+        )
+        cursor_ea = await db.execute(_SQL_HAS_TEAM_KEY, (target_id, ea_id))
+        ea_has_key = await cursor_ea.fetchone() is not None
+        ea_tg_id = str(_uuid.uuid4())
+        await db.execute(
+            "INSERT INTO policy_team_grants "
+            "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT DO NOTHING",
+            (ea_tg_id, effect_id, ea_id, 1 if ea_has_key else 0),
+        )
+        if ea_has_key:
+            await db.execute(
+                "UPDATE policy_team_grants SET key_wrapped = 1 "
+                "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
+                (effect_id, ea_id),
+            )
+
+
+async def _apply_folder_acl_effect(
+    db,
+    user_id: str,
+    effect_id: str,
+    target_id: str,
+    permission: str | None,
+    recursive: bool,
+) -> None:
+    if not permission:
+        logger.warning("policy: folder_acl effect %s has no permission — skipping", effect_id)
+        return
+
+    perm_id = str(_uuid.uuid4())
+    await db.execute(
+        "INSERT INTO permissions "
+        "(id, resource_type, resource_id, user_id, permission, recursive, "
+        " granted_by, policy_effect_id) "
+        "VALUES (?, 'folder', ?, ?, ?, ?, NULL, ?) "
+        "ON CONFLICT DO NOTHING",
+        (perm_id, target_id, user_id, permission, recursive, effect_id),
+    )
+    cursor = await db.execute(
+        "SELECT policy_effect_id FROM permissions "
+        "WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
+        (target_id, user_id),
+    )
+    perm_row = await cursor.fetchone()
+    acl_written = perm_row is not None and perm_row["policy_effect_id"] == effect_id
+
+    team_id = await _get_folder_team_id(db, target_id)
+    if team_id:
+        cursor = await db.execute(_SQL_HAS_TEAM_KEY, (team_id, user_id))
+        key_wrapped = 1 if await cursor.fetchone() is not None else 0
+    else:
+        key_wrapped = 1
+
+    fg_id = str(_uuid.uuid4())
+    await db.execute(
+        "INSERT INTO policy_folder_grants "
+        "(id, effect_id, user_id, folder_id, acl_written, key_wrapped) "
+        "VALUES (?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT DO NOTHING",
+        (fg_id, effect_id, user_id, target_id, 1 if acl_written else 0, key_wrapped),
+    )
+    if key_wrapped:
+        await db.execute(
+            "UPDATE policy_folder_grants SET key_wrapped = 1 "
+            "WHERE effect_id = ? AND user_id = ? AND folder_id = ? AND key_wrapped = 0",
+            (effect_id, user_id, target_id),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Main evaluation function
 # ---------------------------------------------------------------------------
@@ -468,8 +634,6 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
       ) performs the actual X25519/ML-KEM key wrap on the user's next
       password-entry event.  Until key_wrapped=1, the user cannot access the folder.
     """
-    import uuid as _uuid
-
     # Service accounts are policy-exempt — they receive only explicitly granted
     # roles and must never be auto-enrolled via policy triggers.
     cursor = await db.execute("SELECT auth_method FROM users WHERE id = ?", (user_id,))
@@ -544,33 +708,8 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     else:
         field_defs = {}
 
-    # 5. Resolve internal fields
-    internal_fields_needed = {
-        c.field for c in all_conditions
-        if field_defs.get(c.field) and field_defs[c.field].source == "internal"
-    }
-    internal_values = await resolve_internal_fields(db, user_id, internal_fields_needed)
-
-    # 6. Resolve LDAP fields (graceful no-op if identity_providers absent)
-    ldap_conditions = [
-        c for c in all_conditions
-        if field_defs.get(c.field) and field_defs[c.field].source == "ldap"
-    ]
-    ldap_values: dict[str, str] = {}
-    if ldap_conditions:
-        ldap_values = await _resolve_ldap_fields(db, user_id, ldap_conditions, field_defs)
-
-    # OIDC resolution: graceful no-op if identity providers not configured
-    oidc_conditions = [
-        c for c in all_conditions
-        if field_defs.get(c.field) and field_defs[c.field].source == "oidc"
-    ]
-    oidc_values: dict[str, str] = {}
-    if oidc_conditions:
-        oidc_values = await _resolve_oidc_fields(db, user_id, oidc_conditions, field_defs)
-
-    # Combined resolved values (all sources merged by field name)
-    all_resolved: dict[str, str] = {**internal_values, **ldap_values, **oidc_values}
+    # 5-6. Resolve all condition fields (internal / LDAP / OIDC)
+    all_resolved = await _resolve_all_policy_fields(db, user_id, all_conditions, field_defs)
 
     # 7. Evaluate each policy; collect matching policy IDs
     matching_policy_ids: set[str] = set()
@@ -635,141 +774,14 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
                 continue
 
             if effect_type == "team_member":
-                role_level = eff["role_level"]
-                if not role_level:
-                    logger.warning("policy: team_member effect %s has no role_level — skipping", effect_id)
-                    continue
-
-                # Write user_roles row (ON CONFLICT DO NOTHING — manual row wins)
-                ur_id = str(_uuid.uuid4())
-                await db.execute(
-                    "INSERT INTO user_roles "
-                    "(id, user_id, role_id, scope_type, scope_id, granted_by, policy_effect_id) "
-                    "VALUES (?, ?, ?, 'team', ?, NULL, ?) "
-                    "ON CONFLICT DO NOTHING",
-                    (ur_id, user_id, role_level, target_id, effect_id),
+                await _apply_team_member_effect(
+                    db, user_id, effect_id, target_id, eff["role_level"], eff["policy_id"],
+                    policy_escrow_map, escrow_overrides, escrow_agent_ids,
                 )
-
-                # Check if user already has a team key (manual or from another policy)
-                cursor = await db.execute(
-                    _SQL_HAS_TEAM_KEY,
-                    (target_id, user_id),
-                )
-                has_key = await cursor.fetchone() is not None
-
-                # Write policy_team_grants tracking row (ON CONFLICT DO NOTHING)
-                tg_id = str(_uuid.uuid4())
-                await db.execute(
-                    "INSERT INTO policy_team_grants "
-                    "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT DO NOTHING",
-                    (tg_id, effect_id, user_id, 1 if has_key else 0),
-                )
-                # If row already existed and user now has the key, sync key_wrapped=1
-                if has_key:
-                    await db.execute(
-                        "UPDATE policy_team_grants SET key_wrapped = 1 "
-                        "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
-                        (effect_id, user_id),
-                    )
-
-                # write pending escrow grants for this team if effective escrow is ON.
-                # Escrow grants are written as a side effect of any matching team_member
-                # evaluation — ON CONFLICT DO NOTHING makes this idempotent across evaluations.
-                if escrow_agent_ids:
-                    policy_escrow = policy_escrow_map.get(eff["policy_id"], False)
-                    team_override = escrow_overrides.get(eff["policy_id"], {}).get(target_id)
-                    # team_override: None=use policy default, 1=force-on, 0=force-off
-                    effective_escrow = (team_override == 1) if team_override is not None else policy_escrow
-
-                    if effective_escrow:
-                        for ea_id in escrow_agent_ids:
-                            # Grant team_member role to escrow agent for this team
-                            ea_ur_id = str(_uuid.uuid4())
-                            await db.execute(
-                                "INSERT INTO user_roles "
-                                "(id, user_id, role_id, scope_type, scope_id, granted_by, policy_effect_id) "
-                                "VALUES (?, ?, 'team_member', 'team', ?, NULL, ?) "
-                                "ON CONFLICT DO NOTHING",
-                                (ea_ur_id, ea_id, target_id, effect_id),
-                            )
-                            # Check if escrow agent already has a key for this team
-                            cursor_ea = await db.execute(
-                                _SQL_HAS_TEAM_KEY,
-                                (target_id, ea_id),
-                            )
-                            ea_has_key = await cursor_ea.fetchone() is not None
-                            # Write pending grant (key_wrapped=0 until fulfillment loop delivers the wrap)
-                            ea_tg_id = str(_uuid.uuid4())
-                            await db.execute(
-                                "INSERT INTO policy_team_grants "
-                                "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?) "
-                                "ON CONFLICT DO NOTHING",
-                                (ea_tg_id, effect_id, ea_id, 1 if ea_has_key else 0),
-                            )
-                            if ea_has_key:
-                                await db.execute(
-                                    "UPDATE policy_team_grants SET key_wrapped = 1 "
-                                    "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
-                                    (effect_id, ea_id),
-                                )
-
             elif effect_type == "folder_acl":
-                permission = eff["permission"]
-                recursive  = eff["recursive"]
-                if not permission:
-                    logger.warning("policy: folder_acl effect %s has no permission — skipping", effect_id)
-                    continue
-
-                # Write permissions row (ON CONFLICT DO NOTHING — manual row wins)
-                perm_id = str(_uuid.uuid4())
-                await db.execute(
-                    "INSERT INTO permissions "
-                    "(id, resource_type, resource_id, user_id, permission, recursive, "
-                    " granted_by, policy_effect_id) "
-                    "VALUES (?, 'folder', ?, ?, ?, ?, NULL, ?) "
-                    "ON CONFLICT DO NOTHING",
-                    (perm_id, target_id, user_id, permission, recursive, effect_id),
+                await _apply_folder_acl_effect(
+                    db, user_id, effect_id, target_id, eff["permission"], eff["recursive"],
                 )
-                # Determine if WE wrote the row (vs. ON CONFLICT DO NOTHING was triggered)
-                cursor = await db.execute(
-                    "SELECT policy_effect_id FROM permissions "
-                    "WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
-                    (target_id, user_id),
-                )
-                perm_row = await cursor.fetchone()
-                acl_written = (
-                    perm_row is not None
-                    and perm_row["policy_effect_id"] == effect_id
-                )
-
-                # Check if folder is in a team subtree (key_wrapped state)
-                team_id = await _get_folder_team_id(db, target_id)
-                if team_id:
-                    cursor = await db.execute(
-                        _SQL_HAS_TEAM_KEY,
-                        (team_id, user_id),
-                    )
-                    key_wrapped = 1 if await cursor.fetchone() is not None else 0
-                else:
-                    key_wrapped = 1  # No team subtree — no key wrapping needed
-
-                # Write policy_folder_grants tracking row (ON CONFLICT DO NOTHING)
-                fg_id = str(_uuid.uuid4())
-                await db.execute(
-                    "INSERT INTO policy_folder_grants "
-                    "(id, effect_id, user_id, folder_id, acl_written, key_wrapped) "
-                    "VALUES (?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT DO NOTHING",
-                    (fg_id, effect_id, user_id, target_id, 1 if acl_written else 0, key_wrapped),
-                )
-                # Sync key_wrapped if user now has the key
-                if key_wrapped:
-                    await db.execute(
-                        "UPDATE policy_folder_grants SET key_wrapped = 1 "
-                        "WHERE effect_id = ? AND user_id = ? AND folder_id = ? AND key_wrapped = 0",
-                        (effect_id, user_id, target_id),
-                    )
 
     # 9. Revocation: remove policy-sourced rows for policies that no longer match
     non_matching_ids = [p.id for p in policies if p.id not in matching_policy_ids]

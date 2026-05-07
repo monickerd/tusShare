@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from typing import Annotated
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,7 +20,7 @@ from app.services.sse_broker import run_redis_listener
 from app.config import settings
 from app.services import event_bus, op_bus, notification_emitter, siem_syslog, siem_webhook
 import app.storage.manager as storage
-from app.database import db_session, get_db, init_db, close_db
+from app.database import Database, db_session, get_db, init_db, close_db
 import app.sensitive_config as sensitive_config
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.https_redirect import HttpsRedirectMiddleware
@@ -238,8 +240,8 @@ async def lifespan(app: FastAPI):
         task.cancel()
         try:
             await task
-        except asyncio.CancelledError:
-            pass  # NOSONAR — awaiting deliberately cancelled tasks in shutdown sequence
+        except asyncio.CancelledError:  # NOSONAR — awaiting deliberately cancelled tasks in shutdown sequence
+            pass
     from app import redis_client
     await redis_client.close()
     await close_db()
@@ -301,6 +303,140 @@ async def _bootstrap_admin(db) -> None:
         "================================================================",
         token,
     )
+
+
+_SPA_INDEX_PATH: str = ""  # set by create_app when the frontend dir is found
+_SLUG_RE = re.compile(r"^[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}$")
+
+
+async def _on_401(request: Request, exc: HTTPException):
+    event_bus.emit(SecurityEvent(
+        event_type="auth.unauthorized",
+        severity="warning",
+        outcome="failure",
+        actor=_actor_from_request(request),
+        detail={"path": request.url.path, "method": request.method},
+    ))
+    return JSONResponse({"detail": exc.detail}, status_code=401)
+
+
+async def _on_403(request: Request, exc: HTTPException):
+    is_step_up_challenge = (
+        isinstance(exc.detail, dict) and exc.detail.get("error") == "step_up_required"
+    )
+    if not is_step_up_challenge:
+        event_bus.emit(SecurityEvent(
+            event_type="auth.forbidden",
+            severity="warning",
+            outcome="failure",
+            actor=_actor_from_request(request),
+            detail={"path": request.url.path, "method": request.method},
+        ))
+    return JSONResponse({"detail": exc.detail}, status_code=403)
+
+
+async def _on_404(request: Request, exc: HTTPException):
+    if request.url.path.startswith("/api/"):
+        event_bus.emit(SecurityEvent(
+            event_type="auth.probe_404",
+            severity="info",
+            outcome="failure",
+            actor=_actor_from_request(request),
+            detail={"path": request.url.path, "method": request.method},
+        ))
+    return JSONResponse({"detail": exc.detail}, status_code=404)
+
+
+async def _on_405(request: Request, exc: HTTPException):
+    if request.url.path.startswith("/api/"):
+        event_bus.emit(SecurityEvent(
+            event_type="auth.probe_405",
+            severity="info",
+            outcome="failure",
+            actor=_actor_from_request(request),
+            detail={"path": request.url.path, "method": request.method},
+        ))
+    return JSONResponse({"detail": exc.detail}, status_code=405)
+
+
+async def _on_429(request: Request, exc: HTTPException):
+    event_bus.emit(SecurityEvent(
+        event_type="auth.rate_limited",
+        severity="warning",
+        outcome="failure",
+        actor=_actor_from_request(request),
+        detail={"path": request.url.path, "method": request.method},
+    ))
+    headers = exc.headers or {}
+    return JSONResponse({"detail": exc.detail}, status_code=429, headers=headers)
+
+
+async def _health_check():
+    integrity = get_integrity_result()
+    if integrity is None:
+        return {"status": "ok"}
+    if integrity.manifest_missing:
+        return {"status": "ok", "integrity": "no_manifest"}
+    if not integrity.ok:
+        return {
+            "status": "degraded",
+            "integrity": "fail",
+            "missing": integrity.missing,
+            "tampered": integrity.tampered,
+        }
+    return {"status": "ok", "integrity": "ok", "files_verified": integrity.total}
+
+
+async def _spa_register(token: str):
+    return FileResponse(_SPA_INDEX_PATH)
+
+
+async def _spa_share(token: str):
+    return FileResponse(_SPA_INDEX_PATH)
+
+
+async def _spa_shortlink(slug: str):
+    return FileResponse(_SPA_INDEX_PATH)
+
+
+async def _shortlink_redirect(slug: str, db: Annotated[Database, Depends(get_db)]):
+    """Redirect root-level short link slugs to /s/<token>#<shareKey>.
+
+    Only intercepts paths that look like a 3-word PascalCase slug.
+    All other single-segment paths (e.g. index.html) fall through to
+    the SPA HTML so client-side routing can handle them.
+    """
+    if not _SLUG_RE.match(slug):
+        return FileResponse(_SPA_INDEX_PATH)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    invite_cursor = await db.execute(
+        "SELECT token FROM invite_short_links WHERE slug = ? AND expires_at > ?",
+        (slug, now),
+    )
+    invite_row = await invite_cursor.fetchone()
+    if invite_row is not None:
+        return RedirectResponse(url=f"/register/{invite_row['token']}", status_code=302)
+
+    cursor = await db.execute(
+        """
+        SELECT sl.share_key, s.token
+        FROM   short_links sl
+        JOIN   shares s ON sl.share_id = s.id
+        WHERE  sl.slug = ?
+          AND  sl.expires_at > ?
+          AND  sl.share_key IS NOT NULL
+          AND  s.is_active = 1
+          AND (s.expires_at IS NULL OR s.expires_at > ?)
+        """,
+        (slug, now, now),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return FileResponse(_SPA_INDEX_PATH)
+
+    return RedirectResponse(url=f"/s/{row['token']}#{row['share_key']}", status_code=302)
 
 
 def create_app() -> FastAPI:
@@ -395,161 +531,28 @@ def create_app() -> FastAPI:
     # --- SIEM HTTP error event handlers ---
     # Legitimate users should not regularly encounter these codes, so each
     # occurrence on an API path is worth recording as a security signal.
-
-    @app.exception_handler(401)
-    async def _on_401(request: Request, exc: HTTPException):
-        event_bus.emit(SecurityEvent(
-            event_type="auth.unauthorized",
-            severity="warning",
-            outcome="failure",
-            actor=_actor_from_request(request),
-            detail={"path": request.url.path, "method": request.method},
-        ))
-        return JSONResponse({"detail": exc.detail}, status_code=401)
-
-    @app.exception_handler(403)
-    async def _on_403(request: Request, exc: HTTPException):
-        # Step-up challenge responses are expected 403s — the client retries with a
-        # token, and a successful step-up already emits step_up_granted.  Logging
-        # these as auth.forbidden would create misleading noise in the SIEM.
-        is_step_up_challenge = (
-            isinstance(exc.detail, dict) and exc.detail.get("error") == "step_up_required"
-        )
-        if not is_step_up_challenge:
-            event_bus.emit(SecurityEvent(
-                event_type="auth.forbidden",
-                severity="warning",
-                outcome="failure",
-                actor=_actor_from_request(request),
-                detail={"path": request.url.path, "method": request.method},
-            ))
-        return JSONResponse({"detail": exc.detail}, status_code=403)
-
-    @app.exception_handler(404)
-    async def _on_404(request: Request, exc: HTTPException):
-        if request.url.path.startswith("/api/"):
-            event_bus.emit(SecurityEvent(
-                event_type="auth.probe_404",
-                severity="info",
-                outcome="failure",
-                actor=_actor_from_request(request),
-                detail={"path": request.url.path, "method": request.method},
-            ))
-        return JSONResponse({"detail": exc.detail}, status_code=404)
-
-    @app.exception_handler(405)
-    async def _on_405(request: Request, exc: HTTPException):
-        if request.url.path.startswith("/api/"):
-            event_bus.emit(SecurityEvent(
-                event_type="auth.probe_405",
-                severity="info",
-                outcome="failure",
-                actor=_actor_from_request(request),
-                detail={"path": request.url.path, "method": request.method},
-            ))
-        return JSONResponse({"detail": exc.detail}, status_code=405)
-
-    @app.exception_handler(429)
-    async def _on_429(request: Request, exc: HTTPException):
-        # Catches HTTPException(429) only — middleware-returned 429 JSONResponses
-        # are instrumented directly in RateLimitMiddleware.
-        event_bus.emit(SecurityEvent(
-            event_type="auth.rate_limited",
-            severity="warning",
-            outcome="failure",
-            actor=_actor_from_request(request),
-            detail={"path": request.url.path, "method": request.method},
-        ))
-        headers = exc.headers or {}
-        return JSONResponse({"detail": exc.detail}, status_code=429, headers=headers)
+    # Step-up challenge 403s are deliberately excluded — see _on_403 above.
+    app.add_exception_handler(401, _on_401)
+    app.add_exception_handler(403, _on_403)
+    app.add_exception_handler(404, _on_404)
+    app.add_exception_handler(405, _on_405)
+    app.add_exception_handler(429, _on_429)  # Catches HTTPException(429) only
 
     # --- Health check ---
-    @app.get("/api/v1/health")
-    async def health():
-        integrity = get_integrity_result()
-        if integrity is None:
-            # DEBUG mode — check never ran
-            return {"status": "ok"}
-        if integrity.manifest_missing:
-            return {"status": "ok", "integrity": "no_manifest"}
-        if not integrity.ok:
-            return {
-                "status": "degraded",
-                "integrity": "fail",
-                "missing": integrity.missing,
-                "tampered": integrity.tampered,
-            }
-        return {"status": "ok", "integrity": "ok", "files_verified": integrity.total}
+    app.add_api_route("/api/v1/health", _health_check, methods=["GET"])
 
     # --- Static files (SPA) — must be last so /api routes take priority ---
     frontend_dir = Path(__file__).parent.parent / "frontend"
     if frontend_dir.exists():
-        index = str(frontend_dir / "index.html")
+        global _SPA_INDEX_PATH
+        _SPA_INDEX_PATH = str(frontend_dir / "index.html")
 
         # Path-based SPA routes: serve index.html so the client-side router
         # can handle them. These must be declared before the StaticFiles mount.
-        # Regex: three concatenated PascalCase words, e.g. "LimaCharlieTango"
-        _SLUG_RE = re.compile(r"^[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}$")
-
-        @app.get("/register/{token}")
-        async def _spa_register(token: str):
-            return FileResponse(index)
-
-        @app.get("/s/{token}")
-        async def _spa_share(token: str):
-            return FileResponse(index)
-
-        @app.get("/l/{slug}")
-        async def _spa_shortlink(slug: str):
-            return FileResponse(index)
-
-        @app.get("/{slug}")
-        async def _shortlink_redirect(slug: str, db=Depends(get_db)):
-            """Redirect root-level short link slugs to /s/<token>#<shareKey>.
-
-            Only intercepts paths that look like a 3-word PascalCase slug.
-            All other single-segment paths (e.g. index.html) fall through to
-            the SPA HTML so client-side routing can handle them.
-            """
-            if not _SLUG_RE.match(slug):
-                return FileResponse(index)
-
-            now = datetime.now(timezone.utc).isoformat()
-
-            # Check invite short links first — redirect to registration page
-            invite_cursor = await db.execute(
-                "SELECT token FROM invite_short_links WHERE slug = ? AND expires_at > ?",
-                (slug, now),
-            )
-            invite_row = await invite_cursor.fetchone()
-            if invite_row is not None:
-                return RedirectResponse(
-                    url=f"/register/{invite_row['token']}",
-                    status_code=302,
-                )
-
-            cursor = await db.execute(
-                """
-                SELECT sl.share_key, s.token
-                FROM   short_links sl
-                JOIN   shares s ON sl.share_id = s.id
-                WHERE  sl.slug = ?
-                  AND  sl.expires_at > ?
-                  AND  sl.share_key IS NOT NULL
-                  AND  s.is_active = 1
-                  AND (s.expires_at IS NULL OR s.expires_at > ?)
-                """,
-                (slug, now, now),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                # Slug not found or has no server-side key — serve SPA (will show 404)
-                return FileResponse(index)
-
-            return RedirectResponse(
-                url=f"/s/{row['token']}#{row['share_key']}",
-                status_code=302,
-            )
+        app.add_api_route("/register/{token}", _spa_register, methods=["GET"])
+        app.add_api_route("/s/{token}", _spa_share, methods=["GET"])
+        app.add_api_route("/l/{slug}", _spa_shortlink, methods=["GET"])
+        app.add_api_route("/{slug}", _shortlink_redirect, methods=["GET"])
 
         app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="static")
 

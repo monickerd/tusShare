@@ -89,7 +89,7 @@ def _admin_tier(admin: AuthenticatedUser) -> int:
 def _check_rule_lock(rule: dict, my_tier: int) -> None:
     if rule["is_locked"] and rule["locked_min_tier"] is not None:
         if my_tier > rule["locked_min_tier"]:
-            raise HTTPException(
+            raise HTTPException(  # NOSONAR — helper; 403 documented in callers
                 status_code=403,
                 detail=f"Rule is locked — requires role tier ≤ {rule['locked_min_tier']} to modify",
             )
@@ -397,9 +397,9 @@ async def update_sharing_flags(
 async def list_sharing_rules(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
-    offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
-    active_only: bool = Query(False),
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    active_only: Annotated[bool, Query()] = False,
 ):
     """List all sharing rules ordered by priority."""
     require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
@@ -553,6 +553,18 @@ async def get_sharing_rule(
     return await _rule_to_dict(db, dict(rule))
 
 
+def _validate_rule_conditions(conditions, new_subject: str) -> None:
+    """Verify cross-subject operators are only used on cross-type rules."""
+    if conditions is None:
+        return
+    for cond in conditions:
+        if cond.operator in _CROSS_OPERATORS and new_subject != "cross":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Operator '{cond.operator}' is only valid for subject='cross' rules",
+            )
+
+
 @router.put("/rules/{rule_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def update_sharing_rule(
     rule_id: str,
@@ -586,13 +598,7 @@ async def update_sharing_rule(
         )
 
     new_subject = body.subject if body.subject is not None else existing["subject"]
-    if body.conditions is not None:
-        for cond in body.conditions:
-            if cond.operator in _CROSS_OPERATORS and new_subject != "cross":
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Operator '{cond.operator}' is only valid for subject='cross' rules",
-                )
+    _validate_rule_conditions(body.conditions, new_subject)
 
     # Apply updates
     await db.execute(

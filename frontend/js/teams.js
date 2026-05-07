@@ -444,6 +444,52 @@ const Teams = (() => {
         return card;
     }
 
+    function _buildFolderRow(f, isOwner) {
+        const folderLink = Utils.el('a', {
+            href: `#/team-folders/${f.folder_id}`,
+            className: 'folder-link',
+            textContent: f.folder_name,
+        });
+        const folderRow = Utils.el('div', { className: 'team-folder-row' }, [folderLink]);
+
+        if (!isOwner) return folderRow;
+
+        const editBtn = Utils.el('button', { className: 'btn btn-secondary btn-xs', textContent: '✎ Rename' });
+        folderRow.appendChild(editBtn);
+
+        editBtn.addEventListener('click', () => {
+            const nameInput = Utils.el('input', { type: 'text', className: 'input input-xs', value: folderLink.textContent });
+            const saveBtn   = Utils.el('button', { className: 'btn btn-primary btn-xs', textContent: 'Save' });
+            const cancelBtn = Utils.el('button', { className: 'btn btn-secondary btn-xs', textContent: 'Cancel' });
+            const editRow   = Utils.el('span', { className: 'folder-inline-edit' }, [nameInput, saveBtn, cancelBtn]);
+
+            folderLink.replaceWith(editRow);
+            editBtn.remove();
+            nameInput.focus();
+            nameInput.select();
+
+            const restoreView = () => { editRow.replaceWith(folderLink); folderRow.appendChild(editBtn); };
+
+            cancelBtn.addEventListener('click', restoreView);
+            nameInput.addEventListener('keydown', e => { if (e.key === 'Escape') restoreView(); });
+            saveBtn.addEventListener('click', async () => {
+                const name = nameInput.value.trim();
+                if (!name) return;
+                saveBtn.disabled = true;
+                try {
+                    await Api.put(`${Config.app.apiPrefix}/folders/${f.folder_id}`, { name });
+                    folderLink.textContent = name;
+                    Utils.showToast('Folder renamed', 'success');
+                    restoreView();
+                } catch (err) {
+                    Utils.showToast('Rename failed: ' + err.message, 'error');
+                    saveBtn.disabled = false;
+                }
+            });
+        });
+        return folderRow;
+    }
+
     /**
      * Render the Team detail page (members, folders, key management).
      */
@@ -529,69 +575,7 @@ const Teams = (() => {
         if (folders.length === 0) {
             foldersSection.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folder associated with this team.' }));
         } else {
-            const f = folders[0];
-            const folderLink = Utils.el('a', {
-                href: `#/team-folders/${f.folder_id}`,
-                className: 'folder-link',
-                textContent: f.folder_name,
-            });
-            const folderRow = Utils.el('div', { className: 'team-folder-row' }, [folderLink]);
-
-            if (isOwner) {
-                // Inline rename: pencil button toggles a text input in place
-                const editBtn = Utils.el('button', {
-                    className: 'btn btn-secondary btn-xs',
-                    textContent: '✎ Rename',
-                });
-                folderRow.appendChild(editBtn);
-
-                editBtn.addEventListener('click', () => {
-                    // Replace link with inline edit widget
-                    const nameInput = Utils.el('input', {
-                        type: 'text',
-                        className: 'input input-xs',
-                        value: folderLink.textContent,
-                    });
-                    const saveBtn = Utils.el('button', {
-                        className: 'btn btn-primary btn-xs',
-                        textContent: 'Save',
-                    });
-                    const cancelBtn = Utils.el('button', {
-                        className: 'btn btn-secondary btn-xs',
-                        textContent: 'Cancel',
-                    });
-                    const editRow = Utils.el('span', { className: 'folder-inline-edit' }, [nameInput, saveBtn, cancelBtn]);
-
-                    folderLink.replaceWith(editRow);
-                    editBtn.remove();
-                    nameInput.focus();
-                    nameInput.select();
-
-                    const restoreView = () => {
-                        editRow.replaceWith(folderLink);
-                        folderRow.appendChild(editBtn);
-                    };
-
-                    cancelBtn.addEventListener('click', restoreView);
-                    nameInput.addEventListener('keydown', e => { if (e.key === 'Escape') restoreView(); });
-
-                    saveBtn.addEventListener('click', async () => {
-                        const name = nameInput.value.trim();
-                        if (!name) return;
-                        saveBtn.disabled = true;
-                        try {
-                            await Api.put(`${Config.app.apiPrefix}/folders/${f.folder_id}`, { name });
-                            folderLink.textContent = name;
-                            Utils.showToast('Folder renamed', 'success');
-                            restoreView();
-                        } catch (err) {
-                            Utils.showToast('Rename failed: ' + err.message, 'error');
-                            saveBtn.disabled = false;
-                        }
-                    });
-                });
-            }
-            foldersSection.appendChild(folderRow);
+            foldersSection.appendChild(_buildFolderRow(folders[0], isOwner));
         }
         container.appendChild(foldersSection);
 
@@ -952,11 +936,87 @@ const Teams = (() => {
         closeModal = Utils.showModal('Create Custom Role', formContent);
     }
 
+    function _buildMemberNameCellParts(m) {
+        const parts = [document.createTextNode(m.username)];
+        if (m.key_delivery_pending) {
+            parts.push(Utils.el('span', {
+                className: 'badge badge-warn',
+                textContent: 'awaiting key',
+                title: 'Team key not yet delivered — will be fulfilled when an existing member next logs in',
+            }));
+        }
+        if (m.key_confirmed === false) {
+            parts.push(Utils.el('span', {
+                className: 'badge badge-muted',
+                textContent: 'confirming',
+                title: 'Member has not yet submitted their Schnorr proof of key possession',
+            }));
+        }
+        return parts;
+    }
+
+    function _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, ownerCount, allowMultiOwner, teamId, container }) {
+        const actions = [];
+        if (isOwner && !isSelf) {
+            const roleOptions = [
+                { value: 'team_member',  label: 'Member' },
+                { value: 'team_manager', label: 'Supervisor' },
+            ];
+            if (allowMultiOwner) roleOptions.push({ value: 'team_admin', label: 'Owner' });
+
+            const roleSelect = Utils.el('select', { className: 'input input-xs' });
+            for (const opt of roleOptions) {
+                const option = Utils.el('option', { value: opt.value, textContent: opt.label });
+                if (opt.value === m.role) option.selected = true;
+                roleSelect.appendChild(option);
+            }
+            const applyBtn = Utils.el('button', {
+                className: 'btn btn-secondary btn-xs',
+                textContent: 'Apply',
+                onClick: async () => {
+                    const newRole = roleSelect.value;
+                    if (newRole === m.role) return;
+                    if (isTargetOwner && ownerCount <= 1) {
+                        Utils.showToast('Cannot demote the only owner — promote another member first.', 'error');
+                        return;
+                    }
+                    applyBtn.disabled = true;
+                    try {
+                        await Api.put(`${_api}/teams/${teamId}/members/${m.user_id}`, { role: newRole });
+                        Utils.showToast(`${m.username}'s role updated.`, 'success');
+                        renderTeamDetailPage(container, teamId);
+                    } catch (e) {
+                        Utils.showToast('Failed to change role: ' + e.message, 'error');
+                        applyBtn.disabled = false;
+                    }
+                },
+            });
+            actions.push(Utils.el('span', { className: 'member-role-change' }, [roleSelect, applyBtn]));
+        }
+        if (isSupervisor && !isSelf && !isTargetOwner) {
+            actions.push(Utils.el('button', {
+                className: 'btn btn-danger btn-xs',
+                textContent: 'Remove',
+                onClick: async () => {
+                    if (!confirm(`Remove ${m.username} from the team?`)) return;
+                    try {
+                        await Api.del(`${_api}/teams/${teamId}/members/${m.user_id}`);
+                        Utils.showToast(`${m.username} removed. Key rotation is now pending.`, 'info');
+                        renderTeamDetailPage(container, teamId);
+                    } catch (e) {
+                        Utils.showToast('Failed to remove member: ' + e.message, 'error');
+                    }
+                },
+            }));
+        }
+        return actions;
+    }
+
     function _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner) {
-        const user     = Auth.getCurrentUser();
-        const isOwner  = myRole === 'team_admin';
+        const user         = Auth.getCurrentUser();
+        const isOwner      = myRole === 'team_admin';
         const isSupervisor = myRole === 'team_manager' || isOwner;
-        const ownerCount = members.filter(m => m.role === 'team_admin').length;
+        const ownerCount   = members.filter(m => m.role === 'team_admin').length;
 
         const thead = Utils.el('thead', {}, [
             Utils.el('tr', {}, [
@@ -969,92 +1029,13 @@ const Teams = (() => {
 
         for (const m of members) {
             const roleLabel     = { team_admin: 'Owner', team_manager: 'Supervisor', team_member: 'Member' }[m.role] || m.role;
-            const isSelf        = m.user_id === user.id;
             const isTargetOwner = m.role === 'team_admin';
+            const isSelf        = m.user_id === user.id;
 
-            const actions = [];
-
-            // Role-change dropdown — owners only, not for self
-            if (isOwner && !isSelf) {
-                // Build the list of assignable target roles for this member
-                const roleOptions = [
-                    { value: 'team_member',  label: 'Member' },
-                    { value: 'team_manager', label: 'Supervisor' },
-                ];
-                // Show owner option only when the flag is on
-                if (allowMultiOwner) {
-                    roleOptions.push({ value: 'team_admin', label: 'Owner' });
-                }
-
-                const roleSelect = Utils.el('select', { className: 'input input-xs' });
-                for (const opt of roleOptions) {
-                    const option = Utils.el('option', { value: opt.value, textContent: opt.label });
-                    if (opt.value === m.role) option.selected = true;
-                    roleSelect.appendChild(option);
-                }
-
-                const applyBtn = Utils.el('button', {
-                    className: 'btn btn-secondary btn-xs',
-                    textContent: 'Apply',
-                    onClick: async () => {
-                        const newRole = roleSelect.value;
-                        if (newRole === m.role) return;
-                        // Guard: can't demote the only owner
-                        if (isTargetOwner && ownerCount <= 1) {
-                            Utils.showToast('Cannot demote the only owner — promote another member first.', 'error');
-                            return;
-                        }
-                        applyBtn.disabled = true;
-                        try {
-                            await Api.put(`${_api}/teams/${teamId}/members/${m.user_id}`, { role: newRole });
-                            Utils.showToast(`${m.username}'s role updated.`, 'success');
-                            renderTeamDetailPage(container, teamId);
-                        } catch (e) {
-                            Utils.showToast('Failed to change role: ' + e.message, 'error');
-                            applyBtn.disabled = false;
-                        }
-                    },
-                });
-
-                actions.push(Utils.el('span', { className: 'member-role-change' }, [roleSelect, applyBtn]));
-            }
-
-            // Remove button — supervisors and owners; not for self, not for other owners
-            if (isSupervisor && !isSelf && !isTargetOwner) {
-                actions.push(Utils.el('button', {
-                    className: 'btn btn-danger btn-xs',
-                    textContent: 'Remove',
-                    onClick: async () => {
-                        if (!confirm(`Remove ${m.username} from the team?`)) return;
-                        try {
-                            await Api.del(`${_api}/teams/${teamId}/members/${m.user_id}`);
-                            Utils.showToast(`${m.username} removed. Key rotation is now pending.`, 'info');
-                            renderTeamDetailPage(container, teamId);
-                        } catch (e) {
-                            Utils.showToast('Failed to remove member: ' + e.message, 'error');
-                        }
-                    },
-                }));
-            }
-
-            const nameCellParts = [document.createTextNode(m.username)];
-            if (m.key_delivery_pending) {
-                nameCellParts.push(Utils.el('span', {
-                    className: 'badge badge-warn',
-                    textContent: 'awaiting key',
-                    title: 'Team key not yet delivered — will be fulfilled when an existing member next logs in',
-                }));
-            }
-            if (m.key_confirmed === false) {
-                nameCellParts.push(Utils.el('span', {
-                    className: 'badge badge-muted',
-                    textContent: 'confirming',
-                    title: 'Member has not yet submitted their Schnorr proof of key possession',
-                }));
-            }
+            const actions = _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, ownerCount, allowMultiOwner, teamId, container });
 
             tbody.appendChild(Utils.el('tr', {}, [
-                Utils.el('td', {}, nameCellParts),
+                Utils.el('td', {}, _buildMemberNameCellParts(m)),
                 Utils.el('td', { textContent: roleLabel }),
                 ...(isSupervisor ? [Utils.el('td', {}, actions)] : []),
             ]));
@@ -1092,7 +1073,7 @@ const Teams = (() => {
         try {
             // Unwrap sk_team
             const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
-            const { sk_bytes: skBytes } = await unwrapTeamKey(
+            const { sk_bytes: skBytes } = await unwrapTeamKey( // NOSONAR — async function defined in same IIFE scope
                 myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
             );
 
@@ -1193,8 +1174,8 @@ const Teams = (() => {
                 createBtn.disabled = true;
                 createBtn.textContent = 'Creating…';
                 try {
-                    const { sk_bytes, pk_bytes } = await _generateTeamKey();
-                    const wrappedKey = await wrapTeamKeyForMember(
+                    const { sk_bytes, pk_bytes } = await _generateTeamKey(); // NOSONAR — async function defined in same IIFE scope
+                    const wrappedKey = await wrapTeamKeyForMember( // NOSONAR — async function defined in same IIFE scope
                         sk_bytes, myPubs.x25519_public_key, myPubs.mlkem768_public_key
                     );
 
@@ -1204,7 +1185,7 @@ const Teams = (() => {
                         const agentsResp = await Api.get(`${_api}/teams/escrow-agents`);
                         const agents = agentsResp.escrow_agents || [];
                         for (const agent of agents) {
-                            const agentWrap = await wrapTeamKeyForMember(
+                            const agentWrap = await wrapTeamKeyForMember( // NOSONAR — async function defined in same IIFE scope
                                 sk_bytes, agent.x25519_public_key, agent.mlkem768_public_key
                             );
                             escrow_members.push({
@@ -1308,7 +1289,7 @@ const Teams = (() => {
 
                     // Step 3: unwrap sk_team using my private keys
                     _setStatus('Step 3/5: unwrapping team key…');
-                    const { sk_bytes } = await unwrapTeamKey(
+                    const { sk_bytes } = await unwrapTeamKey( // NOSONAR — async function defined in same IIFE scope
                         myKeyEntry,
                         privKeys.x25519PrivateKey,
                         privKeys.mlkem768SecretKey
@@ -1328,7 +1309,7 @@ const Teams = (() => {
 
                     // Step 5: wrap sk_team for recipient and POST
                     _setStatus('Step 5/5: wrapping and sending…');
-                    const wrappedKey = await wrapTeamKeyForMember(
+                    const wrappedKey = await wrapTeamKeyForMember( // NOSONAR — async function defined in same IIFE scope
                         sk_bytes,
                         recipientPub.x25519_public_key,
                         recipientPub.mlkem768_public_key
@@ -1470,7 +1451,7 @@ const Teams = (() => {
                             file.encrypted_file_key, file.key_iv, masterKey
                         );
                         const rawKey = await crypto.subtle.exportKey('raw', fileKey);
-                        const entry  = await encryptFileKeyForTeam(
+                        const entry  = await encryptFileKeyForTeam( // NOSONAR — async function defined in same IIFE scope
                             new Uint8Array(rawKey), team.pre_public_key
                         );
                         fileKeys.push({ file_id: file.id, ...entry });
@@ -1517,15 +1498,15 @@ const Teams = (() => {
         // 1. Unwrap current sk_team
         prog('Unwrapping team key…');
         const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
-        const { sk_bytes: skOldBytes } = await unwrapTeamKey(
+        const { sk_bytes: skOldBytes } = await unwrapTeamKey( // NOSONAR — async function defined in same IIFE scope
             myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
         );
 
         // 2. Generate new keypair; compute rk scalar and rk_point
         prog('Generating new key pair…');
-        const { sk_bytes: skNewBytes, pk_bytes: pkNewBytes } = await _generateTeamKey();
+        const { sk_bytes: skNewBytes, pk_bytes: pkNewBytes } = await _generateTeamKey(); // NOSONAR — async function defined in same IIFE scope
         const rk         = computeRKScalar(skOldBytes, skNewBytes);
-        const rkPointB64 = await _computeRkPoint(rk);
+        const rkPointB64 = await _computeRkPoint(rk); // NOSONAR — async function defined in same IIFE scope
 
         // 3. Fetch all file keys, re-encrypt, generate DLEQ proofs
         prog('Fetching file keys…');
@@ -1536,8 +1517,8 @@ const Teams = (() => {
         const updatedFileKeys = [];
         for (let i = 0; i < oldFileKeys.length; i++) {
             const fk      = oldFileKeys[i];
-            const c1NewB64 = await applyPRERotation(fk.pre_c1, rk);
-            const proof    = await _generateDleqProof(rk, fk.pre_c1, rkPointB64, c1NewB64);
+            const c1NewB64 = await applyPRERotation(fk.pre_c1, rk); // NOSONAR — async function defined in same IIFE scope
+            const proof    = await _generateDleqProof(rk, fk.pre_c1, rkPointB64, c1NewB64); // NOSONAR — async function defined in same IIFE scope
             updatedFileKeys.push({ file_id: fk.file_id, pre_c1: c1NewB64, ...proof });
             if (i % 50 === 49) {
                 prog(`Re-encrypting… ${i + 1}/${oldFileKeys.length}`);
@@ -1553,7 +1534,7 @@ const Teams = (() => {
             const pub = await Api.get(
                 `${Config.app.apiPrefix}/auth/users/${encodeURIComponent(m.username)}/public-keys`
             );
-            const wrapped = await wrapTeamKeyForMember(
+            const wrapped = await wrapTeamKeyForMember( // NOSONAR — async function defined in same IIFE scope
                 skNewBytes, pub.x25519_public_key, pub.mlkem768_public_key
             );
             wrappedMembers.push({ user_id: m.user_id, ...wrapped });
@@ -1614,7 +1595,7 @@ const Teams = (() => {
 
         // Unwrap our sk_team
         const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
-        const { sk_bytes: skBytes } = await unwrapTeamKey(
+        const { sk_bytes: skBytes } = await unwrapTeamKey( // NOSONAR — async function defined in same IIFE scope
             myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
         );
 
@@ -1622,7 +1603,7 @@ const Teams = (() => {
         const grants = [];
         for (const grant of pending) {
             if (!grant.x25519_public_key || !grant.mlkem768_public_key) continue;
-            const wrapped = await wrapTeamKeyForMember(
+            const wrapped = await wrapTeamKeyForMember( // NOSONAR — async function defined in same IIFE scope
                 skBytes, grant.x25519_public_key, grant.mlkem768_public_key
             );
             grants.push({ grant_id: grant.grant_id, user_id: grant.user_id, ...wrapped });
@@ -1653,7 +1634,7 @@ const Teams = (() => {
     async function _submitSchnorrPoK(teamId, pkNewB64, asymKeys) {
         // Unwrap sk_new from our key slot
         const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
-        const { sk_bigint: skBigInt } = await unwrapTeamKey(
+        const { sk_bigint: skBigInt } = await unwrapTeamKey( // NOSONAR — async function defined in same IIFE scope
             myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
         );
 
@@ -1695,6 +1676,31 @@ const Teams = (() => {
      *   (b) Teams with has_pending_key_grants: fulfil sk_team delivery for policy grantees.
      *   (c) Teams with my_key_confirmed=false: submit Schnorr PoK for this member's slot.
      */
+    async function _processOneTeamOps(team, asymKeys) {
+        if (team.rotation_pending) {
+            try {
+                await _performRotation(team.id, asymKeys);
+                console.log(`[teams] background rotation complete for team ${team.id}`);
+            } catch (err) {
+                console.warn(`[teams] background rotation failed for team ${team.id}:`, err.message);
+            }
+        }
+        if (team.has_pending_key_grants) {
+            try {
+                await _fulfillPendingKeyGrants(team.id, asymKeys);
+            } catch (err) {
+                console.warn(`[teams] key grant fulfillment failed for team ${team.id}:`, err.message);
+            }
+        }
+        if (team.my_key_confirmed === false) {
+            try {
+                await _submitSchnorrPoK(team.id, team.pre_public_key, asymKeys);
+            } catch (err) {
+                console.warn(`[teams] Schnorr PoK failed for team ${team.id}:`, err.message);
+            }
+        }
+    }
+
     async function _processPendingTeamOperations() {
         let asymKeys;
         try { asymKeys = _getMyPrivateKeys(); } catch { return; }
@@ -1706,33 +1712,7 @@ const Teams = (() => {
         } catch { return; }
 
         for (const team of teams) {
-            // (a) Pending rotation — any member can execute
-            if (team.rotation_pending) {
-                try {
-                    await _performRotation(team.id, asymKeys);
-                    console.log(`[teams] background rotation complete for team ${team.id}`);
-                } catch (err) {
-                    console.warn(`[teams] background rotation failed for team ${team.id}:`, err.message);
-                }
-            }
-
-            // (b) Pending key grants — wrap sk_team for policy grantees who lack it
-            if (team.has_pending_key_grants) {
-                try {
-                    await _fulfillPendingKeyGrants(team.id, asymKeys);
-                } catch (err) {
-                    console.warn(`[teams] key grant fulfillment failed for team ${team.id}:`, err.message);
-                }
-            }
-
-            // (c) Unconfirmed key slot — prove we can decrypt our user_team_keys entry
-            if (team.my_key_confirmed === false) {
-                try {
-                    await _submitSchnorrPoK(team.id, team.pre_public_key, asymKeys);
-                } catch (err) {
-                    console.warn(`[teams] Schnorr PoK failed for team ${team.id}:`, err.message);
-                }
-            }
+            await _processOneTeamOps(team, asymKeys);
         }
     }
 
@@ -1753,7 +1733,7 @@ const Teams = (() => {
 
         // Fetch my wrapped team key
         const myKeyEntry = await Api.get(`${_api}/teams/${teamId}/my-key`);
-        const { sk_bigint } = await unwrapTeamKey(
+        const { sk_bigint } = await unwrapTeamKey( // NOSONAR — async function defined in same IIFE scope
             myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
         );
 
@@ -1870,9 +1850,9 @@ const Teams = (() => {
 
         // 1. Generate new keypair; compute rk scalar and rk_point
         prog('Generating new key pair…');
-        const { sk_bytes: skNewBytes, pk_bytes: pkNewBytes } = await _generateTeamKey();
+        const { sk_bytes: skNewBytes, pk_bytes: pkNewBytes } = await _generateTeamKey(); // NOSONAR — async function defined in same IIFE scope
         const rk         = computeRKScalar(skOldBytes, skNewBytes);
-        const rkPointB64 = await _computeRkPoint(rk);
+        const rkPointB64 = await _computeRkPoint(rk); // NOSONAR — async function defined in same IIFE scope
 
         // 2. Fetch all file keys for this team, re-encrypt, generate DLEQ proofs
         prog('Fetching file keys…');
@@ -1883,8 +1863,8 @@ const Teams = (() => {
         const updatedFileKeys = [];
         for (let i = 0; i < oldFileKeys.length; i++) {
             const fk       = oldFileKeys[i];
-            const c1NewB64 = await applyPRERotation(fk.pre_c1, rk);
-            const proof    = await _generateDleqProof(rk, fk.pre_c1, rkPointB64, c1NewB64);
+            const c1NewB64 = await applyPRERotation(fk.pre_c1, rk); // NOSONAR — async function defined in same IIFE scope
+            const proof    = await _generateDleqProof(rk, fk.pre_c1, rkPointB64, c1NewB64); // NOSONAR — async function defined in same IIFE scope
             updatedFileKeys.push({ file_id: fk.file_id, pre_c1: c1NewB64, ...proof });
             if (i % 50 === 49) {
                 prog(`Re-encrypting… ${i + 1}/${oldFileKeys.length}`);
@@ -1900,7 +1880,7 @@ const Teams = (() => {
             const pub = await Api.get(
                 `${Config.app.apiPrefix}/auth/users/${encodeURIComponent(m.username)}/public-keys`
             );
-            const wrapped = await wrapTeamKeyForMember(
+            const wrapped = await wrapTeamKeyForMember( // NOSONAR — async function defined in same IIFE scope
                 skNewBytes, pub.x25519_public_key, pub.mlkem768_public_key
             );
             wrappedMembers.push({ user_id: m.user_id, ...wrapped });
@@ -1908,7 +1888,7 @@ const Teams = (() => {
 
         // 4. Wrap sk_new for ourselves (joining user is not yet in members list)
         const myPubs      = _getMyPublicKeys();
-        const selfWrapped = await wrapTeamKeyForMember(
+        const selfWrapped = await wrapTeamKeyForMember( // NOSONAR — async function defined in same IIFE scope
             skNewBytes, myPubs.x25519_public_key, myPubs.mlkem768_public_key
         );
         wrappedMembers.push({ user_id: Auth.getCurrentUser().id, ...selfWrapped });

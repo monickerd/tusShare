@@ -64,7 +64,7 @@ def _check_setting_lock(row, admin_tier: int) -> None:
     """Raise 403 if the admin_settings row is locked and the caller lacks authority."""
     if row and row["is_locked"] and row["locked_min_tier"] is not None:
         if admin_tier > row["locked_min_tier"]:
-            raise HTTPException(
+            raise HTTPException(  # NOSONAR — helper; 403 documented in callers
                 status_code=403,
                 detail=f"This setting is locked and requires role tier ≤ {row['locked_min_tier']}",
             )
@@ -73,7 +73,7 @@ def _check_setting_lock(row, admin_tier: int) -> None:
 def _check_policy_lock(policy_row, admin_tier: int) -> None:
     if policy_row and policy_row["policy_locked"] and policy_row["locked_min_tier"] is not None:
         if admin_tier > policy_row["locked_min_tier"]:
-            raise HTTPException(
+            raise HTTPException(  # NOSONAR — helper; 403 documented in callers
                 status_code=403,
                 detail=f"This folder policy is locked and requires role tier ≤ {policy_row['locked_min_tier']}",
             )
@@ -84,7 +84,7 @@ def _check_overrides_allowed(ancestor_ids: list[str], db_policies: dict) -> None
     for fid in ancestor_ids:
         p = db_policies.get(fid)
         if p and not p["overrides_allowed"]:
-            raise HTTPException(
+            raise HTTPException(  # NOSONAR — helper; 403 documented in callers
                 status_code=403,
                 detail=f"A parent folder policy (folder {fid}) disallows sub-folder escrow overrides",
             )
@@ -137,6 +137,42 @@ async def get_escrow_settings(
     }
 
 
+async def _collect_escrow_value_updates(db, body: "EscrowSettingsUpdate") -> list[tuple]:
+    """Validate IDs and build list of (key, json_value) pairs to write."""
+    updates: list[tuple] = []
+    if body.escrow_default_user_ids is not None:
+        for uid in body.escrow_default_user_ids:
+            c = await db.execute("SELECT 1 FROM users WHERE id = ?", (uid,))
+            if not await c.fetchone():
+                raise HTTPException(status_code=400, detail=f"User ID not found: {uid}")
+        updates.append(("escrow_default_user_ids", json.dumps(body.escrow_default_user_ids)))
+    if body.escrow_default_role_ids is not None:
+        for rid in body.escrow_default_role_ids:
+            c = await db.execute("SELECT 1 FROM roles WHERE id = ?", (rid,))
+            if not await c.fetchone():
+                raise HTTPException(status_code=400, detail=f"Role ID not found: {rid}")
+        updates.append(("escrow_default_role_ids", json.dumps(body.escrow_default_role_ids)))
+    if body.escrow_require_coverage is not None:
+        updates.append(("escrow_require_coverage", "1" if body.escrow_require_coverage else "0"))
+    return updates
+
+
+async def _apply_setting_with_lock(db, key: str, value: str, new_is_locked, new_locked_tier) -> None:
+    """Write one admin_settings row, optionally updating the lock fields."""
+    lock_clause = ""
+    lock_params: tuple = ()
+    if new_is_locked is not None and new_locked_tier is not None:
+        lock_clause = ", is_locked = ?, locked_min_tier = ?"
+        lock_params = (new_is_locked, new_locked_tier)
+    elif new_is_locked is not None:
+        lock_clause = ", is_locked = ?"
+        lock_params = (new_is_locked,)
+    await db.execute(
+        f"UPDATE admin_settings SET value = ?, updated_at = NOW(){lock_clause} WHERE key = ?",
+        (value,) + lock_params + (key,),
+    )
+
+
 @router.put("/settings", dependencies=[Depends(require_step_up(_STEPUP))], responses={400: {"description": "Bad Request"}})
 async def update_escrow_settings(
     body: EscrowSettingsUpdate,
@@ -161,40 +197,10 @@ async def update_escrow_settings(
     if new_is_locked and new_locked_tier is not None and new_locked_tier < my_tier:
         raise HTTPException(status_code=400, detail="Cannot lock at a tier higher than your own")
 
-    updates: list[tuple] = []
-
-    if body.escrow_default_user_ids is not None:
-        # Verify all user IDs exist
-        for uid in body.escrow_default_user_ids:
-            c = await db.execute("SELECT 1 FROM users WHERE id = ?", (uid,))
-            if not await c.fetchone():
-                raise HTTPException(status_code=400, detail=f"User ID not found: {uid}")
-        updates.append(("escrow_default_user_ids", json.dumps(body.escrow_default_user_ids)))
-
-    if body.escrow_default_role_ids is not None:
-        for rid in body.escrow_default_role_ids:
-            c = await db.execute("SELECT 1 FROM roles WHERE id = ?", (rid,))
-            if not await c.fetchone():
-                raise HTTPException(status_code=400, detail=f"Role ID not found: {rid}")
-        updates.append(("escrow_default_role_ids", json.dumps(body.escrow_default_role_ids)))
-
-    if body.escrow_require_coverage is not None:
-        updates.append(("escrow_require_coverage", "1" if body.escrow_require_coverage else "0"))
+    updates = await _collect_escrow_value_updates(db, body)
 
     for key, value in updates:
-        lock_clause = ""
-        lock_params: tuple = ()
-        if new_is_locked is not None and new_locked_tier is not None:
-            lock_clause = ", is_locked = ?, locked_min_tier = ?"
-            lock_params = (new_is_locked, new_locked_tier)
-        elif new_is_locked is not None:
-            lock_clause = ", is_locked = ?"
-            lock_params = (new_is_locked,)
-
-        await db.execute(
-            f"UPDATE admin_settings SET value = ?, updated_at = NOW(){lock_clause} WHERE key = ?",
-            (value,) + lock_params + (key,),
-        )
+        await _apply_setting_with_lock(db, key, value, new_is_locked, new_locked_tier)
 
     # If only lock changed (no value changes)
     if not updates and (new_is_locked is not None or new_locked_tier is not None):
@@ -351,6 +357,52 @@ async def get_folder_policy(
     }
 
 
+async def _validate_policy_agents(db, agents: list[dict]) -> None:
+    """Verify that all user/role IDs referenced in agent entries exist in the DB."""
+    for entry in agents:
+        if "user_id" in entry and entry["user_id"]:
+            c = await db.execute("SELECT 1 FROM users WHERE id = ?", (entry["user_id"],))
+            if not await c.fetchone():
+                raise HTTPException(status_code=400, detail=f"User not found: {entry['user_id']}")
+        elif "role_id" in entry and entry["role_id"]:
+            c = await db.execute("SELECT 1 FROM roles WHERE id = ?", (entry["role_id"],))
+            if not await c.fetchone():
+                raise HTTPException(status_code=400, detail=f"Role not found: {entry['role_id']}")
+
+
+async def _upsert_policy_record(
+    db, existing, policy_id: str, folder_id: str,
+    body: "FolderEscrowPolicyRequest", admin: AuthenticatedUser, my_tier: int,
+) -> None:
+    """Insert or update the folder_escrow_policies row and replace agents."""
+    if existing:
+        await db.execute(
+            "UPDATE folder_escrow_policies SET override_mode=?, policy_locked=?, locked_min_tier=?, "
+            "overrides_allowed=?, updated_at=NOW() WHERE id=?",
+            (body.override_mode, body.policy_locked, body.locked_min_tier,
+             body.overrides_allowed, policy_id),
+        )
+        await db.execute(
+            "DELETE FROM folder_escrow_policy_agents WHERE policy_id = ?", (policy_id,)
+        )
+    else:
+        await db.execute(
+            "INSERT INTO folder_escrow_policies "
+            "(id, folder_id, override_mode, policy_locked, locked_min_tier, overrides_allowed, "
+            " created_by, created_by_tier) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (policy_id, folder_id, body.override_mode, body.policy_locked,
+             body.locked_min_tier, body.overrides_allowed, admin.id, my_tier),
+        )
+    for entry in body.agents:
+        await db.execute(
+            "INSERT INTO folder_escrow_policy_agents (id, policy_id, agent_user_id, agent_role_id) "
+            "VALUES (?, ?, ?, ?)",
+            (str(uuid.uuid4()), policy_id,
+             entry.get("user_id") or None, entry.get("role_id") or None),
+        )
+
+
 @router.put("/folder-policies/{folder_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def upsert_folder_policy(
     folder_id: str,
@@ -387,48 +439,10 @@ async def upsert_folder_policy(
     parent_policies = {fid: ancestor_policies[fid] for fid in parent_ancestors if fid in ancestor_policies}
     _check_overrides_allowed(parent_ancestors, parent_policies)
 
-    # Validate agent entries exist
-    for entry in body.agents:
-        if "user_id" in entry and entry["user_id"]:
-            c = await db.execute("SELECT 1 FROM users WHERE id = ?", (entry["user_id"],))
-            if not await c.fetchone():
-                raise HTTPException(status_code=400, detail=f"User not found: {entry['user_id']}")
-        elif "role_id" in entry and entry["role_id"]:
-            c = await db.execute("SELECT 1 FROM roles WHERE id = ?", (entry["role_id"],))
-            if not await c.fetchone():
-                raise HTTPException(status_code=400, detail=f"Role not found: {entry['role_id']}")
+    await _validate_policy_agents(db, body.agents)
 
     policy_id = existing["id"] if existing else str(uuid.uuid4())
-
-    if existing:
-        await db.execute(
-            "UPDATE folder_escrow_policies SET override_mode=?, policy_locked=?, locked_min_tier=?, "
-            "overrides_allowed=?, updated_at=NOW() WHERE id=?",
-            (body.override_mode, body.policy_locked, body.locked_min_tier,
-             body.overrides_allowed, policy_id),
-        )
-        # Replace agents
-        await db.execute(
-            "DELETE FROM folder_escrow_policy_agents WHERE policy_id = ?", (policy_id,)
-        )
-    else:
-        await db.execute(
-            "INSERT INTO folder_escrow_policies "
-            "(id, folder_id, override_mode, policy_locked, locked_min_tier, overrides_allowed, "
-            " created_by, created_by_tier) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (policy_id, folder_id, body.override_mode, body.policy_locked,
-             body.locked_min_tier, body.overrides_allowed, admin.id, my_tier),
-        )
-
-    for entry in body.agents:
-        await db.execute(
-            "INSERT INTO folder_escrow_policy_agents (id, policy_id, agent_user_id, agent_role_id) "
-            "VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), policy_id,
-             entry.get("user_id") or None, entry.get("role_id") or None),
-        )
-
+    await _upsert_policy_record(db, existing, policy_id, folder_id, body, admin, my_tier)
     await db.commit()
     return {"message": "Policy saved", "policy_id": policy_id}
 
@@ -468,8 +482,8 @@ async def delete_folder_policy(
 async def get_coverage_report(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ):
     """Return teams with no escrow agent key slot currently filled.
 

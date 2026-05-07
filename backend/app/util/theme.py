@@ -123,6 +123,74 @@ _BLOCK_RE = re.compile(
 _config: dict[str, Any] = {}
 
 
+def _load_brand_name(config: dict, raw: dict) -> None:
+    brand = raw.get("brand_name")
+    if brand is None:
+        return
+    if isinstance(brand, str) and 1 <= len(brand) <= _BRAND_NAME_MAX:
+        config["brand_name"] = brand
+    else:
+        logger.warning("Theme: brand_name must be 1–%d chars, ignoring", _BRAND_NAME_MAX)
+
+
+def _load_logo_path(config: dict, raw: dict) -> None:
+    logo = raw.get("logo_path")
+    if logo is None:
+        return
+    if isinstance(logo, str) and _LOGO_FILENAME_RE.match(logo):
+        config["logo_path"] = logo
+    else:
+        logger.warning("Theme: logo_path must be a simple filename with no path separators, ignoring")
+
+
+def _load_colors(config: dict, raw: dict) -> None:
+    colors_raw = raw.get("colors")
+    if colors_raw is None:
+        return
+    if not isinstance(colors_raw, dict):
+        logger.warning("Theme: 'colors' must be a JSON object, ignoring")
+        return
+    colors: dict[str, str] = {}
+    for var, val in colors_raw.items():
+        is_color  = var in _ALLOWED_COLOR_VARS
+        is_shadow = var in _ALLOWED_SHADOW_VARS
+        if not is_color and not is_shadow:
+            logger.warning("Theme: unknown CSS variable %r, ignoring", var)
+            continue
+        if not isinstance(val, str):
+            logger.warning("Theme: value for %r must be a string, ignoring", var)
+            continue
+        stripped = val.strip()
+        pattern = _CSS_COLOR_RE if is_color else _CSS_SHADOW_RE
+        if not pattern.match(stripped):
+            logger.warning("Theme: invalid value for %r: %r, ignoring", var, val)
+            continue
+        colors[var] = stripped
+    config["colors"] = colors
+
+
+def _load_ui_flags(config: dict, raw: dict) -> None:
+    ui_raw = raw.get("ui")
+    if ui_raw is None:
+        return
+    if not isinstance(ui_raw, dict):
+        logger.warning("Theme: 'ui' must be a JSON object, ignoring")
+        return
+    flags: dict[str, bool] = {}
+    for key, val in ui_raw.items():
+        if not isinstance(key, str) or not _UI_FLAG_RE.match(key):
+            logger.warning("Theme: invalid ui flag key %r, ignoring", key)
+            continue
+        if key not in _UI_FLAG_DEFAULTS:
+            logger.warning("Theme: unknown ui flag %r, ignoring", key)
+            continue
+        if not isinstance(val, bool):
+            logger.warning("Theme: ui flag %r value must be true/false, ignoring", key)
+            continue
+        flags[key] = val
+    config["ui"] = flags
+
+
 def load_theme(data_dir: Path) -> dict[str, Any]:
     """Read and validate DATA_DIR/theme.json.  Returns {} if absent or invalid."""
     global _config
@@ -145,74 +213,10 @@ def load_theme(data_dir: Path) -> dict[str, Any]:
         return {}
 
     config: dict[str, Any] = {}
-
-    # --- brand_name ---
-    brand = raw.get("brand_name")
-    if brand is not None:
-        if isinstance(brand, str) and 1 <= len(brand) <= _BRAND_NAME_MAX:
-            config["brand_name"] = brand
-        else:
-            logger.warning(
-                "Theme: brand_name must be 1–%d chars, ignoring", _BRAND_NAME_MAX
-            )
-
-    # --- logo_path ---
-    logo = raw.get("logo_path")
-    if logo is not None:
-        if isinstance(logo, str) and _LOGO_FILENAME_RE.match(logo):
-            config["logo_path"] = logo
-        else:
-            logger.warning(
-                "Theme: logo_path must be a simple filename with no path separators, ignoring"
-            )
-
-    # --- colors ---
-    colors_raw = raw.get("colors")
-    if colors_raw is not None:
-        if not isinstance(colors_raw, dict):
-            logger.warning("Theme: 'colors' must be a JSON object, ignoring")
-        else:
-            colors: dict[str, str] = {}
-            for var, val in colors_raw.items():
-                is_color  = var in _ALLOWED_COLOR_VARS
-                is_shadow = var in _ALLOWED_SHADOW_VARS
-                if not is_color and not is_shadow:
-                    logger.warning("Theme: unknown CSS variable %r, ignoring", var)
-                    continue
-                if not isinstance(val, str):
-                    logger.warning("Theme: value for %r must be a string, ignoring", var)
-                    continue
-                stripped = val.strip()
-                pattern = _CSS_COLOR_RE if is_color else _CSS_SHADOW_RE
-                if not pattern.match(stripped):
-                    logger.warning(
-                        "Theme: invalid value for %r: %r, ignoring", var, val
-                    )
-                    continue
-                colors[var] = stripped
-            config["colors"] = colors
-
-    # --- ui feature flags ---
-    ui_raw = raw.get("ui")
-    if ui_raw is not None:
-        if not isinstance(ui_raw, dict):
-            logger.warning("Theme: 'ui' must be a JSON object, ignoring")
-        else:
-            flags: dict[str, bool] = {}
-            for key, val in ui_raw.items():
-                if not isinstance(key, str) or not _UI_FLAG_RE.match(key):
-                    logger.warning("Theme: invalid ui flag key %r, ignoring", key)
-                    continue
-                if key not in _UI_FLAG_DEFAULTS:
-                    logger.warning("Theme: unknown ui flag %r, ignoring", key)
-                    continue
-                if not isinstance(val, bool):
-                    logger.warning(
-                        "Theme: ui flag %r value must be true/false, ignoring", key
-                    )
-                    continue
-                flags[key] = val
-            config["ui"] = flags
+    _load_brand_name(config, raw)
+    _load_logo_path(config, raw)
+    _load_colors(config, raw)
+    _load_ui_flags(config, raw)
 
     _config = config
     logger.info(

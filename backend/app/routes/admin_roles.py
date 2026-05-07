@@ -60,7 +60,7 @@ async def _load_role(db, role_id: str):
     cursor = await db.execute("SELECT * FROM roles WHERE id = ?", (role_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Role not found")
+        raise HTTPException(status_code=404, detail="Role not found")  # NOSONAR — helper; 404 documented in callers
     return row
 
 
@@ -116,6 +116,14 @@ def _check_sensitive_flag_authority(user: AuthenticatedUser):
             status_code=403,
             detail="Only Server Admin or Org Admin may modify sensitive permission flags",
         )
+
+
+def _validate_new_role_flags(known_flags: set, permissions: dict) -> None:
+    for flag, val in permissions.items():
+        if flag not in known_flags:
+            raise HTTPException(status_code=400, detail=f"Unknown flag: {flag}")
+        if val not in ("0", "1"):
+            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -223,12 +231,7 @@ async def create_role(
     )
     known_flags = {r["flag"] for r in await all_flags_cursor.fetchall()}
 
-    for flag in body.permissions:
-        if flag not in known_flags:
-            raise HTTPException(status_code=400, detail=f"Unknown flag: {flag}")
-        val = body.permissions[flag]
-        if val not in ("0", "1"):
-            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}")
+    _validate_new_role_flags(known_flags, body.permissions)
 
     # Inheritance cap: new role may not grant flags the creator does not have
     for flag, val in body.permissions.items():
@@ -341,6 +344,23 @@ async def delete_role(
     return {"message": "Role deleted"}
 
 
+def _validate_update_permission_flags(known_flags: set, permissions: dict) -> None:
+    for flag, fu in permissions.items():
+        if flag not in known_flags:
+            raise HTTPException(status_code=400, detail=f"Unknown flag: {flag}")
+        if fu.value not in ("0", "1"):
+            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {fu.value!r}")
+
+
+def _check_flag_lock_tier(flag: str, row, my_tier: int) -> None:
+    if row and row["is_locked"] and row["locked_min_tier"] is not None:
+        if my_tier > row["locked_min_tier"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Flag '{flag}' is locked — requires role tier ≤ {row['locked_min_tier']}",
+            )
+
+
 # ---------------------------------------------------------------------------
 # PUT /roles/{role_id}/permissions — replace all flag values for a role
 # ---------------------------------------------------------------------------
@@ -372,11 +392,7 @@ async def update_role_permissions(
     all_flags_cursor = await db.execute("SELECT flag FROM role_permission_flags")
     known_flags = {r["flag"] for r in await all_flags_cursor.fetchall()}
 
-    for flag, fu in body.permissions.items():
-        if flag not in known_flags:
-            raise HTTPException(status_code=400, detail=f"Unknown flag: {flag}")
-        if fu.value not in ("0", "1"):
-            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {fu.value!r}")
+    _validate_update_permission_flags(known_flags, body.permissions)
 
     # Load existing lock state for all flags being touched
     if body.permissions:
@@ -392,13 +408,7 @@ async def update_role_permissions(
 
     # Lock enforcement: blocked if flag is locked and caller lacks the required tier
     for flag in body.permissions:
-        row = existing_locks.get(flag)
-        if row and row["is_locked"] and row["locked_min_tier"] is not None:
-            if my_tier > row["locked_min_tier"]:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Flag '{flag}' is locked — requires role tier ≤ {row['locked_min_tier']}",
-                )
+        _check_flag_lock_tier(flag, existing_locks.get(flag), my_tier)
 
     # Prevent locking a flag at a tier the caller does not hold
     for flag, fu in body.permissions.items():

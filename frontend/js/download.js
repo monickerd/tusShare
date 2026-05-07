@@ -181,6 +181,22 @@ const Download = (() => {
     // OPFS-backed download
     // ------------------------------------------------------------------
 
+    async function _fetchAndCacheChunks(dir, db, fileId, totalChunks, chunks, fileKey, done, onProgress, signal) {
+        for (let i = 0; i < totalChunks; i++) {
+            if (signal?.aborted) {
+                const err = new Error('Aborted');
+                err.name  = 'AbortError';
+                throw err;
+            }
+            if (done.has(i)) continue;
+            const plainBuf = await _fetchDecryptChunk(fileId, chunks[i], i, totalChunks, fileKey, signal);
+            await _writeChunk(dir, fileId, i, plainBuf);
+            done.add(i);
+            await _idbPut(db, { fileId, totalChunks, done: [...done] });
+            if (onProgress) onProgress(done.size, totalChunks);
+        }
+    }
+
     async function _downloadWithOpfs(fileId, masterKey, onProgress, signal) {
         const db  = await _openDb();
         const dir = await _getOpfsDir();
@@ -221,24 +237,7 @@ const Download = (() => {
         );
 
         // 4. Fetch + decrypt + write each chunk not yet persisted to OPFS
-        for (let i = 0; i < totalChunks; i++) {
-            if (signal?.aborted) {
-                const err = new Error('Aborted');
-                err.name  = 'AbortError';
-                throw err;
-            }
-
-            if (done.has(i)) continue;
-
-            const plainBuf = await _fetchDecryptChunk(fileId, manifest.chunks[i], i, totalChunks, fileKey, signal);
-
-            // Write to OPFS first, then record in IndexedDB (crash-safe ordering)
-            await _writeChunk(dir, fileId, i, plainBuf);
-            done.add(i);
-            await _idbPut(db, { fileId, totalChunks, done: [...done] });
-
-            if (onProgress) onProgress(done.size, totalChunks);
-        }
+        await _fetchAndCacheChunks(dir, db, fileId, totalChunks, manifest.chunks, fileKey, done, onProgress, signal);
 
         // 5. Read all chunks from OPFS and assemble
         let totalBytes = 0;

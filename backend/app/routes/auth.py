@@ -331,7 +331,7 @@ async def register_asymmetric_keys(
 # ---------------------------------------------------------------------------
 
 @router.get("/invite/{token}", responses={404: {"description": "Not Found"}})
-async def validate_invite(token: str, db=Depends(get_db)):
+async def validate_invite(token: str, db: Annotated[Database, Depends(get_db)]):
     """Validate a registration invite token.
 
     Returns 200 if the token is valid, unexpired, and unused.
@@ -355,7 +355,7 @@ async def validate_invite(token: str, db=Depends(get_db)):
 
 
 @router.get("/public-settings")
-async def get_public_settings(db=Depends(get_db)):
+async def get_public_settings(db: Annotated[Database, Depends(get_db)]):
     """Return public configuration that unauthenticated clients need before login.
 
     Exposes the server-enforced upload chunk size so the client uses the correct

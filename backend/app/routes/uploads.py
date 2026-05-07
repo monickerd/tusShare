@@ -76,6 +76,95 @@ def _parse_upload_metadata(raw: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# create_upload helpers
+# ---------------------------------------------------------------------------
+
+def _validate_metadata_fields(meta: dict) -> tuple:
+    """Check required fields and validate escrow key encoding. Returns (escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv)."""
+    for field in ("filename", "filetype", "encrypted_file_key", "key_iv", "chunk_size", "original_size"):
+        if field not in meta:
+            raise HTTPException(status_code=400, detail=f"Missing metadata field: {field}")
+    escrow_ephemeral_pk: str | None = meta.get("escrow_ephemeral_pk") or None
+    escrow_encrypted_key: str | None = meta.get("escrow_encrypted_key") or None
+    escrow_key_iv: str | None = meta.get("escrow_key_iv") or None
+    if escrow_ephemeral_pk and escrow_encrypted_key and escrow_key_iv:
+        try:
+            validate_base64(escrow_ephemeral_pk)
+            validate_base64(escrow_encrypted_key)
+            validate_base64(escrow_key_iv)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid escrow key field encoding")
+    return escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv
+
+
+async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> str | None:
+    """Validate folder UUID and ownership. Returns validated folder_id or None."""
+    if not folder_id_raw:
+        return None
+    try:
+        folder_id = validate_uuid(folder_id_raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid folder_id in metadata")
+    cursor = await db.execute(
+        "SELECT id FROM folders WHERE id = ? AND owner_id = ?",
+        (folder_id, user_id),
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Folder not found")
+    return folder_id
+
+
+async def _enforce_upload_quotas(db, user_id: str, total_encrypted_size: int) -> None:
+    """Fetch user row and enforce global/personal size limits and disk quota."""
+    cursor = await db.execute(
+        "SELECT disk_used, disk_quota, max_file_size FROM users WHERE id = ?",
+        (user_id,),
+    )
+    user_row = await cursor.fetchone()
+    if user_row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    gmax_val = await get_admin_setting(db, "global_max_file_size")
+    global_max = int(gmax_val) if gmax_val is not None else settings.GLOBAL_MAX_FILE_SIZE
+    if global_max > 0 and total_encrypted_size > global_max:
+        raise HTTPException(status_code=413, detail="File exceeds the server's maximum allowed size")
+    if user_row["max_file_size"] is not None and total_encrypted_size > user_row["max_file_size"]:
+        raise HTTPException(status_code=413, detail="File exceeds the maximum allowed size")
+
+    if user_row["disk_quota"] is not None:
+        if user_row["disk_used"] + total_encrypted_size > user_row["disk_quota"]:
+            raise HTTPException(status_code=413, detail="Storage quota exceeded")
+        try:
+            warn_val = await get_admin_setting(db, "upload_quota_warn_pct")
+            warn_pct = int(warn_val) if warn_val else 90
+            used_pct = user_row["disk_used"] / user_row["disk_quota"] * 100
+            if used_pct >= warn_pct:
+                from app.services import op_bus
+                from app.schemas.op_event import OperationalEvent
+                op_bus.emit(OperationalEvent(
+                    event_type="upload.quota.warning",
+                    severity="warning", source="upload",
+                    data={
+                        "user_id":     user_id,
+                        "used_bytes":  user_row["disk_used"],
+                        "quota_bytes": user_row["disk_quota"],
+                        "used_pct":    round(used_pct, 1),
+                        "catch_up":    False,
+                    },
+                ))
+            else:
+                from app.services import op_bus
+                from app.schemas.op_event import OperationalEvent
+                op_bus.emit(OperationalEvent(
+                    event_type="upload.quota.ok",
+                    severity="info", source="upload",
+                    data={"user_id": user_id},
+                ))
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # POST /uploads  — create a new upload
 # ---------------------------------------------------------------------------
 
@@ -106,24 +195,8 @@ async def create_upload(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # --- Validate required metadata fields ---
-    for field in ("filename", "filetype", "encrypted_file_key", "key_iv",
-                  "chunk_size", "original_size"):
-        if field not in meta:
-            raise HTTPException(status_code=400, detail=f"Missing metadata field: {field}")
-
-    # Optional escrow fields — present only when TUSSHARE_ESCROW_PRIVATE_KEY is configured
-    # and the client has fetched the server's escrow public key.
-    escrow_ephemeral_pk: str | None = meta.get("escrow_ephemeral_pk") or None
-    escrow_encrypted_key: str | None = meta.get("escrow_encrypted_key") or None
-    escrow_key_iv: str | None = meta.get("escrow_key_iv") or None
-    if escrow_ephemeral_pk and escrow_encrypted_key and escrow_key_iv:
-        try:
-            validate_base64(escrow_ephemeral_pk)
-            validate_base64(escrow_encrypted_key)
-            validate_base64(escrow_key_iv)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid escrow key field encoding")
+    # --- Validate required metadata fields and escrow encoding ---
+    escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv = _validate_metadata_fields(meta)
 
     try:
         sanitized = sanitize_filename(meta["filename"])
@@ -163,73 +236,8 @@ async def create_upload(
     if original_size <= 0:
         raise HTTPException(status_code=400, detail="original_size must be positive")
 
-    folder_id: str | None = meta.get("folder_id") or None
-    if folder_id:
-        try:
-            folder_id = validate_uuid(folder_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid folder_id in metadata")
-        cursor = await db.execute(
-            "SELECT id FROM folders WHERE id = ? AND owner_id = ?",
-            (folder_id, user.id),
-        )
-        if not await cursor.fetchone():
-            raise HTTPException(status_code=404, detail="Folder not found")
-
-    # --- Quota / size limit enforcement ---
-    cursor = await db.execute(
-        "SELECT disk_used, disk_quota, max_file_size FROM users WHERE id = ?",
-        (user.id,),
-    )
-    user_row = await cursor.fetchone()
-    if user_row is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Global max file size (admin setting; 0 = no limit)
-    gmax_val = await get_admin_setting(db, "global_max_file_size")
-    global_max = int(gmax_val) if gmax_val is not None else settings.GLOBAL_MAX_FILE_SIZE
-
-    if global_max > 0 and total_encrypted_size > global_max:
-        raise HTTPException(status_code=413, detail="File exceeds the server's maximum allowed size")
-
-    if user_row["max_file_size"] is not None and total_encrypted_size > user_row["max_file_size"]:
-        raise HTTPException(status_code=413, detail="File exceeds the maximum allowed size")
-
-    if user_row["disk_quota"] is not None:
-        if user_row["disk_used"] + total_encrypted_size > user_row["disk_quota"]:
-            raise HTTPException(status_code=413, detail="Storage quota exceeded")
-
-        # Emit quota warning event when usage is at or above the warn threshold.
-        # Fires on every upload attempt in that range — the deduplication gate in
-        # op_bus suppresses repeat notifications until the user drops below the threshold.
-        try:
-            warn_val = await get_admin_setting(db, "upload_quota_warn_pct")
-            warn_pct = int(warn_val) if warn_val else 90
-            used_pct = user_row["disk_used"] / user_row["disk_quota"] * 100
-            if used_pct >= warn_pct:
-                from app.services import op_bus
-                from app.schemas.op_event import OperationalEvent
-                op_bus.emit(OperationalEvent(
-                    event_type="upload.quota.warning",
-                    severity="warning", source="upload",
-                    data={
-                        "user_id":     user.id,
-                        "used_bytes":  user_row["disk_used"],
-                        "quota_bytes": user_row["disk_quota"],
-                        "used_pct":    round(used_pct, 1),
-                        "catch_up":    False,
-                    },
-                ))
-            else:
-                from app.services import op_bus
-                from app.schemas.op_event import OperationalEvent
-                op_bus.emit(OperationalEvent(
-                    event_type="upload.quota.ok",
-                    severity="info", source="upload",
-                    data={"user_id": user.id},
-                ))
-        except Exception:
-            pass
+    folder_id = await _check_folder_access(db, user.id, meta.get("folder_id") or None)
+    await _enforce_upload_quotas(db, user.id, total_encrypted_size)
 
     total_chunks = (original_size + chunk_size - 1) // chunk_size
 
@@ -322,6 +330,145 @@ async def head_upload(
 
 
 # ---------------------------------------------------------------------------
+# patch_upload helpers
+# ---------------------------------------------------------------------------
+
+async def _read_and_verify_chunk(
+    request: Request, upload_id: str, chunk_index: int, client_offset: int
+) -> bytes:
+    """Read request body and verify the X-Chunk-Hash header. Raises 400 on any mismatch."""
+    chunk_data = await request.body()
+    if not chunk_data:
+        raise HTTPException(status_code=400, detail="Empty chunk body")
+    if len(chunk_data) > _MAX_CHUNK_BYTES:
+        raise HTTPException(status_code=413, detail="Chunk body too large")
+    chunk_hash_header = request.headers.get("X-Chunk-Hash", "")
+    if not chunk_hash_header:
+        raise HTTPException(status_code=400, detail="X-Chunk-Hash header required")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", chunk_hash_header):
+        raise HTTPException(status_code=400, detail="Invalid X-Chunk-Hash format (expected sha256:<64 hex chars>)")
+    expected_hex = chunk_hash_header[7:]
+    actual_hex = await asyncio.to_thread(lambda: hashlib.sha256(chunk_data).hexdigest())
+    if actual_hex != expected_hex:
+        logger.warning(
+            "Chunk hash mismatch for upload %s chunk %d at offset %d "
+            "(expected=%s actual=%s size=%d)",
+            upload_id, chunk_index, client_offset,
+            expected_hex, actual_hex, len(chunk_data),
+        )
+        raise HTTPException(status_code=400, detail="Chunk integrity check failed: hash mismatch")
+    return chunk_data
+
+
+async def _record_chunk_in_db(
+    db, upload_id: str, file_id: str, chunk_index: int, chunk_iv_b64: str,
+    chunk_size: int, client_offset: int, new_offset: int, etag
+) -> None:
+    chunk_id = str(uuid.uuid4())
+    new_expires_at = (
+        datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    chunk_now = datetime.now(timezone.utc).isoformat()
+    await db.execute("BEGIN")
+    try:
+        await db.execute(
+            """
+            INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset")
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (chunk_id, file_id, chunk_index, chunk_iv_b64, chunk_size, client_offset),
+        )
+        if etag is not None:
+            await db.execute(
+                "UPDATE tus_uploads "
+                "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ?, "
+                "    part_tags = (COALESCE(part_tags::jsonb, '[]'::jsonb) || jsonb_build_array(?::text))::text "
+                "WHERE id = ?",
+                (new_offset, chunk_index + 1, new_expires_at, chunk_now, etag, upload_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE tus_uploads "
+                "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ? "
+                "WHERE id = ?",
+                (new_offset, chunk_index + 1, new_expires_at, chunk_now, upload_id),
+            )
+        await db.commit()
+    except Exception as _phase1_exc:
+        logger.error("Phase 1 DB update failed for upload %s: %s", upload_id, _phase1_exc)
+        await db.rollback()
+        raise
+
+
+async def _finalize_completed_upload(
+    db, upload_id: str, file_id: str, storage_key: str,
+    new_offset: int, chunk_index: int, user_id: str, file_row
+) -> None:
+    tags_cursor = await db.execute(
+        "SELECT part_tags FROM tus_uploads WHERE id = ?", (upload_id,)
+    )
+    tags_row = await tags_cursor.fetchone()
+    part_tags: list[str] = json.loads(tags_row["part_tags"] or "[]") if tags_row else []
+
+    try:
+        actual_size = await storage.get_manager().finalize_upload(
+            db, upload_id, file_id, storage_key, part_tags
+        )
+    except Exception as exc:
+        logger.error("Upload finalization failed for %s: %s", upload_id, exc)
+        raise HTTPException(status_code=500, detail="Upload finalization failed")
+
+    if actual_size != new_offset:
+        logger.error(
+            "Blob size mismatch for file %s: expected %d bytes, got %d",
+            file_id, new_offset, actual_size,
+        )
+        await storage.get_manager().abort_upload(upload_id)
+        raise HTTPException(status_code=500, detail="Upload finalization failed: size mismatch")
+
+    await db.execute("BEGIN")
+    try:
+        count_cursor = await db.execute(
+            "SELECT COUNT(*) FROM file_chunks WHERE file_id = ?", (file_id,)
+        )
+        count_row = await count_cursor.fetchone()
+        expected_chunks = chunk_index + 1
+        if count_row[0] != expected_chunks:
+            await db.rollback()
+            logger.error(
+                "Chunk count mismatch for file %s: expected %d, got %d",
+                file_id, expected_chunks, count_row[0],
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Upload finalization failed: chunk count mismatch",
+            )
+        await db.execute(
+            "UPDATE files SET upload_complete = 1, encrypted_size = ?, updated_at = NOW() "
+            "WHERE id = ?",
+            (new_offset, file_id),
+        )
+        await db.execute(
+            "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
+            (new_offset, user_id),
+        )
+        await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
+        await db.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    _topic = file_row["folder_id"] or f"root:{file_row['owner_id']}"
+    sse_broker.publish(_topic, {"type": "change"})
+
+    _t = asyncio.create_task(_maybe_scan_file(file_id))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
+
+
+# ---------------------------------------------------------------------------
 # PATCH /uploads/{upload_id}  — send a chunk
 # ---------------------------------------------------------------------------
 
@@ -380,36 +527,9 @@ async def patch_upload(
             detail=f"Offset conflict: server is at {row['current_offset']}",
         )
 
-    # --- Read and validate chunk body ---
-    chunk_data = await request.body()
-    if not chunk_data:
-        raise HTTPException(status_code=400, detail="Empty chunk body")
-
+    # --- Read and verify chunk body (hash validated in helper) ---
+    chunk_data = await _read_and_verify_chunk(request, upload_id, row["next_chunk"], client_offset)
     chunk_size = len(chunk_data)
-    if chunk_size > _MAX_CHUNK_BYTES:
-        raise HTTPException(status_code=413, detail="Chunk body too large")
-
-    # --- Verify per-chunk hash (application-layer integrity check) ---
-    # Client sends SHA-256 of the ciphertext bytes as "sha256:<64 hex chars>".
-    # This is independent of TLS integrity and lets the server confirm the bytes
-    # received match what the client computed before sending.
-    chunk_hash_header = request.headers.get("X-Chunk-Hash", "")
-    if not chunk_hash_header:
-        raise HTTPException(status_code=400, detail="X-Chunk-Hash header required")
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", chunk_hash_header):
-        raise HTTPException(status_code=400, detail="Invalid X-Chunk-Hash format (expected sha256:<64 hex chars>)")
-    expected_hex = chunk_hash_header[7:]
-    # Offload to thread pool: SHA-256 over a 5 MB chunk is ~15–20 ms of pure CPU
-    # and must not block the async event loop.
-    actual_hex = await asyncio.to_thread(lambda: hashlib.sha256(chunk_data).hexdigest())
-    if actual_hex != expected_hex:
-        logger.warning(
-            "Chunk hash mismatch for upload %s chunk %d at offset %d "
-            "(expected=%s actual=%s size=%d)",
-            upload_id, row["next_chunk"], client_offset,
-            expected_hex, actual_hex, chunk_size,
-        )
-        raise HTTPException(status_code=400, detail="Chunk integrity check failed: hash mismatch")
 
     new_offset = client_offset + chunk_size
     if new_offset > row["total_size"]:
@@ -455,115 +575,17 @@ async def patch_upload(
         raise HTTPException(status_code=500, detail="Chunk write failed")
 
     # --- Phase 1 DB update: record this chunk and advance the tus offset ---
-    chunk_id = str(uuid.uuid4())
-    new_expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
-    chunk_now = datetime.now(timezone.utc).isoformat()
-
-    await db.execute("BEGIN")
-    try:
-        await db.execute(
-            """
-            INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset")
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (chunk_id, row["file_id"], chunk_index, chunk_iv_b64, chunk_size, client_offset),
-        )
-        # Accumulate S3 ETags in part_tags JSON array (NULL for local uploads)
-        if etag is not None:
-            await db.execute(
-                "UPDATE tus_uploads "
-                "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ?, "
-                "    part_tags = (COALESCE(part_tags::jsonb, '[]'::jsonb) || jsonb_build_array(?::text))::text "
-                "WHERE id = ?",
-                (new_offset, chunk_index + 1, new_expires_at, chunk_now, etag, upload_id),
-            )
-        else:
-            await db.execute(
-                "UPDATE tus_uploads "
-                "SET current_offset = ?, next_chunk = ?, expires_at = ?, updated_at = ? "
-                "WHERE id = ?",
-                (new_offset, chunk_index + 1, new_expires_at, chunk_now, upload_id),
-            )
-        await db.commit()
-    except Exception as _phase1_exc:
-        logger.error("Phase 1 DB update failed for upload %s: %s", upload_id, _phase1_exc)
-        await db.rollback()
-        raise
+    await _record_chunk_in_db(
+        db, upload_id, row["file_id"], chunk_index, chunk_iv_b64,
+        chunk_size, client_offset, new_offset, etag,
+    )
 
     # --- If complete, finalize via storage manager then commit Phase 2 ---
     if is_complete:
-        # Fetch accumulated part_tags from DB (needed for S3 CompleteMultipartUpload)
-        tags_cursor = await db.execute(
-            "SELECT part_tags FROM tus_uploads WHERE id = ?", (upload_id,)
+        await _finalize_completed_upload(
+            db, upload_id, row["file_id"], storage_key,
+            new_offset, chunk_index, user.id, file_row,
         )
-        tags_row = await tags_cursor.fetchone()
-        part_tags: list[str] = json.loads(tags_row["part_tags"] or "[]") if tags_row else []
-
-        try:
-            actual_size = await storage.get_manager().finalize_upload(
-                db, upload_id, row["file_id"], storage_key, part_tags
-            )
-        except Exception as exc:
-            logger.error("Upload finalization failed for %s: %s", upload_id, exc)
-            raise HTTPException(status_code=500, detail="Upload finalization failed")
-
-        if actual_size != new_offset:
-            logger.error(
-                "Blob size mismatch for file %s: expected %d bytes, got %d",
-                row["file_id"], new_offset, actual_size,
-            )
-            await storage.get_manager().abort_upload(upload_id)
-            raise HTTPException(status_code=500, detail="Upload finalization failed: size mismatch")
-
-        # Phase 2 DB update: mark file complete, update quota, remove tus record.
-        # file_storage_locations row was inserted by finalize_upload above (same DB session).
-        await db.execute("BEGIN")
-        try:
-            count_cursor = await db.execute(
-                "SELECT COUNT(*) FROM file_chunks WHERE file_id = ?",
-                (row["file_id"],),
-            )
-            count_row = await count_cursor.fetchone()
-            expected_chunks = chunk_index + 1
-            if count_row[0] != expected_chunks:
-                await db.rollback()
-                logger.error(
-                    "Chunk count mismatch for file %s: expected %d, got %d",
-                    row["file_id"], expected_chunks, count_row[0],
-                )
-                raise HTTPException(
-                    status_code=500,
-                    detail="Upload finalization failed: chunk count mismatch",
-                )
-
-            await db.execute(
-                "UPDATE files SET upload_complete = 1, encrypted_size = ?, updated_at = NOW() "
-                "WHERE id = ?",
-                (new_offset, row["file_id"]),
-            )
-            await db.execute(
-                "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
-                (new_offset, user.id),
-            )
-            await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
-            await db.commit()
-        except HTTPException:
-            raise
-        except Exception:
-            await db.rollback()
-            raise
-
-        # Notify any SSE subscribers watching this folder
-        _topic = file_row["folder_id"] or f"root:{file_row['owner_id']}"
-        sse_broker.publish(_topic, {"type": "change"})
-
-        # Trigger async AV scan if escrow + endpoint are configured.
-        # Runs in a background task so it never blocks the upload response.
-        _t = asyncio.create_task(_maybe_scan_file(row["file_id"]))
-        _bg_tasks.add(_t)
-        _t.add_done_callback(_bg_tasks.discard)
 
     extra_headers: dict = {"Upload-Offset": str(new_offset)}
     if is_complete:

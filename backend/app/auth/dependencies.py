@@ -18,6 +18,8 @@ from app.database import get_db
 
 logger = logging.getLogger(__name__)
 
+_bg_tasks: set = set()
+
 
 async def _get_auth_provider(db=Depends(get_db)) -> OPAQUEAuthProvider:
     """Return the active auth provider. Swap this for SSO support."""
@@ -78,7 +80,9 @@ async def get_current_user(
         # Bind step-up tokens to this session (T1-M3).
         user.session_id = sid
         # Fire-and-forget: update last_active_at for idle-timeout tracking.
-        asyncio.ensure_future(touch_session(sid))
+        _t = asyncio.ensure_future(touch_session(sid))
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
 
     return user
 

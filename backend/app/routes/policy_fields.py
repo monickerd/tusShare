@@ -58,7 +58,7 @@ async def _load_field(db, name: str) -> PolicyFieldDef:
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Policy field not found")
+        raise HTTPException(status_code=404, detail="Policy field not found")  # NOSONAR — helper; 404 documented in callers
     return PolicyFieldDef.from_row(row)
 
 

@@ -51,7 +51,7 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
         return
     if file_row["folder_id"] and await has_folder_permission(db, file_row["folder_id"], user.id):
         return
-    raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+    raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — helper; 403 documented in callers
 
 router = APIRouter()
 
@@ -76,7 +76,7 @@ async def _check_av_gate(db, file_row) -> None:
     if not await _av_gate_active(db):
         return
     status = file_row.get("av_scan_status") or "null"
-    raise HTTPException(
+    raise HTTPException(  # NOSONAR — helper; 451 documented in callers
         status_code=451,
         detail={
             "detail":    "File pending antivirus scan",
@@ -153,6 +153,70 @@ class BatchMoveRequest(BaseModel):
         return v
 
 
+async def _check_batch_move_permission(
+    db, user, file_row, src_team_id: str | None, dest_team_id: str | None
+) -> str | None:
+    """Return a deny reason string, or None if the move is permitted."""
+    is_owner = file_row["owner_id"] == user.id
+    if not is_owner:
+        if not src_team_id:
+            return "permission_denied"
+        from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OTHERS_OUT
+        move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
+        return None if move_flags[TEAM_FLAG_MOVE_OTHERS_OUT] else "permission_denied"
+    if src_team_id and src_team_id != dest_team_id:
+        from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OWN_OUT
+        move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
+        return None if move_flags[TEAM_FLAG_MOVE_OWN_OUT] else "permission_denied"
+    return None
+
+
+async def _execute_file_move_tx(
+    db, item, dest_id, dest_team_id, src_folder_id, src_team_id, user
+) -> str | None:
+    """Execute DB transaction for one file move. Returns error reason or None on success."""
+    await db.execute("BEGIN")
+    try:
+        await db.execute(
+            "UPDATE files SET folder_id = ?, updated_at = NOW() WHERE id = ?",
+            (dest_id, item.id),
+        )
+        await db.execute(
+            "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
+            (item.id,),
+        )
+        if dest_id:
+            await copy_folder_permissions(db, dest_id, "file", item.id)
+        if src_team_id and src_team_id != dest_team_id:
+            await db.execute(
+                "DELETE FROM file_team_keys WHERE team_id = ? AND file_id = ?",
+                (src_team_id, item.id),
+            )
+        if dest_team_id and item.team_key:
+            tk = item.team_key
+            new_ftk_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO file_team_keys "
+                "(id, team_id, file_id, pre_c1, encrypted_file_key, key_iv) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(team_id, file_id) DO UPDATE SET "
+                "    pre_c1 = excluded.pre_c1, "
+                "    encrypted_file_key = excluded.encrypted_file_key, "
+                "    key_iv = excluded.key_iv",
+                (new_ftk_id, dest_team_id, item.id,
+                 tk.pre_c1, tk.encrypted_file_key, tk.key_iv),
+            )
+        await db.commit()
+        topic = src_folder_id if src_folder_id else f"root:{user.id}"
+        sse_broker.publish(topic, {"type": "change"})
+        if dest_id and dest_id != src_folder_id:
+            sse_broker.publish(dest_id, {"type": "change"})
+        return None
+    except Exception:
+        await db.rollback()
+        return "error"
+
+
 @router.post("/batch-move", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def batch_move_files(
     body: BatchMoveRequest,
@@ -201,94 +265,30 @@ async def batch_move_files(
     for item in body.files:
         try:
             cursor = await db.execute(
-                "SELECT id, folder_id, owner_id, av_scan_status FROM files WHERE id = ? AND deleted_at IS NULL", (item.id,)
+                "SELECT id, folder_id, owner_id, av_scan_status FROM files WHERE id = ? AND deleted_at IS NULL",
+                (item.id,),
             )
             file_row = await cursor.fetchone()
             if file_row is None:
                 failed.append({"id": item.id, "reason": "not_found"})
                 continue
-
             if gate_active and file_row.get("av_scan_status") != "clean":
                 failed.append({"id": item.id, "reason": "av_not_clean"})
                 continue
 
             src_folder_id = file_row["folder_id"]
             src_team_id = await get_folder_team_id(db, src_folder_id) if src_folder_id else None
-            is_owner = file_row["owner_id"] == user.id
 
-            # --- Move permission checks ---
-            if not is_owner:
-                # Non-owner: allowed only when moving others' files out of a team folder
-                # and the user holds move_others_files_out_of_team for that team.
-                if not src_team_id:
-                    failed.append({"id": item.id, "reason": "permission_denied"})
-                    continue
-                from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OTHERS_OUT
-                move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
-                if not move_flags[TEAM_FLAG_MOVE_OTHERS_OUT]:
-                    failed.append({"id": item.id, "reason": "permission_denied"})
-                    continue
-            elif src_team_id and src_team_id != dest_team_id:
-                # Owner moving their file OUT of a team (to personal space or a different team)
-                from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OWN_OUT
-                move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
-                if not move_flags[TEAM_FLAG_MOVE_OWN_OUT]:
-                    failed.append({"id": item.id, "reason": "permission_denied"})
-                    continue
+            deny_reason = await _check_batch_move_permission(db, user, file_row, src_team_id, dest_team_id)
+            if deny_reason:
+                failed.append({"id": item.id, "reason": deny_reason})
+                continue
 
-            await db.execute("BEGIN")
-            try:
-                # Move the file
-                await db.execute(
-                    "UPDATE files SET folder_id = ?, updated_at = NOW() WHERE id = ?",
-                    (dest_id, item.id),
-                )
-
-                # Replace inherited permissions
-                await db.execute(
-                    "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
-                    (item.id,),
-                )
-                if dest_id:
-                    await copy_folder_permissions(db, dest_id, "file", item.id)
-
-                # Remove old team key if source was a team folder
-                if src_team_id and src_team_id != dest_team_id:
-                    await db.execute(
-                        "DELETE FROM file_team_keys WHERE team_id = ? AND file_id = ?",
-                        (src_team_id, item.id),
-                    )
-
-                # Insert new team key if destination is a team folder
-                if dest_team_id and item.team_key:
-                    tk = item.team_key
-                    new_ftk_id = str(uuid.uuid4())
-                    await db.execute(
-                        "INSERT INTO file_team_keys "
-                        "(id, team_id, file_id, pre_c1, encrypted_file_key, key_iv) "
-                        "VALUES (?, ?, ?, ?, ?, ?) "
-                        "ON CONFLICT(team_id, file_id) DO UPDATE SET "
-                        "    pre_c1 = excluded.pre_c1, "
-                        "    encrypted_file_key = excluded.encrypted_file_key, "
-                        "    key_iv = excluded.key_iv",
-                        (new_ftk_id, dest_team_id, item.id,
-                         tk.pre_c1, tk.encrypted_file_key, tk.key_iv),
-                    )
-
-                await db.commit()
+            err_reason = await _execute_file_move_tx(db, item, dest_id, dest_team_id, src_folder_id, src_team_id, user)
+            if err_reason:
+                failed.append({"id": item.id, "reason": err_reason})
+            else:
                 succeeded.append(item.id)
-
-                # SSE notifications
-                if src_folder_id:
-                    sse_broker.publish(src_folder_id, {"type": "change"})
-                else:
-                    sse_broker.publish(f"root:{user.id}", {"type": "change"})
-                if dest_id and dest_id != src_folder_id:
-                    sse_broker.publish(dest_id, {"type": "change"})
-
-            except Exception:
-                await db.rollback()
-                failed.append({"id": item.id, "reason": "error"})
 
         except Exception:
             failed.append({"id": item.id, "reason": "error"})
@@ -342,6 +342,138 @@ class BatchCopyRequest(BaseModel):
         if len(v) > _BATCH_COPY_MAX:
             raise ValueError(f"Cannot copy more than {_BATCH_COPY_MAX} files per request")
         return v
+
+
+async def _resolve_copy_crypto_fields(
+    db, item: "_BatchCopyItem", src_row, src_team_id: str | None, dest_team_id: str | None
+) -> "tuple[dict | None, str | None]":
+    """Return (fields_dict, None) on success or (None, reason) on failure."""
+    new_enc_key = src_row["encrypted_file_key"]
+    new_key_iv  = src_row["key_iv"]
+    ftk_pre_c1 = ftk_enc_key = ftk_key_iv = None
+    needs_ftk = False
+
+    if src_team_id == dest_team_id:
+        if src_team_id is not None:
+            # Path 2: Same Team — copy file_team_keys verbatim
+            cursor = await db.execute(
+                "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys "
+                "WHERE team_id = ? AND file_id = ?",
+                (src_team_id, item.file_id),
+            )
+            src_ftk = await cursor.fetchone()
+            if src_ftk:
+                ftk_pre_c1  = src_ftk["pre_c1"]
+                ftk_enc_key = src_ftk["encrypted_file_key"]
+                ftk_key_iv  = src_ftk["key_iv"]
+                needs_ftk   = True
+        # Path 1: Personal → Personal — new_enc_key/new_key_iv already set from src
+
+    elif src_team_id is None:
+        # Path 4: Personal → Team — client provides full PRE envelope
+        if not item.pre_c1 or not item.encrypted_file_key or not item.key_iv:
+            return None, "missing_crypto_fields"
+        ftk_pre_c1  = item.pre_c1
+        ftk_enc_key = item.encrypted_file_key
+        ftk_key_iv  = item.key_iv
+        needs_ftk   = True
+
+    elif dest_team_id is None:
+        # Path 5: Team → Personal — client provides personal DEK wrapper
+        if not item.encrypted_file_key or not item.key_iv:
+            return None, "missing_crypto_fields"
+        new_enc_key = item.encrypted_file_key
+        new_key_iv  = item.key_iv
+
+    else:
+        # Path 3: Cross-Team — client sends rk-transformed C1
+        if not item.pre_c1:
+            return None, "missing_crypto_fields"
+        cursor = await db.execute(
+            "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys "
+            "WHERE team_id = ? AND file_id = ?",
+            (src_team_id, item.file_id),
+        )
+        src_ftk = await cursor.fetchone()
+        if src_ftk is None:
+            return None, "missing_team_key"
+        ftk_pre_c1  = item.pre_c1
+        ftk_enc_key = src_ftk["encrypted_file_key"]
+        ftk_key_iv  = src_ftk["key_iv"]
+        needs_ftk   = True
+
+    return {
+        "new_enc_key": new_enc_key, "new_key_iv": new_key_iv,
+        "ftk_pre_c1": ftk_pre_c1, "ftk_enc_key": ftk_enc_key, "ftk_key_iv": ftk_key_iv,
+        "needs_ftk": needs_ftk,
+    }, None
+
+
+async def _execute_file_copy_tx(
+    db, item, src_row, dest_id: str, dest_team_id: str | None, user, cf: dict
+) -> "tuple[str | None, str | None]":
+    """Execute DB transaction for one file copy. Returns (new_file_id, None) or (None, reason)."""
+    new_file_id = str(uuid.uuid4())
+    await db.execute("BEGIN")
+    try:
+        await db.execute(
+            """
+            INSERT INTO files (
+                id, original_name, sanitized_name, storage_key,
+                folder_id, owner_id, mime_type,
+                size_bytes, encrypted_size, chunk_size, total_chunks,
+                encrypted_file_key, key_iv, checksum_sha256,
+                upload_complete, av_scan_status, av_scanned_at,
+                escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_file_id,
+                src_row["original_name"], src_row["sanitized_name"],
+                src_row["storage_key"],
+                dest_id, user.id, src_row["mime_type"],
+                src_row["size_bytes"], src_row["encrypted_size"],
+                src_row["chunk_size"], src_row["total_chunks"],
+                cf["new_enc_key"], cf["new_key_iv"],
+                src_row["checksum_sha256"],
+                src_row["av_scan_status"], src_row["av_scanned_at"],
+                src_row["escrow_ephemeral_pk"],
+                src_row["escrow_encrypted_key"],
+                src_row["escrow_key_iv"],
+            ),
+        )
+        await db.execute(
+            """
+            INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset")
+            SELECT gen_random_uuid()::text, ?, chunk_index, iv, size_bytes, "offset"
+            FROM file_chunks WHERE file_id = ?
+            """,
+            (new_file_id, item.file_id),
+        )
+        if cf["needs_ftk"] and cf["ftk_pre_c1"] and dest_team_id:
+            ftk_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO file_team_keys "
+                "(id, team_id, file_id, pre_c1, encrypted_file_key, key_iv) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (team_id, file_id) DO UPDATE SET "
+                "pre_c1 = excluded.pre_c1, "
+                "encrypted_file_key = excluded.encrypted_file_key, "
+                "key_iv = excluded.key_iv",
+                (ftk_id, dest_team_id, new_file_id, cf["ftk_pre_c1"], cf["ftk_enc_key"], cf["ftk_key_iv"]),
+            )
+        await copy_folder_permissions(db, dest_id, "file", new_file_id)
+        if src_row["encrypted_size"]:
+            await db.execute(
+                "UPDATE users SET disk_used = disk_used + ?::bigint WHERE id = ?",
+                (src_row["encrypted_size"], user.id),
+            )
+        await db.commit()
+        sse_broker.publish(dest_id, {"type": "change"})
+        return new_file_id, None
+    except Exception:
+        await db.rollback()
+        return None, "error"
 
 
 @router.post("/batch-copy", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
@@ -408,7 +540,6 @@ async def batch_copy_files(
 
     for item in body.files:
         try:
-            # Fetch source file
             cursor = await db.execute(
                 "SELECT * FROM files WHERE id = ? AND deleted_at IS NULL AND upload_complete = 1",
                 (item.file_id,),
@@ -418,7 +549,6 @@ async def batch_copy_files(
                 failed.append({"source_id": item.file_id, "reason": "not_found"})
                 continue
 
-            # Source read access
             try:
                 await check_file_access(db, src_row, user)
             except HTTPException:
@@ -428,7 +558,6 @@ async def batch_copy_files(
             src_folder_id = src_row["folder_id"]
             src_team_id = await get_folder_team_id(db, src_folder_id) if src_folder_id else None
 
-            # copy_boundary same_team enforcement
             if copy_boundary == "same_team" and src_team_id != dest_team_id:
                 event_bus.emit(SecurityEvent(
                     event_type="file.copy.blocked",
@@ -446,140 +575,20 @@ async def batch_copy_files(
                 failed.append({"source_id": item.file_id, "reason": "boundary_violation"})
                 continue
 
-            # Determine crypto fields per path
-            new_file_id = str(uuid.uuid4())
-            new_enc_key = src_row["encrypted_file_key"]
-            new_key_iv  = src_row["key_iv"]
-            ftk_pre_c1  = None
-            ftk_enc_key = None
-            ftk_key_iv  = None
-            needs_ftk   = False
+            crypto_fields, reason = await _resolve_copy_crypto_fields(
+                db, item, src_row, src_team_id, dest_team_id
+            )
+            if reason:
+                failed.append({"source_id": item.file_id, "reason": reason})
+                continue
 
-            if src_team_id == dest_team_id:
-                if src_team_id is not None:
-                    # Path 2: Same Team → Same Team — copy file_team_keys verbatim
-                    cursor = await db.execute(
-                        "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys "
-                        "WHERE team_id = ? AND file_id = ?",
-                        (src_team_id, item.file_id),
-                    )
-                    src_ftk = await cursor.fetchone()
-                    if src_ftk:
-                        ftk_pre_c1  = src_ftk["pre_c1"]
-                        ftk_enc_key = src_ftk["encrypted_file_key"]
-                        ftk_key_iv  = src_ftk["key_iv"]
-                        needs_ftk   = True
-                # Path 1: Personal → Personal — new_enc_key/new_key_iv already set from src
-
-            elif src_team_id is None:
-                # Path 4: Personal → Team — client provides full PRE envelope
-                if not item.pre_c1 or not item.encrypted_file_key or not item.key_iv:
-                    failed.append({"source_id": item.file_id, "reason": "missing_crypto_fields"})
-                    continue
-                ftk_pre_c1  = item.pre_c1
-                ftk_enc_key = item.encrypted_file_key
-                ftk_key_iv  = item.key_iv
-                needs_ftk   = True
-
-            elif dest_team_id is None:
-                # Path 5: Team → Personal — client provides personal DEK wrapper
-                if not item.encrypted_file_key or not item.key_iv:
-                    failed.append({"source_id": item.file_id, "reason": "missing_crypto_fields"})
-                    continue
-                new_enc_key = item.encrypted_file_key
-                new_key_iv  = item.key_iv
-
+            new_file_id, err = await _execute_file_copy_tx(
+                db, item, src_row, dest_id, dest_team_id, user, crypto_fields
+            )
+            if err:
+                failed.append({"source_id": item.file_id, "reason": err})
             else:
-                # Path 3: Cross-Team (A → B) — client sends rk-transformed C1
-                if not item.pre_c1:
-                    failed.append({"source_id": item.file_id, "reason": "missing_crypto_fields"})
-                    continue
-                cursor = await db.execute(
-                    "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys "
-                    "WHERE team_id = ? AND file_id = ?",
-                    (src_team_id, item.file_id),
-                )
-                src_ftk = await cursor.fetchone()
-                if src_ftk is None:
-                    failed.append({"source_id": item.file_id, "reason": "missing_team_key"})
-                    continue
-                ftk_pre_c1  = item.pre_c1
-                ftk_enc_key = src_ftk["encrypted_file_key"]
-                ftk_key_iv  = src_ftk["key_iv"]
-                needs_ftk   = True
-
-            # Execute copy in a single transaction
-            await db.execute("BEGIN")
-            try:
-                await db.execute(
-                    """
-                    INSERT INTO files (
-                        id, original_name, sanitized_name, storage_key,
-                        folder_id, owner_id, mime_type,
-                        size_bytes, encrypted_size, chunk_size, total_chunks,
-                        encrypted_file_key, key_iv, checksum_sha256,
-                        upload_complete, av_scan_status, av_scanned_at,
-                        escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        new_file_id,
-                        src_row["original_name"], src_row["sanitized_name"],
-                        src_row["storage_key"],
-                        dest_id, user.id, src_row["mime_type"],
-                        src_row["size_bytes"], src_row["encrypted_size"],
-                        src_row["chunk_size"], src_row["total_chunks"],
-                        new_enc_key, new_key_iv,
-                        src_row["checksum_sha256"],
-                        src_row["av_scan_status"], src_row["av_scanned_at"],
-                        src_row["escrow_ephemeral_pk"],
-                        src_row["escrow_encrypted_key"],
-                        src_row["escrow_key_iv"],
-                    ),
-                )
-
-                # Copy chunk manifest (per-chunk IVs — same blob, same chunks)
-                await db.execute(
-                    """
-                    INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset")
-                    SELECT gen_random_uuid()::text, ?, chunk_index, iv, size_bytes, "offset"
-                    FROM file_chunks WHERE file_id = ?
-                    """,
-                    (new_file_id, item.file_id),
-                )
-
-                # Insert file_team_keys for team destination
-                if needs_ftk and ftk_pre_c1 and dest_team_id:
-                    ftk_id = str(uuid.uuid4())
-                    await db.execute(
-                        "INSERT INTO file_team_keys "
-                        "(id, team_id, file_id, pre_c1, encrypted_file_key, key_iv) "
-                        "VALUES (?, ?, ?, ?, ?, ?) "
-                        "ON CONFLICT (team_id, file_id) DO UPDATE SET "
-                        "pre_c1 = excluded.pre_c1, "
-                        "encrypted_file_key = excluded.encrypted_file_key, "
-                        "key_iv = excluded.key_iv",
-                        (ftk_id, dest_team_id, new_file_id, ftk_pre_c1, ftk_enc_key, ftk_key_iv),
-                    )
-
-                # Inherit destination folder's recursive permissions
-                await copy_folder_permissions(db, dest_id, "file", new_file_id)
-
-                # Increment copying user's disk quota
-                if src_row["encrypted_size"]:
-                    await db.execute(
-                        "UPDATE users SET disk_used = disk_used + ?::bigint WHERE id = ?",
-                        (src_row["encrypted_size"], user.id),
-                    )
-
-                await db.commit()
                 copied.append({"source_id": item.file_id, "new_id": new_file_id})
-
-                sse_broker.publish(dest_id, {"type": "change"})
-
-            except Exception:
-                await db.rollback()
-                failed.append({"source_id": item.file_id, "reason": "error"})
 
         except Exception:
             failed.append({"source_id": item.file_id, "reason": "error"})
@@ -622,29 +631,15 @@ async def get_file_metadata(
     return {"file": file.to_dict()}
 
 
-@router.put("/{file_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
-async def update_file(
-    file_id: str,
-    body: UpdateFileRequest,
-    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
-    db: Annotated[Database, Depends(get_db)],
-):
-    """Update file metadata (rename, move)."""
-    file_id = validate_uuid(file_id)
-
-    cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
-    row = await cursor.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
-
-    if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
-
+async def _build_file_update_fields(
+    db, body: UpdateFileRequest, user
+) -> "tuple[list, list, list[str]]":
+    """Build SQL update clauses for a file update. Raises HTTPException on invalid input."""
     if body.move_to_root and body.folder_id is not None:
         raise HTTPException(status_code=400, detail="Cannot specify both folder_id and move_to_root")
 
-    updates = []
-    params = []
+    updates: list = []
+    params: list = []
     removed_chars: list[str] = []
     if body.original_name is not None:
         updates.append("original_name = ?")
@@ -667,7 +662,6 @@ async def update_file(
         if target_folder is None:
             raise HTTPException(status_code=404, detail="Target folder not found")
         if target_folder["owner_id"] != user.id and not user.is_admin:
-            # Allow moves into team folders where the user is a member
             if not await is_team_folder_member(db, body.folder_id, user.id):
                 raise HTTPException(status_code=403, detail="Access denied to target folder")
         updates.append("folder_id = ?")
@@ -675,38 +669,55 @@ async def update_file(
 
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+    return updates, params, removed_chars
 
+
+async def _apply_move_side_effects(db, body: UpdateFileRequest, file_id: str, row) -> None:
+    """Update inherited permissions and team keys after a file is moved to a new folder."""
+    new_folder_id = body.folder_id if (body.folder_id and not body.move_to_root) else None
+    is_move = body.move_to_root or body.folder_id is not None
+    if not is_move:
+        return
+    await db.execute(
+        "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
+        (file_id,),
+    )
+    if new_folder_id:
+        await copy_folder_permissions(db, new_folder_id, "file", file_id)
+    old_team_id = await get_folder_team_id(db, row["folder_id"]) if row["folder_id"] else None
+    new_team_id = await get_folder_team_id(db, new_folder_id) if new_folder_id else None
+    if old_team_id and old_team_id != new_team_id:
+        await db.execute(
+            "DELETE FROM file_team_keys WHERE team_id = ? AND file_id = ?",
+            (old_team_id, file_id),
+        )
+
+
+@router.put("/{file_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def update_file(
+    file_id: str,
+    body: UpdateFileRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Update file metadata (rename, move)."""
+    file_id = validate_uuid(file_id)
+
+    cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
+    if row["owner_id"] != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+    updates, params, removed_chars = await _build_file_update_fields(db, body, user)
     updates.append("updated_at = NOW()")
     params.append(file_id)
 
-    await db.execute(
-        f"UPDATE files SET {', '.join(updates)} WHERE id = ?",
-        params,
-    )
-
-    # On a folder change, replace inherited permissions with those from the new folder.
-    new_folder_id = body.folder_id if (body.folder_id and not body.move_to_root) else None
-    is_move = body.move_to_root or body.folder_id is not None
-    if is_move:
-        await db.execute(
-            "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
-            (file_id,),
-        )
-        if new_folder_id:
-            await copy_folder_permissions(db, new_folder_id, "file", file_id)
-
-        # Clean up stale file_team_keys if the file is leaving a team's scope.
-        old_team_id = await get_folder_team_id(db, row["folder_id"]) if row["folder_id"] else None
-        new_team_id = await get_folder_team_id(db, new_folder_id) if new_folder_id else None
-        if old_team_id and old_team_id != new_team_id:
-            await db.execute(
-                "DELETE FROM file_team_keys WHERE team_id = ? AND file_id = ?",
-                (old_team_id, file_id),
-            )
-
+    await db.execute(f"UPDATE files SET {', '.join(updates)} WHERE id = ?", params)
+    await _apply_move_side_effects(db, body, file_id, row)
     await db.commit()
 
-    # Notify the folder the file was in (and the destination if it was moved)
     old_topic = row["folder_id"] or f"root:{row['owner_id']}"
     sse_broker.publish(old_topic, {"type": "change"})
     if body.folder_id and body.folder_id != row["folder_id"]:
@@ -941,8 +952,8 @@ async def get_file_chunks(
     file_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
-    offset: int = Query(0, ge=0),
-    limit: int = Query(500, ge=1, le=5000),
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
 ):
     """Return chunk manifest for client-side decryption.
 

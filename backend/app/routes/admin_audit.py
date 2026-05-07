@@ -13,6 +13,7 @@ POST /admin/audit/siem/{dest_id}/test — send a synthetic test event
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import fnmatch
 import io
@@ -89,6 +90,27 @@ def _matches_event_types(event_type: str, patterns: list[str]) -> bool:
 
 def _severity_gte(severity: str, minimum: str) -> bool:
     return _SEVERITY_ORDER.get(severity, 0) >= _SEVERITY_ORDER.get(minimum, 0)
+
+
+def _event_passes_filters(
+    event: "SecurityEvent",
+    min_sev: str,
+    key_min_sev: str,
+    et_patterns: list[str],
+    key_et_patterns: list[str],
+    uid_filter: str | None,
+) -> bool:
+    if not _severity_gte(event.severity, min_sev):
+        return False
+    if not _severity_gte(event.severity, key_min_sev):
+        return False
+    if et_patterns and not _matches_event_types(event.event_type, et_patterns):
+        return False
+    if key_et_patterns and not _matches_event_types(event.event_type, key_et_patterns):
+        return False
+    if uid_filter and event.actor.user_id != uid_filter:
+        return False
+    return True
 
 
 def _apply_key_filters(rows: list, key_row: dict | None) -> list:
@@ -188,14 +210,14 @@ def _row_to_dict(r) -> dict:
 async def list_audit_logs(
     _auth: Annotated[None, Depends(_require_audit_read)],
     db: Annotated[Database, Depends(get_db)],
-    limit:       int   = Query(100, ge=1, le=500),
-    offset:      int   = Query(0,   ge=0),
-    event_types: str   = Query("",  description="Comma-separated glob patterns, e.g. auth.*,file.*"),
-    severity:    str   = Query("info", description="Minimum severity: info|warning|critical"),
-    user_id:     str   = Query("",  description="Filter by actor user_id"),
-    since:       str   = Query("",  description="ISO timestamp lower bound"),
-    until:       str   = Query("",  description="ISO timestamp upper bound"),
-    after:       str   = Query("",  description="Cursor — event_id to page from (exclusive)"),
+    limit:       Annotated[int, Query(ge=1, le=500)] = 100,
+    offset:      Annotated[int, Query(ge=0)] = 0,
+    event_types: Annotated[str, Query(description="Comma-separated glob patterns, e.g. auth.*,file.*")] = "",
+    severity:    Annotated[str, Query(description="Minimum severity: info|warning|critical")] = "info",
+    user_id:     Annotated[str, Query(description="Filter by actor user_id")] = "",
+    since:       Annotated[str, Query(description="ISO timestamp lower bound")] = "",
+    until:       Annotated[str, Query(description="ISO timestamp upper bound")] = "",
+    after:       Annotated[str, Query(description="Cursor — event_id to page from (exclusive)")] = "",
 ):
     """Paginated query over security_events. Suitable for gap-fill after SIEM reconnect."""
     if severity not in _SEVERITY_ORDER:
@@ -238,11 +260,11 @@ async def list_audit_logs(
 async def export_audit_logs(
     _auth: Annotated[None, Depends(_require_audit_read)],
     db: Annotated[Database, Depends(get_db)],
-    event_types: str = Query(""),
-    severity:    str = Query("info"),
-    user_id:     str = Query(""),
-    since:       str = Query(""),
-    until:       str = Query(""),
+    event_types: Annotated[str, Query()] = "",
+    severity:    Annotated[str, Query()] = "info",
+    user_id:     Annotated[str, Query()] = "",
+    since:       Annotated[str, Query()] = "",
+    until:       Annotated[str, Query()] = "",
 ):
     """Download security_events as a CSV file (max 50 000 rows)."""
     if severity not in _SEVERITY_ORDER:
@@ -303,9 +325,9 @@ async def export_audit_logs(
 @router.get("/logs/stream", responses={400: {"description": "Bad Request"}})
 async def stream_audit_logs(
     _key: Annotated[dict, Depends(_require_audit_key)],
-    event_types: str = Query(""),
-    severity:    str = Query("info"),
-    user_id:     str = Query(""),
+    event_types: Annotated[str, Query()] = "",
+    severity:    Annotated[str, Query()] = "info",
+    user_id:     Annotated[str, Query()] = "",
 ):
     """Stream security events in real-time via Server-Sent Events.
 
@@ -324,7 +346,6 @@ async def stream_audit_logs(
     key_min_sev = _key.get("filter_min_severity") or "info"
 
     async def _generate() -> AsyncGenerator[bytes, None]:
-        import asyncio
         q = event_bus.subscribe()
         try:
             while True:
@@ -335,15 +356,7 @@ async def stream_audit_logs(
                     yield b": keepalive\n\n"
                     continue
 
-                if not _severity_gte(event.severity, min_sev):
-                    continue
-                if not _severity_gte(event.severity, key_min_sev):
-                    continue
-                if et_patterns and not _matches_event_types(event.event_type, et_patterns):
-                    continue
-                if key_et_patterns and not _matches_event_types(event.event_type, key_et_patterns):
-                    continue
-                if uid_filter and event.actor.user_id != uid_filter:
+                if not _event_passes_filters(event, min_sev, key_min_sev, et_patterns, key_et_patterns, uid_filter):
                     continue
 
                 payload = event.model_dump_json()
@@ -392,23 +405,25 @@ class SiemDestinationRequest(BaseModel):
 _VALID_PROFILES = frozenset({"high_security", "recommended", "relaxed", "custom"})
 
 
-def _validate_destination(body: SiemDestinationRequest) -> None:
-    if body.type not in ("syslog", "webhook"):
-        raise HTTPException(status_code=400, detail="type must be 'syslog' or 'webhook'")
-    if body.type == "syslog":
-        if not body.host:
-            raise HTTPException(status_code=400, detail="syslog destination requires host")
-        if body.protocol and body.protocol not in ("udp", "tcp", "tls"):
-            raise HTTPException(status_code=400, detail="protocol must be udp, tcp, or tls")
-        if body.syslog_format and body.syslog_format not in ("rfc5424", "cef", "leef"):
-            raise HTTPException(status_code=400, detail="syslog_format must be rfc5424, cef, or leef")
-    if body.type == "webhook":
-        if not body.url:
-            raise HTTPException(status_code=400, detail="webhook destination requires url")
-        if not body.url.startswith("https://"):
-            raise HTTPException(status_code=400, detail="webhook url must use HTTPS")
-        if body.batch_size < 1 or body.batch_size > 100:
-            raise HTTPException(status_code=400, detail="batch_size must be 1–100")
+def _validate_syslog(body: SiemDestinationRequest) -> None:
+    if not body.host:
+        raise HTTPException(status_code=400, detail="syslog destination requires host")
+    if body.protocol and body.protocol not in ("udp", "tcp", "tls"):
+        raise HTTPException(status_code=400, detail="protocol must be udp, tcp, or tls")
+    if body.syslog_format and body.syslog_format not in ("rfc5424", "cef", "leef"):
+        raise HTTPException(status_code=400, detail="syslog_format must be rfc5424, cef, or leef")
+
+
+def _validate_webhook(body: SiemDestinationRequest) -> None:
+    if not body.url:
+        raise HTTPException(status_code=400, detail="webhook destination requires url")
+    if not body.url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="webhook url must use HTTPS")
+    if body.batch_size < 1 or body.batch_size > 100:
+        raise HTTPException(status_code=400, detail="batch_size must be 1–100")
+
+
+def _validate_filter_profile(body: SiemDestinationRequest) -> None:
     if body.filter_profile not in _VALID_PROFILES:
         raise HTTPException(status_code=400, detail="filter_profile must be high_security, recommended, relaxed, or custom")
     if body.filter_profile == "custom":
@@ -421,6 +436,16 @@ def _validate_destination(body: SiemDestinationRequest) -> None:
                 status_code=400,
                 detail='custom filter_custom_json must be valid JSON with {"event_type_globs": [...], "min_severity": "info|warning|critical"}',
             )
+
+
+def _validate_destination(body: SiemDestinationRequest) -> None:
+    if body.type not in ("syslog", "webhook"):
+        raise HTTPException(status_code=400, detail="type must be 'syslog' or 'webhook'")
+    if body.type == "syslog":
+        _validate_syslog(body)
+    if body.type == "webhook":
+        _validate_webhook(body)
+    _validate_filter_profile(body)
 
 
 def _dest_row_to_dict(r) -> dict:
@@ -459,7 +484,7 @@ async def list_siem_destinations(
     }
 
 
-@router.post("/siem")
+@router.post("/siem", responses={400: {"description": "Bad Request"}})
 async def create_siem_destination(
     request: Request,
     body: SiemDestinationRequest,
@@ -497,7 +522,7 @@ async def create_siem_destination(
     return {"ok": True, "id": dest_id}
 
 
-@router.put("/siem/{dest_id}", responses={404: {"description": "Not Found"}})
+@router.put("/siem/{dest_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def update_siem_destination(
     request: Request,
     dest_id: str,

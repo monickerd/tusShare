@@ -557,12 +557,7 @@ const Shares = (() => {
         }
     }
 
-    function _createShareCard(share) {
-        const card = Utils.el('div', {
-            className: 'share-card' + (share.is_active ? '' : ' share-inactive'),
-        });
-
-        // Header: file count + status badges
+    function _buildShareCardHeader(share) {
         const header = Utils.el('div', { className: 'share-card-header' });
         const fileCount = (share.items || []).length;
         header.appendChild(Utils.el('span', {
@@ -591,7 +586,15 @@ const Shares = (() => {
                 textContent: 'Upload enabled',
             }));
         }
-        card.appendChild(header);
+        return header;
+    }
+
+    function _createShareCard(share) {
+        const card = Utils.el('div', {
+            className: 'share-card' + (share.is_active ? '' : ' share-inactive'),
+        });
+
+        card.appendChild(_buildShareCardHeader(share));
 
         // File list
         const fileList = Utils.el('ul', { className: 'share-file-list' });

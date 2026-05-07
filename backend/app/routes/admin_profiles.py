@@ -131,7 +131,7 @@ _PROFILES: dict[str, dict] = {
 
 def _require_server_admin(admin: AuthenticatedUser) -> None:
     if admin_best_tier(admin.roles) > 1:
-        raise HTTPException(
+        raise HTTPException(  # NOSONAR — helper; 403 documented in callers
             status_code=403,
             detail="Only server_admin may manage security profiles",
         )
@@ -392,6 +392,21 @@ async def _apply_merge(
             await _insert_rule(db, rule, admin_id, admin_tier)
 
 
+def _validate_role_flag_overrides(overrides: dict) -> None:
+    for role_id, flags in overrides.items():
+        if not isinstance(flags, dict):
+            raise HTTPException(
+                status_code=400,
+                detail=f"role_flag_overrides.{role_id} must be a dict of flags",
+            )
+        for flag, fu in flags.items():
+            if not isinstance(fu, dict) or "value" not in fu:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"role_flag_overrides.{role_id}.{flag} must be an object with a 'value' field",
+                )
+
+
 def _validate_profile_structure(profile_json: dict) -> None:
     """Raise 400 on structural problems in an imported profile JSON."""
     allowed_keys = {"_warnings", "_meta", "admin_settings", "role_flag_overrides", "sharing_rules"}
@@ -406,18 +421,7 @@ def _validate_profile_structure(profile_json: dict) -> None:
                 detail=f"admin_settings.{key} must be an object with a 'value' field",
             )
 
-    for role_id, flags in profile_json.get("role_flag_overrides", {}).items():
-        if not isinstance(flags, dict):
-            raise HTTPException(
-                status_code=400,
-                detail=f"role_flag_overrides.{role_id} must be a dict of flags",
-            )
-        for flag, fu in flags.items():
-            if not isinstance(fu, dict) or "value" not in fu:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"role_flag_overrides.{role_id}.{flag} must be an object with a 'value' field",
-                )
+    _validate_role_flag_overrides(profile_json.get("role_flag_overrides", {}))
 
     for i, rule in enumerate(profile_json.get("sharing_rules", [])):
         if not isinstance(rule, dict) or "name" not in rule or "subject" not in rule:

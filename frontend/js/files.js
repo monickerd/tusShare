@@ -1121,12 +1121,19 @@ const Files = (() => {
         return li;
     }
 
-    /**
-     * Run pre-move checks (active shares, cross-boundary warning) then execute.
-     * destination: { id: string|null, label: string, isTeam: boolean }
-     */
-    async function _confirmAndExecuteMoves(items, destination, sourceIsTeam) {
-        // 1. Active share check — warn if any item has a live share link
+    /** Resolve destination team id + PRE public key. Throws on API error. */
+    async function _resolveDestTeamInfo(destination) {
+        const destId = destination.id;
+        if (!destination.isTeam || !destId) return { destTeamId: null, destTeamPK: null };
+        const folderData = await Api.get(`${Config.app.apiPrefix}/folders/${destId}`);
+        const destTeamId = folderData.team_id || null;
+        if (!destTeamId) return { destTeamId: null, destTeamPK: null };
+        const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}`);
+        return { destTeamId, destTeamPK: teamData.team?.pre_public_key || null };
+    }
+
+    /** Returns false if the user cancels after being warned about active shares. */
+    async function _warnIfActiveShares(items) {
         const allIds = items.map(i => i.id);
         let idsWithShares = [];
         try {
@@ -1135,90 +1142,49 @@ const Files = (() => {
                 { resource_ids: allIds },
             );
             idsWithShares = res.ids_with_shares || [];
-        } catch {
-            // Best-effort; skip the check if the endpoint fails
-        }
+        } catch { /* best-effort */ }
+        if (idsWithShares.length === 0) return true;
+        const shareMsg = idsWithShares.length === 1
+            ? `One of the selected items has an active share link. Recipients of that link may lose access after the move.`
+            : `${idsWithShares.length} of the selected items have active share links. Recipients of those links may lose access after the move.`;
+        return Utils.showConfirm(shareMsg + '\n\nProceed anyway?');
+    }
 
-        if (idsWithShares.length > 0) {
-            const shareMsg = idsWithShares.length === 1
-                ? `One of the selected items has an active share link. Recipients of that link may lose access after the move.`
-                : `${idsWithShares.length} of the selected items have active share links. Recipients of those links may lose access after the move.`;
-            const ok = await Utils.showConfirm(shareMsg + '\n\nProceed anyway?');
-            if (!ok) return;
-        }
+    /** Returns false if the user cancels after being warned about a team-boundary crossing. */
+    async function _warnIfBoundary(items, sourceIsTeam, destination) {
+        if (sourceIsTeam === destination.isTeam) return true;
+        const boundaryMsg = !sourceIsTeam && destination.isTeam
+            ? `Warning: By moving to "${destination.label}", you will be sharing ${items.length === 1 ? 'this item' : 'these items'} with everyone who has access to that folder.`
+            : `Warning: By moving to your personal files, team members will lose access to ${items.length === 1 ? 'this item' : 'these items'}.`;
+        return Utils.showConfirm(boundaryMsg + '\n\nProceed?');
+    }
 
-        // 2. Cross-boundary warning
-        const destIsTeam = destination.isTeam;
-        if (sourceIsTeam !== destIsTeam) {
-            let boundaryMsg;
-            if (!sourceIsTeam && destIsTeam) {
-                boundaryMsg = `Warning: By moving to "${destination.label}", you will be sharing ${items.length === 1 ? 'this item' : 'these items'} with everyone who has access to that folder.`;
-            } else {
-                boundaryMsg = `Warning: By moving to your personal files, team members will lose access to ${items.length === 1 ? 'this item' : 'these items'}.`;
-            }
-            const ok = await Utils.showConfirm(boundaryMsg + '\n\nProceed?');
-            if (!ok) return;
-        }
-
+    /**
+     * Run pre-move checks (active shares, cross-boundary warning) then execute.
+     * destination: { id: string|null, label: string, isTeam: boolean }
+     */
+    async function _confirmAndExecuteMoves(items, destination, sourceIsTeam) {
+        if (!await _warnIfActiveShares(items)) return;
+        if (!await _warnIfBoundary(items, sourceIsTeam, destination)) return;
         await _executeMoves(items, destination);
     }
 
     /**
-     * Execute moves for a list of items to a destination (no confirmation).
-     * destination: { id: string|null, label: string, isTeam: boolean }
+     * Move folders in the items list to destId, updating the overlay.
+     * Returns { done, errors } counts (done = number of folders processed).
      */
-    async function _executeMoves(items, destination) {
-        const destId = destination.id;
-
-        // Resolve destination team (if any)
-        let destTeamPK = null;
-        let destTeamId = null;
-        if (destination.isTeam && destId) {
-            try {
-                const folderData = await Api.get(`${Config.app.apiPrefix}/folders/${destId}`);
-                destTeamId = folderData.team_id || null;
-                if (destTeamId) {
-                    const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}`);
-                    destTeamPK = teamData.team?.pre_public_key || null;
-                }
-            } catch {
-                Utils.showToast('Failed to resolve destination team — move cancelled', 'error');
-                return;
-            }
-            if (!destTeamPK) {
-                Utils.showToast('Destination folder is not part of a team — move cancelled', 'error');
-                return;
-            }
-        }
-
-        // Cross-team folder moves require re-encryption; same-team/personal use a simple PATCH.
-        const srcTeamId = _currentTeamId || null;
-        const folderNeedsCrypto = srcTeamId !== destTeamId;  // null !== null is false ✓
-
-        const folders = items.filter(i => i.type === 'folder');
-        const files   = items.filter(i => i.type === 'file');
-
-        let errors = 0;
+    async function _executeFolderMoves(folders, destId, destTeamPK, folderNeedsCrypto, overlay, total, isCancelled) {
         let done = 0;
-        const total = items.length;
-        let cancelled = false;
-
-        const initialLabel = items.length === 1
-            ? `Moving "${items[0].name}"…`
-            : `Moving ${items.length} items…`;
-        const overlay = _showMoveOverlay(initialLabel);
-        overlay.onCancel(() => { cancelled = true; });
-
-        // --- Folder moves ---
+        let errors = 0;
         for (const folder of folders) {
-            if (cancelled) break;
+            if (isCancelled()) break;
             overlay.update(done, total, `Moving "${folder.name}"…`);
             try {
                 if (folderNeedsCrypto) {
                     await _moveFolderAcrossTeamBoundary(
                         folder, destId, destTeamPK,
                         (label) => overlay.update(done, total, label),
-                        () => cancelled,
+                        isCancelled,
                     );
                 } else {
                     await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`,
@@ -1228,35 +1194,81 @@ const Files = (() => {
             done++;
             overlay.update(done, total);
         }
+        return { done, errors };
+    }
 
-        // --- File moves — always use batch-move ---
-        // For team destinations: fetch full metadata (encrypted_file_key + key_iv) per file
-        // if not already present, then encrypt a team_key via PRE.
-        // For personal destinations: team_key is null — no crypto needed.
+    /**
+     * Build the batch-move payload for one chunk of files.
+     * For team destinations, fetches missing crypto metadata and encrypts a team_key.
+     * Returns { items: Array, failed: number }.
+     */
+    async function _buildFileMoveItems(batch, destTeamPK, masterKey) {
+        const items = [];
+        let failed = 0;
+        for (const file of batch) {
+            try {
+                let teamKey = null;
+                if (destTeamPK) {
+                    let fileData = file;
+                    if (!file.encrypted_file_key) {
+                        const fetched = await Api.get(`${Config.app.apiPrefix}/files/${file.id}`);
+                        fileData = fetched.file || fetched;
+                    }
+                    const fileKeyBytes = await _resolveFileKeyBytes(fileData, masterKey);
+                    teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK); // NOSONAR — async function accessed via Teams module export
+                }
+                items.push({ id: file.id, team_key: teamKey });
+            } catch { failed++; }
+        }
+        return { items, failed };
+    }
+
+    /**
+     * Execute moves for a list of items to a destination (no confirmation).
+     * destination: { id: string|null, label: string, isTeam: boolean }
+     */
+    async function _executeMoves(items, destination) {
+        const destId = destination.id;
+
+        let destTeamId = null;
+        let destTeamPK = null;
+        try {
+            ({ destTeamId, destTeamPK } = await _resolveDestTeamInfo(destination));
+        } catch {
+            Utils.showToast('Failed to resolve destination team — move cancelled', 'error');
+            return;
+        }
+        if (destination.isTeam && destId && !destTeamPK) {
+            Utils.showToast('Destination folder is not part of a team — move cancelled', 'error');
+            return;
+        }
+
+        const srcTeamId = _currentTeamId || null;
+        const folderNeedsCrypto = srcTeamId !== destTeamId;  // null !== null is false ✓
+
+        const folders = items.filter(i => i.type === 'folder');
+        const files   = items.filter(i => i.type === 'file');
+        const total   = items.length;
+
+        let cancelled = false;
+        const initialLabel = items.length === 1
+            ? `Moving "${items[0].name}"…`
+            : `Moving ${items.length} items…`;
+        const overlay = _showMoveOverlay(initialLabel);
+        overlay.onCancel(() => { cancelled = true; });
+
+        let { done, errors } = await _executeFolderMoves(
+            folders, destId, destTeamPK, folderNeedsCrypto, overlay, total,
+            () => cancelled,
+        );
+
         if (files.length > 0 && !cancelled) {
             const masterKey = destTeamPK ? Auth.getMasterKeyObj() : null;
-            const batches = _chunk(files, 50);
-            for (const batch of batches) {
+            for (const batch of _chunk(files, 50)) {
                 if (cancelled) break;
-                overlay.update(done, total, `Moving files…`);
-                const batchItems = [];
-                for (const file of batch) {
-                    try {
-                        let teamKey = null;
-                        if (destTeamPK) {
-                            // Items from the file list only carry { type, id, name };
-                            // fetch full metadata to get the crypto fields.
-                            let fileData = file;
-                            if (!file.encrypted_file_key) {
-                                const fetched = await Api.get(`${Config.app.apiPrefix}/files/${file.id}`);
-                                fileData = fetched.file || fetched;
-                            }
-                            const fileKeyBytes = await _resolveFileKeyBytes(fileData, masterKey);
-                            teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK);
-                        }
-                        batchItems.push({ id: file.id, team_key: teamKey });
-                    } catch { errors++; }
-                }
+                overlay.update(done, total, 'Moving files…');
+                const { items: batchItems, failed } = await _buildFileMoveItems(batch, destTeamPK, masterKey);
+                errors += failed;
                 if (batchItems.length > 0) {
                     try {
                         const result = await Api.post(
@@ -1274,9 +1286,8 @@ const Files = (() => {
         overlay.remove();
 
         if (cancelled) {
-            const moved = done - errors;
             Utils.showToast(
-                `Move cancelled — ${moved} of ${total} item${total === 1 ? '' : 's'} moved`,
+                `Move cancelled — ${done - errors} of ${total} item${total === 1 ? '' : 's'} moved`,
                 'warning',
             );
         } else {
@@ -1384,6 +1395,79 @@ const Files = (() => {
     }
 
     /**
+     * Load source team SK, file key map, and optionally the rk scalar for cross-team copies.
+     * Returns { skSrcBigInt, srcTeamFileKeyMap, rkBigInt }.
+     */
+    async function _loadCopySourceTeamKeys(srcTeamId, destTeamId) {
+        const asymKeys = Auth.getAsymmetricKeys();
+        if (!asymKeys) throw new Error('Asymmetric keys not available');
+        const srcMyKey = await Api.get(`${Config.app.apiPrefix}/teams/${srcTeamId}/my-key`);
+        const srcKeyResult = await Teams.unwrapTeamKey( // NOSONAR — async function accessed via Teams module export
+            srcMyKey, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+        );
+        const skSrcBigInt = srcKeyResult.sk_bigint;
+        const skSrcBytes  = srcKeyResult.sk_bytes;
+
+        const fkData = await Api.get(`${Config.app.apiPrefix}/teams/${srcTeamId}/file-keys`);
+        const srcTeamFileKeyMap = new Map((fkData.file_keys || []).map(fk => [fk.file_id, fk]));
+
+        let rkBigInt = null;
+        if (destTeamId && destTeamId !== srcTeamId) {
+            const destMyKey = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}/my-key`);
+            const destKeyResult = await Teams.unwrapTeamKey( // NOSONAR — async function accessed via Teams module export
+                destMyKey, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+            );
+            rkBigInt = Teams.computeRKScalar(skSrcBytes, destKeyResult.sk_bytes);
+        }
+        return { skSrcBigInt, srcTeamFileKeyMap, rkBigInt };
+    }
+
+    /**
+     * Build the batch-copy payload item for a single file.
+     * ctx: { srcTeamId, destTeamId, destTeamPK, masterKey, skSrcBigInt, rkBigInt, srcTeamFileKeyMap }
+     */
+    async function _buildFileCopyItem(file, ctx) {
+        const { srcTeamId, destTeamId, destTeamPK, masterKey, skSrcBigInt, rkBigInt, srcTeamFileKeyMap } = ctx;
+        const item = { file_id: file.id };
+
+        if (srcTeamId === destTeamId) {
+            // Path 1 (personal→personal) or Path 2 (same-team): server handles everything
+
+        } else if (!srcTeamId && destTeamId) {
+            // Path 4: Personal → Team — encrypt DEK for team
+            let fileData = file;
+            if (!fileData.encrypted_file_key) {
+                const fetched = await Api.get(`${Config.app.apiPrefix}/files/${file.id}`);
+                fileData = fetched.file || fetched;
+            }
+            const fileKeyBytes = await _resolveFileKeyBytes(fileData, masterKey);
+            const teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK); // NOSONAR — async function accessed via Teams module export
+            item.pre_c1 = teamKey.pre_c1;
+            item.encrypted_file_key = teamKey.encrypted_file_key;
+            item.key_iv = teamKey.key_iv;
+
+        } else if (srcTeamId && !destTeamId) {
+            // Path 5: Team → Personal — decrypt DEK from team, re-wrap under personal KEK
+            const fk = srcTeamFileKeyMap?.get(file.id);
+            if (!fk) throw new Error(`Team file key not found for ${file.id}`);
+            const dekKey = await Teams.decryptFileKeyFromTeam( // NOSONAR — async function accessed via Teams module export
+                fk.pre_c1, fk.encrypted_file_key, fk.key_iv, skSrcBigInt
+            );
+            const { encryptedKeyB64, ivB64 } = await Crypto.encryptFileKey(dekKey, masterKey);
+            item.encrypted_file_key = encryptedKeyB64;
+            item.key_iv = ivB64;
+
+        } else {
+            // Path 3: Cross-Team — apply re-encryption key to C1
+            const fk = srcTeamFileKeyMap?.get(file.id);
+            if (!fk) throw new Error(`Team file key not found for ${file.id}`);
+            item.pre_c1 = await Teams.applyPRERotation(fk.pre_c1, rkBigInt); // NOSONAR — async function accessed via Teams module export
+        }
+
+        return item;
+    }
+
+    /**
      * Execute copies for a list of file items to a destination folder.
      * Determines the crypto path per file and calls POST /files/batch-copy.
      * destination: { id: string|null, label: string, isTeam: boolean }
@@ -1396,58 +1480,23 @@ const Files = (() => {
             return;
         }
 
-        // Resolve destination team info
         let destTeamId = null;
         let destTeamPK = null;
-        if (destination.isTeam && destId) {
-            try {
-                const folderData = await Api.get(`${Config.app.apiPrefix}/folders/${destId}`);
-                destTeamId = folderData.team_id || null;
-                if (destTeamId) {
-                    const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}`);
-                    destTeamPK = teamData.team?.pre_public_key || null;
-                }
-            } catch {
-                Utils.showToast('Failed to resolve destination team — copy cancelled', 'error');
-                return;
-            }
+        try {
+            ({ destTeamId, destTeamPK } = await _resolveDestTeamInfo(destination));
+        } catch {
+            Utils.showToast('Failed to resolve destination team — copy cancelled', 'error');
+            return;
         }
 
         const srcTeamId = _currentTeamId || null;
-
-        // Pre-fetch source team file keys and my team SK when needed for cross-boundary paths
-        let srcTeamFileKeyMap = null; // Map<file_id, {pre_c1, encrypted_file_key, key_iv}>
+        let srcTeamFileKeyMap = null;
         let skSrcBigInt = null;
-        let skSrcBytes = null;
-        let skDestBytes = null;
         let rkBigInt = null;
 
-        const needsSourceTeamKey = srcTeamId && srcTeamId !== destTeamId;
-
-        if (needsSourceTeamKey) {
+        if (srcTeamId && srcTeamId !== destTeamId) {
             try {
-                const asymKeys = Auth.getAsymmetricKeys();
-                if (!asymKeys) throw new Error('Asymmetric keys not available');
-                const srcMyKey = await Api.get(`${Config.app.apiPrefix}/teams/${srcTeamId}/my-key`);
-                const srcKeyResult = await Teams.unwrapTeamKey(
-                    srcMyKey, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
-                );
-                skSrcBigInt = srcKeyResult.sk_bigint;
-                skSrcBytes  = srcKeyResult.sk_bytes;
-
-                // Fetch all file keys for this source team once
-                const fkData = await Api.get(`${Config.app.apiPrefix}/teams/${srcTeamId}/file-keys`);
-                srcTeamFileKeyMap = new Map((fkData.file_keys || []).map(fk => [fk.file_id, fk]));
-
-                // Cross-team (path 3): also unwrap dest team SK to compute rk
-                if (destTeamId && destTeamId !== srcTeamId) {
-                    const destMyKey = await Api.get(`${Config.app.apiPrefix}/teams/${destTeamId}/my-key`);
-                    const destKeyResult = await Teams.unwrapTeamKey(
-                        destMyKey, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
-                    );
-                    skDestBytes = destKeyResult.sk_bytes;
-                    rkBigInt = Teams.computeRKScalar(skSrcBytes, skDestBytes);
-                }
+                ({ skSrcBigInt, srcTeamFileKeyMap, rkBigInt } = await _loadCopySourceTeamKeys(srcTeamId, destTeamId));
             } catch (e) {
                 Utils.showToast(`Failed to load team key: ${e.message}`, 'error');
                 return;
@@ -1457,61 +1506,20 @@ const Files = (() => {
         const total = files.length;
         let errors = 0;
         let done = 0;
-
         const initialLabel = files.length === 1
             ? `Copying "${files[0].name}"…`
             : `Copying ${files.length} files…`;
         const overlay = _showMoveOverlay(initialLabel);
+        const ctx = { srcTeamId, destTeamId, destTeamPK, masterKey, skSrcBigInt, rkBigInt, srcTeamFileKeyMap };
 
-        const batches = _chunk(files, 50);
-        for (const batch of batches) {
+        for (const batch of _chunk(files, 50)) {
             overlay.update(done, total, 'Copying files…');
             const batchItems = [];
-
             for (const file of batch) {
                 try {
-                    const item = { file_id: file.id };
-
-                    if (srcTeamId === destTeamId) {
-                        // Path 1 (personal→personal) or Path 2 (same-team): server handles everything
-
-                    } else if (!srcTeamId && destTeamId) {
-                        // Path 4: Personal → Team — encrypt DEK for team
-                        let fileData = file;
-                        if (!fileData.encrypted_file_key) {
-                            const fetched = await Api.get(`${Config.app.apiPrefix}/files/${file.id}`);
-                            fileData = fetched.file || fetched;
-                        }
-                        const fileKeyBytes = await _resolveFileKeyBytes(fileData, masterKey);
-                        const teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK);
-                        item.pre_c1 = teamKey.pre_c1;
-                        item.encrypted_file_key = teamKey.encrypted_file_key;
-                        item.key_iv = teamKey.key_iv;
-
-                    } else if (srcTeamId && !destTeamId) {
-                        // Path 5: Team → Personal — decrypt DEK from team, re-wrap under personal KEK
-                        const fk = srcTeamFileKeyMap?.get(file.id);
-                        if (!fk) throw new Error(`Team file key not found for ${file.id}`);
-                        const dekKey = await Teams.decryptFileKeyFromTeam(
-                            fk.pre_c1, fk.encrypted_file_key, fk.key_iv, skSrcBigInt
-                        );
-                        const { encryptedKeyB64, ivB64 } = await Crypto.encryptFileKey(dekKey, masterKey);
-                        item.encrypted_file_key = encryptedKeyB64;
-                        item.key_iv = ivB64;
-
-                    } else {
-                        // Path 3: Cross-Team — apply re-encryption key to C1
-                        const fk = srcTeamFileKeyMap?.get(file.id);
-                        if (!fk) throw new Error(`Team file key not found for ${file.id}`);
-                        item.pre_c1 = await Teams.applyPRERotation(fk.pre_c1, rkBigInt);
-                    }
-
-                    batchItems.push(item);
-                } catch {
-                    errors++;
-                }
+                    batchItems.push(await _buildFileCopyItem(file, ctx));
+                } catch { errors++; }
             }
-
             if (batchItems.length > 0) {
                 try {
                     const result = await Api.post(
@@ -1519,9 +1527,7 @@ const Files = (() => {
                         { files: batchItems, destination_folder_id: destId },
                     );
                     errors += (result.failed || []).length;
-                } catch {
-                    errors += batchItems.length;
-                }
+                } catch { errors += batchItems.length; }
             }
             done += batch.length;
             overlay.update(done, total);
@@ -1568,24 +1574,12 @@ const Files = (() => {
 
         // Paginated enumeration — process each page as it arrives
         await _enumerateFolderFiles(folder.id, async (pageFiles, doneSoFar, totalFiles) => {
-            if (isCancelled && isCancelled()) return;
-            if (onProgress) {
-                onProgress(`Moving "${folder.name}" — ${doneSoFar} / ${totalFiles} files…`);
-            }
+            if (isCancelled?.()) return;
+            onProgress?.(`Moving "${folder.name}" — ${doneSoFar} / ${totalFiles} files…`);
 
-            const batches = _chunk(pageFiles, 50);
-            for (const batch of batches) {
-                if (isCancelled && isCancelled()) break;
-                const batchItems = [];
-                for (const file of batch) {
-                    try {
-                        const fileKeyBytes = await _resolveFileKeyBytes(file, masterKey);
-                        const teamKey = destTeamPK
-                            ? await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK)
-                            : null;
-                        batchItems.push({ id: file.id, team_key: teamKey });
-                    } catch { /* skip file, leave in source */ }
-                }
+            for (const batch of _chunk(pageFiles, 50)) {
+                if (isCancelled?.()) break;
+                const { items: batchItems } = await _buildFileMoveItems(batch, destTeamPK, masterKey);
                 if (batchItems.length > 0) {
                     await Api.post(
                         `${Config.app.apiPrefix}/files/batch-move`,
@@ -1680,6 +1674,16 @@ const Files = (() => {
         input.click();
     }
 
+    /** Register a team file key after upload; no-op when not in a team context. */
+    async function _registerTeamFileKey(fileId, fileKeyBytes) {
+        if (!_currentTeamId || !_currentTeamPK || !fileId || !fileKeyBytes) return;
+        const teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, _currentTeamPK); // NOSONAR — async function accessed via Teams module export
+        await Api.post(
+            `${Config.app.apiPrefix}/teams/${_currentTeamId}/file-keys`,
+            { file_keys: [{ file_id: fileId, ...teamKey }] },
+        );
+    }
+
     /**
      * Upload an array of File objects sequentially, showing a progress overlay.
      * Requires Auth.getMasterKeyObj() to return a valid CryptoKey.
@@ -1715,21 +1719,9 @@ const Files = (() => {
                 }, ctrl);
                 overlay.remove();
                 transfer.complete();
-
-                // Register file_team_keys so team members can decrypt this file
-                if (_currentTeamId && _currentTeamPK && result.fileId && result.fileKeyBytes) {
-                    try {
-                        const teamKey = await Teams.encryptFileKeyForTeam(result.fileKeyBytes, _currentTeamPK);
-                        await Api.post(
-                            `${Config.app.apiPrefix}/teams/${_currentTeamId}/file-keys`,
-                            { file_keys: [{ file_id: result.fileId, ...teamKey }] },
-                        );
-                    } catch (teamKeyErr) {
-                        // Non-fatal: file is uploaded and owner can access it; log the failure
-                        console.warn('Failed to register team file key for', result.fileId, teamKeyErr);
-                    }
-                }
-
+                await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(
+                    teamKeyErr => console.warn('Failed to register team file key for', result.fileId, teamKeyErr),
+                );
                 Utils.showToast(`"${file.name}" uploaded`, 'success');
             } catch (err) {
                 overlay.remove();

@@ -48,7 +48,7 @@ async def _require_team(db, team_id: str):
     """Return team row or raise 404."""
     team = await get_team(db, team_id)
     if team is None:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail="Team not found")  # NOSONAR — helper; 404 documented in callers
     return team
 
 
@@ -63,7 +63,7 @@ def _is_team_admin(member_role: str | None) -> bool:
 def _check_can_view(user: AuthenticatedUser, member_role: str | None):
     """Viewable by any team member or global role managers."""
     if member_role is None and not user.has_flag(FLAG_MANAGE_ROLES):
-        raise HTTPException(status_code=403, detail="Team membership or can_manage_roles required")
+        raise HTTPException(status_code=403, detail="Team membership or can_manage_roles required")  # NOSONAR — helper; 403 documented in callers
 
 
 def _check_can_manage(user: AuthenticatedUser, member_role: str | None):
@@ -71,7 +71,7 @@ def _check_can_manage(user: AuthenticatedUser, member_role: str | None):
     if user.has_flag(FLAG_MANAGE_ROLES):
         return
     if not _is_team_admin(member_role):
-        raise HTTPException(status_code=403, detail="Team Admin or can_manage_roles required")
+        raise HTTPException(status_code=403, detail="Team Admin or can_manage_roles required")  # NOSONAR — helper; 403 documented in callers
 
 
 async def _check_can_create(user: AuthenticatedUser, member_role: str | None):
@@ -100,7 +100,7 @@ async def _load_team_role(db, team_id: str, role_id: str):
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Team role not found")
+        raise HTTPException(status_code=404, detail="Team role not found")  # NOSONAR — helper; 404 documented in callers
     return row
 
 
@@ -195,6 +195,17 @@ async def list_team_roles(
 # POST /{team_id}/custom-roles
 # ---------------------------------------------------------------------------
 
+def _validate_permission_flags(permissions: dict) -> None:
+    """Raise 400 if any flag name or value is invalid."""
+    for flag, val in permissions.items():
+        if flag not in TEAM_ROLE_FLAGS:
+            raise HTTPException(status_code=400, detail=f"Unknown team role flag: {flag!r}")
+        if val not in ("0", "1"):
+            raise HTTPException(
+                status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}"
+            )
+
+
 @router.post("/{team_id}/custom-roles", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def create_team_role(
     team_id: str,
@@ -226,14 +237,7 @@ async def create_team_role(
             detail=f"Description must be ≤{MAX_TEAM_ROLE_DESC_LEN} characters",
         )
 
-    # Validate flag names and values
-    for flag, val in body.permissions.items():
-        if flag not in TEAM_ROLE_FLAGS:
-            raise HTTPException(status_code=400, detail=f"Unknown team role flag: {flag!r}")
-        if val not in ("0", "1"):
-            raise HTTPException(
-                status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}"
-            )
+    _validate_permission_flags(body.permissions)
 
     # Inheritance cap: if creator lacks can_manage_roles, cap flags to their own
     if not user.has_flag(FLAG_MANAGE_ROLES):

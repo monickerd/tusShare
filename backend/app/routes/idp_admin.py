@@ -283,6 +283,23 @@ async def get_provider(
     return result
 
 
+def _build_merged_config_enc(provider_type: str, existing_enc: str | None, new_config: dict) -> str:
+    try:
+        existing_cfg = decrypt_idp_config(existing_enc)
+    except Exception:
+        existing_cfg = {}
+    merged = dict(existing_cfg)
+    for k, v in new_config.items():
+        if k in _SECRET_FIELDS and v == _REDACTED:
+            pass  # keep existing value
+        else:
+            merged[k] = v
+    try:
+        return _validate_and_encrypt_config(provider_type, merged)
+    except (ValueError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Update
 # ---------------------------------------------------------------------------
@@ -335,23 +352,8 @@ async def update_provider(
             params.append(body.claim_mode)
 
     if body.config is not None:
-        # Merge redaction placeholders: preserve existing secrets for unchanged fields
-        try:
-            existing_cfg = decrypt_idp_config(row["config_enc"])
-        except Exception:
-            existing_cfg = {}
-        merged = dict(existing_cfg)
-        for k, v in body.config.items():
-            if k in _SECRET_FIELDS and v == _REDACTED:
-                pass  # keep existing value
-            else:
-                merged[k] = v
-        try:
-            new_config_enc = _validate_and_encrypt_config(provider_type, merged)
-        except (ValueError, Exception) as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
         updates.append("config_enc = ?")
-        params.append(new_config_enc)
+        params.append(_build_merged_config_enc(provider_type, row["config_enc"], body.config))
 
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")

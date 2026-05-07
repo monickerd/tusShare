@@ -417,7 +417,7 @@ def _role_rank(role: str) -> int:
 async def _get_team_or_404(db, team_id: str):
     team = await get_team(db, team_id)
     if not team:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail="Team not found")  # NOSONAR — helper; 404 documented in callers
     return team
 
 
@@ -425,9 +425,9 @@ async def _require_team_role(db, team_id: str, user: AuthenticatedUser, min_role
     """Raise 403 if the user does not hold at least min_role in the team."""
     role = await get_team_member_role(db, team_id, user.id)
     if role is None:
-        raise HTTPException(status_code=403, detail="Not a member of this team")
+        raise HTTPException(status_code=403, detail="Not a member of this team")  # NOSONAR — helper; 403 documented in callers
     if _role_rank(role) > _role_rank(min_role):
-        raise HTTPException(status_code=403, detail="Insufficient team role")
+        raise HTTPException(status_code=403, detail="Insufficient team role")  # NOSONAR — helper; 403 documented in callers
     return role
 
 
@@ -1086,6 +1086,55 @@ async def add_file_keys(
 # PRE key rotation
 # ---------------------------------------------------------------------------
 
+async def _validate_rotation_inputs(db, team_id: str, user, body) -> None:
+    """Validate file_keys and member list for a PRE key rotation."""
+    if body.file_keys:
+        file_ids = [fk.file_id for fk in body.file_keys]
+        placeholders = ",".join("?" for _ in file_ids)
+        cursor = await db.execute(
+            f"SELECT file_id FROM file_team_keys WHERE team_id = ? AND file_id IN ({placeholders})",
+            (team_id, *file_ids),
+        )
+        found_ids = {row["file_id"] for row in await cursor.fetchall()}
+        unknown = [fid for fid in file_ids if fid not in found_ids]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"file_ids not in this team's file_team_keys: {unknown[:5]}"
+            )
+        cursor2 = await db.execute(
+            "SELECT COUNT(*) FROM file_team_keys WHERE team_id = ?", (team_id,)
+        )
+        total_row = await cursor2.fetchone()
+        if total_row[0] != len(file_ids):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Rotation must include all {total_row[0]} file keys; "
+                    f"submitted {len(file_ids)}"
+                )
+            )
+
+    submitted_user_ids = {m.user_id for m in body.members}
+    if user.id not in submitted_user_ids:
+        raise HTTPException(
+            status_code=422,
+            detail="Rotation members list must include the requesting user"
+        )
+
+    cursor = await db.execute(
+        "SELECT user_id FROM user_roles WHERE scope_type = 'team' AND scope_id = ?",
+        (team_id,),
+    )
+    current_member_ids = {row["user_id"] for row in await cursor.fetchall()}
+    non_members = submitted_user_ids - current_member_ids
+    if non_members:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Submitted members include non-members: {list(non_members)[:5]}"
+        )
+
+
 @router.post("/{team_id}/rotate", responses={422: {"description": "Unprocessable Entity"}})
 async def rotate_team_keys(
     team_id: str,
@@ -1110,59 +1159,7 @@ async def rotate_team_keys(
     team_id = validate_uuid(team_id)
     team = await _get_team_or_404(db, team_id)
     await _require_team_role(db, team_id, user, TEAM_ROLE_MEMBER)
-
-    # --- Validate file_ids belong to this team ---
-    if body.file_keys:
-        file_ids = [fk.file_id for fk in body.file_keys]
-        placeholders = ",".join("?" for _ in file_ids)
-        cursor = await db.execute(
-            f"SELECT file_id FROM file_team_keys WHERE team_id = ? AND file_id IN ({placeholders})",
-            (team_id, *file_ids),
-        )
-        found_ids = {row["file_id"] for row in await cursor.fetchall()}
-        # All submitted file IDs must already exist in file_team_keys for this team
-        unknown = [fid for fid in file_ids if fid not in found_ids]
-        if unknown:
-            raise HTTPException(
-                status_code=422,
-                detail=f"file_ids not in this team's file_team_keys: {unknown[:5]}"
-            )
-        # Submitted set must cover the full current set (no partial rotation)
-        cursor2 = await db.execute(
-            "SELECT COUNT(*) FROM file_team_keys WHERE team_id = ?", (team_id,)
-        )
-        total_row = await cursor2.fetchone()
-        if total_row[0] != len(file_ids):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Rotation must include all {total_row[0]} file keys; "
-                    f"submitted {len(file_ids)}"
-                )
-            )
-
-    # --- Validate members match current (non-owner) members minus any removed ones ---
-    submitted_user_ids = {m.user_id for m in body.members}
-
-    # The requester must be in the members list
-    if user.id not in submitted_user_ids:
-        raise HTTPException(
-            status_code=422,
-            detail="Rotation members list must include the requesting user"
-        )
-
-    # Every submitted user_id must currently be a member
-    cursor = await db.execute(
-        "SELECT user_id FROM user_roles WHERE scope_type = 'team' AND scope_id = ?",
-        (team_id,),
-    )
-    current_member_ids = {row["user_id"] for row in await cursor.fetchall()}
-    non_members = submitted_user_ids - current_member_ids
-    if non_members:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Submitted members include non-members: {list(non_members)[:5]}"
-        )
+    await _validate_rotation_inputs(db, team_id, user, body)
 
     # --- DLEQ / rk_consistency verification ---
     # Fetch current C1 values from DB so we can pass c1_old to DLEQ proofs.
@@ -1615,6 +1612,41 @@ async def get_ephemeral_slot(
     return {"sk_wrapped": slot["sk_wrapped"], "sk_iv": slot["sk_iv"]}
 
 
+async def _load_valid_slot(db, team_id: str, slot_id: str):
+    """Fetch an ephemeral slot and raise 404/410 if invalid, consumed, or expired."""
+    cursor = await db.execute(
+        "SELECT expires_at, consumed FROM team_ephemeral_slots WHERE id = ? AND team_id = ?",
+        (slot_id, team_id),
+    )
+    slot = await cursor.fetchone()
+    if not slot:
+        raise HTTPException(status_code=404, detail="Invite slot not found")
+    if slot["consumed"]:
+        raise HTTPException(status_code=410, detail="Invite slot has already been used")
+    now_str = datetime.now(timezone.utc).strftime(_ISO_FMT)
+    if slot["expires_at"] < now_str:
+        raise HTTPException(status_code=410, detail="Invite slot has expired")
+
+
+async def _validate_join_file_keys(db, team_id: str, body) -> None:
+    """Verify submitted file_keys cover exactly the team's current file_team_keys."""
+    if not body.file_keys:
+        return
+    file_ids = [fk.file_id for fk in body.file_keys]
+    ph = ",".join("?" for _ in file_ids)
+    c2 = await db.execute(
+        f"SELECT COUNT(*) FROM file_team_keys WHERE team_id = ? AND file_id IN ({ph})",
+        (team_id, *file_ids),
+    )
+    if (await c2.fetchone())[0] != len(file_ids):
+        raise HTTPException(status_code=422, detail="file_ids mismatch for this team")
+    c3 = await db.execute(
+        "SELECT COUNT(*) FROM file_team_keys WHERE team_id = ?", (team_id,)
+    )
+    if (await c3.fetchone())[0] != len(file_ids):
+        raise HTTPException(status_code=422, detail="Rotation must include all file keys")
+
+
 @router.post("/{team_id}/ephemeral-join", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 422: {"description": "Unprocessable Entity"}})
 async def ephemeral_join(
     team_id: str,
@@ -1657,37 +1689,8 @@ async def ephemeral_join(
             detail=f"Team has reached the member limit ({TEAM_MAX_MEMBERS})"
         )
 
-    # Validate slot: unexpired, unconsumed, belongs to this team
-    cursor = await db.execute(
-        "SELECT expires_at, consumed FROM team_ephemeral_slots WHERE id = ? AND team_id = ?",
-        (slot_id, team_id),
-    )
-    slot = await cursor.fetchone()
-    if not slot:
-        raise HTTPException(status_code=404, detail="Invite slot not found")
-    if slot["consumed"]:
-        raise HTTPException(status_code=410, detail="Invite slot has already been used")
-    now_str = datetime.now(timezone.utc).strftime(_ISO_FMT)
-    if slot["expires_at"] < now_str:
-        raise HTTPException(status_code=410, detail="Invite slot has expired")
-
-    # Validate file_ids belong to this team
-    if body.file_keys:
-        file_ids = [fk.file_id for fk in body.file_keys]
-        ph = ",".join("?" for _ in file_ids)
-        c2 = await db.execute(
-            f"SELECT COUNT(*) FROM file_team_keys WHERE team_id = ? AND file_id IN ({ph})",
-            (team_id, *file_ids),
-        )
-        if (await c2.fetchone())[0] != len(file_ids):
-            raise HTTPException(status_code=422, detail="file_ids mismatch for this team")
-        c3 = await db.execute(
-            "SELECT COUNT(*) FROM file_team_keys WHERE team_id = ?", (team_id,)
-        )
-        if (await c3.fetchone())[0] != len(file_ids):
-            raise HTTPException(
-                status_code=422, detail="Rotation must include all file keys"
-            )
+    await _load_valid_slot(db, team_id, slot_id)
+    await _validate_join_file_keys(db, team_id, body)
 
     # Joining user must be in the members list (they wrap sk_new for themselves)
     submitted_user_ids = {m.user_id for m in body.members}

@@ -240,8 +240,8 @@ async def list_folder_files_recursive(
     folder_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ):
     """Return a paginated flat list of all complete files within a folder tree (recursive).
 
@@ -317,6 +317,58 @@ async def list_folder_files_recursive(
     return {"files": files, "total": total, "offset": offset, "limit": limit}
 
 
+async def _check_no_ancestor_cycle(db, folder_id: str, new_parent_id: str) -> None:
+    """Raise 400 if new_parent_id is a descendant of folder_id."""
+    visited: set[str] = set()
+    current: str | None = new_parent_id
+    while current and current not in visited:
+        if current == folder_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot move a folder into itself or one of its descendants",
+            )
+        visited.add(current)
+        anc_cursor = await db.execute("SELECT parent_id FROM folders WHERE id = ?", (current,))
+        anc_row = await anc_cursor.fetchone()
+        current = anc_row["parent_id"] if anc_row else None
+
+
+async def _build_folder_update_params(db, folder_id: str, folder_row, body) -> tuple[list, list]:
+    """Build (updates, params) for the folder UPDATE statement."""
+    updates: list = []
+    params: list = []
+    if body.name is not None:
+        updates.append("name = ?")
+        params.append(body.name)
+    if body.restrict_permissions is not None:
+        updates.append("restrict_permissions = ?")
+        params.append(body.restrict_permissions)
+    if body.move_to_root:
+        if folder_row["parent_id"] is None:
+            raise HTTPException(status_code=400, detail="Folder is already at root")
+        updates.append("parent_id = ?")
+        params.append(None)
+    elif body.parent_id is not None:
+        pid = validate_uuid(body.parent_id)
+        await _check_no_ancestor_cycle(db, folder_id, pid)
+        updates.append("parent_id = ?")
+        params.append(pid)
+    return updates, params
+
+
+async def _update_move_permissions(db, folder_id: str, move_to_root: bool, parent_id: str | None) -> None:
+    """Delete stale recursive permissions and copy from new parent after a move."""
+    if not move_to_root and parent_id is None:
+        return
+    new_parent_id = None if move_to_root else parent_id
+    await db.execute(
+        "DELETE FROM permissions WHERE resource_type = 'folder' AND resource_id = ? AND recursive = 1",
+        (folder_id,),
+    )
+    if new_parent_id:
+        await copy_folder_permissions(db, new_parent_id, "folder", folder_id)
+
+
 @router.put("/{folder_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_folder(
     folder_id: str,
@@ -341,40 +393,7 @@ async def update_folder(
     if body.move_to_root and body.parent_id is not None:
         raise HTTPException(status_code=400, detail="Cannot specify both parent_id and move_to_root")
 
-    updates = []
-    params = []
-    if body.name is not None:
-        updates.append("name = ?")
-        params.append(body.name)
-    if body.restrict_permissions is not None:
-        updates.append("restrict_permissions = ?")
-        params.append(body.restrict_permissions)
-    if body.move_to_root:
-        if folder_row["parent_id"] is None:
-            raise HTTPException(status_code=400, detail="Folder is already at root")
-        updates.append("parent_id = ?")
-        params.append(None)
-    elif body.parent_id is not None:
-        parent_id = validate_uuid(body.parent_id)
-        # Walk the ancestor chain of parent_id and confirm folder_id doesn't appear in it.
-        # Without this, moving A into one of its own descendants creates a parent_id cycle
-        # which infinite-loops the breadcrumb traversal in get_folder_contents.
-        visited: set[str] = set()
-        current = parent_id
-        while current and current not in visited:
-            if current == folder_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Cannot move a folder into itself or one of its descendants",
-                )
-            visited.add(current)
-            anc_cursor = await db.execute(
-                "SELECT parent_id FROM folders WHERE id = ?", (current,)
-            )
-            anc_row = await anc_cursor.fetchone()
-            current = anc_row["parent_id"] if anc_row else None
-        updates.append("parent_id = ?")
-        params.append(parent_id)
+    updates, params = await _build_folder_update_params(db, folder_id, folder_row, body)
 
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -388,16 +407,7 @@ async def update_folder(
     )
 
     # On a parent change, replace inherited permissions with those from the new parent.
-    # Rename-only (body.parent_id is None and not move_to_root) leaves permissions untouched.
-    is_move = body.move_to_root or body.parent_id is not None
-    if is_move:
-        new_parent_id = body.parent_id if not body.move_to_root else None
-        await db.execute(
-            "DELETE FROM permissions WHERE resource_type = 'folder' AND resource_id = ? AND recursive = 1",
-            (folder_id,),
-        )
-        if new_parent_id:
-            await copy_folder_permissions(db, new_parent_id, "folder", folder_id)
+    await _update_move_permissions(db, folder_id, body.move_to_root, body.parent_id)
 
     await db.commit()
 

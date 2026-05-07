@@ -76,6 +76,24 @@ def _flush_pending(
             _t.add_done_callback(_bg_tasks.discard)
 
 
+def _enqueue_for_dest(dest: dict, event: SecurityEvent, overflow: dict, secrets_cache: dict) -> None:
+    if not matches_destination_filter(dest, event):
+        return
+    did = dest["id"]
+    if did not in overflow:
+        overflow[did] = []
+    overflow[did].append(event)
+    batch_size = max(1, dest.get("batch_size") or 1)
+    if len(overflow[did]) >= batch_size:
+        batch = overflow[did][:batch_size]
+        overflow[did] = overflow[did][batch_size:]
+        _t = asyncio.create_task(
+            _send_with_retry(dest, batch, secrets_cache.get(did, ""))
+        )
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
+
+
 async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
     from app.services import event_bus
 
@@ -102,23 +120,7 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
                 reload_countdown = _RELOAD_INTERVAL_SECS
 
             for dest in destinations:
-                if not matches_destination_filter(dest, event):
-                    continue
-                did = dest["id"]
-                if did not in overflow:
-                    overflow[did] = []
-
-                overflow[did].append(event)
-                batch_size = max(1, dest.get("batch_size") or 1)
-
-                if len(overflow[did]) >= batch_size:
-                    batch = overflow[did][:batch_size]
-                    overflow[did] = overflow[did][batch_size:]
-                    _t = asyncio.create_task(
-                        _send_with_retry(dest, batch, secrets_cache.get(did, ""))
-                    )
-                    _bg_tasks.add(_t)
-                    _t.add_done_callback(_bg_tasks.discard)
+                _enqueue_for_dest(dest, event, overflow, secrets_cache)
 
     except asyncio.CancelledError:
         event_bus.unsubscribe(q)

@@ -248,16 +248,31 @@ async def scan_file(db, file_id: str) -> None:
         return
 
     # --- Webhook with retry ---
+    verdict = await _scan_with_retry(
+        endpoint, secret, plaintext, file_id,
+        file_row.get("original_name", "file"),
+        file_row.get("mime_type", "application/octet-stream"),
+        max_attempts,
+    )
+
+    await _write_status(db, file_id, verdict)
+
+    if verdict == "infected":
+        await _handle_infected(db, file_id, file_row.get("original_name", ""))
+
+    logger.info("AV scan complete for file %s: verdict=%s", file_id, verdict)
+
+
+async def _scan_with_retry(
+    endpoint: str, secret: str, plaintext: bytes,
+    file_id: str, original_name: str, mime_type: str,
+    max_attempts: int,
+) -> str:
     verdict = "error"
-    delay   = 2.0
+    delay = 2.0
     for attempt in range(1, max_attempts + 1):
         try:
-            result  = await _call_webhook(
-                endpoint, secret, plaintext,
-                file_id,
-                file_row.get("original_name", "file"),
-                file_row.get("mime_type", "application/octet-stream"),
-            )
+            result = await _call_webhook(endpoint, secret, plaintext, file_id, original_name, mime_type)
             raw_verdict = result.get("verdict", "error")
             verdict = raw_verdict if raw_verdict in ("clean", "infected", "error") else "error"
             break
@@ -269,13 +284,7 @@ async def scan_file(db, file_id: str) -> None:
             if attempt < max_attempts:
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60.0)
-
-    await _write_status(db, file_id, verdict)
-
-    if verdict == "infected":
-        await _handle_infected(db, file_id, file_row.get("original_name", ""))
-
-    logger.info("AV scan complete for file %s: verdict=%s", file_id, verdict)
+    return verdict
 
 
 async def _write_status(db, file_id: str, status: str) -> None:

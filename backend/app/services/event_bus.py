@@ -116,6 +116,19 @@ async def start() -> asyncio.Task:
 # Internal — drainer + persistence
 # ---------------------------------------------------------------------------
 
+async def _flush_remaining_events() -> None:
+    while not _write_queue.empty():
+        try:
+            event, should_persist = _write_queue.get_nowait()
+            if should_persist:
+                await _persist(event)
+            _fanout(event)
+        except asyncio.QueueEmpty:
+            break
+        except Exception:
+            logger.exception("Event bus: error flushing event on shutdown")
+
+
 async def _drain_loop() -> None:
     """Drain the write queue: optionally persist each event then fan out to subscribers."""
     while True:
@@ -125,28 +138,7 @@ async def _drain_loop() -> None:
                 await _persist(event)
             _fanout(event)
         except asyncio.CancelledError:
-            # Flush remaining events before exiting so nothing is silently lost.
-            while not _write_queue.empty():
-                try:
-                    event, should_persist = _write_queue.get_nowait()
-                    if should_persist:
-                        await _persist(event)
-                    _fanout(event)
-                except asyncio.QueueEmpty:
-                    break
-                except Exception:
-                    logger.exception("Event bus: error flushing event on shutdown")
-            # Flush remaining events before exiting so nothing is silently lost.
-            while not _write_queue.empty():
-                try:
-                    event, should_persist = _write_queue.get_nowait()
-                    if should_persist:
-                        await _persist(event)
-                    _fanout(event)
-                except asyncio.QueueEmpty:
-                    break
-                except Exception:
-                    logger.exception("Event bus: error flushing event on shutdown")
+            await _flush_remaining_events()
             raise
         except Exception:
             logger.exception("Event bus: unhandled error in drain loop")

@@ -67,32 +67,16 @@ const App = (() => {
         { pattern: /^#\/l\/(.+)$/,                                                            handler: _routeShortLink },
     ];
 
-    async function init() {
-        // Load org theme config (brand name, logo, ui flags) before rendering anything.
-        // Errors are swallowed — falls back to Config.app.name gracefully.
-        await _loadTheme();
-        _applyThemeFlags();
-
-        // Fetch server-enforced chunk size so uploads use the correct value.
-        // Fire-and-forget: falls back to the Config default if the fetch fails.
-        Upload.fetchAndSetChunkSize();
-
-        // OIDC callback detection — check query params set by the server after the
-        // IdP redirect.  Must run before the normal auth check so we handle the
-        // callback URL before it is stripped by the SPA router.
-        const _qs = new URLSearchParams(window.location.search);
-        if (_qs.has('oidc_error')) {
-            // Clean the query string and show login with an error banner
+    async function _handleOidcCallbacks(qs) {
+        if (qs.has('oidc_error')) {
             history.replaceState(null, '', '/');
             window.location.hash = '#/login';
             await _routeLogin(_appEl());
             Utils.showToast('Sign-in via identity provider failed. Please try again.', 'error');
-            return;
+            return true;
         }
-        if (_qs.has('mfa_challenge')) {
-            // Exchange the opaque challenge_id for the actual pending_token.
-            // The token is never placed in the URL — only the one-time challenge_id is.
-            const challengeId = _qs.get('mfa_challenge');
+        if (qs.has('mfa_challenge')) {
+            const challengeId = qs.get('mfa_challenge');
             history.replaceState(null, '', '/');
             window.location.hash = '#/login';
             try {
@@ -109,83 +93,30 @@ const App = (() => {
                 // Challenge expired or already used — send to login.
                 Auth.renderOidcMfaChallenge(_appEl(), '', []);
             }
-            return;
+            return true;
         }
+        return false;
+    }
 
-        // Path-based public routes — handled before auth check so unauthenticated
-        // users land on the correct page rather than being bounced to login.
-        const path = window.location.pathname;
-
-        // /register/<token> — invite-based registration (no auth required)
-        if (path.startsWith('/register/')) {
-            const token = path.slice('/register/'.length);
-            Auth.renderRegisterPage(_appEl(), token);
-            return;
-        }
-
-        // /s/<token>#shareKey and /l/<slug>#shareKey — public share views
-        if (path.startsWith('/s/')) {
-            const token          = path.slice(3);
-            const shareKeyB64url = window.location.hash.slice(1);
-            Shares.renderPublicSharePage(_appEl(), token, shareKeyB64url);
-            return;
-        }
-        if (path.startsWith('/l/')) {
-            const slug           = path.slice(3);
-            const shareKeyB64url = window.location.hash.slice(1);
-            Shares.renderShortLinkPage(_appEl(), slug, shareKeyB64url);
-            return;
-        }
-
-        window.addEventListener('hashchange', _onHashChange);
-
-        // Check for existing session
-        const hasSession = await Auth.checkSession();
-
-        if (!hasSession) {
-            // If the user landed on a join link without a session, save the intent so
-            // auth.js can redirect back to it after a successful login.
-            const h = window.location.hash;
-            if (h?.startsWith('#/join/')) {
-                sessionStorage.setItem('pendingJoinHash', h);
-            }
-            // Setting hash to #/login won't fire hashchange if the hash is already
-            // #/login (browser no-ops same-value assignments). Render directly so
-            // a refresh on the login page doesn't hang on "Loading tusShare...".
-            window.location.hash = '#/login';
-            await _routeLogin(_appEl());
-            return;
-        }
-
-        // Session exists but may need key derivation (page refresh).
-        // Admin accounts have no encryption keys — skip the key prompt entirely.
-        // Public-device sessions: no key prompt — the tab close cleared sessionStorage
-        // intentionally, so go to login instead of asking for the password again.
+    async function _checkKeyAndMfa() {
         if (!Auth.getMasterKeyObj() && !Auth.getCurrentUser()?.is_admin) {
             const user = Auth.getCurrentUser();
             if (user?.is_public_device) {
-                // Public-device session: tab close cleared key material intentionally.
-                // Go to login rather than prompting for the password again.
                 window.location.hash = '#/login';
                 await _routeLogin(_appEl());
-                return;
+                return true;
             }
-            const container = _appEl();
-            Auth.renderKeyPrompt(container);
-            return;
+            Auth.renderKeyPrompt(_appEl());
+            return true;
         }
-
-        // MFA enforcement gate: if required mode and user has no credentials,
-        // redirect to #/mfa enrollment before allowing any file access.
         if (!Auth.getCurrentUser()?.is_admin) {
             try {
                 const mfaStatus = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
                 if (mfaStatus.enforcement === 'required' && mfaStatus.active_count === 0) {
                     window.location.hash = '#/mfa';
                     _onHashChange();
-                    return;
+                    return true;
                 }
-                // Show nudge banner in optional mode (non-blocking)
                 if (mfaStatus.enforcement === 'optional') {
                     Auth.checkMfaBanner(_appEl());
                 }
@@ -193,11 +124,50 @@ const App = (() => {
                 // Non-critical — proceed without enforcement
             }
         }
+        return false;
+    }
 
-        // Start persistent identity watch so all tabs detect admin-forced changes.
+    async function init() {
+        await _loadTheme();
+        _applyThemeFlags();
+        Upload.fetchAndSetChunkSize();
+
+        const _qs = new URLSearchParams(window.location.search);
+        if (await _handleOidcCallbacks(_qs)) return;
+
+        // Path-based public routes — handled before auth check so unauthenticated
+        // users land on the correct page rather than being bounced to login.
+        const path = window.location.pathname;
+        if (path.startsWith('/register/')) {
+            Auth.renderRegisterPage(_appEl(), path.slice('/register/'.length));
+            return;
+        }
+        if (path.startsWith('/s/')) {
+            Shares.renderPublicSharePage(_appEl(), path.slice(3), window.location.hash.slice(1));
+            return;
+        }
+        if (path.startsWith('/l/')) {
+            Shares.renderShortLinkPage(_appEl(), path.slice(3), window.location.hash.slice(1));
+            return;
+        }
+
+        window.addEventListener('hashchange', _onHashChange);
+
+        const hasSession = await Auth.checkSession();
+        if (!hasSession) {
+            const h = window.location.hash;
+            if (h?.startsWith('#/join/')) {
+                sessionStorage.setItem('pendingJoinHash', h);
+            }
+            window.location.hash = '#/login';
+            await _routeLogin(_appEl());
+            return;
+        }
+
+        if (await _checkKeyAndMfa()) return;
+
         Auth.startIdentityWatch();
 
-        // Navigate to current hash or default
         const defaultHash = Auth.getCurrentUser()?.is_admin ? '#/admin' : '#/files';
         if (!window.location.hash || window.location.hash === '#/') {
             window.location.hash = defaultHash;
@@ -206,17 +176,28 @@ const App = (() => {
         }
     }
 
+    function _guardKeyPrompt(hash, container) {
+        if (!Auth.getMasterKeyObj()) {
+            if (Auth.getCurrentUser()?.is_admin) {
+                if (hash !== '#/admin' && hash !== '#/setup') {
+                    window.location.hash = '#/admin';
+                    return true;
+                }
+            } else {
+                Auth.renderKeyPrompt(container);
+                return true;
+            }
+        }
+        return false;
+    }
+
     function _onHashChange() {
         const hash = window.location.hash || '#/login';
         const container = _appEl();
 
-        // Tear down any active live-update stream. File routes re-open it
-        // once their folder finishes loading; all other routes leave it closed.
         Files.stopLive();
 
         // Public / semi-public routes — no auth check at router level.
-        // #/join/ is handled by Teams.renderEphemeralJoinPage which saves intent
-        // and redirects to #/login if the user is not authenticated.
         if (hash.startsWith('#/s/') || hash.startsWith('#/l/') || hash.startsWith('#/join/')) {
             for (const route of _routes) {
                 const match = hash.match(route.pattern);
@@ -227,32 +208,17 @@ const App = (() => {
             }
         }
 
-        // Login route
         if (hash === '#/login') {
             _routeLogin(container);
             return;
         }
 
-        // All other routes require auth
         if (!Auth.getCurrentUser()) {
             window.location.hash = '#/login';
             return;
         }
 
-        // Need master key for file operations; admin accounts have no keys
-        if (!Auth.getMasterKeyObj()) {
-            if (Auth.getCurrentUser()?.is_admin) {
-                // Admin only has access to the admin route and the first-run wizard.
-                // Redirect away from file routes, but let #/admin and #/setup fall through.
-                if (hash !== '#/admin' && hash !== '#/setup') {
-                    window.location.hash = '#/admin';
-                    return;
-                }
-            } else {
-                Auth.renderKeyPrompt(container);
-                return;
-            }
-        }
+        if (_guardKeyPrompt(hash, container)) return;
 
         _updateSidebarActive(hash);
 
@@ -264,7 +230,6 @@ const App = (() => {
             }
         }
 
-        // 404 — redirect to files
         window.location.hash = '#/files';
     }
 
@@ -357,7 +322,7 @@ const App = (() => {
         // On error (network/auth) fall through to normal admin panel.
         try {
             const { settings } = await Api.get(`${Config.app.apiPrefix}/admin/settings`);
-            if (!settings || settings.first_run_completed !== '1') {
+            if (settings?.first_run_completed !== '1') {
                 window.location.hash = '#/setup';
                 return;
             }
@@ -448,10 +413,11 @@ const App = (() => {
                 const btn = Utils.el('button', {
                     className: 'account-menu-tab' + (label === _activeTab ? ' active' : ''),
                     textContent: label,
-                    onClick: () => { // NOSONAR — closure over label/panel/contentEl; unavoidable nesting
+                    onClick: () => {
                         _activeTab = label;
-                        panel.querySelectorAll('.account-menu-tab').forEach(b =>
-                            b.classList.toggle('active', b.textContent === label));
+                        panel.querySelectorAll('.account-menu-tab').forEach(b => { // NOSONAR — deep in onClick inside tabs.map; nesting unavoidable
+                            b.classList.toggle('active', b.textContent === label);
+                        });
                         _renderTabContent(contentEl, label);
                     },
                 });
@@ -739,7 +705,7 @@ const App = (() => {
                     } catch { /* proceed without warning if check fails */ }
 
                     if (ownedTeams.length > 0) {
-                        const teamList = ownedTeams.map(t => `"${t.name}"`).join(', ');
+                        const teamList = ownedTeams.map(t => `"${t.name}"`).join(', '); // NOSONAR — deep in onClick inside .then; nesting unavoidable
                         if (!canDeleteOwned) {
                             Utils.showToast(
                                 `You own ${ownedTeams.length > 1 ? 'teams' : 'a team'} (${teamList}). ` +

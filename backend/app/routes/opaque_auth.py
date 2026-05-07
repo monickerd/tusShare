@@ -71,7 +71,7 @@ def _decode_b64_field(value: str, field_name: str) -> bytes:
         padded = value + "=" * (-len(value) % 4)
         return base64.urlsafe_b64decode(padded)
     except Exception:
-        raise HTTPException(status_code=422, detail=f"{field_name}: invalid base64")
+        raise HTTPException(status_code=422, detail=f"{field_name}: invalid base64")  # NOSONAR — helper; 422 documented in callers
 
 
 # ---------------------------------------------------------------------------
@@ -500,6 +500,44 @@ async def opaque_login_start(
     }
 
 
+async def _maybe_issue_mfa_response(db, user, body, active_methods, mfa_reset_required):
+    """Return a pending-token response dict if MFA is required, else None."""
+    if not (active_methods or mfa_reset_required):
+        return None
+    from app.auth.mfa import (
+        get_active_methods, issue_pending_token, store_pending_token, extract_pending_jti,
+    )
+    pending_token = issue_pending_token(user.id)
+    jti = extract_pending_jti(pending_token)
+    await store_pending_token(db, jti, user.id, body.is_public_device)
+    await db.commit()
+    logger.info(
+        "OPAQUE login: user=%s (id=%s) — MFA required (methods=%s reset=%s)",
+        user.username, user.id, sorted(active_methods), mfa_reset_required,
+    )
+    try:
+        from app.models.policy import evaluate_user_policies as _eval_mfa_policies
+        from app.database import db_session as _db_session_mfa
+        _mfa_uid = user.id
+        async def _bg_mfa_eval() -> None:
+            try:
+                async with _db_session_mfa() as _bg_db:
+                    await _eval_mfa_policies(_bg_db, _mfa_uid)
+            except Exception:
+                pass
+        _t = asyncio.create_task(_bg_mfa_eval())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
+    except Exception:
+        pass
+    return {
+        "mfa_required": True,
+        "methods": sorted(active_methods),
+        "reset_required": mfa_reset_required,
+        "pending_token": pending_token,
+    }
+
+
 @router.post("/login/finish", responses={401: {"description": "Unauthorized"}})
 async def opaque_login_finish(
     body: OpaqueLoginFinishRequest,
@@ -553,12 +591,7 @@ async def opaque_login_finish(
     # If MFA is required, return a pending_token instead of session cookies so
     # the client can complete the MFA challenge.  mfa_reset_required bypasses
     # the "no credentials → skip" path and forces the user to enrollment.
-    from app.auth.mfa import (
-        get_active_methods,
-        issue_pending_token,
-        store_pending_token,
-        extract_pending_jti,
-    )
+    from app.auth.mfa import get_active_methods
     cursor = await db.execute(
         "SELECT mfa_reset_required FROM users WHERE id = ?", (user.id,)
     )
@@ -567,42 +600,9 @@ async def opaque_login_finish(
 
     active_methods = await get_active_methods(db, user.id)
 
-    if active_methods or mfa_reset_required:
-        # User has MFA enrolled (or admin forced re-enrollment) — issue pending token
-        pending_token = issue_pending_token(user.id)
-        jti = extract_pending_jti(pending_token)
-        is_public_device = body.is_public_device
-        await store_pending_token(db, jti, user.id, is_public_device)
-        await db.commit()
-
-        logger.info(
-            "OPAQUE login: user=%s (id=%s) — MFA required (methods=%s reset=%s)",
-            user.username, user.id, sorted(active_methods), mfa_reset_required,
-        )
-
-        # Fire-and-forget policy eval (same as normal login path)
-        try:
-            from app.models.policy import evaluate_user_policies as _eval_mfa_policies
-            from app.database import db_session as _db_session_mfa
-            _mfa_uid = user.id
-            async def _bg_mfa_eval() -> None:
-                try:
-                    async with _db_session_mfa() as _bg_db:
-                        await _eval_mfa_policies(_bg_db, _mfa_uid)
-                except Exception:
-                    pass
-            _t = asyncio.create_task(_bg_mfa_eval())
-            _bg_tasks.add(_t)
-            _t.add_done_callback(_bg_tasks.discard)
-        except Exception:
-            pass
-
-        return {
-            "mfa_required": True,
-            "methods": sorted(active_methods),
-            "reset_required": mfa_reset_required,
-            "pending_token": pending_token,
-        }
+    mfa_resp = await _maybe_issue_mfa_response(db, user, body, active_methods, mfa_reset_required)
+    if mfa_resp is not None:
+        return mfa_resp
 
     # Public device sessions get a shorter-lived refresh token to limit exposure
     # if the user forgets to log out.  Key material stays in sessionStorage only
@@ -1387,7 +1387,7 @@ async def _validate_bootstrap_token(token: str, db) -> None:
 
 
 @router.get("/bootstrap/status")
-async def opaque_bootstrap_status(db=Depends(get_db)):
+async def opaque_bootstrap_status(db: Annotated[Database, Depends(get_db)]):
     """Return whether first-run admin bootstrap is still pending.
 
     Returns {"needs_bootstrap": true} only when both conditions hold:

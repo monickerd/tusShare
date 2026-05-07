@@ -723,11 +723,11 @@ const Auth = (() => {
                         mlkem768_private_wrapped: mlkem768PrivWrappedB64,
                         asymmetric_key_iv:        asymKeyIvB64,
                     });
-                    _currentUser = Object.assign({}, _currentUser, {
+                    _currentUser = { ..._currentUser,
                         x25519_private_wrapped:   x25519PrivWrappedB64,
                         mlkem768_private_wrapped: mlkem768PrivWrappedB64,
                         asymmetric_key_iv:        asymKeyIvB64,
-                    });
+                    };
                 } catch (e) {
                     console.warn('Legacy IV re-wrap failed (will retry next login):', e);
                 }
@@ -753,13 +753,13 @@ const Auth = (() => {
         });
 
         // Update _currentUser with the new key material so it's available this session
-        _currentUser = Object.assign({}, _currentUser, {
+        _currentUser = { ..._currentUser,
             x25519_public_key: x25519PublicKeyB64,
             mlkem768_public_key: mlkem768PublicKeyB64,
             x25519_private_wrapped: x25519PrivWrappedB64,
             mlkem768_private_wrapped: mlkem768PrivWrappedB64,
             asymmetric_key_iv: asymKeyIvB64,
-        });
+        };
 
         // Store private keys in memory
         _asymmetricKeys = {

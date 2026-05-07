@@ -224,6 +224,26 @@ async def get_user(
     return {"user": user_dict}
 
 
+async def _handle_activation_change(db, user_id: str, is_active, admin: AuthenticatedUser, request: Request) -> None:
+    event_bus.emit(SecurityEvent(
+        event_type="admin.user.deactivated" if not is_active else "admin.user.activated",
+        severity="warning" if not is_active else "info",
+        outcome="success",
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+        target=EventTarget(type="user", id=user_id),
+    ))
+    if is_active is False:
+        await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_team_keys WHERE user_id = ?", (user_id,))
+        await db.execute(
+            "UPDATE shares SET expires_at = NOW() "
+            "WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
+            (user_id,),
+        )
+        await db.commit()
+        sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "deactivated"})
+
+
 @router.put("/{user_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_user(
     request: Request,
@@ -270,37 +290,7 @@ async def update_user(
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
     if body.is_active is not None:
-        event_bus.emit(SecurityEvent(
-            event_type="admin.user.deactivated" if not body.is_active else "admin.user.activated",
-            severity="warning" if not body.is_active else "info",
-            outcome="success",
-            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-            target=EventTarget(type="user", id=user_id),
-        ))
-
-    if body.is_active is False:
-        # Immediately revoke all active sessions — defence-in-depth on top of the
-        # is_active gate in get_user_by_id (which already blocks new requests).
-        await db.execute(
-            "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
-            (user_id,),
-        )
-        # Remove team key material so access is blocked even if the account is
-        # later re-activated without a deliberate re-invitation to each team.
-        await db.execute(
-            "DELETE FROM user_team_keys WHERE user_id = ?",
-            (user_id,),
-        )
-        # Immediately expire all link/user shares created by this account so
-        # recipients can no longer download via those links.
-        await db.execute(
-            "UPDATE shares SET expires_at = NOW() "
-            "WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
-            (user_id,),
-        )
-        await db.commit()
-        # Notify all open browser tabs so they redirect to login immediately.
-        sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "deactivated"})
+        await _handle_activation_change(db, user_id, body.is_active, admin, request)
 
     return {"message": "User updated"}
 

@@ -95,6 +95,23 @@ def check_sharing_flags(
 # Layer 2 — identity-scoped rule evaluation (async)
 # ---------------------------------------------------------------------------
 
+async def _resolve_ldap_oidc_attribute(db, user_id: str, source: str, attr_name: str):
+    cursor = await db.execute(
+        "SELECT oidc_claims_cache, auth_method FROM users WHERE id = ?", (user_id,)
+    )
+    row = await cursor.fetchone()
+    if not row or not row["oidc_claims_cache"]:
+        return None
+    if row["auth_method"] != source:
+        return None
+    try:
+        claims = json.loads(row["oidc_claims_cache"])
+    except (ValueError, TypeError):
+        return None
+    val = claims.get(attr_name)
+    return val if val is not None else None
+
+
 async def _resolve_attribute(db, user_id: str, attribute_path: str):
     """Resolve attribute_path for user_id. Returns the value or None if missing."""
     if "." not in attribute_path:
@@ -113,20 +130,7 @@ async def _resolve_attribute(db, user_id: str, attribute_path: str):
         return str(row[attr_name])
 
     if source in ("ldap", "oidc"):
-        cursor = await db.execute(
-            "SELECT oidc_claims_cache, auth_method FROM users WHERE id = ?", (user_id,)
-        )
-        row = await cursor.fetchone()
-        if not row or not row["oidc_claims_cache"]:
-            return None
-        if row["auth_method"] != source:
-            return None
-        try:
-            claims = json.loads(row["oidc_claims_cache"])
-        except (ValueError, TypeError):
-            return None
-        val = claims.get(attr_name)
-        return val if val is not None else None
+        return await _resolve_ldap_oidc_attribute(db, user_id, source, attr_name)
 
     return None
 
@@ -228,6 +232,23 @@ async def _evaluate_condition(
     return await _match_scalar(resolved, operator, cond.get("value"), timeout_ms)
 
 
+async def _conditions_all_match(
+    db,
+    conditions: list,
+    subject: str,
+    actor_id: str,
+    recipient_id: str | None,
+    timeout_ms: int,
+) -> bool:
+    for cond in conditions:
+        matched = await _evaluate_condition(
+            db, dict(cond), subject, actor_id, recipient_id, timeout_ms
+        )
+        if not matched:
+            return False
+    return True
+
+
 async def _get_timeout_ms(db) -> int:
     cursor = await db.execute(
         "SELECT value FROM admin_settings WHERE key = 'regex_match_timeout_ms'"
@@ -285,17 +306,7 @@ async def evaluate_sharing_rules(
         )
         conditions = await cond_cursor.fetchall()
 
-        # AND-logic: all conditions must match
-        all_match = True
-        for cond in conditions:
-            matched = await _evaluate_condition(
-                db, dict(cond), subject, actor.id, recipient_id, timeout_ms
-            )
-            if not matched:
-                all_match = False
-                break
-
-        if not all_match:
+        if not await _conditions_all_match(db, conditions, subject, actor.id, recipient_id, timeout_ms):
             continue
 
         # Rule fires
