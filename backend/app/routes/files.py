@@ -374,7 +374,7 @@ def _resolve_personal_to_team_path(item, src_row):
                         item.pre_c1, item.encrypted_file_key, item.key_iv, True), None
 
 
-def _resolve_team_to_personal_path(item, src_row):
+def _resolve_team_to_personal_path(item):
     """Path 5: team → personal."""
     if not item.encrypted_file_key or not item.key_iv:
         return None, "missing_crypto_fields"
@@ -406,7 +406,7 @@ async def _resolve_copy_crypto_fields(
     if src_team_id is None:
         return _resolve_personal_to_team_path(item, src_row)
     if dest_team_id is None:
-        return _resolve_team_to_personal_path(item, src_row)
+        return _resolve_team_to_personal_path(item)
     return await _resolve_cross_team_path(db, item, src_row, src_team_id)
 
 

@@ -1541,14 +1541,13 @@ const Files = (() => {
 
         const total = files.length;
         let errors = 0;
-        let done = 0;
         const initialLabel = files.length === 1
             ? `Copying "${files[0].name}"…`
             : `Copying ${files.length} files…`;
         const overlay = _showMoveOverlay(initialLabel);
         const ctx = { srcTeamId, destTeamId, destTeamPK, masterKey, skSrcBigInt, rkBigInt, srcTeamFileKeyMap };
 
-        ({ done, errors } = await _copyFileBatches(files, destId, ctx, overlay, total));
+        ({ errors } = await _copyFileBatches(files, destId, ctx, overlay, total));
 
         overlay.remove();
 
