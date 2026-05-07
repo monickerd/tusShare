@@ -185,19 +185,19 @@ async def lifespan(app: FastAPI):
     storage_reconcile_task  = asyncio.create_task(storage_manager.run_reconciliation_task())
 
     event_bus.init(db_session)
-    event_bus_task = await event_bus.start()
+    event_bus_task = event_bus.start()
 
     op_bus.init(db_session)
-    op_bus_task = await op_bus.start()
+    op_bus_task = op_bus.start()
 
     notification_emitter.init(db_session)
-    notif_task = await notification_emitter.start()
+    notif_task = notification_emitter.start()
 
     siem_syslog.init(db_session)
-    siem_syslog_task = await siem_syslog.start()
+    siem_syslog_task = siem_syslog.start()
 
     siem_webhook.init(db_session)
-    siem_webhook_task = await siem_webhook.start()
+    siem_webhook_task = siem_webhook.start()
 
     from app.schemas.op_event import OperationalEvent as _OpEvent
     op_bus.emit(_OpEvent(event_type="system.startup", severity="info", source="system"))
@@ -309,7 +309,7 @@ _SPA_INDEX_PATH: str = ""  # set by create_app when the frontend dir is found
 _SLUG_RE = re.compile(r"^[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}$")
 
 
-async def _on_401(request: Request, exc: HTTPException):
+def _on_401(request: Request, exc: HTTPException):
     event_bus.emit(SecurityEvent(
         event_type="auth.unauthorized",
         severity="warning",
@@ -320,7 +320,7 @@ async def _on_401(request: Request, exc: HTTPException):
     return JSONResponse({"detail": exc.detail}, status_code=401)
 
 
-async def _on_403(request: Request, exc: HTTPException):
+def _on_403(request: Request, exc: HTTPException):
     is_step_up_challenge = (
         isinstance(exc.detail, dict) and exc.detail.get("error") == "step_up_required"
     )
@@ -335,7 +335,7 @@ async def _on_403(request: Request, exc: HTTPException):
     return JSONResponse({"detail": exc.detail}, status_code=403)
 
 
-async def _on_404(request: Request, exc: HTTPException):
+def _on_404(request: Request, exc: HTTPException):
     if request.url.path.startswith("/api/"):
         event_bus.emit(SecurityEvent(
             event_type="auth.probe_404",
@@ -347,7 +347,7 @@ async def _on_404(request: Request, exc: HTTPException):
     return JSONResponse({"detail": exc.detail}, status_code=404)
 
 
-async def _on_405(request: Request, exc: HTTPException):
+def _on_405(request: Request, exc: HTTPException):
     if request.url.path.startswith("/api/"):
         event_bus.emit(SecurityEvent(
             event_type="auth.probe_405",
@@ -359,7 +359,7 @@ async def _on_405(request: Request, exc: HTTPException):
     return JSONResponse({"detail": exc.detail}, status_code=405)
 
 
-async def _on_429(request: Request, exc: HTTPException):
+def _on_429(request: Request, exc: HTTPException):
     event_bus.emit(SecurityEvent(
         event_type="auth.rate_limited",
         severity="warning",
@@ -371,7 +371,7 @@ async def _on_429(request: Request, exc: HTTPException):
     return JSONResponse({"detail": exc.detail}, status_code=429, headers=headers)
 
 
-async def _health_check():
+def _health_check():
     integrity = get_integrity_result()
     if integrity is None:
         return {"status": "ok"}
@@ -387,15 +387,15 @@ async def _health_check():
     return {"status": "ok", "integrity": "ok", "files_verified": integrity.total}
 
 
-async def _spa_register(token: str):
+def _spa_register(token: str):
     return FileResponse(_SPA_INDEX_PATH)
 
 
-async def _spa_share(token: str):
+def _spa_share(token: str):
     return FileResponse(_SPA_INDEX_PATH)
 
 
-async def _spa_shortlink(slug: str):
+def _spa_shortlink(slug: str):
     return FileResponse(_SPA_INDEX_PATH)
 
 

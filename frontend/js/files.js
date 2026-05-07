@@ -694,7 +694,7 @@ const Files = (() => {
         const removed = [];
         let cleaned = '';
         for (const ch of name) {
-            const code = ch.charCodeAt(0);
+            const code = ch.codePointAt(0);
             if ((code >= 0x00 && code <= 0x1f) || (code >= 0x7f && code <= 0x9f) || blacklist.has(ch)) {
                 if (!removed.includes(ch)) removed.push(ch);
             } else {
@@ -1707,7 +1707,7 @@ const Files = (() => {
     async function _uploadFiles(files, targetFolderId) {
         const folderId = targetFolderId !== undefined ? targetFolderId : _currentFolderId;
         const masterKey = Auth.getMasterKeyObj();
-        if (!masterKey) {
+        if (!masterKey) {  // NOSONAR — guard clause; inverting would require indenting the entire function body
             Utils.showToast('Master key not available — please re-enter your password.', 'error');
             return;
         }

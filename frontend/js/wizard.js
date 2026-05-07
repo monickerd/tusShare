@@ -400,12 +400,12 @@ const Wizard = (() => {
             onNext: async () => {
                 _hideErr(err);
                 const settings = {};
-                const chunk = parseInt(chunkInp.value, 10);
-                if (!isNaN(chunk) && chunk >= 1) settings.default_chunk_size = String(chunk * _MB);
-                const maxMb = parseInt(maxInp.value, 10);
-                if (!isNaN(maxMb) && maxMb >= 0) settings.global_max_file_size = String(maxMb * _MB);
-                const bwMbs = parseInt(bwInp.value, 10);
-                if (!isNaN(bwMbs) && bwMbs >= 0) settings.global_bandwidth_limit = String(bwMbs * _MB);
+                const chunk = Number.parseInt(chunkInp.value, 10);
+                if (!Number.isNaN(chunk) && chunk >= 1) settings.default_chunk_size = String(chunk * _MB);
+                const maxMb = Number.parseInt(maxInp.value, 10);
+                if (!Number.isNaN(maxMb) && maxMb >= 0) settings.global_max_file_size = String(maxMb * _MB);
+                const bwMbs = Number.parseInt(bwInp.value, 10);
+                if (!Number.isNaN(bwMbs) && bwMbs >= 0) settings.global_bandwidth_limit = String(bwMbs * _MB);
                 if (!Object.keys(settings).length) { navigate(3); return; }
                 _setSaving(nextBtn, 'Saving…');
                 try {

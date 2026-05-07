@@ -341,7 +341,7 @@ const Download = (() => {
         const encBuf = await resp.arrayBuffer();
         try {
             return await Crypto.decryptChunk(encBuf, chunk.iv, fileKey);
-        } catch (_) {
+        } catch {
             throw new Error(
                 `Chunk ${chunkIdx + 1}/${totalChunks} failed integrity check — ` +
                 `the data may be corrupted (offset ${chunk.offset})`
@@ -404,8 +404,8 @@ const Download = (() => {
 
     function _crc32(data) {
         let crc = 0xFFFFFFFF;
-        for (let i = 0; i < data.length; i++) {
-            crc = _CRC32_TABLE[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+        for (const byte of data) {
+            crc = _CRC32_TABLE[(crc ^ byte) & 0xFF] ^ (crc >>> 8);
         }
         return (crc ^ 0xFFFFFFFF) >>> 0;
     }
@@ -417,7 +417,6 @@ const Download = (() => {
      * @returns {Blob} ZIP blob
      */
     function _buildZip(entries) {
-        const localHeaders  = [];
         const centralDir    = [];
         const parts         = [];
         let   offset        = 0;

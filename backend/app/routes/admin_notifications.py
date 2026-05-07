@@ -206,7 +206,7 @@ async def create_channel(
     await db.commit()
 
     from app.services import notification_emitter
-    await notification_emitter.reload(db)
+    notification_emitter.reload(db)
     await asyncio.sleep(0.1)   # brief yield so supervisor picks up new channel
     await notification_emitter.catch_up(ch_id, db)
 
@@ -276,7 +276,7 @@ async def update_channel(
     await db.commit()
 
     from app.services import notification_emitter
-    await notification_emitter.reload(db)
+    notification_emitter.reload(db)
     return {"ok": True}
 
 
@@ -298,7 +298,7 @@ async def delete_channel(
     await db.commit()
 
     from app.services import notification_emitter
-    await notification_emitter.reload(db)
+    notification_emitter.reload(db)
     return {"ok": True}
 
 

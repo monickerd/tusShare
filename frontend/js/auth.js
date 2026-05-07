@@ -582,7 +582,7 @@ const Auth = (() => {
             } else {
                 globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
             }
-        } catch (err) {
+        } catch {
             _unlockFailures++;
             if (_unlockFailures >= _UNLOCK_MAX_FAILURES) {
                 // Too many wrong attempts — force a full logout so the user must
@@ -669,7 +669,7 @@ const Auth = (() => {
             // Re-dispatch hashchange so the router navigates to whatever hash is
             // currently set — preserves deep links like #/files/<id> after a refresh.
             globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
-        } catch (err) {
+        } catch {
             status.textContent = 'Invalid recovery key. Please try again.';
             btn.disabled = false;
         }
@@ -1419,17 +1419,19 @@ const Auth = (() => {
             ]));
         }
 
-        children.push(Utils.el('div', { style: 'text-align:center;margin-top:12px' }, [
-            Utils.el('a', {
-                href: '#', className: 'text-muted',
-                textContent: 'Use a recovery code instead',
-                onClick: (ev) => {
-                    ev.preventDefault();
-                    _renderRecoveryChallenge(container, pending_token, exportKey, username);
-                },
-            }),
-        ]));
-        children.push(Utils.el('p', { id: 'mfa-status', className: 'auth-status' }));
+        children.push(
+            Utils.el('div', { style: 'text-align:center;margin-top:12px' }, [
+                Utils.el('a', {
+                    href: '#', className: 'text-muted',
+                    textContent: 'Use a recovery code instead',
+                    onClick: (ev) => {
+                        ev.preventDefault();
+                        _renderRecoveryChallenge(container, pending_token, exportKey, username);
+                    },
+                }),
+            ]),
+            Utils.el('p', { id: 'mfa-status', className: 'auth-status' }),
+        );
 
         container.appendChild(Utils.el('div', { className: 'auth-form' }, children));
     }
@@ -1575,7 +1577,7 @@ const Auth = (() => {
                 ]));
             }
             _renderMfaSettingsContent(wrap, data);
-        } catch (err) {
+        } catch {
             wrap.appendChild(Utils.el('p', { className: 'auth-status', textContent: 'Failed to load MFA status.' }));
         }
     }
@@ -1780,8 +1782,8 @@ const Auth = (() => {
 
     function _b64ToBytes(b64) {
         const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
-        const bin = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
-        return Uint8Array.from(bin, c => c.charCodeAt(0));
+        const bin = atob(padded.replaceAll(/-/g, '+').replaceAll(/_/g, '/'));
+        return Uint8Array.from(bin, c => c.codePointAt(0));
     }
 
     function _webAuthnOptionsFromServer(opts) {
@@ -1803,8 +1805,8 @@ const Auth = (() => {
     }
 
     function _bytesToB64url(bytes) {
-        return btoa(String.fromCharCode(...new Uint8Array(bytes)))
-            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+        return btoa(String.fromCodePoint(...new Uint8Array(bytes)))
+            .replaceAll(/\+/g, '-').replaceAll(/\//g, '_').replaceAll(/=/g, '');
     }
 
     function _serializeAttestation(cred) {

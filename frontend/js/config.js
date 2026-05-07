@@ -2,13 +2,13 @@
 // Runs before any app code. Server-side X-Frame-Options: DENY and
 // CSP frame-ancestors 'none' are the primary controls; this is a
 // defence-in-depth fallback for legacy browsers or cached responses.
-if (globalThis !== globalThis.top) {
+if (globalThis !== globalThis.top) {  // NOSONAR — intentional framejacking detection; top===self when not framed
     try {
         const _target = globalThis.location.pathname;
         if (_target.startsWith('/') && !_target.startsWith('//')) {
             globalThis.top.location.replace(_target);
         }
-    } catch (_) { document.documentElement.innerHTML = ''; }
+    } catch { document.documentElement.innerHTML = ''; }
 }
 
 /**
@@ -27,7 +27,7 @@ const Config = Object.freeze({
     /* --- Authentication --- */
     auth: Object.freeze({
         usernameMaxLength: 64,
-        usernamePattern: '[a-zA-Z0-9._+@\\-]+',
+        usernamePattern: String.raw`[a-zA-Z0-9._+@\-]+`,
         passwordMinLength: 1,      // login (server validates strength)
         passwordMaxLength: 128,
         sessionStorageKey: 'masterKey',
@@ -69,7 +69,7 @@ const Config = Object.freeze({
     file: Object.freeze({
         nameMaxLength: 255,         // cross-platform NTFS/ext4 component limit
         // Characters forbidden by Windows and/or Linux
-        nameBlacklistChars: new Set('<>:"/\\|?*'),
+        nameBlacklistChars: new Set(String.raw`<>:"/\|?*`),
         reservedNames: new Set([
             'CON','PRN','AUX','NUL',
             ...[1,2,3,4,5,6,7,8,9].map(i => `COM${i}`),

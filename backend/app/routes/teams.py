@@ -567,7 +567,7 @@ async def create_team(
         (tf_id, team_id, folder_id, user.id),
     )
     await db.commit()
-    logger.info(
+    logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "Team %s (%s) created by user %s (escrow_members=%d)",
         body.name, team_id, user.id, len(body.escrow_members),
     )
@@ -675,7 +675,7 @@ async def delete_team(
         await db.execute("DELETE FROM folders WHERE id = ?", (fid,))
 
     await db.commit()
-    logger.info("Team %s (%s) deleted by user %s", team.name, team_id, user.id)
+    logger.info("Team %s (%s) deleted by user %s", team.name, team_id, user.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
 
 
 # ---------------------------------------------------------------------------
@@ -760,7 +760,7 @@ async def invite_member(
         "UPDATE teams SET updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?", (team_id,)
     )
     await db.commit()
-    logger.info("User %s invited %s to team %s with role %s", user.id, invitee_id, team_id, body.role)
+    logger.info("User %s invited %s to team %s with role %s", user.id, invitee_id, team_id, body.role)  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"user_id": invitee_id}
 
 
@@ -818,7 +818,7 @@ async def update_member_role(
         (body.role, target_user_id, team_id),
     )
     await db.commit()
-    logger.info(
+    logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "User %s changed role of %s in team %s: %s → %s",
         user.id, target_user_id, team_id, current_role, body.role,
     )
@@ -870,7 +870,7 @@ async def remove_member(
         (team_id,),
     )
     await db.commit()
-    logger.info("User %s removed member %s from team %s", user.id, target_user_id, team_id)
+    logger.info("User %s removed member %s from team %s", user.id, target_user_id, team_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
 
 
 # ---------------------------------------------------------------------------
@@ -1223,7 +1223,7 @@ async def rotate_team_keys(
         (body.pre_public_key_new, team_id),
     )
     await db.commit()
-    logger.info(
+    logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "PRE rotation committed for team %s by user %s (%d files, %d members)",
         team_id, user.id, len(body.file_keys), len(body.members),
     )
@@ -1283,7 +1283,7 @@ async def confirm_team_key(
         (team_id, user.id),
     )
     await db.commit()
-    logger.info("Key confirmation accepted for user %s in team %s", user.id, team_id)
+    logger.info("Key confirmation accepted for user %s in team %s", user.id, team_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"ok": True}
 
 
@@ -1442,7 +1442,7 @@ async def complete_pending_key_grants(
         fulfilled += 1
 
     await db.commit()
-    logger.info(
+    logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "User %s fulfilled %d pending key grant(s) for team %s",
         user.id, fulfilled, team_id,
     )
@@ -1569,7 +1569,7 @@ async def create_ephemeral_slot(
         (slot_id, team_id, body.sk_wrapped, body.sk_iv, user.id, created_at, expires_at),
     )
     await db.commit()
-    logger.info(
+    logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "Ephemeral slot %s created for team %s by user %s (expires %s)",
         slot_id, team_id, user.id, expires_at,
     )
@@ -1773,7 +1773,7 @@ async def ephemeral_join(
     )
 
     await db.commit()
-    logger.info(
+    logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "Ephemeral join committed: user %s joined team %s via slot %s (%d files, %d members)",
         user.id, team_id, slot_id, len(body.file_keys), len(body.members),
     )

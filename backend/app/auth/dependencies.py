@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 _bg_tasks: set = set()
 
 
-async def _get_auth_provider(db=Depends(get_db)) -> OPAQUEAuthProvider:
+def _get_auth_provider(db=Depends(get_db)) -> OPAQUEAuthProvider:
     """Return the active auth provider. Swap this for SSO support."""
     return OPAQUEAuthProvider(db)
 
@@ -98,7 +98,7 @@ async def get_optional_user(
         return None
 
 
-async def require_admin(
+def require_admin(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> AuthenticatedUser:
     """Require the current user to hold the can_view_admin_panel permission."""

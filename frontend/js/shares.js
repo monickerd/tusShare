@@ -89,7 +89,7 @@ const Shares = (() => {
         if (!dateVal) return null;
         const time = timeVal || '00:00';
         const d = new Date(`${dateVal}T${time}:00`);
-        return isNaN(d.getTime()) ? null : d.toISOString();
+        return Number.isNaN(d.getTime()) ? null : d.toISOString();
     }
 
     /** Default custom date value: 7 days from today (YYYY-MM-DD). */
@@ -332,7 +332,7 @@ const Shares = (() => {
         const fileList = Utils.el('ul', { className: 'share-file-list' });
         if (folderCtx) {
             fileList.appendChild(Utils.el('li', {
-                textContent: `📁 ${folderCtx.name} (${files.length} file${files.length !== 1 ? 's' : ''})`,
+                textContent: `📁 ${folderCtx.name} (${files.length} file${files.length === 1 ? '' : 's'})`,
             }));
         } else {
             for (const f of files) {
@@ -375,8 +375,8 @@ const Shares = (() => {
         });
         // When the spinner reaches 0 (down-arrow from 1), snap back to ∞ (empty)
         maxDlInput.addEventListener('change', () => {
-            const v = parseInt(maxDlInput.value, 10);
-            if (maxDlInput.value !== '' && (isNaN(v) || v < 1)) {
+            const v = Number.parseInt(maxDlInput.value, 10);
+            if (maxDlInput.value !== '' && (Number.isNaN(v) || v < 1)) {
                 maxDlInput.value = '';
             }
         });
@@ -415,7 +415,7 @@ const Shares = (() => {
             try {
                 const shareKeyB64url = await _doCreateShare(files, masterKey, {
                     expiresAt,
-                    maxDownloads: maxDlInput.value ? parseInt(maxDlInput.value, 10) : null,
+                    maxDownloads: maxDlInput.value ? Number.parseInt(maxDlInput.value, 10) : null,
                     generateShortLink: shortLinkChk.checked,
                     allowUpload: allowUploadChk ? allowUploadChk.checked : false,
                     folderId: folderCtx ? folderCtx.id : null,
@@ -459,7 +459,7 @@ const Shares = (() => {
         const { expiresAt, maxDownloads, generateShortLink, allowUpload, folderId } = opts;
 
         if (maxDownloads !== null && maxDownloads !== undefined &&
-            (isNaN(maxDownloads) || maxDownloads < 1)) {
+            (Number.isNaN(maxDownloads) || maxDownloads < 1)) {
             throw new Error('Max downloads must be a positive number');
         }
 
@@ -562,7 +562,7 @@ const Shares = (() => {
         const fileCount = (share.items || []).length;
         header.appendChild(Utils.el('span', {
             className: 'share-card-title',
-            textContent: `${fileCount} file${fileCount !== 1 ? 's' : ''}`,
+            textContent: `${fileCount} file${fileCount === 1 ? '' : 's'}`,
         }));
         if (!share.is_active) {
             header.appendChild(Utils.el('span', { className: 'badge badge-muted', textContent: 'Inactive' }));
@@ -667,7 +667,7 @@ const Shares = (() => {
         if (!expiryStr) return;
 
         const d = new Date(expiryStr);
-        if (isNaN(d.getTime()) || d <= new Date()) {
+        if (Number.isNaN(d.getTime()) || d <= new Date()) {
             Utils.showToast('Invalid or past expiry date', 'error');
             return;
         }
@@ -1188,7 +1188,7 @@ const Shares = (() => {
         let expiresAt = null;
         if (expiresAtLocal) {
             const d = new Date(expiresAtLocal);
-            if (isNaN(d.getTime())) throw new Error('Invalid expiry date');
+            if (Number.isNaN(d.getTime())) throw new Error('Invalid expiry date');
             expiresAt = d.toISOString();
         }
 
@@ -1275,7 +1275,7 @@ const Shares = (() => {
         const fileCount = (share.files || []).length;
         header.appendChild(Utils.el('span', {
             className: 'share-card-title',
-            textContent: `${fileCount} file${fileCount !== 1 ? 's' : ''} from ${share.sender_username || 'unknown'}`,
+            textContent: `${fileCount} file${fileCount === 1 ? '' : 's'} from ${share.sender_username || 'unknown'}`,
         }));
         if (share.expires_at) {
             const expired = new Date(share.expires_at) < new Date();

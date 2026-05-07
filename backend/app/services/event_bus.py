@@ -104,7 +104,7 @@ def init(db_session_factory) -> None:
     _db_session_factory = db_session_factory
 
 
-async def start() -> asyncio.Task:
+def start() -> asyncio.Task:
     """Start the background drainer task. Returns the task for cancellation."""
     global _drainer_task
     _clear_capture()

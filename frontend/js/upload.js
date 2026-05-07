@@ -49,7 +49,7 @@ const Upload = (() => {
         try {
             const data = await Api.get(`${_prefix()}/auth/public-settings`);
             setServerChunkSize(data.chunk_size);
-        } catch (_) {
+        } catch {
             // Non-fatal: keep Config fallback
         }
     }
@@ -172,7 +172,7 @@ const Upload = (() => {
         if (!headResp.ok) {
             throw new Error(`Resume HEAD failed (${headResp.status})`);
         }
-        let encryptedOffset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
+        let encryptedOffset = Number.parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
 
         const startChunk = _findStartChunk(totalChunks, chunkSize, file.size, encryptedOffset);
         if (startChunk >= totalChunks) return { fileId: null, location };
@@ -211,7 +211,7 @@ const Upload = (() => {
     }
 
     // Cached escrow public key (CryptoKey) — fetched once per session, null if unavailable
-    let _escrowPublicKey = undefined; // undefined = not yet fetched; null = server has none
+    let _escrowPublicKey; // undefined = not yet fetched; null = server has none
 
     /**
      * Try to fetch and cache the server's escrow public key (P-256 ECDH).
@@ -221,7 +221,7 @@ const Upload = (() => {
         if (_escrowPublicKey !== undefined) return _escrowPublicKey;
         try {
             const data = await Api.get(`${_prefix()}/uploads/escrow-key`);
-            const spkiBytes = Uint8Array.from(atob(data.escrow_public_key), c => c.charCodeAt(0));
+            const spkiBytes = Uint8Array.from(atob(data.escrow_public_key), c => c.codePointAt(0));
             _escrowPublicKey = await crypto.subtle.importKey(
                 'spki', spkiBytes,
                 { name: 'ECDH', namedCurve: 'P-256' },
@@ -284,7 +284,7 @@ const Upload = (() => {
             // Export ephemeral public key as SPKI
             const spkiBytes = await crypto.subtle.exportKey('spki', ephemeral.publicKey);
 
-            const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+            const toB64 = buf => btoa(String.fromCodePoint(...new Uint8Array(buf)));
             return {
                 escrow_ephemeral_pk:  toB64(spkiBytes),
                 escrow_encrypted_key: toB64(encryptedKey),
@@ -313,7 +313,7 @@ const Upload = (() => {
     function _utf8ToBase64(str) {
         const bytes = new TextEncoder().encode(str);
         let binary = '';
-        for (const b of bytes) binary += String.fromCharCode(b);
+        for (const b of bytes) binary += String.fromCodePoint(b);
         return btoa(binary);
     }
 
@@ -373,7 +373,7 @@ const Upload = (() => {
             credentials: 'same-origin',
         });
         if (headResp.ok) {
-            const serverOffset = parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
+            const serverOffset = Number.parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
             if (serverOffset > encryptedOffset) {
                 return { newOffset: serverOffset, fileId: null, committed: false };
             }
@@ -421,7 +421,7 @@ const Upload = (() => {
 
             if (patchResp.ok) {
                 return {
-                    newOffset: parseInt(patchResp.headers.get('Upload-Offset') || '0', 10),
+                    newOffset: Number.parseInt(patchResp.headers.get('Upload-Offset') || '0', 10),
                     fileId:    patchResp.headers.get('X-File-ID') || null,
                     committed: true,
                 };

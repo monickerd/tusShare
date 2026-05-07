@@ -143,7 +143,7 @@ def init(db_session_factory) -> None:
     _db_session_factory = db_session_factory
 
 
-async def start() -> asyncio.Task:
+def start() -> asyncio.Task:
     task = asyncio.create_task(_drain_loop(), name="op_bus_drainer")
     return task
 

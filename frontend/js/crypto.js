@@ -450,7 +450,7 @@ const Crypto = (() => {
         // 'x' = public key, required by spec for OKP JWK private key import.
         const dB64url = _arrayBufToBase64url(x25519RawBuf);
         new Uint8Array(x25519RawBuf).fill(0);
-        const xB64url = x25519PublicKeyB64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const xB64url = x25519PublicKeyB64.replaceAll(/\+/g, '-').replaceAll(/\//g, '_').replace(/=+$/, '');
         const x25519PrivateKey = await crypto.subtle.importKey(
             'jwk',
             { kty: 'OKP', crv: 'X25519', d: dB64url, x: xB64url },
@@ -667,26 +667,26 @@ const Crypto = (() => {
     function _arrayBufToBase64(buffer) {
         const bytes = new Uint8Array(buffer);
         let binary = '';
-        for (const b of bytes) binary += String.fromCharCode(b);
+        for (const b of bytes) binary += String.fromCodePoint(b);
         return btoa(binary);
     }
 
     function _base64ToArrayBuf(b64) {
         const binary = atob(b64);
         const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i);
         return bytes.buffer;
     }
 
     function _arrayBufToBase64url(buffer) {
         return _arrayBufToBase64(buffer)
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
+            .replaceAll(/\+/g, '-')
+            .replaceAll(/\//g, '_')
             .replace(/=+$/, '');
     }
 
     function _base64urlToArrayBuf(b64url) {
-        let b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+        let b64 = b64url.replaceAll(/-/g, '+').replaceAll(/_/g, '/');
         while (b64.length % 4) b64 += '=';
         return _base64ToArrayBuf(b64);
     }
@@ -781,10 +781,10 @@ async function computeOpaqueStepUpHmac(sessionKeyB64, actionKey, payloadHash, ti
     const enc = new TextEncoder();
     // serenity-kit/opaque returns base64url (- and _); atob() only accepts standard
     // base64 (+ and /) and throws "String contains an invalid character" in Firefox.
-    const b64std = sessionKeyB64.replace(/-/g, '+').replace(/_/g, '/');
+    const b64std = sessionKeyB64.replaceAll(/-/g, '+').replaceAll(/_/g, '/');
     const binary = atob(b64std + '==='.slice(0, (4 - b64std.length % 4) % 4));
     const keyBytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) keyBytes[i] = binary.charCodeAt(i);
+    for (let i = 0; i < binary.length; i++) keyBytes[i] = binary.codePointAt(i);
 
     const hkdfKey = await crypto.subtle.importKey(
         'raw', keyBytes, 'HKDF', false, ['deriveKey']

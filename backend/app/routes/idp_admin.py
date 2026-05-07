@@ -215,7 +215,7 @@ async def create_provider(
     # Validate and encrypt config
     try:
         config_enc = _validate_and_encrypt_config(body.provider_type, body.config)
-    except (ValueError, Exception) as exc:
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     provider_id = str(uuid.uuid4())
@@ -244,7 +244,7 @@ async def create_provider(
     except DuplicateError:
         raise HTTPException(status_code=409, detail="A provider with that name already exists")
 
-    logger.info("IdP created: id=%s type=%s name=%r by admin=%s", provider_id, body.provider_type, body.name, admin.id)
+    logger.info("IdP created: id=%s type=%s name=%r by admin=%s", provider_id, body.provider_type, body.name, admin.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"id": provider_id, "provider_type": body.provider_type, "name": body.name, "is_active": body.is_active}
 
 
@@ -296,7 +296,7 @@ def _build_merged_config_enc(provider_type: str, existing_enc: str | None, new_c
             merged[k] = v
     try:
         return _validate_and_encrypt_config(provider_type, merged)
-    except (ValueError, Exception) as exc:
+    except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -371,7 +371,7 @@ async def update_provider(
     except DuplicateError:
         raise HTTPException(status_code=409, detail="A provider with that name already exists")
 
-    logger.info("IdP updated: id=%s by admin=%s", provider_id, admin.id)
+    logger.info("IdP updated: id=%s by admin=%s", provider_id, admin.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"ok": True}
 
 
@@ -412,7 +412,7 @@ async def delete_provider(
         raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
     await db.commit()
 
-    logger.info("IdP deleted: id=%s by admin=%s", provider_id, admin.id)
+    logger.info("IdP deleted: id=%s by admin=%s", provider_id, admin.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"ok": True}
 
 

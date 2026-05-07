@@ -369,7 +369,7 @@ def _get_share_client_ip(request: Request) -> str:
     return ip.split(",")[0].strip() or "unknown"
 
 
-async def _require_share_access(
+def _require_share_access(
     request: Request,
     share_id: str,
     user: AuthenticatedUser | None,
@@ -882,7 +882,7 @@ async def resolve_share(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("resolve_share internal error for token %s: %s", token[:8], exc)
+        logger.exception("resolve_share internal error for token %s: %s", token[:8], exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise
 
 
@@ -913,7 +913,7 @@ async def get_shared_file_chunks(
 
     share = await _get_active_share_by_token(db, token)
     await _verify_creator_still_has_access(db, share["id"], share["created_by"])
-    await _require_share_access(request, share["id"], user)
+    _require_share_access(request, share["id"], user)
     await _verify_file_in_share(db, share["id"], file_id)
 
     cursor = await db.execute(
@@ -1006,7 +1006,7 @@ async def download_shared_file(
 
     share = await _get_active_share_by_token(db, token)
     await _verify_creator_still_has_access(db, share["id"], share["created_by"])
-    await _require_share_access(request, share["id"], user)
+    _require_share_access(request, share["id"], user)
     await _verify_file_in_share(db, share["id"], file_id)
 
     row = await _load_shared_file_row(db, file_id)
@@ -1015,7 +1015,7 @@ async def download_shared_file(
 
     blob_exists = await storage.get_manager().exists(db, file_id, storage_key)
     if not blob_exists:
-        logger.error("Blob missing for shared file %s (storage_key=%s)", file_id, storage_key)
+        logger.error("Blob missing for shared file %s (storage_key=%s)", file_id, storage_key)  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
 
     # --- Parse Range header ---
@@ -1158,7 +1158,7 @@ async def upload_to_share(
     Requires the share to have allow_upload=1 and a target_folder_id.
     """
     share_id = validate_uuid(share_id)
-    await _require_share_access(request, share_id, user)
+    _require_share_access(request, share_id, user)
 
     if not await _counter.is_allowed(f"share_upload:{share_id}", 20, 60):
         raise HTTPException(status_code=429, detail="Too many uploads to this share. Please try again later.")

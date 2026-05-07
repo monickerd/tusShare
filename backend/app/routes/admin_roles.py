@@ -297,7 +297,7 @@ async def update_role(
     """Update a role's name and/or description. System roles can be renamed."""
     require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
 
-    row = await _load_role(db, role_id)
+    await _load_role(db, role_id)
 
     updates = []
     params = []

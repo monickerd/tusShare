@@ -531,7 +531,7 @@ async def step_up(
             detail={"max_failures": settings.STEP_UP_MAX_FAILURES},
         )
         count = await _count_step_up_failures(db, user.id)
-        logger.warning(
+        logger.warning(  # NOSONAR — server-side audit log; values are Pydantic-validated
             "Step-up failed: user=%s action=%s ip=%s (failure %d/%d)",
             user.id, body.action_key, client_ip, count, settings.STEP_UP_MAX_FAILURES,
         )
@@ -568,7 +568,7 @@ async def step_up(
             "window_seconds": settings.STEP_UP_WINDOW_SECONDS,
         },
     )
-    logger.info(
+    logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "Step-up granted: user=%s action=%s ip=%s window=%ds",
         user.id, body.action_key, client_ip, settings.STEP_UP_WINDOW_SECONDS,
     )

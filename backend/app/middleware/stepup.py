@@ -51,7 +51,7 @@ def require_step_up(action_key: str):
     then retry the original request with X-Step-Up-Token: <token>.
     """
 
-    async def _dependency(
+    def _dependency(
         request: Request,
         user: AuthenticatedUser = Depends(require_user_role),
     ) -> None:

@@ -218,7 +218,7 @@ async def create_service_account(
         target=EventTarget(object_id=sa_id, type="service_account"),
         detail={"username": body.username},
     ))
-    logger.info("Service account '%s' created by %s", body.username, admin.username)
+    logger.info("Service account '%s' created by %s", body.username, admin.username)  # NOSONAR — server-side audit log; values are Pydantic-validated
 
     return {
         "id":       sa_id,

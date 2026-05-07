@@ -88,10 +88,10 @@ class _Result:
         self._rows = [_Row(r) for r in (rows or [])]
         self.rowcount = rowcount
 
-    async def fetchone(self) -> _Row | None:
+    async def fetchone(self) -> _Row | None:  # NOSONAR — async for interface consistency with real cursors
         return self._rows[0] if self._rows else None
 
-    async def fetchall(self) -> list[_Row]:
+    async def fetchall(self) -> list[_Row]:  # NOSONAR — async for interface consistency with real cursors
         return self._rows
 
 

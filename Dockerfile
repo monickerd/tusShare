@@ -47,11 +47,9 @@ RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 COPY backend/app ./app
 COPY frontend ./frontend
 
-# Create data directories
-RUN mkdir -p /data/files /data/uploads
-
-# Non-root user for security (Alpine uses BusyBox addgroup/adduser)
-RUN addgroup -S tusshare && adduser -S -G tusshare -h /app tusshare \
+# Create data directories and non-root user
+RUN mkdir -p /data/files /data/uploads \
+    && addgroup -S tusshare && adduser -S -G tusshare -h /app tusshare \
     && chown -R tusshare:tusshare /app /data
 USER tusshare
 

@@ -128,8 +128,8 @@ def verify_dleq_proof(
     c1_old_b64: str,
     c1_new_b64: str,
     dleq_s: str,
-    dleq_R1: str,
-    dleq_R2: str,
+    dleq_r1: str,
+    dleq_r2: str,
 ) -> bool:
     """Verify a Chaum-Pedersen DLEQ proof for a single C1 re-encryption.
 
@@ -148,8 +148,8 @@ def verify_dleq_proof(
         c1_old_b64:   Base64 G1 — C1 before rotation (from DB).
         c1_new_b64:   Base64 G1 — C1 after rotation (from payload).
         dleq_s:       Base64 32-byte scalar — Fiat-Shamir response.
-        dleq_R1:      Base64 G1 — blinding commitment r × G1.
-        dleq_R2:      Base64 G1 — blinding commitment r × C1_old.
+        dleq_r1:      Base64 G1 — blinding commitment r × G1.
+        dleq_r2:      Base64 G1 — blinding commitment r × C1_old.
     """
     if not _BLS_AVAILABLE:
         log.error("verify_dleq_proof: py_ecc not available")
@@ -158,8 +158,8 @@ def verify_dleq_proof(
         rk_point = _g1_from_b64(rk_point_b64)
         c1_old   = _g1_from_b64(c1_old_b64)
         c1_new   = _g1_from_b64(c1_new_b64)
-        R1       = _g1_from_b64(dleq_R1)
-        R2       = _g1_from_b64(dleq_R2)
+        R1       = _g1_from_b64(dleq_r1)
+        R2       = _g1_from_b64(dleq_r2)
         s        = _scalar_from_b64(dleq_s)
 
         # Fiat-Shamir challenge — byte-exact match with client SHA-256 computation.
@@ -171,8 +171,8 @@ def verify_dleq_proof(
             + _b64_decode(c1_old_b64)  # C1_old  (48 bytes)
             + _b64_decode(rk_point_b64)  # rk_point (48 bytes)
             + _b64_decode(c1_new_b64)  # C1_new  (48 bytes)
-            + _b64_decode(dleq_R1)     # R1      (48 bytes)
-            + _b64_decode(dleq_R2)     # R2      (48 bytes)
+            + _b64_decode(dleq_r1)     # R1      (48 bytes)
+            + _b64_decode(dleq_r2)     # R2      (48 bytes)
         )
         c = int.from_bytes(hashlib.sha256(hash_input).digest(), "big") % _FR_ORDER
 
@@ -198,7 +198,7 @@ def verify_batch_dleq(proofs: list[dict]) -> bool:
     """Verify a list of DLEQ proofs (one per file in a rotation).
 
     Each proof dict must contain:
-      rk_point, c1_old, c1_new, dleq_s, dleq_R1, dleq_R2  (all base64 strings)
+      rk_point, c1_old, c1_new, dleq_s, dleq_r1, dleq_r2  (all base64 strings)
 
     All proofs in one rotation share the same rk_point.  Returns False on the
     first failing proof and logs which index failed.
@@ -217,8 +217,8 @@ def verify_batch_dleq(proofs: list[dict]) -> bool:
                 proof["c1_old"],
                 proof["c1_new"],
                 proof["dleq_s"],
-                proof["dleq_R1"],
-                proof["dleq_R2"],
+                proof["dleq_r1"],
+                proof["dleq_r2"],
             )
         except KeyError as exc:
             log.error("verify_batch_dleq: proof[%d] missing field %s", i, exc)
@@ -229,7 +229,7 @@ def verify_batch_dleq(proofs: list[dict]) -> bool:
     return True
 
 
-def verify_schnorr_pok(schnorr_R_b64: str, schnorr_s_b64: str, pk_new_b64: str) -> bool:
+def verify_schnorr_pok(schnorr_r_b64: str, schnorr_s_b64: str, pk_new_b64: str) -> bool:
     """Verify a Schnorr PoK that the caller holds sk_new.
 
     Proves: the submitter knows sk_new such that pk_new = sk_new × G2.
@@ -242,7 +242,7 @@ def verify_schnorr_pok(schnorr_R_b64: str, schnorr_s_b64: str, pk_new_b64: str) 
       s × G2_base + c × pk_new == R
 
     Args:
-        schnorr_R_b64:  Base64 G2 point (96 bytes) — blinding commitment r × G2.
+        schnorr_r_b64:  Base64 G2 point (96 bytes) — blinding commitment r × G2.
         schnorr_s_b64:  Base64 32-byte scalar — Fiat-Shamir response.
         pk_new_b64:     Base64 G2 point (96 bytes) — team's current public key.
     """
@@ -250,12 +250,12 @@ def verify_schnorr_pok(schnorr_R_b64: str, schnorr_s_b64: str, pk_new_b64: str) 
         log.error("verify_schnorr_pok: py_ecc not available")
         return False
     try:
-        R      = _g2_from_b64(schnorr_R_b64)
+        R      = _g2_from_b64(schnorr_r_b64)
         pk_new = _g2_from_b64(pk_new_b64)
         s      = _scalar_from_b64(schnorr_s_b64)
 
         # Fiat-Shamir challenge — must match client: SHA-256(pk_new ‖ R) mod Fr
-        hash_input = _b64_decode(pk_new_b64) + _b64_decode(schnorr_R_b64)
+        hash_input = _b64_decode(pk_new_b64) + _b64_decode(schnorr_r_b64)
         c = int.from_bytes(hashlib.sha256(hash_input).digest(), "big") % _FR_ORDER
 
         # Verify: s × G2 + c × pk_new == R

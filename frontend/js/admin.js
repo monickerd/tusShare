@@ -410,7 +410,7 @@ const Admin = (() => {
         }
 
         const _numVal = (key, divisor = 1) => {
-            const raw = parseInt(s[key] || '0', 10);
+            const raw = Number.parseInt(s[key] || '0', 10);
             return divisor > 1 ? Math.round(raw / divisor) : raw;
         };
 
@@ -449,15 +449,15 @@ const Admin = (() => {
             className: 'btn btn-primary btn-sm',
             textContent: 'Save Settings',
             onClick: async () => {
-                const chunkMb = parseInt(fldChunkSize.value, 10);
-                if (isNaN(chunkMb) || chunkMb < 1) {
+                const chunkMb = Number.parseInt(fldChunkSize.value, 10);
+                if (Number.isNaN(chunkMb) || chunkMb < 1) {
                     Utils.showToast('Default chunk size must be at least 1 MB', 'error');
                     return;
                 }
                 const payload = {
-                    global_max_file_size:          String(parseInt(fldMaxFileSize.value, 10) * _MB),
-                    global_bandwidth_limit:         String(parseInt(fldBandwidth.value, 10)   * _MB),
-                    disk_warning_threshold:         String(parseInt(fldDiskWarn.value, 10)),
+                    global_max_file_size:          String(Number.parseInt(fldMaxFileSize.value, 10) * _MB),
+                    global_bandwidth_limit:         String(Number.parseInt(fldBandwidth.value, 10)   * _MB),
+                    disk_warning_threshold:         String(Number.parseInt(fldDiskWarn.value, 10)),
                     default_chunk_size:             String(chunkMb * _MB),
                     open_registration:              fldOpenReg.checked ? 'true' : 'false',
                     allow_user_delete_own_account:  fldAllowSelfDelete.checked ? 'true' : 'false',
@@ -540,8 +540,8 @@ const Admin = (() => {
                 Utils.el('td', { textContent: _fmtBytes(used) }),
                 Utils.el('td', { textContent: quota > 0 ? _fmtBytes(quota) : '—' }),
                 Utils.el('td', {
-                    textContent: uPct !== null ? `${uPct}%` : '—',
-                    className: uPct !== null && uPct >= 90 ? 'text-warn' : '',
+                    textContent: uPct === null ? '—' : `${uPct}%`,
+                    className: uPct !== null && uPct >= 90 ? 'text-warn' : '',  // NOSONAR — compound condition; simpler negated form is less readable
                 }),
             ]));
         }
@@ -598,7 +598,7 @@ const Admin = (() => {
         // Editable number input (0 = no limit; blank also treated as 0)
         const _numInput = (val, divisor = 1) => Utils.el('input', {
             type: 'number', min: '0', className: 'input-xs',
-            value: val != null ? String(Math.round(val / divisor)) : '',
+            value: val == null ? '' : String(Math.round(val / divisor)),
             placeholder: '0=none',
         });
 
@@ -617,8 +617,8 @@ const Admin = (() => {
             textContent: 'Save',
             onClick: async () => {
                 const _parseMb = (input) => {
-                    const n = parseInt(input.value, 10);
-                    return isNaN(n) || n === 0 ? null : n * _MB;
+                    const n = Number.parseInt(input.value, 10);
+                    return !Number.isNaN(n) && n !== 0 ? n * _MB : null;
                 };
                 const payload = {
                     is_active:       fldActive.checked,
@@ -633,9 +633,9 @@ const Admin = (() => {
                     return;
                 }
                 // Re-add null values for limit fields so they can be cleared
-                if (fldQuota.value === '' || parseInt(fldQuota.value, 10) === 0) payload.disk_quota = null;
-                if (fldBw.value    === '' || parseInt(fldBw.value,    10) === 0) payload.bandwidth_limit = null;
-                if (fldMax.value   === '' || parseInt(fldMax.value,   10) === 0) payload.max_file_size = null;
+                if (fldQuota.value === '' || Number.parseInt(fldQuota.value, 10) === 0) payload.disk_quota = null;
+                if (fldBw.value    === '' || Number.parseInt(fldBw.value,    10) === 0) payload.bandwidth_limit = null;
+                if (fldMax.value   === '' || Number.parseInt(fldMax.value,   10) === 0) payload.max_file_size = null;
                 saveBtn.disabled = true;
                 try {
                     await Api.put(`${_api()}/admin/users/${u.id}`, payload);
@@ -721,7 +721,7 @@ const Admin = (() => {
                 ]));
             });
             return Utils.el('details', { className: 'admin-used-invites' }, [
-                Utils.el('summary', { textContent: `${used.length} used invite${used.length !== 1 ? 's' : ''}` }),
+                Utils.el('summary', { textContent: `${used.length} used invite${used.length === 1 ? '' : 's'}` }),
                 Utils.el('table', { className: 'admin-table admin-table-sm' }, [
                     Utils.el('thead', {}, [
                         Utils.el('tr', {}, [
@@ -1663,9 +1663,7 @@ const Admin = (() => {
         const condHeader = Utils.el('h5', { className: 'policy-body-section-title', textContent: 'Conditions' });
         container.appendChild(condHeader);
 
-        if (!policy.conditions.length) {
-            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No conditions yet. Add at least one condition for this policy to match users.' }));
-        } else {
+        if (policy.conditions.length) {
             const table = Utils.el('table', { className: 'policy-table' });
             table.innerHTML = `<thead><tr>
                 <th>Field</th><th>Operator</th><th>Value</th><th>Strict</th><th>Inherited</th><th></th>
@@ -1676,6 +1674,8 @@ const Admin = (() => {
             }
             table.appendChild(tbody);
             container.appendChild(table);
+        } else {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No conditions yet. Add at least one condition for this policy to match users.' }));
         }
 
         container.appendChild(Utils.el('button', {
@@ -1760,9 +1760,7 @@ const Admin = (() => {
     function _renderEffects(wrap, policy, effects, refreshFn) {
         wrap.innerHTML = '';
 
-        if (!effects.length) {
-            wrap.appendChild(Utils.el('p', { className: 'text-muted policy-effects-empty', textContent: 'No effects yet. Add an effect to define what this policy grants.' }));
-        } else {
+        if (effects.length) {
             const table = Utils.el('table', { className: 'policy-table' });
             table.innerHTML = `<thead><tr>
                 <th>Type</th><th>Target ID</th><th>Details</th><th></th>
@@ -1773,6 +1771,8 @@ const Admin = (() => {
             }
             table.appendChild(tbody);
             wrap.appendChild(table);
+        } else {
+            wrap.appendChild(Utils.el('p', { className: 'text-muted policy-effects-empty', textContent: 'No effects yet. Add an effect to define what this policy grants.' }));
         }
 
         wrap.appendChild(Utils.el('button', {
@@ -1854,7 +1854,7 @@ const Admin = (() => {
                     payload.permission = permEl.value;
                     payload.recursive  = recursiveEl.checked;
                 } else {
-                    payload.escrow_override = parseInt(escrowOverrideEl.value, 10);
+                    payload.escrow_override = Number.parseInt(escrowOverrideEl.value, 10);
                 }
                 try {
                     await Api.post(`${_api()}/admin/policies/${policy.id}/effects`, payload);
@@ -1913,7 +1913,7 @@ const Admin = (() => {
                     await Api.post(`${_api()}/admin/policies`, {
                         name:           nameEl.value.trim(),
                         scope_type:     scopeTypeEl.value,
-                        scope_id:       scopeTypeEl.value !== 'team' ? null : (scopeIdInput?.value.trim() || null),
+                        scope_id:       scopeTypeEl.value === 'team' ? (scopeIdInput?.value.trim() || null) : null,
                         escrow_enabled: escrowEl.checked,
                     });
                     Utils.showToast('Policy created', 'success');
@@ -2607,7 +2607,7 @@ const Admin = (() => {
         container.appendChild(wrap);
 
         // --- Retention setting ---
-        const retentionDays = parseInt(settings['audit_retention_days'] || '365', 10);
+        const retentionDays = Number.parseInt(settings['audit_retention_days'] || '365', 10);
         const retInput = Utils.el('input', {
             type: 'number', min: '1', max: '3650', className: 'input-sm',
             value: String(retentionDays), style: 'width:80px; margin-right:8px',
@@ -2714,7 +2714,7 @@ const Admin = (() => {
                     const data = await Api.get(`${_api()}/admin/audit/logs?${_buildQs(50)}`);
                     _populateAuditTable(histTable, data.events || []);
                 } catch {}
-            }, parseInt(refreshSel.value, 10) * 1000);
+            }, Number.parseInt(refreshSel.value, 10) * 1000);
         };
         refreshChk.onchange = () => refreshChk.checked ? _startRefresh() : _stopRefresh();
         refreshSel.onchange = () => { if (refreshChk.checked) _startRefresh(); };
@@ -2971,7 +2971,7 @@ const Admin = (() => {
                 const cfg = JSON.parse(dest.filter_custom_json);
                 customGlobsIn.value = (cfg.event_type_globs || []).join('\n');
                 customSevSel.value = cfg.min_severity || 'info';
-            } catch (_) {}
+            } catch { /* invalid JSON; keep default empty values */ }
         }
 
         customWrap.appendChild(Utils.el('label', { className: 'settings-label', textContent: 'Event type glob patterns (one per line)' }));
@@ -3015,12 +3015,12 @@ const Admin = (() => {
                     type:               typeSel.value,
                     is_active:          activeCb.checked,
                     host:               typeSel.value === 'syslog' ? hostIn.value.trim() || null : null,
-                    port:               typeSel.value === 'syslog' ? parseInt(portIn.value, 10) || 514 : null,
+                    port:               typeSel.value === 'syslog' ? Number.parseInt(portIn.value, 10) || 514 : null,
                     protocol:           typeSel.value === 'syslog' ? protoSel.value : null,
                     syslog_format:      typeSel.value === 'syslog' ? fmtSel.value : null,
                     url:                typeSel.value === 'webhook' ? urlIn.value.trim() || null : null,
                     secret:             typeSel.value === 'webhook' && secretIn.value ? secretIn.value : null,
-                    batch_size:         typeSel.value === 'webhook' ? parseInt(batchIn.value, 10) || 1 : 1,
+                    batch_size:         typeSel.value === 'webhook' ? Number.parseInt(batchIn.value, 10) || 1 : 1,
                     filter_profile:     profileSel.value,
                     filter_custom_json: filterCustomJson,
                 };
@@ -3182,12 +3182,12 @@ const Admin = (() => {
             onClick: async (ev) => {
                 ev.target.disabled = true;
                 try {
-                    const warnPctVal  = warnPctIn.value.trim()   !== '' ? parseFloat(warnPctIn.value)  : null;
-                    const warnBytesVal = warnBytesIn.value.trim() !== '' ? parseInt(warnBytesIn.value, 10) : null;
+                    const warnPctVal   = warnPctIn.value.trim()   === '' ? null : Number.parseFloat(warnPctIn.value);
+                    const warnBytesVal = warnBytesIn.value.trim() === '' ? null : Number.parseInt(warnBytesIn.value, 10);
                     await Api.put(`${_api()}/admin/storage/tiers`, {
                         enabled: enabledCb.checked,
-                        hot_to_warm_days:       parseInt(hotWarmIn.value, 10) || null,
-                        warm_to_cold_days:      parseInt(warmColdIn.value, 10) || null,
+                        hot_to_warm_days:       Number.parseInt(hotWarmIn.value, 10) || null,
+                        warm_to_cold_days:      Number.parseInt(warmColdIn.value, 10) || null,
                         warm_volume_id:         warmVolIn.value.trim() || null,
                         cold_volume_id:         coldVolIn.value.trim() || null,
                         auto_warm_on_read:      autoWarmCb.checked,
@@ -3491,9 +3491,9 @@ const Admin = (() => {
             try {
                 const body = {
                     server_id:               inputs['server_id'].value.trim(),
-                    op_event_retention_days:  parseInt(inputs['op_event_retention_days'].value) || 30,
-                    api_key_expiry_warn_days: parseInt(inputs['api_key_expiry_warn_days'].value) || 30,
-                    upload_quota_warn_pct:    parseInt(inputs['upload_quota_warn_pct'].value) || 90,
+                    op_event_retention_days:  Number.parseInt(inputs['op_event_retention_days'].value) || 30,
+                    api_key_expiry_warn_days: Number.parseInt(inputs['api_key_expiry_warn_days'].value) || 30,
+                    upload_quota_warn_pct:    Number.parseInt(inputs['upload_quota_warn_pct'].value) || 90,
                 };
                 await Api.put(`${_api()}/admin/notifications/settings`, body);
                 Utils.showToast('Settings saved.');
@@ -3639,8 +3639,8 @@ const Admin = (() => {
                 endpoint_url:     urlInp.value.trim(),
                 secret:           secretInp.value || null,
                 event_filter:     filters,
-                batch_size:       batchSizeInp.value ? parseInt(batchSizeInp.value) : null,
-                batch_interval_s: intervalInp.value ? parseInt(intervalInp.value) : null,
+                batch_size:       batchSizeInp.value ? Number.parseInt(batchSizeInp.value) : null,
+                batch_interval_s: intervalInp.value ? Number.parseInt(intervalInp.value) : null,
                 enabled:          enabledChk.checked,
             };
             try {
@@ -4525,7 +4525,7 @@ const Admin = (() => {
                 const payload = {
                     name: nameEl.value.trim(),
                     description: descEl.value.trim() || null,
-                    priority: parseInt(priorityEl.value, 10) || 100,
+                    priority: Number.parseInt(priorityEl.value, 10) || 100,
                     subject: subjectSel.value,
                     applies_to_share_type: typeSel.value || null,
                     effect: effectSel.value,
@@ -4956,7 +4956,7 @@ const Admin = (() => {
         const modal = Utils.el('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;display:flex;align-items:center;justify-content:center' });
         const box   = Utils.el('div', { style: 'background:var(--color-bg,#fff);border-radius:8px;padding:24px;width:640px;max-width:95vw;max-height:80vh;overflow-y:auto' });
 
-        box.appendChild(Utils.el('h4', { textContent: `Apply Profile: ${profileId.replace(/_/g,' ')}`, style: 'margin-bottom:16px' }));
+        box.appendChild(Utils.el('h4', { textContent: `Apply Profile: ${profileId.replaceAll(/_/g,' ')}`, style: 'margin-bottom:16px' }));
 
         const modeRow = Utils.el('div', { style: 'display:flex;gap:12px;margin-bottom:16px;align-items:center' });
         modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0' }));

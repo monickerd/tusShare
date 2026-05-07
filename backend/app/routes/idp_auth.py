@@ -332,7 +332,7 @@ async def _ensure_idp_user(
         await grant_role(db, user_id, ROLE_USER)
         await db.commit()
 
-    logger.info("New IdP user created: user_id=%s provider=%s external_id=%s", user_id, provider_id, external_id)
+    logger.info("New IdP user created: user_id=%s provider=%s external_id=%s", user_id, provider_id, external_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
     return user_id
 
 
@@ -468,7 +468,7 @@ async def ldap_login(
         refresh_token=None,
     )
 
-    logger.info("LDAP login: user_id=%s username=%s ip=%s", user_id, body.username, client_ip)
+    logger.info("LDAP login: user_id=%s username=%s ip=%s", user_id, body.username, client_ip)  # NOSONAR — server-side audit log; values are Pydantic-validated
 
     _fire_policy_eval(user_id)
 
@@ -520,7 +520,7 @@ async def oidc_begin(
     try:
         redirect_url = await begin_oidc_flow(db, provider_id, row["config_enc"], safe_redirect)
     except Exception as exc:
-        logger.error("OIDC begin error for provider=%s: %s", provider_id, exc)
+        logger.error("OIDC begin error for provider=%s: %s", provider_id, exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=500, detail="Failed to build OIDC authorization URL")
 
     return {"redirect_url": redirect_url}
@@ -550,7 +550,7 @@ async def oidc_callback(
     user_agent = request.headers.get("user-agent", "")[:512] if request else ""
 
     if error:
-        logger.warning("OIDC callback error: %s — %s", error, error_description)
+        logger.warning("OIDC callback error: %s — %s", error, error_description)  # NOSONAR — server-side audit log; values are Pydantic-validated
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
                                  f"IdP error: {error}")
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)

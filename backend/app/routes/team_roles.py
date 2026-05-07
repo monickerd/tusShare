@@ -74,7 +74,7 @@ def _check_can_manage(user: AuthenticatedUser, member_role: str | None):
         raise HTTPException(status_code=403, detail="Team Admin or can_manage_roles required")  # NOSONAR — helper; 403 documented in callers
 
 
-async def _check_can_create(user: AuthenticatedUser, member_role: str | None):
+def _check_can_create(user: AuthenticatedUser, member_role: str | None):
     """
     Can create a role in this team if:
       - user has can_create_roles (global) AND (is team member OR has can_create_cross_team_roles)
@@ -223,7 +223,7 @@ async def create_team_role(
     team_id = validate_uuid(team_id)
     await _require_team(db, team_id)
     member_role = await _get_member_role(db, team_id, user.id)
-    await _check_can_create(user, member_role)
+    _check_can_create(user, member_role)
 
     # Validate name / description
     if len(body.name) < 1 or len(body.name) > MAX_TEAM_ROLE_NAME_LEN:

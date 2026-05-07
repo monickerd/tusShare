@@ -42,7 +42,7 @@ def init(db_session_factory) -> None:
     _db_session_factory = db_session_factory
 
 
-async def start() -> asyncio.Task:
+def start() -> asyncio.Task:
     from app.services import event_bus
     global _dispatcher_task
     _dispatcher_task = asyncio.create_task(_dispatch_loop(event_bus.subscribe()), name="siem_syslog")

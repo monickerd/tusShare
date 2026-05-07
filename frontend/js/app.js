@@ -30,7 +30,7 @@ const App = (() => {
         const ui = _themeConfig?.ui || {};
         for (const [flag, value] of Object.entries(ui)) {
             document.body.setAttribute(
-                'data-ui-' + flag.replace(/_/g, '-'),
+                'data-ui-' + flag.replaceAll(/_/g, '-'),
                 value ? 'true' : 'false',
             );
         }
@@ -157,7 +157,7 @@ const App = (() => {
         if (!hasSession) {
             const h = globalThis.location.hash;
             if (h?.startsWith('#/join/')) {
-                sessionStorage.setItem('pendingJoinHash', h);
+                sessionStorage.setItem('pendingJoinHash', h.slice(0, 512));  // NOSONAR — constrained to #/join/ prefix by preceding check
             }
             globalThis.location.hash = '#/login';
             await _routeLogin(_appEl());
@@ -200,7 +200,7 @@ const App = (() => {
         // Public / semi-public routes — no auth check at router level.
         if (hash.startsWith('#/s/') || hash.startsWith('#/l/') || hash.startsWith('#/join/')) {
             for (const route of _routes) {
-                const match = hash.match(route.pattern);
+                const match = route.pattern.exec(hash);
                 if (match) {
                     route.handler(container, ...match.slice(1));
                     return;
@@ -223,7 +223,7 @@ const App = (() => {
         _updateSidebarActive(hash);
 
         for (const route of _routes) {
-            const match = hash.match(route.pattern);
+            const match = route.pattern.exec(hash);
             if (match) {
                 route.handler(container, ...match.slice(1));
                 return;

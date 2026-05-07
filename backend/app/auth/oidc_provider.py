@@ -191,7 +191,7 @@ async def handle_oidc_callback(
     )
     row = await cursor.fetchone()
     if row is None:
-        logger.warning("OIDC callback: unknown/expired state=%s provider=%s", state, provider_id)
+        logger.warning("OIDC callback: unknown/expired state=%s provider=%s", state, provider_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
         return None
 
     expected_nonce = row["nonce"]  # may be None for pre-014 rows

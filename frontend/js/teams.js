@@ -60,28 +60,28 @@ const Teams = (() => {
     function _b64ToBytes(b64) {
         const bin = atob(b64);
         const out = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.codePointAt(i);
         return out;
     }
 
     function _bytesToB64(bytes) {
         let bin = '';
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        for (const byte of bytes) bin += String.fromCodePoint(byte);
         return btoa(bin);
     }
 
     function _bytesToB64url(bytes) {
-        return _bytesToB64(bytes).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        return _bytesToB64(bytes).replaceAll(/\+/g, '-').replaceAll(/\//g, '_').replace(/=+$/, '');
     }
 
     function _b64urlToBytes(b64url) {
-        return _b64ToBytes(b64url.replace(/-/g, '+').replace(/_/g, '/'));
+        return _b64ToBytes(b64url.replaceAll(/-/g, '+').replaceAll(/_/g, '/'));
     }
 
     function _bigintTo32Bytes(n) {
         const hex = n.toString(16).padStart(64, '0');
         const out = new Uint8Array(32);
-        for (let i = 0; i < 32; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+        for (let i = 0; i < 32; i++) out[i] = Number.parseInt(hex.substr(i * 2, 2), 16);
         return out;
     }
 
@@ -804,7 +804,7 @@ const Teams = (() => {
         let data;
         try {
             data = await Api.get(`${_api}/teams/${teamId}/custom-roles/${role.id}/assignments`);
-        } catch (err) {
+        } catch {
             container.appendChild(Utils.el('p', { textContent: 'Failed to load assignments.' }));
             return;
         }
@@ -1201,7 +1201,7 @@ const Teams = (() => {
                                 sk_iv:                agentWrap.sk_iv,
                             });
                         }
-                    } catch (_) {
+                    } catch {
                         // Escrow agents fetch failure is non-fatal; team creates without escrow slots
                         escrow_members = [];
                     }
@@ -1353,47 +1353,6 @@ const Teams = (() => {
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
         usernameInput.focus();
-    }
-
-    function _openRenameFolderDialog(folderId, currentName, refreshContainer, teamId) {
-        const overlay = _createModalOverlay();
-        const modal   = Utils.el('div', { className: 'modal' });
-        modal.appendChild(Utils.el('h3', { textContent: 'Rename Team Folder' }));
-
-        const input = Utils.el('input', { type: 'text', className: 'input', value: currentName });
-        modal.appendChild(input);
-
-        const errEl = Utils.el('p', { className: 'form-error', textContent: '' });
-        modal.appendChild(errEl);
-
-        const cancelBtn = Utils.el('button', {
-            className: 'btn btn-secondary',
-            textContent: 'Cancel',
-            onClick: () => overlay.remove(),
-        });
-        const saveBtn = Utils.el('button', {
-            className: 'btn btn-primary',
-            textContent: 'Save',
-            onClick: async () => {
-                const name = input.value.trim();
-                if (!name) { errEl.textContent = 'Name is required'; return; }
-                saveBtn.disabled = true;
-                try {
-                    await Api.put(`${Config.app.apiPrefix}/folders/${folderId}`, { name });
-                    overlay.remove();
-                    Utils.showToast('Folder renamed', 'success');
-                    renderTeamDetailPage(refreshContainer, teamId);
-                } catch (err) {
-                    errEl.textContent = err.message;
-                    saveBtn.disabled = false;
-                }
-            },
-        });
-
-        modal.appendChild(Utils.el('div', { className: 'modal-actions' }, [cancelBtn, saveBtn]));
-        overlay.appendChild(modal);
-        document.body.appendChild(overlay);
-        input.select();
     }
 
     /**

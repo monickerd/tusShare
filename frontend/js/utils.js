@@ -10,7 +10,7 @@ const Utils = (() => {
         const k = 1024;
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(k));
-        return parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
+        return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + ' ' + sizes[i];
     }
 
     /**
@@ -275,7 +275,7 @@ const Utils = (() => {
      * Read a cookie by name.
      */
     function parseCookie(name) {
-        const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+        const match = new RegExp('(^| )' + name + '=([^;]+)').exec(document.cookie);
         return match ? decodeURIComponent(match[2]) : null;
     }
 
@@ -285,11 +285,11 @@ const Utils = (() => {
     function escHtml(str) {
         if (str == null) return '';
         return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
+            .replaceAll(/&/g, '&amp;')
+            .replaceAll(/</g, '&lt;')
+            .replaceAll(/>/g, '&gt;')
+            .replaceAll(/"/g, '&quot;')
+            .replaceAll(/'/g, '&#39;');
     }
 
     /**

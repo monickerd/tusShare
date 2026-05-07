@@ -46,14 +46,14 @@ def init(db_factory) -> None:
     _db_session_factory = db_factory
 
 
-async def start() -> asyncio.Task:
+def start() -> asyncio.Task:
     global _reload_event
     _reload_event = asyncio.Event()
     task = asyncio.create_task(_supervisor_loop(), name="notif_emitter_supervisor")
     return task
 
 
-async def reload(db) -> None:
+def reload(db) -> None:
     """Force the supervisor to reload channel configs immediately."""
     if _reload_event is not None:
         _reload_event.set()
@@ -262,7 +262,7 @@ def _cancel_removed_channels(
     channel_tasks: dict[str, asyncio.Task],
     channel_queues_local: dict[str, asyncio.Queue],
 ) -> None:
-    for ch_id in list(channel_tasks):
+    for ch_id in list(channel_tasks):  # NOSONAR — list() snapshots keys so deletions inside loop don't raise RuntimeError
         if ch_id not in active_ids:
             channel_tasks[ch_id].cancel()
             del channel_tasks[ch_id]
@@ -339,7 +339,7 @@ async def _forward_security_events(
         while True:
             sec_event = await sec_q.get()
             event_dict = _security_to_op(sec_event)
-            for ch_id, q in list(chan_queues.items()):
+            for ch_id, q in list(chan_queues.items()):  # NOSONAR — list() snapshot guards against concurrent modification
                 # Only forward if the channel has matching security: filter
                 channels = await _load_channels()
                 ch_map = {c["id"]: c for c in channels}

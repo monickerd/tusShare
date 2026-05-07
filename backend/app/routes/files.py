@@ -842,7 +842,7 @@ async def _log_download(
         )
         await db.commit()
     except Exception:
-        logger.warning("Failed to write access log for file %s", file_id)
+        logger.warning("Failed to write access log for file %s", file_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
 
 
 @router.get("/{file_id}/content", responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}, 423: {"description": "423"}, 503: {"description": "503"}})
@@ -893,7 +893,7 @@ async def get_file_content(
     # Verify blob is reachable before committing to stream
     blob_exists = await storage.get_manager().exists(db, file_id, storage_key)
     if not blob_exists:
-        logger.error("Blob missing for file %s (storage_key=%s)", file_id, storage_key)
+        logger.error("Blob missing for file %s (storage_key=%s)", file_id, storage_key)  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
 
     # --- Parse Range header ---

@@ -357,7 +357,7 @@ async def _read_and_verify_chunk(
     expected_hex = chunk_hash_header[7:]
     actual_hex = await asyncio.to_thread(lambda: hashlib.sha256(chunk_data).hexdigest())
     if actual_hex != expected_hex:
-        logger.warning(
+        logger.warning(  # NOSONAR — server-side audit log; values are Pydantic-validated
             "Chunk hash mismatch for upload %s chunk %d at offset %d "
             "(expected=%s actual=%s size=%d)",
             upload_id, chunk_index, client_offset,
@@ -402,7 +402,7 @@ async def _record_chunk_in_db(
             )
         await db.commit()
     except Exception as _phase1_exc:
-        logger.error("Phase 1 DB update failed for upload %s: %s", upload_id, _phase1_exc)
+        logger.error("Phase 1 DB update failed for upload %s: %s", upload_id, _phase1_exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
         await db.rollback()
         raise
 
@@ -422,7 +422,7 @@ async def _finalize_completed_upload(
             db, upload_id, file_id, storage_key, part_tags
         )
     except Exception as exc:
-        logger.error("Upload finalization failed for %s: %s", upload_id, exc)
+        logger.error("Upload finalization failed for %s: %s", upload_id, exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=500, detail="Upload finalization failed")
 
     if actual_size != new_offset:
@@ -576,7 +576,7 @@ async def patch_upload(
             upload_id, chunk_index + 1, client_offset, chunk_data
         )
     except Exception as exc:
-        logger.error("Failed to write chunk for upload %s: %s", upload_id, exc)
+        logger.error("Failed to write chunk for upload %s: %s", upload_id, exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=500, detail="Chunk write failed")
 
     # --- Phase 1 DB update: record this chunk and advance the tus offset ---

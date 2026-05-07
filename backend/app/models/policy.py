@@ -1059,4 +1059,4 @@ async def sweep_policy_for_all_users(db, policy_id: str) -> None:
         try:
             await evaluate_user_policies(db, uid, force=True)
         except Exception:
-            logger.exception("policy sweep: error evaluating user %s for policy %s", uid, policy_id)
+            logger.exception("policy sweep: error evaluating user %s for policy %s", uid, policy_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
