@@ -114,6 +114,36 @@ async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> s
     return folder_id
 
 
+async def _emit_quota_status_event(db, user_id: str, disk_used: int, disk_quota: int) -> None:
+    """Emit an op_bus event for quota warning or ok status."""
+    try:
+        from app.services import op_bus
+        from app.schemas.op_event import OperationalEvent
+        warn_val = await get_admin_setting(db, "upload_quota_warn_pct")
+        warn_pct = int(warn_val) if warn_val else 90
+        used_pct = disk_used / disk_quota * 100
+        if used_pct >= warn_pct:
+            op_bus.emit(OperationalEvent(
+                event_type="upload.quota.warning",
+                severity="warning", source="upload",
+                data={
+                    "user_id":     user_id,
+                    "used_bytes":  disk_used,
+                    "quota_bytes": disk_quota,
+                    "used_pct":    round(used_pct, 1),
+                    "catch_up":    False,
+                },
+            ))
+        else:
+            op_bus.emit(OperationalEvent(
+                event_type="upload.quota.ok",
+                severity="info", source="upload",
+                data={"user_id": user_id},
+            ))
+    except Exception:
+        pass
+
+
 async def _enforce_upload_quotas(db, user_id: str, total_encrypted_size: int) -> None:
     """Fetch user row and enforce global/personal size limits and disk quota."""
     cursor = await db.execute(
@@ -134,34 +164,23 @@ async def _enforce_upload_quotas(db, user_id: str, total_encrypted_size: int) ->
     if user_row["disk_quota"] is not None:
         if user_row["disk_used"] + total_encrypted_size > user_row["disk_quota"]:
             raise HTTPException(status_code=413, detail="Storage quota exceeded")
-        try:
-            warn_val = await get_admin_setting(db, "upload_quota_warn_pct")
-            warn_pct = int(warn_val) if warn_val else 90
-            used_pct = user_row["disk_used"] / user_row["disk_quota"] * 100
-            if used_pct >= warn_pct:
-                from app.services import op_bus
-                from app.schemas.op_event import OperationalEvent
-                op_bus.emit(OperationalEvent(
-                    event_type="upload.quota.warning",
-                    severity="warning", source="upload",
-                    data={
-                        "user_id":     user_id,
-                        "used_bytes":  user_row["disk_used"],
-                        "quota_bytes": user_row["disk_quota"],
-                        "used_pct":    round(used_pct, 1),
-                        "catch_up":    False,
-                    },
-                ))
-            else:
-                from app.services import op_bus
-                from app.schemas.op_event import OperationalEvent
-                op_bus.emit(OperationalEvent(
-                    event_type="upload.quota.ok",
-                    severity="info", source="upload",
-                    data={"user_id": user_id},
-                ))
-        except Exception:
-            pass
+        await _emit_quota_status_event(db, user_id, user_row["disk_used"], user_row["disk_quota"])
+
+
+def _parse_create_upload_headers(request: Request) -> tuple[int, str]:
+    """Validate POST /uploads Tus headers. Returns (total_encrypted_size, metadata_raw)."""
+    if request.headers.get("Tus-Resumable", "") != _TUS_VERSION:
+        raise HTTPException(status_code=400, detail="Unsupported Tus-Resumable version")
+    upload_length_raw = request.headers.get("Upload-Length", "")
+    if not upload_length_raw.isdigit():
+        raise HTTPException(status_code=400, detail="Upload-Length header required")
+    total_encrypted_size = int(upload_length_raw)
+    if total_encrypted_size <= 0:
+        raise HTTPException(status_code=400, detail="Upload-Length must be positive")
+    metadata_raw = request.headers.get("Upload-Metadata", "")
+    if not metadata_raw:
+        raise HTTPException(status_code=400, detail="Upload-Metadata header required")
+    return total_encrypted_size, metadata_raw
 
 
 # ---------------------------------------------------------------------------
@@ -176,19 +195,7 @@ async def create_upload(
 ):
     """Create a new tus upload. Returns 201 with Location header."""
 
-    if request.headers.get("Tus-Resumable", "") != _TUS_VERSION:
-        raise HTTPException(status_code=400, detail="Unsupported Tus-Resumable version")
-
-    upload_length_raw = request.headers.get("Upload-Length", "")
-    if not upload_length_raw.isdigit():
-        raise HTTPException(status_code=400, detail="Upload-Length header required")
-    total_encrypted_size = int(upload_length_raw)
-    if total_encrypted_size <= 0:
-        raise HTTPException(status_code=400, detail="Upload-Length must be positive")
-
-    metadata_raw = request.headers.get("Upload-Metadata", "")
-    if not metadata_raw:
-        raise HTTPException(status_code=400, detail="Upload-Metadata header required")
+    total_encrypted_size, metadata_raw = _parse_create_upload_headers(request)
 
     try:
         meta = _parse_upload_metadata(metadata_raw)
@@ -472,6 +479,29 @@ async def _finalize_completed_upload(
 # PATCH /uploads/{upload_id}  — send a chunk
 # ---------------------------------------------------------------------------
 
+def _parse_patch_upload_headers(request: Request, upload_id_raw: str) -> tuple[str, int, str]:
+    """Validate PATCH /uploads/{id} headers. Returns (upload_id, client_offset, chunk_iv_b64)."""
+    try:
+        upload_id = validate_uuid(upload_id_raw)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
+    if request.headers.get("Tus-Resumable", "") != _TUS_VERSION:
+        raise HTTPException(status_code=400, detail="Unsupported Tus-Resumable version")
+    if request.headers.get("Content-Type", "") != _CONTENT_TYPE_PATCH:
+        raise HTTPException(status_code=415, detail=f"Content-Type must be {_CONTENT_TYPE_PATCH}")
+    offset_raw = request.headers.get("Upload-Offset", "")
+    if not offset_raw.isdigit():
+        raise HTTPException(status_code=400, detail="Upload-Offset header required")
+    chunk_iv_b64 = request.headers.get("X-Chunk-IV", "")
+    if not chunk_iv_b64:
+        raise HTTPException(status_code=400, detail="X-Chunk-IV header required")
+    try:
+        validate_base64(chunk_iv_b64)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid X-Chunk-IV header")
+    return upload_id, int(offset_raw), chunk_iv_b64
+
+
 @router.patch("/{upload_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 413: {"description": "413"}, 415: {"description": "415"}, 423: {"description": "423"}, 500: {"description": "Internal Server Error"}})
 async def patch_upload(
     upload_id: str,
@@ -480,32 +510,7 @@ async def patch_upload(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Receive one encrypted chunk and append it to the upload."""
-    try:
-        upload_id = validate_uuid(upload_id)
-    except ValueError:
-        raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
-
-    if request.headers.get("Tus-Resumable", "") != _TUS_VERSION:
-        raise HTTPException(status_code=400, detail="Unsupported Tus-Resumable version")
-
-    if request.headers.get("Content-Type", "") != _CONTENT_TYPE_PATCH:
-        raise HTTPException(
-            status_code=415,
-            detail=f"Content-Type must be {_CONTENT_TYPE_PATCH}",
-        )
-
-    offset_raw = request.headers.get("Upload-Offset", "")
-    if not offset_raw.isdigit():
-        raise HTTPException(status_code=400, detail="Upload-Offset header required")
-    client_offset = int(offset_raw)
-
-    chunk_iv_b64 = request.headers.get("X-Chunk-IV", "")
-    if not chunk_iv_b64:
-        raise HTTPException(status_code=400, detail="X-Chunk-IV header required")
-    try:
-        validate_base64(chunk_iv_b64)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid X-Chunk-IV header")
+    upload_id, client_offset, chunk_iv_b64 = _parse_patch_upload_headers(request, upload_id)
 
     # --- Fetch and validate upload record ---
     cursor = await db.execute(

@@ -274,6 +274,13 @@ async def _resolve_totp_field(db, user_id: str) -> str:
         return "0"
 
 
+def _set_provider_result(result: dict, fields: set, provider_type: str | None, name: str | None) -> None:
+    if "auth_provider" in fields:
+        result["auth_provider"] = provider_type or "opaque"
+    if "identity_provider" in fields:
+        result["identity_provider"] = name or ""
+
+
 async def _resolve_provider_fields(db, user_id: str, fields: set) -> dict[str, str]:
     result: dict[str, str] = {}
     try:
@@ -287,21 +294,12 @@ async def _resolve_provider_fields(db, user_id: str, fields: set) -> dict[str, s
         )
         row = await cursor.fetchone()
         if row is None or row["provider_type"] is None:
-            if "auth_provider" in fields:
-                result["auth_provider"] = "opaque"
-            if "identity_provider" in fields:
-                result["identity_provider"] = ""
+            _set_provider_result(result, fields, None, None)
         else:
-            if "auth_provider" in fields:
-                result["auth_provider"] = row["provider_type"]
-            if "identity_provider" in fields:
-                result["identity_provider"] = row["name"] or ""
+            _set_provider_result(result, fields, row["provider_type"], row["name"])
     except Exception:
         # identity_providers table not available — treat as opaque user
-        if "auth_provider" in fields:
-            result["auth_provider"] = "opaque"
-        if "identity_provider" in fields:
-            result["identity_provider"] = ""
+        _set_provider_result(result, fields, None, None)
     return result
 
 
@@ -604,6 +602,126 @@ async def _apply_folder_acl_effect(
         )
 
 
+async def _check_policy_debounce(db, user_id: str, force: bool) -> bool:
+    """Return True if the user was recently evaluated and evaluation should be skipped."""
+    if force:
+        return False
+    cursor = await db.execute(
+        "SELECT policy_last_evaluated_at FROM users WHERE id = ?", (user_id,)
+    )
+    row = await cursor.fetchone()
+    if not (row and row["policy_last_evaluated_at"]):
+        return False
+    try:
+        last = datetime.fromisoformat(row["policy_last_evaluated_at"])
+        now  = datetime.now(timezone.utc)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        return (now - last).total_seconds() < _DEBOUNCE_SECONDS
+    except ValueError:
+        return False  # malformed timestamp — proceed with evaluation
+
+
+def _collect_matching_policy_ids(
+    policies: list, conditions_by_policy: dict, all_resolved: dict
+) -> "set[str]":
+    """Evaluate each policy's conditions against resolved field values (AND semantics)."""
+    matching: set[str] = set()
+    for policy in policies:
+        conds = conditions_by_policy[policy.id]
+        if not conds:
+            continue
+        matched = True
+        for cond in conds:
+            actual = all_resolved.get(cond.field)
+            if actual is None:
+                matched = False
+                break
+            if not _evaluate_condition(cond, actual):
+                matched = False
+                break
+        if matched:
+            matching.add(policy.id)
+    return matching
+
+
+async def _write_matching_policy_grants(
+    db, user_id: str, policies: list, matching_policy_ids: "set[str]"
+) -> None:
+    """Write policy_folder_grants for all matching policies (step 8)."""
+    match_ph = ",".join("?" * len(matching_policy_ids))
+    cursor = await db.execute(
+        f"SELECT * FROM policy_effects WHERE policy_id IN ({match_ph})",
+        list(matching_policy_ids),
+    )
+    effects = await cursor.fetchall()
+
+    policy_escrow_map: dict[str, bool] = {
+        p.id: p.escrow_enabled for p in policies if p.id in matching_policy_ids
+    }
+    escrow_overrides: dict[str, dict] = {}
+    for eff in effects:
+        if eff["effect_type"] == "team_escrow":
+            pid = eff["policy_id"]
+            if pid not in escrow_overrides:
+                escrow_overrides[pid] = {}
+            escrow_overrides[pid][eff["target_id"]] = eff["escrow_override"]
+
+    cursor2 = await db.execute(
+        "SELECT DISTINCT ur.user_id FROM user_roles ur "
+        "WHERE ur.role_id = 'escrow_agent' AND ur.scope_type IS NULL",
+    )
+    escrow_agent_ids: list[str] = [r["user_id"] for r in await cursor2.fetchall()]
+
+    for eff in effects:
+        effect_type = eff["effect_type"]
+        if effect_type == "team_escrow":
+            continue
+        if effect_type == "team_member":
+            await _apply_team_member_effect(
+                db, user_id, eff["id"], eff["target_id"], eff["role_level"], eff["policy_id"],
+                policy_escrow_map, escrow_overrides, escrow_agent_ids,
+            )
+        elif effect_type == "folder_acl":
+            await _apply_folder_acl_effect(
+                db, user_id, eff["id"], eff["target_id"], eff["permission"], eff["recursive"],
+            )
+
+
+async def _revoke_non_matching_policy_grants(
+    db, user_id: str, policies: list, matching_policy_ids: "set[str]"
+) -> None:
+    """Delete policy-sourced grants for policies that no longer match (step 9)."""
+    non_matching_ids = [p.id for p in policies if p.id not in matching_policy_ids]
+    if not non_matching_ids:
+        return
+    nm_ph = ",".join("?" * len(non_matching_ids))
+    cursor = await db.execute(
+        f"SELECT id FROM policy_effects WHERE policy_id IN ({nm_ph})",
+        non_matching_ids,
+    )
+    revoke_effect_ids = [r["id"] for r in await cursor.fetchall()]
+    if not revoke_effect_ids:
+        return
+    rev_ph = ",".join("?" * len(revoke_effect_ids))
+    rev_args = [user_id] + revoke_effect_ids
+    await db.execute(
+        f"DELETE FROM user_roles WHERE user_id = ? AND policy_effect_id IN ({rev_ph})", rev_args,
+    )
+    await db.execute(
+        f"DELETE FROM user_team_keys WHERE user_id = ? AND policy_effect_id IN ({rev_ph})", rev_args,
+    )
+    await db.execute(
+        f"DELETE FROM permissions WHERE user_id = ? AND policy_effect_id IN ({rev_ph})", rev_args,
+    )
+    await db.execute(
+        f"DELETE FROM policy_team_grants WHERE user_id = ? AND effect_id IN ({rev_ph})", rev_args,
+    )
+    await db.execute(
+        f"DELETE FROM policy_folder_grants WHERE user_id = ? AND effect_id IN ({rev_ph})", rev_args,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main evaluation function
 # ---------------------------------------------------------------------------
@@ -642,25 +760,10 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
         return
 
     # 1. Debounce
-    if not force:
-        cursor = await db.execute(
-            "SELECT policy_last_evaluated_at FROM users WHERE id = ?", (user_id,)
-        )
-        row = await cursor.fetchone()
-        if row and row["policy_last_evaluated_at"]:
-            try:
-                last = datetime.fromisoformat(row["policy_last_evaluated_at"])
-                now  = datetime.now(timezone.utc)
-                if last.tzinfo is None:
-                    last = last.replace(tzinfo=timezone.utc)
-                if (now - last).total_seconds() < _DEBOUNCE_SECONDS:
-                    return
-            except ValueError:
-                pass  # malformed timestamp — proceed with evaluation
+    if await _check_policy_debounce(db, user_id, force):
+        return
 
-    # 2. Load policies applicable to this user:
-    #    - org-scoped policies (always apply)
-    #    - team-scoped policies for teams the user is a member of
+    # 2. Load policies applicable to this user
     cursor = await db.execute(
         """
         SELECT p.*
@@ -676,7 +779,6 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     policies = [Policy.from_row(r) for r in await cursor.fetchall()]
 
     if not policies:
-        # Still update the debounce timestamp
         await _stamp_evaluated(db, user_id)
         return
 
@@ -689,12 +791,11 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     )
     all_conditions = [PolicyCondition.from_row(r) for r in await cursor.fetchall()]
 
-    # Group conditions by policy
     conditions_by_policy: dict[str, list[PolicyCondition]] = {p.id: [] for p in policies}
     for cond in all_conditions:
         conditions_by_policy[cond.policy_id].append(cond)
 
-    # 4. Identify which field sources are needed and load field definitions
+    # 4. Load field definitions
     needed_fields = {c.field for c in all_conditions}
     if needed_fields:
         field_placeholders = ",".join("?" * len(needed_fields))
@@ -712,113 +813,14 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     all_resolved = await _resolve_all_policy_fields(db, user_id, all_conditions, field_defs)
 
     # 7. Evaluate each policy; collect matching policy IDs
-    matching_policy_ids: set[str] = set()
-
-    for policy in policies:
-        conds = conditions_by_policy[policy.id]
-        if not conds:
-            # Policy with no conditions matches nobody — skip
-            continue
-
-        matched = True
-        for cond in conds:
-            actual = all_resolved.get(cond.field)
-            if actual is None:
-                # Unresolvable field — conservative: treat as no-match
-                matched = False
-                break
-            if not _evaluate_condition(cond, actual):
-                matched = False
-                break
-
-        if matched:
-            matching_policy_ids.add(policy.id)
+    matching_policy_ids = _collect_matching_policy_ids(policies, conditions_by_policy, all_resolved)
 
     # 8. Write grants for matching policies
-    #    ON CONFLICT DO NOTHING: manual row (policy_effect_id IS NULL) wins on conflict.
     if matching_policy_ids:
-        match_ph = ",".join("?" * len(matching_policy_ids))
-        cursor = await db.execute(
-            f"SELECT * FROM policy_effects WHERE policy_id IN ({match_ph})",
-            list(matching_policy_ids),
-        )
-        effects = await cursor.fetchall()
+        await _write_matching_policy_grants(db, user_id, policies, matching_policy_ids)
 
-        # build policy escrow map and per-team escrow overrides from team_escrow effects
-        policy_escrow_map: dict[str, bool] = {
-            p.id: p.escrow_enabled for p in policies if p.id in matching_policy_ids
-        }
-        # {policy_id: {team_id: override_value}}  — team_escrow effects override policy default
-        escrow_overrides: dict[str, dict[str, int | None]] = {}
-        for eff in effects:
-            if eff["effect_type"] == "team_escrow":
-                pid = eff["policy_id"]
-                if pid not in escrow_overrides:
-                    escrow_overrides[pid] = {}
-                escrow_overrides[pid][eff["target_id"]] = eff["escrow_override"]
-
-        # load org-level escrow agents once (users holding the escrow_agent role)
-        cursor2 = await db.execute(
-            "SELECT DISTINCT ur.user_id FROM user_roles ur "
-            "WHERE ur.role_id = 'escrow_agent' AND ur.scope_type IS NULL",
-        )
-        escrow_agent_ids: list[str] = [r["user_id"] for r in await cursor2.fetchall()]
-
-        for eff in effects:
-            effect_id   = eff["id"]
-            effect_type = eff["effect_type"]
-            target_id   = eff["target_id"]
-
-            if effect_type == "team_escrow":
-                # Pure metadata / override marker — no direct grants written here
-                continue
-
-            if effect_type == "team_member":
-                await _apply_team_member_effect(
-                    db, user_id, effect_id, target_id, eff["role_level"], eff["policy_id"],
-                    policy_escrow_map, escrow_overrides, escrow_agent_ids,
-                )
-            elif effect_type == "folder_acl":
-                await _apply_folder_acl_effect(
-                    db, user_id, effect_id, target_id, eff["permission"], eff["recursive"],
-                )
-
-    # 9. Revocation: remove policy-sourced rows for policies that no longer match
-    non_matching_ids = [p.id for p in policies if p.id not in matching_policy_ids]
-    if non_matching_ids:
-        nm_ph = ",".join("?" * len(non_matching_ids))
-        cursor = await db.execute(
-            f"SELECT id FROM policy_effects WHERE policy_id IN ({nm_ph})",
-            non_matching_ids,
-        )
-        revoke_effect_ids = [r["id"] for r in await cursor.fetchall()]
-
-        if revoke_effect_ids:
-            rev_ph = ",".join("?" * len(revoke_effect_ids))
-            rev_args = [user_id] + revoke_effect_ids
-
-            # Delete policy-sourced rows — manual rows (policy_effect_id IS NULL) untouched
-            await db.execute(
-                f"DELETE FROM user_roles WHERE user_id = ? AND policy_effect_id IN ({rev_ph})",
-                rev_args,
-            )
-            await db.execute(
-                f"DELETE FROM user_team_keys WHERE user_id = ? AND policy_effect_id IN ({rev_ph})",
-                rev_args,
-            )
-            await db.execute(
-                f"DELETE FROM permissions WHERE user_id = ? AND policy_effect_id IN ({rev_ph})",
-                rev_args,
-            )
-            # Delete tracking rows
-            await db.execute(
-                f"DELETE FROM policy_team_grants WHERE user_id = ? AND effect_id IN ({rev_ph})",
-                rev_args,
-            )
-            await db.execute(
-                f"DELETE FROM policy_folder_grants WHERE user_id = ? AND effect_id IN ({rev_ph})",
-                rev_args,
-            )
+    # 9. Revoke grants for policies that no longer match
+    await _revoke_non_matching_policy_grants(db, user_id, policies, matching_policy_ids)
 
     # 10. Stamp evaluation time
     await _stamp_evaluated(db, user_id)

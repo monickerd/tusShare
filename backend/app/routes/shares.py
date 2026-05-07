@@ -943,6 +943,23 @@ async def get_shared_file_chunks(
     }
 
 
+async def _load_shared_file_row(db, file_id: str) -> dict:
+    """Fetch and validate a file for shared download. Raises 404/409/422."""
+    cursor = await db.execute(
+        "SELECT id, storage_key, sanitized_name, encrypted_size, upload_complete "
+        "FROM files WHERE id = ? AND deleted_at IS NULL",
+        (file_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not row["upload_complete"]:
+        raise HTTPException(status_code=409, detail="File upload is not complete")
+    if row["encrypted_size"] <= 0:
+        raise HTTPException(status_code=422, detail="File has no content")
+    return row
+
+
 async def _enforce_download_limit(
     db: Database, share: dict, user: AuthenticatedUser | None,
     range_header: str, start: int, content_length: int,
@@ -992,23 +1009,9 @@ async def download_shared_file(
     await _require_share_access(request, share["id"], user)
     await _verify_file_in_share(db, share["id"], file_id)
 
-    cursor = await db.execute(
-        "SELECT id, storage_key, sanitized_name, encrypted_size, upload_complete "
-        "FROM files WHERE id = ? AND deleted_at IS NULL",
-        (file_id,),
-    )
-    row = await cursor.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    if not row["upload_complete"]:
-        raise HTTPException(status_code=409, detail="File upload is not complete")
-
+    row = await _load_shared_file_row(db, file_id)
     storage_key = row["storage_key"]
     encrypted_size: int = row["encrypted_size"]
-
-    if encrypted_size <= 0:
-        raise HTTPException(status_code=422, detail="File has no content")
 
     blob_exists = await storage.get_manager().exists(db, file_id, storage_key)
     if not blob_exists:

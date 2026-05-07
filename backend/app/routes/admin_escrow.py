@@ -157,6 +157,21 @@ async def _collect_escrow_value_updates(db, body: "EscrowSettingsUpdate") -> lis
     return updates
 
 
+async def _apply_lock_only_setting_updates(db, new_is_locked, new_locked_tier) -> None:
+    """Write lock fields for all three escrow settings rows when no value changed."""
+    for key in ("escrow_default_user_ids", "escrow_default_role_ids", "escrow_require_coverage"):
+        if new_locked_tier is not None:
+            await db.execute(
+                "UPDATE admin_settings SET is_locked = ?, locked_min_tier = ? WHERE key = ?",
+                (new_is_locked if new_is_locked is not None else True, new_locked_tier, key),
+            )
+        elif new_is_locked is not None:
+            await db.execute(
+                "UPDATE admin_settings SET is_locked = ? WHERE key = ?",
+                (new_is_locked, key),
+            )
+
+
 async def _apply_setting_with_lock(db, key: str, value: str, new_is_locked, new_locked_tier) -> None:
     """Write one admin_settings row, optionally updating the lock fields."""
     lock_clause = ""
@@ -204,17 +219,7 @@ async def update_escrow_settings(
 
     # If only lock changed (no value changes)
     if not updates and (new_is_locked is not None or new_locked_tier is not None):
-        for key in ("escrow_default_user_ids", "escrow_default_role_ids", "escrow_require_coverage"):
-            if new_locked_tier is not None:
-                await db.execute(
-                    "UPDATE admin_settings SET is_locked = ?, locked_min_tier = ? WHERE key = ?",
-                    (new_is_locked if new_is_locked is not None else True, new_locked_tier, key),
-                )
-            elif new_is_locked is not None:
-                await db.execute(
-                    "UPDATE admin_settings SET is_locked = ? WHERE key = ?",
-                    (new_is_locked, key),
-                )
+        await _apply_lock_only_setting_updates(db, new_is_locked, new_locked_tier)
 
     await db.commit()
     return {"message": "Escrow settings updated"}

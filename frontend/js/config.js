@@ -4,7 +4,7 @@
 // defence-in-depth fallback for legacy browsers or cached responses.
 if (window !== window.top) {
     try {
-        const _target = window.location.pathname + window.location.search + window.location.hash;
+        const _target = window.location.pathname;
         if (_target.startsWith('/') && !_target.startsWith('//')) {
             window.top.location.replace(_target);
         }

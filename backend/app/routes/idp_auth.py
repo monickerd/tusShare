@@ -468,7 +468,6 @@ async def ldap_login(
         refresh_token=None,
     )
 
-    user_agent = request.headers.get("user-agent", "")[:512]
     logger.info("LDAP login: user_id=%s username=%s ip=%s", user_id, body.username, client_ip)
 
     _fire_policy_eval(user_id)

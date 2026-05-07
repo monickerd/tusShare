@@ -1153,9 +1153,10 @@ const Files = (() => {
     /** Returns false if the user cancels after being warned about a team-boundary crossing. */
     async function _warnIfBoundary(items, sourceIsTeam, destination) {
         if (sourceIsTeam === destination.isTeam) return true;
+        const noun = items.length === 1 ? 'this item' : 'these items';
         const boundaryMsg = !sourceIsTeam && destination.isTeam
-            ? `Warning: By moving to "${destination.label}", you will be sharing ${items.length === 1 ? 'this item' : 'these items'} with everyone who has access to that folder.`
-            : `Warning: By moving to your personal files, team members will lose access to ${items.length === 1 ? 'this item' : 'these items'}.`;
+            ? `Warning: By moving to "${destination.label}", you will be sharing ${noun} with everyone who has access to that folder.`
+            : `Warning: By moving to your personal files, team members will lose access to ${noun}.`;
         return Utils.showConfirm(boundaryMsg + '\n\nProceed?');
     }
 
@@ -1223,6 +1224,30 @@ const Files = (() => {
         return { items, failed };
     }
 
+    async function _moveFileBatches(files, destId, destTeamPK, overlay, initialDone, total, isCancelled) {
+        const masterKey = destTeamPK ? Auth.getMasterKeyObj() : null;
+        let done = initialDone;
+        let errors = 0;
+        for (const batch of _chunk(files, 50)) {
+            if (isCancelled()) break;
+            overlay.update(done, total, 'Moving files…');
+            const { items: batchItems, failed } = await _buildFileMoveItems(batch, destTeamPK, masterKey);
+            errors += failed;
+            if (batchItems.length > 0) {
+                try {
+                    const result = await Api.post(
+                        `${Config.app.apiPrefix}/files/batch-move`,
+                        { files: batchItems, destination_folder_id: destId },
+                    );
+                    errors += (result.failed || []).length;
+                } catch { errors += batchItems.length; }
+            }
+            done += batch.length;
+            overlay.update(done, total);
+        }
+        return { done, errors };
+    }
+
     /**
      * Execute moves for a list of items to a destination (no confirmation).
      * destination: { id: string|null, label: string, isTeam: boolean }
@@ -1263,24 +1288,9 @@ const Files = (() => {
         );
 
         if (files.length > 0 && !cancelled) {
-            const masterKey = destTeamPK ? Auth.getMasterKeyObj() : null;
-            for (const batch of _chunk(files, 50)) {
-                if (cancelled) break;
-                overlay.update(done, total, 'Moving files…');
-                const { items: batchItems, failed } = await _buildFileMoveItems(batch, destTeamPK, masterKey);
-                errors += failed;
-                if (batchItems.length > 0) {
-                    try {
-                        const result = await Api.post(
-                            `${Config.app.apiPrefix}/files/batch-move`,
-                            { files: batchItems, destination_folder_id: destId },
-                        );
-                        errors += (result.failed || []).length;
-                    } catch { errors += batchItems.length; }
-                }
-                done += batch.length;
-                overlay.update(done, total);
-            }
+            const fileResult = await _moveFileBatches(files, destId, destTeamPK, overlay, done, total, () => cancelled);
+            done = fileResult.done;
+            errors += fileResult.errors;
         }
 
         overlay.remove();
@@ -1467,6 +1477,32 @@ const Files = (() => {
         return item;
     }
 
+    async function _copyFileBatches(files, destId, ctx, overlay, total) {
+        let done = 0;
+        let errors = 0;
+        for (const batch of _chunk(files, 50)) {
+            overlay.update(done, total, 'Copying files…');
+            const batchItems = [];
+            for (const file of batch) {
+                try {
+                    batchItems.push(await _buildFileCopyItem(file, ctx));
+                } catch { errors++; }
+            }
+            if (batchItems.length > 0) {
+                try {
+                    const result = await Api.post(
+                        `${Config.app.apiPrefix}/files/batch-copy`,
+                        { files: batchItems, destination_folder_id: destId },
+                    );
+                    errors += (result.failed || []).length;
+                } catch { errors += batchItems.length; }
+            }
+            done += batch.length;
+            overlay.update(done, total);
+        }
+        return { done, errors };
+    }
+
     /**
      * Execute copies for a list of file items to a destination folder.
      * Determines the crypto path per file and calls POST /files/batch-copy.
@@ -1512,26 +1548,7 @@ const Files = (() => {
         const overlay = _showMoveOverlay(initialLabel);
         const ctx = { srcTeamId, destTeamId, destTeamPK, masterKey, skSrcBigInt, rkBigInt, srcTeamFileKeyMap };
 
-        for (const batch of _chunk(files, 50)) {
-            overlay.update(done, total, 'Copying files…');
-            const batchItems = [];
-            for (const file of batch) {
-                try {
-                    batchItems.push(await _buildFileCopyItem(file, ctx));
-                } catch { errors++; }
-            }
-            if (batchItems.length > 0) {
-                try {
-                    const result = await Api.post(
-                        `${Config.app.apiPrefix}/files/batch-copy`,
-                        { files: batchItems, destination_folder_id: destId },
-                    );
-                    errors += (result.failed || []).length;
-                } catch { errors += batchItems.length; }
-            }
-            done += batch.length;
-            overlay.update(done, total);
-        }
+        ({ done, errors } = await _copyFileBatches(files, destId, ctx, overlay, total));
 
         overlay.remove();
 

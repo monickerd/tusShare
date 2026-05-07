@@ -181,7 +181,8 @@ const Download = (() => {
     // OPFS-backed download
     // ------------------------------------------------------------------
 
-    async function _fetchAndCacheChunks(dir, db, fileId, totalChunks, chunks, fileKey, done, onProgress, signal) {
+    async function _fetchAndCacheChunks(dir, db, fileId, totalChunks, chunks, fileKey, ctx) {
+        const { done, onProgress, signal } = ctx;
         for (let i = 0; i < totalChunks; i++) {
             if (signal?.aborted) {
                 const err = new Error('Aborted');
@@ -237,7 +238,7 @@ const Download = (() => {
         );
 
         // 4. Fetch + decrypt + write each chunk not yet persisted to OPFS
-        await _fetchAndCacheChunks(dir, db, fileId, totalChunks, manifest.chunks, fileKey, done, onProgress, signal);
+        await _fetchAndCacheChunks(dir, db, fileId, totalChunks, manifest.chunks, fileKey, { done, onProgress, signal });
 
         // 5. Read all chunks from OPFS and assemble
         let totalBytes = 0;

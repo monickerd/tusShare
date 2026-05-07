@@ -563,31 +563,31 @@ async def list_effects(
     return {"effects": effects}
 
 
-async def _resolve_effect_fields(db, policy_id: str, target_id: str, body) -> tuple:
-    """Validate effect-type-specific payload; return (permission, recursive, escrow_override)."""
-    if body.effect_type == "team_member":
-        cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
-        if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
-        if not body.role_level:
-            raise HTTPException(status_code=400, detail="role_level is required for team_member effects")
-        cursor = await db.execute("SELECT 1 FROM roles WHERE id = ?", (body.role_level,))
-        if await cursor.fetchone() is None:
-            raise HTTPException(status_code=400, detail=f"Role not found: {body.role_level!r}")
-        return None, 1, None
+async def _validate_team_member_effect(db, target_id: str, body) -> tuple:
+    cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
+    if not body.role_level:
+        raise HTTPException(status_code=400, detail="role_level is required for team_member effects")
+    cursor = await db.execute("SELECT 1 FROM roles WHERE id = ?", (body.role_level,))
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=400, detail=f"Role not found: {body.role_level!r}")
+    return None, 1, None
 
-    if body.effect_type == "folder_acl":
-        cursor = await db.execute("SELECT 1 FROM folders WHERE id = ?", (target_id,))
-        if await cursor.fetchone() is None:
-            raise HTTPException(status_code=404, detail="Folder not found")
-        if not body.permission or body.permission not in ("read", "write", "admin"):
-            raise HTTPException(
-                status_code=400,
-                detail="permission must be 'read', 'write', or 'admin' for folder_acl effects",
-            )
-        return body.permission, (1 if body.recursive else 0), None
 
-    # team_escrow — per-team escrow override
+async def _validate_folder_acl_effect(db, target_id: str, body) -> tuple:
+    cursor = await db.execute("SELECT 1 FROM folders WHERE id = ?", (target_id,))
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+    if not body.permission or body.permission not in ("read", "write", "admin"):
+        raise HTTPException(
+            status_code=400,
+            detail="permission must be 'read', 'write', or 'admin' for folder_acl effects",
+        )
+    return body.permission, (1 if body.recursive else 0), None
+
+
+async def _validate_team_escrow_effect(db, policy_id: str, target_id: str, body) -> tuple:
     cursor = await db.execute(_SQL_TEAM_EXISTS, (target_id,))
     if await cursor.fetchone() is None:
         raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
@@ -607,6 +607,15 @@ async def _resolve_effect_fields(db, policy_id: str, target_id: str, body) -> tu
             detail="A team_escrow override already exists for this team on this policy",
         )
     return None, 1, body.escrow_override
+
+
+async def _resolve_effect_fields(db, policy_id: str, target_id: str, body) -> tuple:
+    """Validate effect-type-specific payload; return (permission, recursive, escrow_override)."""
+    if body.effect_type == "team_member":
+        return await _validate_team_member_effect(db, target_id, body)
+    if body.effect_type == "folder_acl":
+        return await _validate_folder_acl_effect(db, target_id, body)
+    return await _validate_team_escrow_effect(db, policy_id, target_id, body)
 
 
 # POST /admin/policies/{policy_id}/effects — create an effect

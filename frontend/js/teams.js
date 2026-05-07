@@ -490,6 +490,49 @@ const Teams = (() => {
         return folderRow;
     }
 
+    function _appendSupervisorButtons(membersSection, teamId, members, container, allowEphemeralInvites) {
+        membersSection.appendChild(Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Invite Member',
+            onClick: () => _openInviteMemberDialog(teamId, members, container),
+        }));
+        membersSection.appendChild(Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Create Invite Link',
+            disabled: !allowEphemeralInvites,
+            title: allowEphemeralInvites ? '' : 'Ephemeral invite links are disabled by an administrator',
+            onClick: allowEphemeralInvites ? () => _openCreateInviteLinkDialog(teamId) : null,
+        }));
+    }
+
+    function _appendOwnerActionsSection(container, team, teamId) {
+        const actionsSection = Utils.el('section', { className: 'team-section' });
+        actionsSection.appendChild(Utils.el('h3', { textContent: 'Key Management' }));
+        if (team.rotation_pending) {
+            actionsSection.appendChild(Utils.el('button', {
+                className: 'btn btn-primary',
+                textContent: 'Rotate Keys Now',
+                onClick: () => _triggerRotation(teamId, team, container),
+            }));
+        }
+        actionsSection.appendChild(Utils.el('hr'));
+        actionsSection.appendChild(Utils.el('button', {
+            className: 'btn btn-danger',
+            textContent: 'Delete Team',
+            onClick: async () => {
+                if (!confirm(`Delete team "${team.name}"? This cannot be undone.`)) return;
+                try {
+                    await Api.del(`${_api}/teams/${teamId}`);
+                    Utils.showToast('Team deleted', 'success');
+                    window.location.hash = '#/teams';
+                } catch (e) {
+                    Utils.showToast('Failed to delete team: ' + e.message, 'error');
+                }
+            },
+        }));
+        container.appendChild(actionsSection);
+    }
+
     /**
      * Render the Team detail page (members, folders, key management).
      */
@@ -553,19 +596,7 @@ const Teams = (() => {
         });
 
         if (isSupervisor) {
-            membersSection.appendChild(Utils.el('button', {
-                className: 'btn btn-secondary btn-sm',
-                textContent: 'Invite Member',
-                onClick: () => _openInviteMemberDialog(teamId, members, container),
-            }));
-            const inviteLinkBtn = Utils.el('button', {
-                className: 'btn btn-secondary btn-sm',
-                textContent: 'Create Invite Link',
-                disabled: !allowEphemeralInvites,
-                title: allowEphemeralInvites ? '' : 'Ephemeral invite links are disabled by an administrator',
-                onClick: allowEphemeralInvites ? () => _openCreateInviteLinkDialog(teamId) : null,
-            });
-            membersSection.appendChild(inviteLinkBtn);
+            _appendSupervisorButtons(membersSection, teamId, members, container, allowEphemeralInvites);
         }
         container.appendChild(membersSection);
 
@@ -581,33 +612,7 @@ const Teams = (() => {
 
         // ---- Owner actions ----
         if (isOwner) {
-            const actionsSection = Utils.el('section', { className: 'team-section' });
-            actionsSection.appendChild(Utils.el('h3', { textContent: 'Key Management' }));
-
-            if (team.rotation_pending) {
-                actionsSection.appendChild(Utils.el('button', {
-                    className: 'btn btn-primary',
-                    textContent: 'Rotate Keys Now',
-                    onClick: () => _triggerRotation(teamId, team, container),
-                }));
-            }
-
-            actionsSection.appendChild(Utils.el('hr'));
-            actionsSection.appendChild(Utils.el('button', {
-                className: 'btn btn-danger',
-                textContent: 'Delete Team',
-                onClick: async () => {
-                    if (!confirm(`Delete team "${team.name}"? This cannot be undone.`)) return;
-                    try {
-                        await Api.del(`${_api}/teams/${teamId}`);
-                        Utils.showToast('Team deleted', 'success');
-                        window.location.hash = '#/teams';
-                    } catch (e) {
-                        Utils.showToast('Failed to delete team: ' + e.message, 'error');
-                    }
-                },
-            }));
-            container.appendChild(actionsSection);
+            _appendOwnerActionsSection(container, team, teamId);
         }
 
         // ---- Custom Roles section (visible to team owners and global admins) ----
