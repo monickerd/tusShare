@@ -30,6 +30,11 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if any(path.startswith(prefix) for prefix in CSRF_EXEMPT_PREFIXES):
             return await call_next(request)
 
+        # Bearer token auth (service accounts, API keys) is CSRF-immune by design:
+        # browsers cannot set the Authorization header on cross-origin requests.
+        if request.headers.get("Authorization", "").startswith("Bearer "):
+            return await call_next(request)
+
         cookie_token = request.cookies.get(COOKIE_CSRF, "")
         header_token = request.headers.get("X-CSRF-Token", "")
 

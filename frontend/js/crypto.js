@@ -464,7 +464,9 @@ const Crypto = (() => {
             masterKey,
             _base64ToArrayBuf(mlkem768PrivWrappedB64)
         );
-        const mlkem768SecretKey = new Uint8Array(mlkem768RawBuf);
+        // .slice(0) copies the data to a new ArrayBuffer before zeroing the decryption buffer,
+        // preventing the zero-fill from clobbering the returned secret key via the shared buffer.
+        const mlkem768SecretKey = new Uint8Array(mlkem768RawBuf.slice(0));
         new Uint8Array(mlkem768RawBuf).fill(0);
 
         // Signal legacy IV format so the caller can silently re-upload with separate IVs (T1-L3).

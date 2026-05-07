@@ -1261,7 +1261,7 @@ const Admin = (() => {
         const flagInputs = {};
         const flagSections = _FLAG_CATEGORIES
             .filter(cat => flagsByCategory[cat.key])
-            .map(cat => {
+            .map((cat, catIdx) => {
                 const rows = (flagsByCategory[cat.key] || []).map(f => {
                     const permData = role.permissions?.[f.flag] || { value: '0', is_locked: false, locked_min_tier: null };
                     const isLocked  = permData.is_locked;
@@ -1302,8 +1302,23 @@ const Admin = (() => {
                         ]),
                     ]);
                 });
+                const lockHeaderCell = catIdx === 0
+                    ? Utils.el('div', { className: 'flag-lock-col-header' }, [
+                        Utils.el('span', { textContent: 'Lock' }),
+                        Utils.el('span', {
+                            className: 'flag-lock-help',
+                            textContent: '?',
+                            title: 'Locking stops these users from being able to further delegate management of this permission to lower-level admins.',
+                        }),
+                    ])
+                    : Utils.el('div', { className: 'flag-lock-cell' });
                 return Utils.el('div', { className: 'flag-category' }, [
-                    Utils.el('h5', { className: 'flag-category-label', textContent: cat.label }),
+                    Utils.el('div', { className: 'flag-row flag-category-row' }, [
+                        lockHeaderCell,
+                        Utils.el('div', { className: 'flag-content-cell' }, [
+                            Utils.el('h5', { className: 'flag-category-label', textContent: cat.label }),
+                        ]),
+                    ]),
                     ...rows,
                 ]);
             });
@@ -1348,17 +1363,6 @@ const Admin = (() => {
             ]),
             Utils.el('div', { className: 'role-flags' }, [
                 Utils.el('h4', { className: 'role-flags-title', textContent: 'Permission Flags' }),
-                Utils.el('div', { className: 'flag-columns-header' }, [
-                    Utils.el('div', { className: 'flag-lock-col-header' }, [
-                        Utils.el('span', { textContent: 'Lock' }),
-                        Utils.el('span', {
-                            className: 'flag-lock-help',
-                            textContent: '?',
-                            title: 'Locking stops these users from being able to further delegate management of this permission to lower-level admins.',
-                        }),
-                    ]),
-                    Utils.el('span', {}),
-                ]),
                 ...flagSections,
                 Utils.el('div', { className: 'role-flags-actions' }, [saveFlagsBtn]),
             ]),
@@ -1388,12 +1392,15 @@ const Admin = (() => {
                     });
                     flagInputs[f.flag] = chk;
                     return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') }, [
-                        Utils.el('label', { className: 'flag-label' }, [
-                            chk,
-                            Utils.el('span', { className: 'flag-name', textContent: f.flag }),
-                            f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
-                        ].filter(Boolean)),
-                        Utils.el('span', { className: 'flag-desc', textContent: f.description }),
+                        Utils.el('div', { className: 'flag-lock-cell' }),
+                        Utils.el('div', { className: 'flag-content-cell' }, [
+                            Utils.el('label', { className: 'flag-label' }, [
+                                chk,
+                                Utils.el('span', { className: 'flag-name', textContent: f.flag }),
+                                f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
+                            ].filter(Boolean)),
+                            Utils.el('span', { className: 'flag-desc', textContent: f.description }),
+                        ]),
                     ]);
                 });
                 return Utils.el('div', { className: 'flag-category' }, [

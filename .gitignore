@@ -53,3 +53,4 @@ TODO.txt
 testoutput.txt
 sonar*
 !sonar-project.properties
+bot/

@@ -1560,6 +1560,9 @@
     text-transform: uppercase;
     letter-spacing: 0.5px;
     color: var(--color-text-muted);
+}
+
+.flag-category > .flag-category-label {
     margin-bottom: var(--space-1);
     padding-bottom: var(--space-1);
     border-bottom: 1px solid var(--color-border);
@@ -1571,6 +1574,12 @@
     align-items: start;
     gap: var(--space-1) var(--space-3);
     padding: var(--space-1) 0;
+}
+
+.flag-category-row {
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-1);
+    padding-bottom: var(--space-1);
 }
 
 .flag-lock-cell {
@@ -1595,9 +1604,12 @@
 }
 
 .flag-lock-col-header {
-    position: relative;
     display: flex;
+    align-items: center;
     justify-content: center;
+    gap: 2px;
+    overflow: visible;
+    white-space: nowrap;
     font-size: var(--font-size-xs);
     font-weight: 600;
     color: var(--color-text-muted);
@@ -1606,9 +1618,7 @@
 }
 
 .flag-lock-help {
-    position: absolute;
-    top: -4px;
-    right: -4px;
+    flex-shrink: 0;
     font-size: 9px;
     line-height: 13px;
     width: 13px;

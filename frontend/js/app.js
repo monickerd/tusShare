@@ -473,6 +473,7 @@ const App = (() => {
     function _routeTeams(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
+        while (main.firstChild) main.firstChild.remove();
         const wrap = Utils.el('div', { className: 'page-content' });
         main.appendChild(wrap);
         Teams.renderTeamsPage(wrap);
@@ -481,6 +482,7 @@ const App = (() => {
     function _routeTeamDetail(container, teamId) {
         _renderShell(container);
         const main = document.getElementById('main-content');
+        while (main.firstChild) main.firstChild.remove();
         const wrap = Utils.el('div', { className: 'page-content' });
         main.appendChild(wrap);
         Teams.renderTeamDetailPage(wrap, teamId);
