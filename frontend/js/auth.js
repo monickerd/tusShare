@@ -246,7 +246,7 @@ const Auth = (() => {
                 `${Config.app.apiPrefix}/auth/oidc/${providerId}/begin`,
             );
             if (data.redirect_url) {
-                window.location.href = data.redirect_url;
+                globalThis.location.href = data.redirect_url;
             }
         } catch (err) {
             Utils.showToast(`Failed to start ${providerName} login: ${err.message}`, 'error');
@@ -327,16 +327,16 @@ const Auth = (() => {
     async function _finishIdpSession(data, container) {
         _currentUser = data.user;
         if (_currentUser.is_admin) {
-            window.location.hash = '#/admin';
+            globalThis.location.hash = '#/admin';
             return;
         }
         if (data.mfa_enrollment_required) {
-            window.location.hash = '#/mfa';
+            globalThis.location.hash = '#/mfa';
             return;
         }
         // IdP users have no personal encryption key (wrapped_master_key is null).
         // Navigate directly to files; personal file upload will be disabled client-side.
-        window.location.hash = '#/files';
+        globalThis.location.hash = '#/files';
     }
 
     // Called by app.js when ?mfa_pending=<token> is detected in the URL after OIDC callback.
@@ -374,7 +374,7 @@ const Auth = (() => {
             // Admin accounts have no encryption keys — go straight to the admin panel
             if (data.user.is_admin) {
                 status.textContent = '';
-                window.location.hash = '#/admin';
+                globalThis.location.hash = '#/admin';
                 return;
             }
 
@@ -412,14 +412,14 @@ const Auth = (() => {
 
             status.textContent = '';
             if (data.mfa_enrollment_required) {
-                window.location.hash = '#/mfa';
+                globalThis.location.hash = '#/mfa';
             } else {
                 const pendingJoin = sessionStorage.getItem('pendingJoinHash');
                 if (pendingJoin) {
                     sessionStorage.removeItem('pendingJoinHash');
-                    window.location.hash = pendingJoin;
+                    globalThis.location.hash = pendingJoin;
                 } else {
-                    window.location.hash = '#/files';
+                    globalThis.location.hash = '#/files';
                 }
             }
         } catch (err) {
@@ -519,11 +519,11 @@ const Auth = (() => {
             Teams.processPendingTeamOperations().catch(() => {});
             startIdentityWatch();
 
-            const currentHash = window.location.hash;
+            const currentHash = globalThis.location.hash;
             if (!currentHash || currentHash === '#/' || currentHash === '#/login') {
-                window.location.hash = '#/files';
+                globalThis.location.hash = '#/files';
             } else {
-                window.dispatchEvent(new HashChangeEvent('hashchange'));
+                globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
             }
         } catch (err) {
             if (status) status.textContent = err.message || 'Security key verification failed.';
@@ -576,11 +576,11 @@ const Auth = (() => {
             // After unlock, navigate to the current hash — but if the hash is #/login
             // (which is where the unlock prompt is rendered), redirect to #/files instead
             // so the user isn't sent back to the login form.
-            const currentHash = window.location.hash;
+            const currentHash = globalThis.location.hash;
             if (!currentHash || currentHash === '#/' || currentHash === '#/login') {
-                window.location.hash = '#/files';
+                globalThis.location.hash = '#/files';
             } else {
-                window.dispatchEvent(new HashChangeEvent('hashchange'));
+                globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
             }
         } catch (err) {
             _unlockFailures++;
@@ -668,7 +668,7 @@ const Auth = (() => {
             status.textContent = '';
             // Re-dispatch hashchange so the router navigates to whatever hash is
             // currently set — preserves deep links like #/files/<id> after a refresh.
-            window.dispatchEvent(new HashChangeEvent('hashchange'));
+            globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
         } catch (err) {
             status.textContent = 'Invalid recovery key. Please try again.';
             btn.disabled = false;
@@ -1312,13 +1312,13 @@ const Auth = (() => {
                 style: 'margin-top:8px',
                 textContent: 'I have saved my recovery key',
                 onClick: () => {
-                    const before = window.location.href;
-                    window.location.replace(destination);
+                    const before = globalThis.location.href;
+                    globalThis.location.replace(destination);
                     // If the URL didn't change (destination hash was already active),
                     // the browser won't fire hashchange — dispatch it manually so the
                     // router re-renders the target page (e.g. login after password reset).
-                    if (window.location.href === before) {
-                        window.dispatchEvent(new HashChangeEvent('hashchange'));
+                    if (globalThis.location.href === before) {
+                        globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
                     }
                 },
             }),
@@ -1480,7 +1480,7 @@ const Auth = (() => {
         _currentUser = meData.user;
 
         if (_currentUser.is_admin) {
-            window.location.hash = '#/admin';
+            globalThis.location.hash = '#/admin';
             return;
         }
 
@@ -1494,9 +1494,9 @@ const Auth = (() => {
             const pendingJoin = sessionStorage.getItem('pendingJoinHash');
             if (pendingJoin) {
                 sessionStorage.removeItem('pendingJoinHash');
-                window.location.hash = pendingJoin;
+                globalThis.location.hash = pendingJoin;
             } else {
-                window.location.hash = '#/files';
+                globalThis.location.hash = '#/files';
             }
             return;
         }
@@ -1522,9 +1522,9 @@ const Auth = (() => {
         const pendingJoin = sessionStorage.getItem('pendingJoinHash');
         if (pendingJoin) {
             sessionStorage.removeItem('pendingJoinHash');
-            window.location.hash = pendingJoin;
+            globalThis.location.hash = pendingJoin;
         } else {
-            window.location.hash = '#/files';
+            globalThis.location.hash = '#/files';
         }
     }
 
@@ -1630,7 +1630,7 @@ const Auth = (() => {
         ]));
 
         // Enroll WebAuthn
-        if (window.PublicKeyCredential) {
+        if (globalThis.PublicKeyCredential) {
             wrap.appendChild(Utils.el('details', { style: 'margin-bottom:12px' }, [
                 Utils.el('summary', { style: 'cursor:pointer;font-weight:600;padding:8px 0', textContent: '+ Add Security Key / Biometrics (WebAuthn)' }),
                 _buildWebAuthnEnrollForm(wrap),
@@ -1955,7 +1955,7 @@ const Auth = (() => {
         _masterKeyObj = null;
         sessionStorage.removeItem(Config.auth.sessionStorageKey);
         sessionStorage.removeItem(Config.publicDevice.sessionStorageKey);
-        window.location.hash = '#/login';
+        globalThis.location.hash = '#/login';
     }
 
     async function checkSession() {

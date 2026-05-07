@@ -52,13 +52,13 @@ const Shares = (() => {
     // -----------------------------------------------------------------------
 
     function _buildShareUrl(token, shareKeyB64url) {
-        return `${window.location.origin}/s/${token}#${shareKeyB64url}`;
+        return `${globalThis.location.origin}/s/${token}#${shareKeyB64url}`;
     }
 
     // Short links now redirect at root level: /LimaCharlieTango
     // The key is stored server-side — no fragment needed.
     function _buildShortLinkUrl(slug) {
-        return `${window.location.origin}/${slug}`;
+        return `${globalThis.location.origin}/${slug}`;
     }
 
     // -----------------------------------------------------------------------
@@ -964,7 +964,7 @@ const Shares = (() => {
 
         // Invite short links redirect straight to the registration page
         if (shareData.type === 'invite') {
-            window.location.replace(`/register/${shareData.token}`);
+            globalThis.location.replace(`/register/${shareData.token}`);
             return;
         }
 

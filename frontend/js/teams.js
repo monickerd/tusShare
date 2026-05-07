@@ -524,7 +524,7 @@ const Teams = (() => {
                 try {
                     await Api.del(`${_api}/teams/${teamId}`);
                     Utils.showToast('Team deleted', 'success');
-                    window.location.hash = '#/teams';
+                    globalThis.location.hash = '#/teams';
                 } catch (e) {
                     Utils.showToast('Failed to delete team: ' + e.message, 'error');
                 }
@@ -1098,7 +1098,7 @@ const Teams = (() => {
                 sk_iv:      _bytesToB64(iv),
             });
 
-            const link = `${window.location.origin}/#/join/${teamId}/${resp.slot_id}/${_bytesToB64url(kRaw)}`;
+            const link = `${globalThis.location.origin}/#/join/${teamId}/${resp.slot_id}/${_bytesToB64url(kRaw)}`;
 
             statusEl.remove();
             const linkInput = Utils.el('input', {
@@ -1926,8 +1926,8 @@ const Teams = (() => {
 
         // Require authentication — save intent and redirect to login if not signed in
         if (!Auth.getCurrentUser()) {
-            sessionStorage.setItem('pendingJoinHash', window.location.hash);
-            window.location.hash = '#/login';
+            sessionStorage.setItem('pendingJoinHash', globalThis.location.hash);
+            globalThis.location.hash = '#/login';
             return;
         }
 
@@ -1966,7 +1966,7 @@ const Teams = (() => {
 
             statusEl.textContent = 'Joined! Redirecting…';
             Utils.showToast('You have joined the team.', 'success');
-            window.location.hash = `#/teams/${teamId}`;
+            globalThis.location.hash = `#/teams/${teamId}`;
         } catch (err) {
             statusEl.textContent = '';
             container.appendChild(Utils.el('div', {

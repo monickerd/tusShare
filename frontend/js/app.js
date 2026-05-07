@@ -70,7 +70,7 @@ const App = (() => {
     async function _handleOidcCallbacks(qs) {
         if (qs.has('oidc_error')) {
             history.replaceState(null, '', '/');
-            window.location.hash = '#/login';
+            globalThis.location.hash = '#/login';
             await _routeLogin(_appEl());
             Utils.showToast('Sign-in via identity provider failed. Please try again.', 'error');
             return true;
@@ -78,7 +78,7 @@ const App = (() => {
         if (qs.has('mfa_challenge')) {
             const challengeId = qs.get('mfa_challenge');
             history.replaceState(null, '', '/');
-            window.location.hash = '#/login';
+            globalThis.location.hash = '#/login';
             try {
                 const challengeData = await Api.get(
                     `${Config.app.apiPrefix}/auth/mfa/challenge/${encodeURIComponent(challengeId)}`,
@@ -102,7 +102,7 @@ const App = (() => {
         if (!Auth.getMasterKeyObj() && !Auth.getCurrentUser()?.is_admin) {
             const user = Auth.getCurrentUser();
             if (user?.is_public_device) {
-                window.location.hash = '#/login';
+                globalThis.location.hash = '#/login';
                 await _routeLogin(_appEl());
                 return true;
             }
@@ -113,7 +113,7 @@ const App = (() => {
             try {
                 const mfaStatus = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
                 if (mfaStatus.enforcement === 'required' && mfaStatus.active_count === 0) {
-                    window.location.hash = '#/mfa';
+                    globalThis.location.hash = '#/mfa';
                     _onHashChange();
                     return true;
                 }
@@ -132,34 +132,34 @@ const App = (() => {
         _applyThemeFlags();
         Upload.fetchAndSetChunkSize();
 
-        const _qs = new URLSearchParams(window.location.search);
+        const _qs = new URLSearchParams(globalThis.location.search);
         if (await _handleOidcCallbacks(_qs)) return;
 
         // Path-based public routes — handled before auth check so unauthenticated
         // users land on the correct page rather than being bounced to login.
-        const path = window.location.pathname;
+        const path = globalThis.location.pathname;
         if (path.startsWith('/register/')) {
             Auth.renderRegisterPage(_appEl(), path.slice('/register/'.length));
             return;
         }
         if (path.startsWith('/s/')) {
-            Shares.renderPublicSharePage(_appEl(), path.slice(3), window.location.hash.slice(1));
+            Shares.renderPublicSharePage(_appEl(), path.slice(3), globalThis.location.hash.slice(1));
             return;
         }
         if (path.startsWith('/l/')) {
-            Shares.renderShortLinkPage(_appEl(), path.slice(3), window.location.hash.slice(1));
+            Shares.renderShortLinkPage(_appEl(), path.slice(3), globalThis.location.hash.slice(1));
             return;
         }
 
-        window.addEventListener('hashchange', _onHashChange);
+        globalThis.addEventListener('hashchange', _onHashChange);
 
         const hasSession = await Auth.checkSession();
         if (!hasSession) {
-            const h = window.location.hash;
+            const h = globalThis.location.hash;
             if (h?.startsWith('#/join/')) {
                 sessionStorage.setItem('pendingJoinHash', h);
             }
-            window.location.hash = '#/login';
+            globalThis.location.hash = '#/login';
             await _routeLogin(_appEl());
             return;
         }
@@ -169,8 +169,8 @@ const App = (() => {
         Auth.startIdentityWatch();
 
         const defaultHash = Auth.getCurrentUser()?.is_admin ? '#/admin' : '#/files';
-        if (!window.location.hash || window.location.hash === '#/') {
-            window.location.hash = defaultHash;
+        if (!globalThis.location.hash || globalThis.location.hash === '#/') {
+            globalThis.location.hash = defaultHash;
         } else {
             _onHashChange();
         }
@@ -180,7 +180,7 @@ const App = (() => {
         if (!Auth.getMasterKeyObj()) {
             if (Auth.getCurrentUser()?.is_admin) {
                 if (hash !== '#/admin' && hash !== '#/setup') {
-                    window.location.hash = '#/admin';
+                    globalThis.location.hash = '#/admin';
                     return true;
                 }
             } else {
@@ -192,7 +192,7 @@ const App = (() => {
     }
 
     function _onHashChange() {
-        const hash = window.location.hash || '#/login';
+        const hash = globalThis.location.hash || '#/login';
         const container = _appEl();
 
         Files.stopLive();
@@ -214,7 +214,7 @@ const App = (() => {
         }
 
         if (!Auth.getCurrentUser()) {
-            window.location.hash = '#/login';
+            globalThis.location.hash = '#/login';
             return;
         }
 
@@ -230,7 +230,7 @@ const App = (() => {
             }
         }
 
-        window.location.hash = '#/files';
+        globalThis.location.hash = '#/files';
     }
 
     async function _routeLogin(container) {
@@ -315,7 +315,7 @@ const App = (() => {
     async function _routeAdmin(container) {
         const user = Auth.getCurrentUser();
         if (!user?.is_admin) {
-            window.location.hash = '#/files';
+            globalThis.location.hash = '#/files';
             return;
         }
         // Check first-run flag before rendering admin panel.
@@ -323,7 +323,7 @@ const App = (() => {
         try {
             const { settings } = await Api.get(`${Config.app.apiPrefix}/admin/settings`);
             if (settings?.first_run_completed !== '1') {
-                window.location.hash = '#/setup';
+                globalThis.location.hash = '#/setup';
                 return;
             }
         } catch { /* fall through */ }
@@ -334,7 +334,7 @@ const App = (() => {
     function _routeSetup(container) {
         const user = Auth.getCurrentUser();
         if (!user?.is_admin) {
-            window.location.hash = '#/login';
+            globalThis.location.hash = '#/login';
             return;
         }
         _renderShell(container);

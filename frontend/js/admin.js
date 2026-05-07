@@ -780,7 +780,7 @@ const Admin = (() => {
             return;
         }
 
-        const inviteUrl = `${window.location.origin}/register/${data.token}`;
+        const inviteUrl = `${globalThis.location.origin}/register/${data.token}`;
 
         // Short-link row — hidden until the "Short Link" button is clicked
         const shortLinkInput = Utils.el('input', {
@@ -814,7 +814,7 @@ const Admin = (() => {
                         `${_api()}/admin/invites/${data.id}/short-link`,
                         { token: data.token, expires_at: data.expires_at },
                     );
-                    shortLinkInput.value = `${window.location.origin}/${sl.slug}`;
+                    shortLinkInput.value = `${globalThis.location.origin}/${sl.slug}`;
                     shortLinkRow.style.display = '';
                     shortLinkBtn.style.display = 'none';
                 } catch (err) {
@@ -2426,7 +2426,7 @@ const Admin = (() => {
             ]),
             Utils.el('div', { className: 'form-group' }, [
                 Utils.el('label', { textContent: 'Redirect URI' }),
-                Utils.el('input', { type: 'url', id: 'oidc-redirect-uri', value: cfg.redirect_uri || (window.location.origin + '/api/v1/auth/oidc/callback') }),
+                Utils.el('input', { type: 'url', id: 'oidc-redirect-uri', value: cfg.redirect_uri || (globalThis.location.origin + '/api/v1/auth/oidc/callback') }),
             ]),
             Utils.el('div', { className: 'form-group' }, [
                 Utils.el('label', { textContent: 'Username Attribute' }),
@@ -2699,7 +2699,7 @@ const Admin = (() => {
         };
 
         exportBtn.onclick = () => {
-            window.location = `${_api()}/admin/audit/logs/export?${_buildQs(200)}`;
+            globalThis.location = `${_api()}/admin/audit/logs/export?${_buildQs(200)}`;
         };
 
         // Auto-refresh: polls the pull API at the selected interval.
@@ -4192,7 +4192,7 @@ const Admin = (() => {
             const grantBtn = Utils.el('button', {
                 className: 'btn btn-secondary btn-xs',
                 textContent: 'View team',
-                onClick: () => window.location.hash = `#/teams/${t.team_id}`,
+                onClick: () => globalThis.location.hash = `#/teams/${t.team_id}`,
             });
             const td = Utils.el('td');
             td.appendChild(grantBtn);

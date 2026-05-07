@@ -2,11 +2,11 @@
 // Runs before any app code. Server-side X-Frame-Options: DENY and
 // CSP frame-ancestors 'none' are the primary controls; this is a
 // defence-in-depth fallback for legacy browsers or cached responses.
-if (window !== window.top) {
+if (globalThis !== globalThis.top) {
     try {
-        const _target = window.location.pathname;
+        const _target = globalThis.location.pathname;
         if (_target.startsWith('/') && !_target.startsWith('//')) {
-            window.top.location.replace(_target);
+            globalThis.top.location.replace(_target);
         }
     } catch (_) { document.documentElement.innerHTML = ''; }
 }

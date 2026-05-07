@@ -16,7 +16,7 @@ const Api = (() => {
         try { data = await resp.json(); } catch { data = null; }
 
         if (data?.detail?.error === 'mfa_enrollment_required') {
-            window.location.hash = '#/mfa';
+            globalThis.location.hash = '#/mfa';
             const err = new Error('MFA enrollment required');
             err.status = 403;
             err.mfaEnrollmentRequired = true;
@@ -78,7 +78,7 @@ const Api = (() => {
                 return _handleResponse(retry);
             }
             sessionStorage.removeItem(Config.auth.sessionStorageKey);
-            window.location.hash = '#/login';
+            globalThis.location.hash = '#/login';
             throw new Error('Session expired');
         }
 
