@@ -195,33 +195,191 @@ async def get_user(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    """Get a single user's details including roles."""
+    """Get a single user's details including roles, permissions, teams, and recent audit."""
     user_id = validate_uuid(user_id)
     cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
-    # Load roles
+    # Global role assignments
     role_cursor = await db.execute(
-        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type IS NULL",
+        "SELECT ur.role_id, r.name AS role_name, r.is_system "
+        "FROM user_roles ur JOIN roles r ON r.id = ur.role_id "
+        "WHERE ur.user_id = ? AND ur.scope_type IS NULL",
         (user_id,),
     )
-    roles = [r["role_id"] for r in await role_cursor.fetchall()]
+    role_rows = await role_cursor.fetchall()
+    roles = [{"id": r["role_id"], "name": r["role_name"], "is_system": bool(r["is_system"])} for r in role_rows]
 
-    user_dict = {
-        "id":              row["id"],
-        "username":        row["username"],
-        "is_admin":        bool(row["is_admin"]),
-        "is_active":       bool(row["is_active"]),
-        "max_file_size":   row["max_file_size"],
-        "disk_quota":      row["disk_quota"],
-        "bandwidth_limit": row["bandwidth_limit"],
-        "disk_used":       row["disk_used"],
-        "created_at":      str(row["created_at"]) if row["created_at"] else None,
+    # Effective permissions: OR across all global roles
+    perm_cursor = await db.execute(
+        "SELECT rp.flag, MAX(CASE WHEN rp.value = '1' THEN 1 ELSE 0 END) AS granted "
+        "FROM user_roles ur "
+        "JOIN role_permissions rp ON rp.role_id = ur.role_id "
+        "WHERE ur.user_id = ? AND ur.scope_type IS NULL "
+        "GROUP BY rp.flag",
+        (user_id,),
+    )
+    perm_rows = await perm_cursor.fetchall()
+    permissions = {r["flag"]: bool(r["granted"]) for r in perm_rows}
+
+    # Team memberships
+    team_cursor = await db.execute(
+        "SELECT t.id AS team_id, t.name AS team_name, tr.id AS team_role_id, tr.name AS team_role_name "
+        "FROM team_role_assignments tra "
+        "JOIN teams t ON t.id = tra.team_id "
+        "LEFT JOIN team_roles tr ON tr.id = tra.team_role_id "
+        "WHERE tra.user_id = ? "
+        "ORDER BY t.name",
+        (user_id,),
+    )
+    team_rows = await team_cursor.fetchall()
+    teams = [
+        {
+            "team_id":        r["team_id"],
+            "team_name":      r["team_name"],
+            "team_role_id":   r["team_role_id"],
+            "team_role_name": r["team_role_name"],
+        }
+        for r in team_rows
+    ]
+
+    # Last login timestamp from refresh_tokens
+    lt_cursor = await db.execute(
+        "SELECT MAX(created_at) AS last_login_at FROM refresh_tokens WHERE user_id = ?",
+        (user_id,),
+    )
+    lt_row = await lt_cursor.fetchone()
+    last_login_at = str(lt_row["last_login_at"]) if lt_row and lt_row["last_login_at"] else None
+
+    # Last login IP from most recent security event with an IP for this user
+    ip_cursor = await db.execute(
+        "SELECT ip_address FROM security_events "
+        "WHERE user_id = ? AND ip_address IS NOT NULL "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (user_id,),
+    )
+    ip_row = await ip_cursor.fetchone()
+    last_login_ip = ip_row["ip_address"] if ip_row else None
+
+    # Last 10 audit entries for this user
+    audit_cursor = await db.execute(
+        "SELECT event_type, severity, outcome, ip_address, timestamp "
+        "FROM security_events WHERE user_id = ? ORDER BY timestamp DESC LIMIT 10",
+        (user_id,),
+    )
+    audit_rows = await audit_cursor.fetchall()
+    recent_audit = [
+        {
+            "event_type": r["event_type"],
+            "severity":   r["severity"],
+            "outcome":    r["outcome"],
+            "ip_address": r["ip_address"],
+            "timestamp":  str(r["timestamp"]) if r["timestamp"] else None,
+        }
+        for r in audit_rows
+    ]
+
+    return {
+        "user": {
+            "id":              row["id"],
+            "username":        row["username"],
+            "auth_method":     row["auth_method"],
+            "is_admin":        bool(row["is_admin"]),
+            "is_active":       bool(row["is_active"]),
+            "max_file_size":   row["max_file_size"],
+            "disk_quota":      row["disk_quota"],
+            "bandwidth_limit": row["bandwidth_limit"],
+            "disk_used":       row["disk_used"],
+            "created_at":      str(row["created_at"]) if row["created_at"] else None,
+            "last_login_at":   last_login_at,
+            "last_login_ip":   last_login_ip,
+            "roles":           roles,
+            "permissions":     permissions,
+            "teams":           teams,
+            "recent_audit":    recent_audit,
+        }
     }
-    user_dict["roles"] = sorted(roles)
-    return {"user": user_dict}
+
+
+@router.post("/{user_id}/lock", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def lock_user(
+    request: Request,
+    user_id: str,
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Deactivate a user account (lock). Revokes all sessions and shares."""
+    if not admin.has_flag(FLAG_MANAGE_USERS):
+        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
+    user_id = validate_uuid(user_id)
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="Cannot lock your own account")
+    result = await db.execute(
+        "UPDATE users SET is_active = 0, updated_at = NOW() WHERE id = ?", (user_id,)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
+    await _handle_activation_change(db, user_id, False, admin, request)
+    return {"message": "User locked"}
+
+
+@router.post("/{user_id}/unlock", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def unlock_user(
+    request: Request,
+    user_id: str,
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Reactivate a previously locked user account."""
+    if not admin.has_flag(FLAG_MANAGE_USERS):
+        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
+    user_id = validate_uuid(user_id)
+    result = await db.execute(
+        "UPDATE users SET is_active = 1, updated_at = NOW() WHERE id = ?", (user_id,)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
+    await db.commit()
+    await _handle_activation_change(db, user_id, True, admin, request)
+    return {"message": "User unlocked"}
+
+
+@router.post("/{user_id}/reset-password", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def reset_user_password(
+    request: Request,
+    user_id: str,
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Force a user to re-authenticate by revoking all active sessions.
+
+    OPAQUE does not support admin-set passwords. To change a user's password
+    they must use the recovery-key flow or be re-invited via POST /admin/invites.
+    This endpoint revokes all refresh tokens (forcing logout everywhere) and
+    emits an audit event. Share an invite link via the invites API for full reset.
+    """
+    if not admin.has_flag(FLAG_MANAGE_USERS):
+        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
+    user_id = validate_uuid(user_id)
+    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    target = await cursor.fetchone()
+    if target is None:
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
+    await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+    await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.user.sessions_revoked",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+        target=EventTarget(type="user", id=user_id, name=target["username"]),
+        detail={"reason": "admin_password_reset"},
+    ))
+    return {
+        "message": "All sessions revoked. To complete a password reset, share a new invite link with the user via POST /api/v1/admin/invites.",
+    }
 
 
 async def _handle_activation_change(db, user_id: str, is_active, admin: AuthenticatedUser, request: Request) -> None:

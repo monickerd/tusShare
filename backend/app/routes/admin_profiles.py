@@ -530,7 +530,9 @@ async def apply_profile(
     # Determine whether step-up must be enforced.
     # During first-run setup the admin has just bootstrapped and has no active
     # session key to complete OPAQUE step-up, so we skip it.
-    is_wizard_call = (await get_admin_setting(db, "first_run_completed")) is None
+    # first_run_completed is pre-seeded as '0' by schema.sql, so treat both
+    # NULL and '0' as "wizard not yet finished" to bypass step-up.
+    is_wizard_call = (await get_admin_setting(db, "first_run_completed")) not in ("1",)
 
     if not is_wizard_call and sensitive_config.is_sensitive(_STEPUP_ACTION):
         token = request.headers.get("X-Step-Up-Token", "")
@@ -609,8 +611,8 @@ async def apply_profile(
 @router.post("/settings/import", responses={400: {"description": "Bad Request"}})
 async def import_profile(
     body: ImportProfileRequest,
+    request: Request,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
-    _: Annotated[None, Depends(require_step_up(_STEPUP_ACTION))],
     db: Annotated[Database, Depends(get_db)],
 ):
     """Import a profile JSON.
@@ -618,8 +620,33 @@ async def import_profile(
     Without confirm=True: validates structure and returns a diff preview.
     With confirm=True and (for replace mode) confirmation_text='REPLACE':
       applies the profile atomically and emits a SIEM event.
+
+    Step-up is bypassed during the first-run wizard (same logic as apply_profile).
     """
     _require_server_admin(admin)
+
+    is_wizard_call = (await get_admin_setting(db, "first_run_completed")) not in ("1",)
+    if not is_wizard_call and sensitive_config.is_sensitive(_STEPUP_ACTION):
+        token = request.headers.get("X-Step-Up-Token", "")
+        if not token:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "step_up_required",
+                    "action": _STEPUP_ACTION,
+                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+                },
+            )
+        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION,
+                                    session_id=admin.session_id):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "step_up_invalid",
+                    "action": _STEPUP_ACTION,
+                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+                },
+            )
 
     if body.mode not in ("replace", "merge"):
         raise HTTPException(status_code=400, detail="mode must be 'replace' or 'merge'")
@@ -665,3 +692,500 @@ async def import_profile(
     ))
 
     return {"message": "Profile imported", "mode": body.mode}
+
+
+# ---------------------------------------------------------------------------
+# Full export / import (multi-category)
+# ---------------------------------------------------------------------------
+
+# Admin settings keys that are safe to export (credentials excluded)
+_FULL_EXPORT_SETTING_KEYS = [
+    "open_registration", "global_max_file_size", "global_bandwidth_limit",
+    "disk_warning_threshold", "default_chunk_size",
+    "mfa_enforcement", "mfa_allowed_methods", "mfa_oidc_exempt",
+    "notify_escrow_on_revocation", "escrow_require_coverage",
+    "allow_user_delete_own_account", "can_delete_owned_shared",
+    "allow_multi_team_owner", "copy_boundary",
+    "audit_retention_days", "regex_match_timeout_ms",
+    "av_scan_endpoint", "av_require_clean", "av_scan_retry_attempts",
+    "trash_enabled", "trash_retention_days",
+]
+
+_ALL_CATEGORIES = frozenset([
+    "security_profile", "roles", "admin_settings", "policies",
+    "policy_fields", "siem", "notifications", "storage",
+])
+
+
+class FullImportRequest(BaseModel):
+    data:       dict
+    categories: list[str] = []
+    mode:       str = "replace"
+
+
+async def _full_read(db, categories: set) -> dict:
+    out: dict = {}
+    warnings: list[str] = []
+
+    if "security_profile" in categories:
+        out["security_profile"] = await _read_current(db)
+
+    if "roles" in categories:
+        cursor = await db.execute(
+            "SELECT id, name, description, is_system FROM roles ORDER BY is_system DESC, id"
+        )
+        roles = []
+        for rr in await cursor.fetchall():
+            cursor2 = await db.execute(
+                "SELECT flag, value, is_locked, locked_min_tier "
+                "FROM role_permissions WHERE role_id = ?",
+                (rr["id"],),
+            )
+            perms = {
+                r["flag"]: {
+                    "value": r["value"],
+                    "is_locked": bool(r["is_locked"]),
+                    "locked_min_tier": r["locked_min_tier"],
+                }
+                for r in await cursor2.fetchall()
+            }
+            roles.append({
+                "id": rr["id"],
+                "name": rr["name"],
+                "description": rr["description"] or "",
+                "is_system": bool(rr["is_system"]),
+                "permissions": perms,
+            })
+        out["roles"] = roles
+
+    if "admin_settings" in categories:
+        placeholders = ",".join("?" * len(_FULL_EXPORT_SETTING_KEYS))
+        cursor = await db.execute(
+            f"SELECT key, value FROM admin_settings WHERE key IN ({placeholders})",
+            _FULL_EXPORT_SETTING_KEYS,
+        )
+        out["admin_settings"] = {r["key"]: r["value"] for r in await cursor.fetchall()}
+
+    if "policies" in categories:
+        cursor = await db.execute(
+            "SELECT id, name, scope_type, escrow_enabled "
+            "FROM policies WHERE scope_type = 'org' ORDER BY name"
+        )
+        policies = []
+        for pr in await cursor.fetchall():
+            cursor2 = await db.execute(
+                "SELECT field, operator, value, block_on_missing_attribute "
+                "FROM policy_conditions WHERE policy_id = ? ORDER BY field",
+                (pr["id"],),
+            )
+            conditions = [
+                {
+                    "field": c["field"],
+                    "operator": c["operator"],
+                    "value": c["value"],
+                    "block_on_missing_attribute": bool(c["block_on_missing_attribute"]),
+                }
+                for c in await cursor2.fetchall()
+            ]
+            policies.append({
+                "name": pr["name"],
+                "escrow_enabled": pr["escrow_enabled"],
+                "conditions": conditions,
+            })
+        out["policies"] = policies
+        warnings.append(
+            "NOTE: policy effects (team membership, folder ACL, escrow overrides) "
+            "are NOT exported because they reference instance-specific user/team IDs."
+        )
+
+    if "policy_fields" in categories:
+        cursor = await db.execute(
+            "SELECT name, display_label, source "
+            "FROM policy_field_definitions WHERE source != 'internal' ORDER BY name"
+        )
+        out["policy_fields"] = [
+            {"name": r["name"], "display_label": r["display_label"], "source": r["source"]}
+            for r in await cursor.fetchall()
+        ]
+
+    if "siem" in categories:
+        cursor = await db.execute(
+            "SELECT id, name, type, is_active, host, port, protocol, "
+            "syslog_format, facility, url, batch_size, filter_profile "
+            "FROM siem_destinations ORDER BY created_at ASC"
+        )
+        out["siem"] = [dict(r) for r in await cursor.fetchall()]
+        if out["siem"]:
+            warnings.append(
+                "SIEM destination signing secrets (secret_enc) are NOT exported. "
+                "Re-configure shared secrets after import."
+            )
+
+    if "notifications" in categories:
+        cursor = await db.execute(
+            "SELECT id, name, endpoint_url, event_filter, batch_size, batch_interval_s, enabled "
+            "FROM notification_channels ORDER BY created_at ASC"
+        )
+        out["notifications"] = [dict(r) for r in await cursor.fetchall()]
+        if out["notifications"]:
+            warnings.append(
+                "Notification channel signing secrets are NOT exported. "
+                "Re-configure shared secrets after import."
+            )
+
+    if "storage" in categories:
+        cursor = await db.execute(
+            "SELECT id, name, provider, tier, is_default, priority "
+            "FROM storage_volumes ORDER BY priority ASC, name ASC"
+        )
+        out["storage"] = [dict(r) for r in await cursor.fetchall()]
+        if out["storage"]:
+            warnings.append(
+                "Storage volume credentials (access keys, secrets) are NOT exported. "
+                "Re-configure provider credentials after import. Storage volumes are "
+                "always merged on import — existing volumes with files are never deleted."
+            )
+
+    return out, warnings
+
+
+@router.get("/settings/full-export")
+async def full_export_settings(
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    _: Annotated[None, Depends(require_step_up(_STEPUP_ACTION))],
+    db: Annotated[Database, Depends(get_db)],
+    categories: str = "security_profile,roles,admin_settings,policies,policy_fields,siem,notifications,storage",
+):
+    """Export multiple configuration categories as a single JSON file."""
+    _require_server_admin(admin)
+
+    requested = {c.strip() for c in categories.split(",") if c.strip()}
+    unknown = requested - _ALL_CATEGORIES
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown export categories: {sorted(unknown)}. "
+                   f"Valid: {sorted(_ALL_CATEGORIES)}",
+        )
+
+    data, warnings = await _full_read(db, requested)
+
+    from app.config import settings as _app_settings
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    export = {
+        "_warnings": warnings,
+        "_meta": {
+            "format_version":            "2",
+            "exported_at":               now_str,
+            "exported_by_tier":          admin_best_tier(admin.roles),
+            "categories":                sorted(requested),
+            "exported_from_app_version": getattr(_app_settings, "APP_VERSION", "unknown"),
+        },
+        **data,
+    }
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.settings.full_exported",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=admin.id),
+        detail={"categories": sorted(requested), "tier": admin_best_tier(admin.roles)},
+    ))
+
+    return Response(
+        content=_json.dumps(export, indent=2, default=str),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="filexfer-export-{date_str}.json"',
+        },
+    )
+
+
+@router.post("/settings/full-import")
+async def full_import_settings(
+    body: FullImportRequest,
+    request: Request,
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Import one or more configuration categories from a full-export JSON."""
+    _require_server_admin(admin)
+
+    # Step-up always required for full import (no wizard bypass)
+    if sensitive_config.is_sensitive(_STEPUP_ACTION):
+        token = request.headers.get("X-Step-Up-Token", "")
+        if not token:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "step_up_required",
+                    "action": _STEPUP_ACTION,
+                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+                },
+            )
+        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION,
+                                    session_id=admin.session_id):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "step_up_invalid",
+                    "action": _STEPUP_ACTION,
+                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+                },
+            )
+
+    if body.mode not in ("replace", "merge"):
+        raise HTTPException(status_code=400, detail="mode must be 'replace' or 'merge'")
+
+    requested = set(body.categories)
+    unknown = requested - _ALL_CATEGORIES
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown import categories: {sorted(unknown)}",
+        )
+
+    admin_id = admin.id
+    tier = admin_best_tier(admin.roles)
+    data = body.data
+    replace = body.mode == "replace"
+    items_applied: dict[str, int] = {}
+
+    if "security_profile" in requested and "security_profile" in data:
+        sp = data["security_profile"]
+        _validate_profile_structure(sp)
+        if replace:
+            await _apply_replace(db, sp, admin_id, tier)
+        else:
+            await _apply_merge(db, sp, {}, admin_id, tier)
+        items_applied["security_profile"] = (
+            len(sp.get("admin_settings", {}))
+            + sum(len(v) for v in sp.get("role_flag_overrides", {}).values())
+            + len(sp.get("sharing_rules", []))
+        )
+
+    if "roles" in requested and "roles" in data:
+        from app.validation.sanitizers import validate_uuid as _vuuid
+        roles_list = data["roles"]
+        if not isinstance(roles_list, list):
+            raise HTTPException(status_code=400, detail="data.roles must be a list")
+        count = 0
+        if replace:
+            # Delete non-system custom roles not present in the export
+            export_ids = {r["id"] for r in roles_list if isinstance(r, dict) and "id" in r}
+            cursor = await db.execute(
+                "SELECT id FROM roles WHERE is_system = 0 AND id NOT IN "
+                f"({','.join('?' * len(export_ids)) if export_ids else 'NULL'})",
+                list(export_ids) if export_ids else [],
+            )
+            for row in await cursor.fetchall():
+                await db.execute("DELETE FROM roles WHERE id = ?", (row["id"],))
+        for role in roles_list:
+            if not isinstance(role, dict) or "id" not in role or "name" not in role:
+                continue
+            rid = role["id"]
+            # Upsert role metadata
+            await db.execute(
+                "INSERT INTO roles (id, name, description, is_system) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET name = excluded.name, "
+                "description = excluded.description",
+                (rid, role["name"], role.get("description", ""), 1 if role.get("is_system") else 0),
+            )
+            # Upsert permissions
+            for flag, fu in (role.get("permissions") or {}).items():
+                if not isinstance(fu, dict) or "value" not in fu:
+                    continue
+                await db.execute(
+                    "INSERT INTO role_permissions (role_id, flag, value, is_locked, locked_min_tier) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT (role_id, flag) DO UPDATE SET "
+                    "value = excluded.value, is_locked = excluded.is_locked, "
+                    "locked_min_tier = excluded.locked_min_tier",
+                    (rid, flag, fu["value"], bool(fu.get("is_locked", False)),
+                     fu.get("locked_min_tier")),
+                )
+            count += 1
+        items_applied["roles"] = count
+
+    if "admin_settings" in requested and "admin_settings" in data:
+        from app.routes.admin import _SETTINGS_VALIDATORS
+        settings_dict = data["admin_settings"]
+        if not isinstance(settings_dict, dict):
+            raise HTTPException(status_code=400, detail="data.admin_settings must be a dict")
+        count = 0
+        for key, value in settings_dict.items():
+            if key not in _SETTINGS_VALIDATORS:
+                continue  # skip unknown; don't error on full import
+            if not _SETTINGS_VALIDATORS[key](str(value)):
+                continue
+            await db.execute(
+                "INSERT INTO admin_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (key, str(value)),
+            )
+            count += 1
+        items_applied["admin_settings"] = count
+
+    if "policies" in requested and "policies" in data:
+        policies_list = data["policies"]
+        if not isinstance(policies_list, list):
+            raise HTTPException(status_code=400, detail="data.policies must be a list")
+        if replace:
+            # Remove org-scoped policies that have no effects (safe to wipe)
+            # For safety, only delete policies with no conditions/effects
+            await db.execute(
+                "DELETE FROM policies WHERE scope_type = 'org' AND id NOT IN "
+                "(SELECT DISTINCT policy_id FROM policy_effects)"
+            )
+        count = 0
+        for pol in policies_list:
+            if not isinstance(pol, dict) or "name" not in pol:
+                continue
+            pol_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO policies (id, name, scope_type, escrow_enabled, created_by) "
+                "VALUES (?, ?, 'org', ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (pol_id, pol["name"],
+                 pol.get("escrow_enabled"),
+                 admin_id),
+            )
+            # Fetch actual id (may differ if ON CONFLICT skipped insert)
+            cursor = await db.execute(
+                "SELECT id FROM policies WHERE name = ? AND scope_type = 'org'",
+                (pol["name"],),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                continue
+            actual_id = row["id"]
+            # Upsert conditions
+            for cond in (pol.get("conditions") or []):
+                if not isinstance(cond, dict) or "field" not in cond:
+                    continue
+                await db.execute(
+                    "INSERT INTO policy_conditions "
+                    "(id, policy_id, field, operator, value, block_on_missing_attribute) "
+                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                    (str(uuid.uuid4()), actual_id,
+                     cond["field"], cond.get("operator", "="),
+                     cond.get("value"), 1 if cond.get("block_on_missing_attribute", True) else 0),
+                )
+            count += 1
+        items_applied["policies"] = count
+
+    if "policy_fields" in requested and "policy_fields" in data:
+        fields_list = data["policy_fields"]
+        if not isinstance(fields_list, list):
+            raise HTTPException(status_code=400, detail="data.policy_fields must be a list")
+        count = 0
+        for f in fields_list:
+            if not isinstance(f, dict) or "name" not in f or "source" not in f:
+                continue
+            if f["source"] == "internal":
+                continue  # never overwrite internal fields
+            await db.execute(
+                "INSERT INTO policy_field_definitions (name, display_label, source) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT (name) DO UPDATE SET display_label = excluded.display_label, "
+                "source = excluded.source",
+                (f["name"], f.get("display_label", f["name"]), f["source"]),
+            )
+            count += 1
+        items_applied["policy_fields"] = count
+
+    if "siem" in requested and "siem" in data:
+        siem_list = data["siem"]
+        if not isinstance(siem_list, list):
+            raise HTTPException(status_code=400, detail="data.siem must be a list")
+        if replace:
+            await db.execute("DELETE FROM siem_destinations")
+        count = 0
+        for dest in siem_list:
+            if not isinstance(dest, dict) or "name" not in dest or "type" not in dest:
+                continue
+            dest_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO siem_destinations "
+                "(id, name, type, is_active, host, port, protocol, syslog_format, "
+                "facility, url, secret_enc, batch_size, filter_profile) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (
+                    dest_id, dest["name"], dest["type"],
+                    1 if dest.get("is_active", True) else 0,
+                    dest.get("host"), dest.get("port"),
+                    dest.get("protocol"), dest.get("syslog_format"),
+                    dest.get("facility"), dest.get("url"),
+                    dest.get("batch_size"), dest.get("filter_profile"),
+                ),
+            )
+            count += 1
+        items_applied["siem"] = count
+
+    if "notifications" in requested and "notifications" in data:
+        notif_list = data["notifications"]
+        if not isinstance(notif_list, list):
+            raise HTTPException(status_code=400, detail="data.notifications must be a list")
+        if replace:
+            await db.execute("DELETE FROM notification_channels")
+        count = 0
+        for ch in notif_list:
+            if not isinstance(ch, dict) or "name" not in ch or "endpoint_url" not in ch:
+                continue
+            ch_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO notification_channels "
+                "(id, name, endpoint_url, secret_enc, event_filter, "
+                "batch_size, batch_interval_s, enabled, created_at) "
+                "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                (
+                    ch_id, ch["name"], ch["endpoint_url"],
+                    ch.get("event_filter", "[]"),
+                    ch.get("batch_size"), ch.get("batch_interval_s"),
+                    1 if ch.get("enabled", True) else 0,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            count += 1
+        items_applied["notifications"] = count
+
+    if "storage" in requested and "storage" in data:
+        storage_list = data["storage"]
+        if not isinstance(storage_list, list):
+            raise HTTPException(status_code=400, detail="data.storage must be a list")
+        # Storage is always merged — never delete volumes (they may hold files)
+        count = 0
+        for vol in storage_list:
+            if not isinstance(vol, dict) or "name" not in vol or "provider" not in vol:
+                continue
+            valid_providers = {"local", "s3", "b2", "azure", "gcs"}
+            if vol["provider"] not in valid_providers:
+                continue
+            vol_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO storage_volumes (id, name, provider, config_enc, tier, is_default, priority) "
+                "VALUES (?, ?, ?, NULL, ?, 0, ?) "
+                "ON CONFLICT (name) DO NOTHING",
+                (
+                    vol_id, vol["name"], vol["provider"],
+                    vol.get("tier", "hot"),
+                    vol.get("priority", 0),
+                ),
+            )
+            count += 1
+        items_applied["storage"] = count
+
+    await db.commit()
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.settings.full_imported",
+        severity="critical" if replace else "high",
+        outcome="success",
+        actor=EventActor(user_id=admin_id),
+        detail={"mode": body.mode, "categories": sorted(requested), "items": items_applied},
+    ))
+
+    return {"message": "Import applied", "mode": body.mode, "items_applied": items_applied}

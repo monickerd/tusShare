@@ -1411,6 +1411,132 @@ const Shares = (() => {
     }
 
     // -----------------------------------------------------------------------
+    // Embeddable content builders — used by the combined share dialog in
+    // files.js so both tabs live inside one modal overlay.
+    // Each function returns { contentEl, actionBtn } with no overlay of their own.
+    // -----------------------------------------------------------------------
+
+    function buildLinkShareContent(files, masterKey, folderCtx, onSuccess) {
+        const fileList = Utils.el('ul', { className: 'share-file-list' });
+        if (folderCtx) {
+            fileList.appendChild(Utils.el('li', {
+                textContent: `📁 ${folderCtx.name} (${files.length} file${files.length === 1 ? '' : 's'})`,
+            }));
+        } else {
+            for (const f of files) {
+                fileList.appendChild(Utils.el('li', {
+                    textContent: `${f.original_name} (${Utils.formatBytes(f.size_bytes)})`,
+                }));
+            }
+        }
+
+        const expiry = _buildExpirySection();
+
+        const shortLinkChk = Utils.el('input', { type: 'checkbox' });
+        const checkboxCol  = Utils.el('div', { className: 'share-dialog-checkboxes' }, [
+            Utils.el('label', { className: 'share-dialog-check-row' }, [shortLinkChk, Utils.el('span', { textContent: 'Generate short link' })]),
+        ]);
+
+        let allowUploadChk = null;
+        if (folderCtx) {
+            allowUploadChk = Utils.el('input', { type: 'checkbox' });
+            checkboxCol.appendChild(Utils.el('label', { className: 'share-dialog-check-row' }, [
+                allowUploadChk, Utils.el('span', { textContent: 'Allow upload (Download + Upload)' }),
+            ]));
+        }
+
+        const maxDlInput = Utils.el('input', {
+            type: 'number', className: 'input input-maxdl',
+            placeholder: '∞', max: '10000',
+            title: 'Max downloads (leave blank for unlimited)',
+        });
+        maxDlInput.addEventListener('change', () => {
+            const v = Number.parseInt(maxDlInput.value, 10);
+            if (maxDlInput.value !== '' && (Number.isNaN(v) || v < 1)) maxDlInput.value = '';
+        });
+
+        const statusArea = Utils.el('div', { className: 'share-status' });
+
+        const actionBtn = Utils.el('button', { className: 'btn btn-primary', textContent: 'Create link' });
+        actionBtn.addEventListener('click', async () => {
+            const expiresAt = expiry.getExpiresAt();
+            if (!expiresAt) { Utils.showToast('Please set an expiry date.', 'error'); return; }
+            actionBtn.disabled = true;
+            actionBtn.textContent = 'Creating…';
+            _clearEl(statusArea);
+            try {
+                const key = await _doCreateShare(files, masterKey, {
+                    expiresAt,
+                    maxDownloads: maxDlInput.value ? Number.parseInt(maxDlInput.value, 10) : null,
+                    generateShortLink: shortLinkChk.checked,
+                    allowUpload: allowUploadChk ? allowUploadChk.checked : false,
+                    folderId: folderCtx ? folderCtx.id : null,
+                }, statusArea);
+                if (key) { actionBtn.style.display = 'none'; if (onSuccess) onSuccess(); }
+            } catch (err) {
+                statusArea.appendChild(Utils.el('p', { className: 'share-error', textContent: `Failed: ${err.message}` }));
+                actionBtn.disabled = false;
+                actionBtn.textContent = 'Create link';
+            }
+        });
+
+        const contentEl = Utils.el('div', {}, [
+            fileList,
+            expiry.el,
+            Utils.el('div', { className: 'share-dialog-options' }, [
+                checkboxCol,
+                Utils.el('div', { className: 'share-dialog-maxdl' }, [Utils.el('span', { textContent: 'Max downloads' }), maxDlInput]),
+            ]),
+            statusArea,
+        ]);
+        return { contentEl, actionBtn };
+    }
+
+    function buildUserShareContent(files, masterKey, onSuccess) {
+        const fileList = Utils.el('ul', { className: 'share-file-list' });
+        for (const f of files) {
+            fileList.appendChild(Utils.el('li', {
+                textContent: `${f.original_name} (${Utils.formatBytes(f.size_bytes)})`,
+            }));
+        }
+
+        const recipientInput = Utils.el('input', {
+            type: 'text', className: 'input',
+            placeholder: 'Username', autocomplete: 'off',
+        });
+        const expiryInput = Utils.el('input', {
+            type: 'datetime-local', className: 'input', value: _defaultExpiryIso(),
+        });
+        const statusArea = Utils.el('div', { className: 'share-status' });
+
+        const actionBtn = Utils.el('button', { className: 'btn btn-primary', textContent: 'Send' });
+        actionBtn.addEventListener('click', async () => {
+            const username = recipientInput.value.trim();
+            if (!username) { Utils.showToast('Enter a username', 'error'); return; }
+            actionBtn.disabled = true;
+            actionBtn.textContent = 'Sending…';
+            _clearEl(statusArea);
+            try {
+                await _doCreateUserShare(files, masterKey, username, expiryInput.value, statusArea);
+                actionBtn.style.display = 'none';
+                if (onSuccess) onSuccess();
+            } catch (err) {
+                statusArea.appendChild(Utils.el('p', { className: 'share-error', textContent: `Failed: ${err.message}` }));
+                actionBtn.disabled = false;
+                actionBtn.textContent = 'Send';
+            }
+        });
+
+        const contentEl = Utils.el('div', {}, [
+            fileList,
+            Utils.el('label', {}, [Utils.el('span', { textContent: 'Recipient username' }), recipientInput]),
+            Utils.el('label', {}, [Utils.el('span', { textContent: 'Expires at' }), expiryInput]),
+            statusArea,
+        ]);
+        return { contentEl, actionBtn };
+    }
+
+    // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
 
@@ -1418,6 +1544,8 @@ const Shares = (() => {
         openShareDialog,
         openFolderShareDialog,
         openUserShareDialog,
+        buildLinkShareContent,
+        buildUserShareContent,
         renderSharesPage,
         renderReceivedSharesPage,
         renderPublicSharePage,

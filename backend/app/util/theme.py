@@ -143,6 +143,16 @@ def _load_logo_path(config: dict, raw: dict) -> None:
         logger.warning("Theme: logo_path must be a simple filename with no path separators, ignoring")
 
 
+def _load_favicon_path(config: dict, raw: dict) -> None:
+    favicon = raw.get("favicon_path")
+    if favicon is None:
+        return
+    if isinstance(favicon, str) and _LOGO_FILENAME_RE.match(favicon):
+        config["favicon_path"] = favicon
+    else:
+        logger.warning("Theme: favicon_path must be a simple filename with no path separators, ignoring")
+
+
 def _load_colors(config: dict, raw: dict) -> None:
     colors_raw = raw.get("colors")
     if colors_raw is None:
@@ -215,6 +225,7 @@ def load_theme(data_dir: Path) -> dict[str, Any]:
     config: dict[str, Any] = {}
     _load_brand_name(config, raw)
     _load_logo_path(config, raw)
+    _load_favicon_path(config, raw)
     _load_colors(config, raw)
     _load_ui_flags(config, raw)
 

@@ -167,6 +167,24 @@ const Wizard = (() => {
         btn.textContent = label;
     }
 
+    function _checkImageDimensions(file, maxW, maxH) {
+        return new Promise((resolve, reject) => {
+            if (file.type === 'image/svg+xml') { resolve(); return; }
+            const url = URL.createObjectURL(file);
+            const img = new Image();
+            img.onload = () => {
+                URL.revokeObjectURL(url);
+                if (img.naturalWidth > maxW || img.naturalHeight > maxH) {
+                    reject(new Error(`Image must be at most ${maxW}×${maxH} px (got ${img.naturalWidth}×${img.naturalHeight} px)`));
+                } else {
+                    resolve();
+                }
+            };
+            img.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+            img.src = url;
+        });
+    }
+
     // -----------------------------------------------------------------------
     // Screen 1: Org Identity
     // -----------------------------------------------------------------------
@@ -218,9 +236,27 @@ const Wizard = (() => {
         logoGrp.appendChild(logoInp);
         logoGrp.appendChild(Utils.el('p', {
             className: 'settings-hint',
-            textContent: 'PNG, JPEG, GIF, SVG, or WebP · max 2 MB. Replaces the text brand name in the header.',
+            textContent: 'PNG, JPEG, GIF, SVG, or WebP · max 800 × 300 px · max 2 MB. Replaces the text brand name in the header.',
         }));
         wrapper.appendChild(logoGrp);
+
+        // Favicon upload
+        const faviconGrp = Utils.el('div', { style: 'margin-bottom:24px' });
+        faviconGrp.appendChild(Utils.el('label', {
+            textContent: 'Favicon',
+            style: 'display:block;font-weight:600;margin-bottom:6px',
+        }));
+        const faviconInp = Utils.el('input', {
+            type: 'file',
+            accept: 'image/png,image/x-icon,image/vnd.microsoft.icon,image/svg+xml',
+            style: 'display:block;margin-bottom:4px',
+        });
+        faviconGrp.appendChild(faviconInp);
+        faviconGrp.appendChild(Utils.el('p', {
+            className: 'settings-hint',
+            textContent: 'PNG, ICO, or SVG · max 256 × 256 px · max 256 KB. Shown in browser tabs.',
+        }));
+        wrapper.appendChild(faviconGrp);
 
         const err = _errEl();
         wrapper.appendChild(err);
@@ -237,9 +273,14 @@ const Wizard = (() => {
                         if (document.title) document.title = brand;
                     }
                     if (logoInp.files[0]) {
+                        const logoFile = logoInp.files[0];
+                        if (logoFile.size > 2 * 1024 * 1024) {
+                            throw new Error('Logo must be ≤ 2 MB');
+                        }
+                        await _checkImageDimensions(logoFile, 800, 300);
                         const csrf = Api.getCsrfToken();
                         const fd = new FormData();
-                        fd.append('file', logoInp.files[0]);
+                        fd.append('file', logoFile);
                         const resp = await fetch(`${_api()}/admin/theme/logo`, {
                             method: 'POST',
                             headers: { 'X-CSRF-Token': csrf },
@@ -251,6 +292,29 @@ const Wizard = (() => {
                             throw new Error(body.detail || `HTTP ${resp.status}`);
                         }
                         _state.logoUploaded = true;
+                    }
+                    if (faviconInp.files[0]) {
+                        const faviconFile = faviconInp.files[0];
+                        if (faviconFile.size > 256 * 1024) {
+                            throw new Error('Favicon must be ≤ 256 KB');
+                        }
+                        await _checkImageDimensions(faviconFile, 256, 256);
+                        const csrf = Api.getCsrfToken();
+                        const fd = new FormData();
+                        fd.append('file', faviconFile);
+                        const resp = await fetch(`${_api()}/admin/theme/favicon`, {
+                            method: 'POST',
+                            headers: { 'X-CSRF-Token': csrf },
+                            body: fd,
+                            credentials: 'same-origin',
+                        });
+                        if (!resp.ok) {
+                            const body = await resp.json().catch(() => ({}));
+                            throw new Error(body.detail || `HTTP ${resp.status}`);
+                        }
+                    }
+                    if (typeof App !== 'undefined' && App.reloadTheme) {
+                        await App.reloadTheme();
                     }
                     navigate(2);
                 } catch (e) {

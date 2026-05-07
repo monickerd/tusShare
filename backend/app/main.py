@@ -493,6 +493,7 @@ def create_app() -> FastAPI:
     from app.routes.admin_sharing import router as admin_sharing_router
     from app.routes.admin_service_accounts import router as admin_service_accounts_router
     from app.routes.admin_profiles import router as admin_profiles_router
+    from app.routes.admin_teams import router as admin_teams_router
     from app.routes.trash import router as trash_router
 
     app.include_router(auth_router, prefix=_AUTH_PREFIX, tags=["auth"])
@@ -526,6 +527,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_sharing_router,        prefix="/api/v1/admin/sharing",         tags=["admin-sharing"])
     app.include_router(admin_service_accounts_router, prefix=_ADMIN_PREFIX,                tags=["admin-service-accounts"])
     app.include_router(admin_profiles_router,         prefix=_ADMIN_PREFIX,                tags=["admin-profiles"])
+    app.include_router(admin_teams_router,            prefix=_ADMIN_PREFIX,                tags=["admin-teams"])
     app.include_router(trash_router,                  prefix="/api/v1/trash",                tags=["trash"])
 
     # --- SIEM HTTP error event handlers ---

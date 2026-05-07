@@ -268,6 +268,27 @@
     border-bottom-color: var(--color-primary);
 }
 
+/* tab-btn / tab-active: used in modal tab bars where .tab is unavailable */
+.tab-btn {
+    padding: var(--space-2) var(--space-4);
+    font-size: var(--font-size-md);
+    font-weight: 500;
+    color: var(--color-text-muted);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    transition: color var(--transition-fast), border-bottom-color var(--transition-fast);
+    white-space: nowrap;
+}
+.tab-btn:hover {
+    color: var(--color-text);
+}
+.tab-btn.tab-active {
+    color: var(--color-primary);
+    border-bottom-color: var(--color-primary);
+}
+
 /* === Badge === */
 .badge {
     display: inline-block;
@@ -1546,10 +1567,62 @@
 
 .flag-row {
     display: grid;
-    grid-template-columns: auto 1fr;
-    align-items: baseline;
-    gap: var(--space-2) var(--space-3);
+    grid-template-columns: 32px 1fr;
+    align-items: start;
+    gap: var(--space-1) var(--space-3);
     padding: var(--space-1) 0;
+}
+
+.flag-lock-cell {
+    display: flex;
+    justify-content: center;
+    padding-top: 3px;
+}
+
+.flag-content-cell {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+.flag-columns-header {
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    gap: var(--space-1) var(--space-3);
+    margin-bottom: var(--space-1);
+    padding-bottom: var(--space-1);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.flag-lock-col-header {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.flag-lock-help {
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    font-size: 9px;
+    line-height: 13px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-text-muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: help;
+    font-family: sans-serif;
+    font-weight: 700;
 }
 
 .flag-label {
@@ -1598,6 +1671,13 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
+}
+
+/* Inputs inside role-meta-fields fill their 1fr grid column */
+.role-meta-fields input,
+.role-meta-fields select {
+    width: 100%;
+    box-sizing: border-box;
 }
 
 /* ===== E2: Team Custom Roles ===== */
@@ -1852,6 +1932,13 @@
     font-size: var(--font-size-sm);
     font-weight: 500;
     color: var(--color-text-muted);
+}
+
+.policy-modal-form input,
+.policy-modal-form select,
+.policy-modal-form textarea {
+    width: 100%;
+    box-sizing: border-box;
 }
 
 /* Policy effects sub-section */
@@ -2113,6 +2200,16 @@
     margin: 0;
     color: var(--color-text-muted);
     font-size: var(--font-size-sm);
+}
+
+/* Anchor wrapper making the entire team card a clickable link */
+.team-card-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+}
+.team-card-link:hover .team-card {
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
 }
 
 .team-rotation-warn {

@@ -24,6 +24,7 @@ inserting high-priority allow rules above a higher-authority locked deny.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 
@@ -311,6 +312,46 @@ class TestRulesRequest(BaseModel):
         if v not in _VALID_SHARE_TYPES:
             raise ValueError("share_type must be 'link' or 'user'")
         return v
+
+
+# ---------------------------------------------------------------------------
+# Attribute reference endpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/attributes")
+async def list_sharing_attributes(
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return attribute keys observed in user claims caches, grouped by auth_method.
+
+    Scans up to 500 users with a non-null claims cache and returns the union of
+    all keys seen per source (ldap / oidc), so admins know what attribute paths
+    are available for sharing rule conditions.
+    """
+    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+
+    cursor = await db.execute(
+        "SELECT auth_method, oidc_claims_cache FROM users "
+        "WHERE oidc_claims_cache IS NOT NULL AND auth_method IN ('ldap', 'oidc') LIMIT 500"
+    )
+    rows = await cursor.fetchall()
+
+    observed: dict[str, set[str]] = {}
+    for row in rows:
+        method = row["auth_method"]
+        if not method:
+            continue
+        try:
+            claims = json.loads(row["oidc_claims_cache"])
+            if isinstance(claims, dict) and claims:
+                if method not in observed:
+                    observed[method] = set()
+                observed[method].update(claims.keys())
+        except (ValueError, TypeError):
+            continue
+
+    return {"observed": {k: sorted(v) for k, v in observed.items()}}
 
 
 # ---------------------------------------------------------------------------

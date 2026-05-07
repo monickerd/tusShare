@@ -254,6 +254,87 @@ async def _process_single_file_move(db, item, dest_id, dest_team_id, gate_active
         return None, "error"
 
 
+@router.get("/search")
+async def search_files(
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)] = None,
+    db: Annotated[Database, Depends(get_db)] = None,
+):
+    """Search files by name substring across all folders the authenticated user may access.
+
+    Access scope is computed entirely server-side (not caller-supplied):
+    - Files the user owns
+    - Files in team folders where the user holds a confirmed key (user_team_keys)
+    - Files in folders with an explicit permissions grant (recursive grants propagate
+      downward, both stopping at restrict_permissions boundaries)
+
+    Uses case-insensitive substring match against original_name.
+    """
+    term = q.strip()
+    if not term:
+        return {"files": []}
+
+    pattern = f"%{term}%"
+
+    # Two recursive CTEs derive the user's accessible folder set server-side.
+    # team_tree: all folders reachable from a team root the user is a member of,
+    #            descending through non-restricted subfolders.
+    # perm_tree: all folders with a direct permission grant for the user, plus
+    #            descendants of recursive grants, stopping at restrict_permissions.
+    cursor = await db.execute(
+        "WITH RECURSIVE "
+        "team_tree(id) AS ( "
+        "    SELECT tf.folder_id "
+        "    FROM team_folders tf "
+        "    JOIN user_team_keys utk ON utk.team_id = tf.team_id AND utk.user_id = ? "
+        "    UNION ALL "
+        "    SELECT f.id "
+        "    FROM folders f "
+        "    JOIN team_tree tt ON f.parent_id = tt.id "
+        "    WHERE f.restrict_permissions = 0 AND f.deleted_at IS NULL "
+        "), "
+        "perm_tree(id, rec) AS ( "
+        "    SELECT p.resource_id, p.recursive "
+        "    FROM permissions p "
+        "    WHERE p.resource_type = 'folder' AND p.user_id = ? "
+        "    UNION ALL "
+        "    SELECT f.id, 1 "
+        "    FROM folders f "
+        "    JOIN perm_tree pt ON f.parent_id = pt.id AND pt.rec = 1 "
+        "    WHERE f.restrict_permissions = 0 AND f.deleted_at IS NULL "
+        ") "
+        "SELECT f.id, f.original_name, f.size_bytes, f.created_at, f.folder_id, "
+        "       f.encrypted_file_key, f.key_iv, fold.name AS folder_name "
+        "FROM files f "
+        "LEFT JOIN folders fold ON fold.id = f.folder_id "
+        "WHERE f.deleted_at IS NULL "
+        "  AND LOWER(f.original_name) LIKE LOWER(?) "
+        "  AND (f.owner_id = ? "
+        "       OR f.folder_id IN (SELECT id FROM team_tree) "
+        "       OR f.folder_id IN (SELECT id FROM perm_tree)) "
+        "ORDER BY f.created_at DESC "
+        "LIMIT ?",
+        (user.id, user.id, pattern, user.id, limit),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "files": [
+            {
+                "id":                 r["id"],
+                "original_name":      r["original_name"],
+                "size_bytes":         r["size_bytes"],
+                "created_at":         str(r["created_at"]) if r["created_at"] else None,
+                "folder_id":          r["folder_id"],
+                "folder_path":        r["folder_name"] or "(root)",
+                "encrypted_file_key": r["encrypted_file_key"],
+                "key_iv":             r["key_iv"],
+            }
+            for r in rows
+        ]
+    }
+
+
 @router.post("/batch-move", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def batch_move_files(
     body: BatchMoveRequest,
@@ -623,6 +704,64 @@ async def get_file_metadata(
     file = File.from_row(row)
     await check_file_access(db, row, user)
     return {"file": file.to_dict()}
+
+
+@router.get("/{file_id}/info", responses={404: {"description": "Not Found"}})
+async def get_file_info(
+    file_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return file statistics: name, size, creator, download count, last 5 access log entries."""
+    file_id = validate_uuid(file_id)
+
+    cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
+    await check_file_access(db, row, user)
+
+    # Creator username
+    owner_cursor = await db.execute(
+        "SELECT username FROM users WHERE id = ?", (row["owner_id"],)
+    )
+    owner_row = await owner_cursor.fetchone()
+    creator = owner_row["username"] if owner_row else row["owner_id"]
+
+    # Download count
+    dc_cursor = await db.execute(
+        "SELECT COUNT(*) AS cnt FROM access_logs WHERE file_id = ? AND action = 'download'",
+        (file_id,),
+    )
+    dc_row = await dc_cursor.fetchone()
+    download_count = dc_row["cnt"] if dc_row else 0
+
+    # Last 5 access log entries
+    al_cursor = await db.execute(
+        "SELECT actor_username, action, timestamp, ip_address FROM access_logs "
+        "WHERE file_id = ? ORDER BY timestamp DESC LIMIT 5",
+        (file_id,),
+    )
+    audit_rows = await al_cursor.fetchall()
+    audit = [
+        {
+            "user":      r["actor_username"],
+            "action":    r["action"],
+            "timestamp": str(r["timestamp"]) if r["timestamp"] else None,
+            "ip":        r["ip_address"],
+        }
+        for r in audit_rows
+    ]
+
+    return {
+        "file_id":       row["id"],
+        "name":          row["original_name"],
+        "size_bytes":    row["size_bytes"],
+        "created_at":    str(row["created_at"]) if row["created_at"] else None,
+        "creator":       creator,
+        "download_count": download_count,
+        "audit":         audit,
+    }
 
 
 async def _build_file_update_fields(

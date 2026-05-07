@@ -1651,7 +1651,7 @@ const Auth = (() => {
         startBtn.addEventListener('click', async () => {
             startBtn.disabled = true;
             try {
-                const { totp_uri, secret_b32, cred_id } = await Api.post(
+                const { totp_uri, secret_b32, cred_id, qr_data_url } = await Api.post(
                     `${Config.app.apiPrefix}/auth/totp/enroll/start`
                 );
 
@@ -1660,11 +1660,10 @@ const Auth = (() => {
                 area.appendChild(Utils.el('p', { className: 'text-muted', style: 'margin-bottom:8px',
                     textContent: 'Scan this QR code with your authenticator app, then enter the 6-digit code to confirm.' }));
 
-                // QR code using a simple API (no external dependency needed if we render URI as text)
                 const qrImg = Utils.el('img', {
-                    src: `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(totp_uri)}`,
+                    src: qr_data_url,
                     alt: 'TOTP QR Code',
-                    style: 'display:block;margin:0 auto 12px',
+                    style: 'display:block;margin:0 auto 12px;background:#fff;padding:8px',
                     width: '180', height: '180',
                 });
                 area.appendChild(qrImg);
@@ -1739,6 +1738,10 @@ const Auth = (() => {
         const form = Utils.el('form', {
             onSubmit: async (e) => {
                 e.preventDefault();
+                if (!globalThis.isSecureContext) {
+                    Utils.showToast('Security keys require HTTPS or localhost. Please access this page over a secure connection.', 'error');
+                    return;
+                }
                 const name = document.getElementById('webauthn-key-name').value.trim() || 'Security Key';
                 const btn = e.target.querySelector('button[type="submit"]');
                 btn.disabled = true;
@@ -1756,7 +1759,10 @@ const Auth = (() => {
                     const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
                     _renderMfaSettingsContent(wrapRef, updated);
                 } catch (err) {
-                    Utils.showToast(err.message || 'Registration failed.', 'error');
+                    const msg = err.name === 'SecurityError' || err.name === 'NotAllowedError'
+                        ? 'Security keys require HTTPS or localhost. Please access this page over a secure connection.'
+                        : (err.message || 'Registration failed.');
+                    Utils.showToast(msg, 'error');
                     btn.disabled = false;
                 }
             },

@@ -61,6 +61,22 @@ const Files = (() => {
             Utils.el('div', { className: 'files-toolbar', id: 'files-toolbar' }, [
                 Utils.el('div', { id: 'breadcrumbs', className: 'breadcrumbs' }),
                 Utils.el('div', { className: 'toolbar-actions' }, [
+                    Utils.el('input', {
+                        type: 'text',
+                        id: 'file-list-filter',
+                        className: 'input-sm',
+                        placeholder: 'Filter by name…',
+                        style: 'width:200px;margin-right:12px',
+                        onInput: (e) => {
+                            const term = e.target.value.toLowerCase();
+                            const listEl = document.getElementById('file-list');
+                            if (!listEl) return;
+                            for (const row of listEl.querySelectorAll('tr.row-file, tr.row-folder')) {
+                                const name = (row.dataset.name || '').toLowerCase();
+                                row.style.display = !term || name.includes(term) ? '' : 'none';
+                            }
+                        },
+                    }),
                     Utils.el('button', {
                         className: 'btn btn-secondary btn-sm',
                         textContent: 'New Folder',
@@ -87,7 +103,6 @@ const Files = (() => {
             } else {
                 _loadRootFolders();
             }
-            _loadFolderTree();
         }
 
         // Wire up drag-and-drop on the file list area
@@ -237,29 +252,80 @@ const Files = (() => {
             rootLabel = 'My Files';
             rootHash  = '#/files';
         }
-        el.appendChild(Utils.el('a', {
-            href: rootHash,
-            className: 'breadcrumb-link',
-            textContent: rootLabel,
-        }));
 
-        // Ancestor folders
-        for (const crumb of ancestors) {
-            el.appendChild(Utils.el('span', { className: 'breadcrumb-sep', textContent: ' / ' }));
+        // "Go up one level" button (shown when inside a folder)
+        if (currentFolder) {
+            const parentHash = ancestors.length > 0
+                ? (_isTeamView ? `#/team-folders/${ancestors[ancestors.length - 1].id}` : `#/files/${ancestors[ancestors.length - 1].id}`)
+                : rootHash;
             el.appendChild(Utils.el('a', {
-                href: `#/files/${crumb.id}`,
-                className: 'breadcrumb-link',
-                textContent: crumb.name,
+                href: parentHash,
+                className: 'breadcrumb-up',
+                title: 'Go up one level',
+                textContent: '↑',
             }));
         }
 
-        // Current folder
+        el.appendChild(Utils.el('a', {
+            href: rootHash,
+            className: 'breadcrumb-tile',
+            textContent: rootLabel,
+        }));
+
+        // Collapse deep paths: show root → /…/ → parent → current
+        const COLLAPSE_DEPTH = 3;
+        const crumbHash = (crumb) => _isTeamView ? `#/team-folders/${crumb.id}` : `#/files/${crumb.id}`;
+
+        if (ancestors.length > COLLAPSE_DEPTH) {
+            // Show first ancestor, then ellipsis, then last ancestor
+            el.appendChild(Utils.el('span', { className: 'breadcrumb-sep', textContent: ' / ' }));
+            el.appendChild(Utils.el('a', {
+                href: crumbHash(ancestors[0]),
+                className: 'breadcrumb-tile',
+                textContent: ancestors[0].name,
+            }));
+            el.appendChild(Utils.el('span', { className: 'breadcrumb-sep breadcrumb-ellipsis', textContent: ' / … / ' }));
+            const parent = ancestors[ancestors.length - 1];
+            el.appendChild(Utils.el('a', {
+                href: crumbHash(parent),
+                className: 'breadcrumb-tile',
+                textContent: parent.name,
+            }));
+        } else {
+            for (const crumb of ancestors) {
+                el.appendChild(Utils.el('span', { className: 'breadcrumb-sep', textContent: ' / ' }));
+                el.appendChild(Utils.el('a', {
+                    href: crumbHash(crumb),
+                    className: 'breadcrumb-tile',
+                    textContent: crumb.name,
+                }));
+            }
+        }
+
+        // Current folder (plain non-clickable text)
         if (currentFolder) {
             el.appendChild(Utils.el('span', { className: 'breadcrumb-sep', textContent: ' / ' }));
             el.appendChild(Utils.el('span', {
                 className: 'breadcrumb-current',
                 textContent: currentFolder.name,
             }));
+
+            // Star icon at end of breadcrumb trail (add to Favourites)
+            const pinBtn = Utils.el('button', {
+                className: 'breadcrumb-pin-btn',
+                title: 'Add to Favourites',
+                textContent: '☆',
+            });
+            pinBtn.addEventListener('click', () => {
+                const hash = _isTeamView
+                    ? `#/team-folders/${currentFolder.id}`
+                    : `#/files/${currentFolder.id}`;
+                if (typeof App !== 'undefined' && App.pinCurrentFolder) {
+                    App.pinCurrentFolder(currentFolder.id, currentFolder.name, hash);
+                    Utils.showToast(`Added "${currentFolder.name}" to Favourites`, 'success');
+                }
+            });
+            el.appendChild(pinBtn);
         }
     }
 
@@ -369,7 +435,7 @@ const Files = (() => {
 
     function _createFolderRow(folder) {
         const folderHash = _isTeamView ? `#/team-folders/${folder.id}` : `#/files/${folder.id}`;
-        return Utils.el('tr', { className: 'row-folder' }, [
+        return Utils.el('tr', { className: 'row-folder', dataset: { name: folder.name } }, [
             Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'folder', id: folder.id, name: folder.name } })]),
             Utils.el('td', {}, [
                 Utils.el('a', {
@@ -383,7 +449,7 @@ const Files = (() => {
             Utils.el('td', { className: 'row-actions' }, [
                 _createContextButton([
                     { label: 'Share', action: () => Shares.openFolderShareDialog(folder) },
-                    { label: 'Move', action: () => _openMoveModal([{ type: 'folder', id: folder.id, name: folder.name }]) },
+                    { label: 'Move/Copy', action: () => _openMoveCopyModal([{ type: 'folder', id: folder.id, name: folder.name }]) },
                     { label: 'Rename', action: () => _renameFolder(folder) },
                     { label: 'Delete', action: () => _deleteFolder(folder), danger: true },
                 ]),
@@ -392,9 +458,18 @@ const Files = (() => {
     }
 
     function _createFileRow(file) {
-        return Utils.el('tr', { className: 'row-file' }, [
+        const nameLink = Utils.el('a', {
+            href: '#',
+            className: 'file-name-link',
+            textContent: file.original_name,
+        });
+        nameLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            _downloadFile(file);
+        });
+        return Utils.el('tr', { className: 'row-file', dataset: { name: file.original_name } }, [
             Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'file', id: file.id, name: file.original_name } })]),
-            Utils.el('td', { textContent: file.original_name }),
+            Utils.el('td', {}, [nameLink]),
             Utils.el('td', { textContent: Utils.formatBytes(file.size_bytes) }),
             Utils.el('td', { textContent: Utils.timeAgo(file.created_at) }),
             Utils.el('td', { className: 'row-actions' }, [
@@ -404,13 +479,12 @@ const Files = (() => {
     }
 
     async function _fileContextItems(file) {
+        const fileForPicker = { type: 'file', id: file.id, name: file.original_name, encrypted_file_key: file.encrypted_file_key, key_iv: file.key_iv };
         const items = [
             { label: 'Download', action: () => _downloadFile(file) },
-            { label: 'Share (link)', action: () => Shares.openShareDialog([file]) },
-            { label: 'Share with user', action: () => Shares.openUserShareDialog([file]) },
-            { label: 'Add to Team', action: () => Teams.openAddToTeamDialog([file]) },
-            { label: 'Move', action: () => _openMoveModal([{ type: 'file', id: file.id, name: file.original_name }]) },
-            { label: 'Copy to…', action: () => _openCopyModal([{ type: 'file', id: file.id, name: file.original_name, encrypted_file_key: file.encrypted_file_key, key_iv: file.key_iv }]) },
+            { label: 'Share', action: () => _openCombinedShareDialog(file) },
+            { label: 'Move/Copy', action: () => _openMoveCopyModal([fileForPicker]) },
+            { label: 'More Info', action: () => _openFileInfoModal(file) },
             { label: 'Rename', action: () => _renameFile(file) },
             { label: 'Delete', action: () => _deleteFile(file), danger: true },
         ];
@@ -424,6 +498,115 @@ const Files = (() => {
         }
 
         return items;
+    }
+
+    function _openCombinedShareDialog(file) {
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey) {
+            Utils.showToast('Master key not available — please re-enter your password.', 'error');
+            return;
+        }
+        const files = [file].filter(f => f.encrypted_file_key && f.key_iv);
+        if (!files.length) {
+            Utils.showToast('File is not shareable (missing encryption keys).', 'info');
+            return;
+        }
+
+        const overlay = Utils.el('div', { className: 'modal-overlay' });
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+        const tabLink = Utils.el('button', { className: 'tab-btn tab-active', textContent: 'Link' });
+        const tabUser = Utils.el('button', { className: 'tab-btn', textContent: 'User' });
+        const tabBar  = Utils.el('div', { style: 'display:flex;border-bottom:1px solid var(--color-border);margin-bottom:12px' }, [tabLink, tabUser]);
+
+        const contentWrap = Utils.el('div');
+        const cancelBtn   = Utils.el('button', { className: 'btn btn-secondary', textContent: 'Cancel' });
+        cancelBtn.addEventListener('click', () => overlay.remove());
+        const actionsRow  = Utils.el('div', { className: 'modal-actions' }, [cancelBtn]);
+
+        let _currentActionBtn = null;
+
+        function _switchTab(type) {
+            tabLink.classList.toggle('tab-active', type === 'link');
+            tabUser.classList.toggle('tab-active', type === 'user');
+            contentWrap.innerHTML = '';
+            if (_currentActionBtn) _currentActionBtn.remove();
+            cancelBtn.textContent = 'Cancel';
+
+            const onSuccess = () => { cancelBtn.textContent = 'Close'; };
+            const { contentEl, actionBtn } = type === 'link'
+                ? Shares.buildLinkShareContent(files, masterKey, null, onSuccess)
+                : Shares.buildUserShareContent(files, masterKey, onSuccess);
+
+            contentWrap.appendChild(contentEl);
+            actionsRow.appendChild(actionBtn);
+            _currentActionBtn = actionBtn;
+        }
+
+        tabLink.addEventListener('click', () => _switchTab('link'));
+        tabUser.addEventListener('click', () => _switchTab('user'));
+
+        overlay.appendChild(Utils.el('div', { className: 'modal share-dialog' }, [
+            Utils.el('h3', { textContent: `Share: ${file.original_name}`, style: 'margin-top:0' }),
+            tabBar,
+            contentWrap,
+            actionsRow,
+        ]));
+        document.body.appendChild(overlay);
+        _switchTab('link');
+    }
+
+    async function _openFileInfoModal(file) {
+        Utils.showModal(`Info: ${file.original_name}`, Utils.el('p', { textContent: 'Loading…' }));
+        let info;
+        try {
+            info = await Api.get(`${Config.app.apiPrefix}/files/${file.id}/info`);
+        } catch (e) {
+            Utils.showModal(`Info: ${file.original_name}`, Utils.el('p', { className: 'text-error', textContent: 'Failed to load: ' + e.message }));
+            return;
+        }
+
+        const _esc = (s) => {
+            if (s == null) return '—';
+            return String(s).replace(/[^a-zA-Z0-9 .\-_]/g, c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+        };
+
+        const wrap = Utils.el('div', { style: 'min-width:400px' });
+        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;margin-bottom:14px' });
+        const _row = (label, val) => {
+            grid.appendChild(Utils.el('span', { textContent: label + ':', style: 'font-weight:600;color:var(--color-text-muted)' }));
+            grid.appendChild(Utils.el('span', { textContent: _esc(val) }));
+        };
+        _row('File Name', info.name);
+        _row('Size', Utils.formatBytes(info.size_bytes));
+        _row('Created', info.created_at ? info.created_at.replace('T', ' ').slice(0, 19) : '—');
+        _row('Creator', info.creator);
+        _row('Downloads', String(info.download_count));
+        wrap.appendChild(grid);
+
+        if (info.audit && info.audit.length) {
+            wrap.appendChild(Utils.el('h5', { textContent: 'Recent Access', style: 'margin:0 0 6px' }));
+            const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;width:100%' });
+            tbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
+                Utils.el('th', { textContent: 'Time' }),
+                Utils.el('th', { textContent: 'User' }),
+                Utils.el('th', { textContent: 'Action' }),
+                Utils.el('th', { textContent: 'IP' }),
+            ])]));
+            const tbody = Utils.el('tbody');
+            for (const e of info.audit) {
+                tbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: e.timestamp ? e.timestamp.replace('T', ' ').slice(0, 19) : '' }),
+                    Utils.el('td', { textContent: _esc(e.user) }),
+                    Utils.el('td', { textContent: _esc(e.action) }),
+                    Utils.el('td', { textContent: _esc(e.ip) }),
+                ]));
+            }
+            tbl.appendChild(tbody);
+            wrap.appendChild(tbl);
+        }
+
+        Utils.showModal(`Info: ${_esc(info.name)}`, wrap);
     }
 
     async function _discardPartialDownload(file) {
@@ -762,7 +945,6 @@ const Files = (() => {
         } else if (!_isSharedView) {
             _loadRootFolders();
         }
-        if (!_isSharedView) _loadFolderTree();
     }
 
     function _updateBulkActions() {
@@ -796,18 +978,8 @@ const Files = (() => {
         }));
         bar.appendChild(Utils.el('button', {
             className: 'btn btn-secondary btn-sm',
-            textContent: 'Add to Team',
-            onClick: () => _bulkAddToTeam(selected),
-        }));
-        bar.appendChild(Utils.el('button', {
-            className: 'btn btn-secondary btn-sm',
-            textContent: 'Move selected',
-            onClick: () => _openMoveModal(selected),
-        }));
-        bar.appendChild(Utils.el('button', {
-            className: 'btn btn-secondary btn-sm',
-            textContent: 'Copy selected',
-            onClick: () => _openCopyModal(selected.filter(i => i.type === 'file')),
+            textContent: 'Move/Copy selected',
+            onClick: () => _openMoveCopyModal(selected),
         }));
         bar.appendChild(Utils.el('button', {
             className: 'btn btn-danger btn-sm',
@@ -957,6 +1129,151 @@ const Files = (() => {
      * items: [{ type: 'file'|'folder', id: string, name: string }]
      * sourceIsTeam derived from _isTeamView at call time.
      */
+    async function _openMoveCopyModal(items) {
+        const files = items.filter(i => i.type === 'file');
+        if (items.length === 0) return;
+
+        const sourceIsTeam = _isTeamView;
+        let selectedDest = null;
+        let currentSelectedEl = null;
+
+        const moveBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Move',
+            disabled: true,
+        });
+        const copyBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Copy',
+            disabled: true,
+        });
+
+        function _selectDest(optionEl, dest) {
+            if (currentSelectedEl) currentSelectedEl.classList.remove('selected');
+            optionEl.classList.add('selected');
+            currentSelectedEl = optionEl;
+            selectedDest = dest;
+            moveBtn.disabled = false;
+            copyBtn.disabled = files.length === 0;
+        }
+
+        const filterInput = Utils.el('input', {
+            type: 'text',
+            className: 'input-sm',
+            placeholder: 'Filter destinations…',
+            style: 'width:100%;margin-bottom:8px;box-sizing:border-box',
+        });
+
+        const pickerList = Utils.el('ul', { className: 'folder-picker' });
+
+        Utils.inlineFilter(filterInput, () => pickerList.querySelectorAll('li.folder-picker-item'), row => row.querySelector('.picker-folder-name')?.textContent || '');
+
+        const overlay = Utils.el('div', {
+            className: 'modal-overlay',
+            onClick: (e) => { if (e.target === overlay) overlay.remove(); },
+        });
+
+        const title = items.length === 1
+            ? `Move / Copy "${items[0].name}"`
+            : `Move / Copy ${items.length} items`;
+
+        overlay.appendChild(Utils.el('div', { className: 'modal move-modal' }, [
+            Utils.el('h3', { textContent: title }),
+            filterInput,
+            pickerList,
+            Utils.el('div', { className: 'modal-actions', style: 'justify-content:space-between' }, [
+                Utils.el('button', {
+                    className: 'btn btn-secondary',
+                    textContent: 'Cancel',
+                    onClick: () => overlay.remove(),
+                }),
+                Utils.el('div', { style: 'display:flex;gap:8px' }, [copyBtn, moveBtn]),
+            ]),
+        ]));
+        document.body.appendChild(overlay);
+
+        moveBtn.addEventListener('click', async () => {
+            overlay.remove();
+            await _confirmAndExecuteMoves(items, selectedDest, sourceIsTeam);
+        });
+        copyBtn.addEventListener('click', async () => {
+            overlay.remove();
+            await _executeCopies(files, selectedDest);
+        });
+
+        // Personal root
+        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: 'My Files' }));
+        const rootRow = Utils.el('div', { className: 'folder-picker-option' }, [
+            Utils.el('span', { className: 'picker-folder-name', textContent: 'My Files (root)' }),
+        ]);
+        rootRow.addEventListener('click', () => _selectDest(rootRow, { id: null, label: 'My Files (root)', isTeam: false }));
+        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-item' }, [rootRow]));
+
+        const loadingLi = Utils.el('li', { className: 'folder-picker-loading', textContent: 'Loading…' });
+        pickerList.appendChild(loadingLi);
+
+        try {
+            const [foldersData, teamsData] = await Promise.all([
+                Api.get(`${Config.app.apiPrefix}/folders`),
+                Api.get(`${Config.app.apiPrefix}/teams`),
+            ]);
+            loadingLi.remove();
+
+            for (const folder of (foldersData.folders || [])) {
+                pickerList.appendChild(_createPickerFolderNode(folder, 0, _selectDest, false));
+            }
+
+            const teams = teamsData.teams || [];
+            const visibleTeams = teams.slice(0, 3);
+            const hiddenTeams  = teams.slice(3);
+
+            for (const team of visibleTeams) {
+                pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: team.name }));
+                await _appendTeamFolders(pickerList, team, _selectDest);
+            }
+
+            if (hiddenTeams.length > 0) {
+                const loadMoreLi = Utils.el('li', { className: 'folder-picker-item' });
+                const loadMoreBtn = Utils.el('button', {
+                    className: 'btn btn-secondary btn-sm',
+                    textContent: `Load more (${hiddenTeams.length} more team${hiddenTeams.length > 1 ? 's' : ''})…`,
+                    style: 'width:100%;margin:4px 0',
+                });
+                loadMoreBtn.addEventListener('click', async () => {
+                    loadMoreLi.remove();
+                    pickerList.style.maxHeight = '340px';
+                    pickerList.style.overflowY = 'auto';
+                    for (const team of hiddenTeams) {
+                        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: team.name }));
+                        await _appendTeamFolders(pickerList, team, _selectDest);
+                    }
+                });
+                loadMoreLi.appendChild(loadMoreBtn);
+                pickerList.appendChild(loadMoreLi);
+            }
+        } catch {
+            if (loadingLi.parentNode) loadingLi.textContent = 'Failed to load destinations';
+        }
+    }
+
+    async function _appendTeamFolders(pickerList, team, selectDest) {
+        try {
+            const tfData = await Api.get(`${Config.app.apiPrefix}/teams/${team.id}/folders`);
+            const teamFolders = tfData.folders || [];
+            if (teamFolders.length === 0) {
+                pickerList.appendChild(Utils.el('li', { className: 'folder-picker-loading', textContent: 'No folders in this team' }));
+            } else {
+                for (const tf of teamFolders) {
+                    pickerList.appendChild(_createPickerFolderNode(
+                        { id: tf.folder_id, name: tf.folder_name }, 0, selectDest, true,
+                    ));
+                }
+            }
+        } catch {
+            pickerList.appendChild(Utils.el('li', { className: 'folder-picker-error', textContent: 'Failed to load folders' }));
+        }
+    }
+
     async function _openMoveModal(items) {
         if (items.length === 0) return;
 
@@ -2007,9 +2324,14 @@ const Files = (() => {
         }));
     }
 
+    function downloadFileById(_id, file) {
+        return _downloadFile(file);
+    }
+
     return {
         renderFileBrowser,
         loadFolder,
+        downloadFileById,
         getSelectedItems,
         stopLive: _stopLive,
     };

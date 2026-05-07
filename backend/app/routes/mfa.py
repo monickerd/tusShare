@@ -24,6 +24,8 @@ GET  /auth/mfa/credentials                     list own MFA credentials
 DELETE /auth/mfa/credentials/{id}              remove own credential (with proof)
 """
 
+import base64
+import io
 import logging
 import uuid
 
@@ -56,6 +58,17 @@ from app.validation.sanitizers import validate_uuid
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def _make_qr_data_url(data: str) -> str:
+    """Return an SVG QR code for *data* as a base64 data URL (no external dependency)."""
+    import qrcode
+    import qrcode.image.svg as _svg
+    img = qrcode.make(data, image_factory=_svg.SvgFillImage)
+    buf = io.BytesIO()
+    img.save(buf)
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/svg+xml;base64,{b64}"
 
 # Re-use cookie helpers from auth.py to avoid duplication
 from app.auth.cookies import set_auth_cookies, clear_auth_cookies
@@ -102,7 +115,8 @@ async def totp_enroll_start(
     totp_uri, secret_b32, cred_id = await enroll_start(
         db, user.id, issuer=settings.WEBAUTHN_RP_NAME
     )
-    return {"totp_uri": totp_uri, "secret_b32": secret_b32, "cred_id": cred_id}
+    qr_data_url = _make_qr_data_url(totp_uri)
+    return {"totp_uri": totp_uri, "secret_b32": secret_b32, "cred_id": cred_id, "qr_data_url": qr_data_url}
 
 
 class TotpEnrollFinishRequest(BaseModel):

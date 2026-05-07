@@ -33,7 +33,6 @@ const Admin = (() => {
                 ['disk',           'Disk Usage',             _renderDiskUsage],
                 ['theme',          'Theme & Branding',       _renderTheme],
                 ['notifications',  'Notification Channels',  _renderNotificationsSection],
-                ['api-keys',       'API Keys',               _renderApiKeysSection],
             ],
         },
         {
@@ -44,6 +43,13 @@ const Admin = (() => {
                 ['invites',          'Invites',             _renderInvites],
                 ['service-accounts', 'Service Accounts',   _renderServiceAccountsSection],
                 ['idp',              'Identity Providers',  _renderIdpSection],
+            ],
+        },
+        {
+            id: 'teams',
+            label: 'Teams',
+            sections: [
+                ['teams', 'Team Management', _renderTeams],
             ],
         },
         {
@@ -61,9 +67,23 @@ const Admin = (() => {
             label: 'Security & Privacy',
             sections: [
                 ['profiles',  'Settings Profile',     _renderProfilesSection],
-                ['audit',     'Audit & SIEM',         _renderAuditSection],
+                ['api-keys',  'API Keys',              _renderApiKeysSection],
                 ['antivirus', 'Antivirus',             _renderAntivirusSection],
                 ['sharing',   'Sharing Restrictions',  _renderSharingSection],
+            ],
+        },
+        {
+            id: 'audit',
+            label: 'Audit',
+            sections: [
+                ['audit', 'Audit & SIEM', _renderAuditSection],
+            ],
+        },
+        {
+            id: 'export',
+            label: 'Import / Export',
+            sections: [
+                ['export', 'Import / Export', _renderExportSection],
             ],
         },
     ];
@@ -486,6 +506,40 @@ const Admin = (() => {
             _row('Allow multiple team owners', 'When enabled, team owners may promote supervisors to co-owner', fldMultiOwner),
             Utils.el('div', { className: 'settings-actions' }, [saveBtn]),
         ]));
+
+        // Hardware scan — runs a capability scan and renders tuning recommendations
+        const hwSection = Utils.el('div', { style: 'margin-top:24px' });
+        hwSection.appendChild(Utils.el('h4', { textContent: 'Hardware Capability Scan', style: 'margin-bottom:6px' }));
+        hwSection.appendChild(Utils.el('p', { className: 'text-muted', style: 'margin-bottom:8px;font-size:var(--font-size-sm)', textContent: 'Detects CPU, memory, and storage capabilities and provides tuning recommendations.' }));
+        const hwResultWrap = Utils.el('div');
+        const hwBtn = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Run Hardware Scan' });
+        hwBtn.addEventListener('click', async () => {
+            hwBtn.disabled = true;
+            hwBtn.textContent = 'Scanning…';
+            hwResultWrap.innerHTML = '';
+            try {
+                const result = await Api.get(`${_api()}/admin/hw-scan`);
+                hwResultWrap.innerHTML = '';
+                if (result.recommendations && result.recommendations.length) {
+                    const list = Utils.el('ul', { style: 'font-size:var(--font-size-sm);margin:8px 0 0;padding-left:18px' });
+                    for (const rec of result.recommendations) {
+                        list.appendChild(Utils.el('li', { textContent: rec }));
+                    }
+                    hwResultWrap.appendChild(list);
+                }
+                const summary = Utils.el('pre', { style: 'font-size:11px;background:var(--color-surface-secondary);padding:8px;border-radius:4px;overflow-x:auto;margin-top:8px;white-space:pre-wrap' });
+                summary.textContent = JSON.stringify(result, null, 2);
+                hwResultWrap.appendChild(summary);
+            } catch (err) {
+                hwResultWrap.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Scan failed: ' + err.message }));
+            } finally {
+                hwBtn.disabled = false;
+                hwBtn.textContent = 'Run Hardware Scan';
+            }
+        });
+        hwSection.appendChild(hwBtn);
+        hwSection.appendChild(hwResultWrap);
+        container.appendChild(hwSection);
     }
 
     // ------------------------------------------------------------------
@@ -663,7 +717,14 @@ const Admin = (() => {
             },
         });
 
+        const detailBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-xs',
+            textContent: 'Detail',
+            onClick: () => _showUserDetailModal(u.id, u.username),
+        });
+
         const actions = Utils.el('td', { className: 'admin-actions' }, [
+            detailBtn,
             saveBtn,
             deleteBtn,
         ].filter(Boolean));
@@ -678,6 +739,136 @@ const Admin = (() => {
             Utils.el('td', {}, [fldActive]),
             actions,
         ]);
+    }
+
+    // ------------------------------------------------------------------
+    // Section: Team Management (admin view of all teams)
+    // ------------------------------------------------------------------
+
+    async function _renderTeams(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+        let data;
+        try {
+            data = await Api.get(`${_api()}/admin/teams`);
+        } catch (err) {
+            _showError(container, 'Failed to load teams: ' + err.message);
+            return;
+        }
+
+        if (!data.teams.length) {
+            container.innerHTML = '<p class="text-muted">No teams found.</p>';
+            return;
+        }
+
+        const thead = Utils.el('thead', {}, [
+            Utils.el('tr', {}, [
+                Utils.el('th', { textContent: 'Name' }),
+                Utils.el('th', { textContent: 'Owner' }),
+                Utils.el('th', { textContent: 'Members' }),
+                Utils.el('th', { textContent: 'Created' }),
+                Utils.el('th', { textContent: 'Actions' }),
+            ]),
+        ]);
+
+        const tbody = Utils.el('tbody');
+        for (const t of data.teams) {
+            tbody.appendChild(_buildTeamRow(t, () => _renderTeams(container)));
+        }
+
+        container.innerHTML = '';
+        container.appendChild(Utils.el('table', { className: 'admin-table' }, [thead, tbody]));
+    }
+
+    function _buildTeamRow(t, refreshFn) {
+        const detailBtn = Utils.el('button', {
+            className: 'btn btn-sm btn-secondary',
+            textContent: 'Details',
+            onClick: () => _showTeamDetailModal(t.id, t.name),
+        });
+
+        const deleteBtn = Utils.el('button', {
+            className: 'btn btn-sm btn-danger',
+            textContent: 'Delete',
+            onClick: async () => {
+                if (!confirm(`Delete team "${t.name}"? This will remove all member access and cannot be undone.`)) return;
+                deleteBtn.disabled = true;
+                try {
+                    await Api.delete(`${_api()}/admin/teams/${t.id}`);
+                    Utils.showToast(`Team "${t.name}" deleted`, 'success');
+                    refreshFn();
+                } catch (err) {
+                    Utils.showToast('Delete failed: ' + err.message, 'error');
+                    deleteBtn.disabled = false;
+                }
+            },
+        });
+
+        const created = t.created_at ? t.created_at.replace('T', ' ').slice(0, 10) : '—';
+
+        return Utils.el('tr', {}, [
+            Utils.el('td', { textContent: t.name }),
+            Utils.el('td', { textContent: t.owner_username }),
+            Utils.el('td', { textContent: String(t.member_count) }),
+            Utils.el('td', { textContent: created }),
+            Utils.el('td', {}, [
+                Utils.el('div', { style: 'display:flex;gap:6px' }, [detailBtn, deleteBtn]),
+            ]),
+        ]);
+    }
+
+    async function _showTeamDetailModal(teamId, teamName) {
+        const wrap = Utils.el('div', { style: 'min-width:480px;max-width:640px' });
+        wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
+        Utils.showModal(`Team: ${teamName || teamId}`, wrap);
+
+        let team, members;
+        try {
+            ({ team, members } = await Api.get(`${_api()}/admin/teams/${teamId}`));
+        } catch (e) {
+            wrap.innerHTML = '';
+            wrap.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load: ' + e.message }));
+            return;
+        }
+
+        wrap.innerHTML = '';
+
+        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:14px;font-size:13px' });
+        const _row = (label, value) => {
+            grid.appendChild(Utils.el('span', { textContent: label + ':', style: 'font-weight:600;color:var(--color-text-muted)' }));
+            grid.appendChild(Utils.el('span', { textContent: value || '—', style: 'word-break:break-all' }));
+        };
+        _row('ID', team.id);
+        _row('Name', team.name);
+        _row('Owner', team.owner_username);
+        _row('Created', team.created_at ? team.created_at.replace('T', ' ').slice(0, 19) : '—');
+        _row('Key rotation', team.rotation_pending ? 'Pending' : 'Up to date');
+        if (team.description) _row('Description', team.description);
+        wrap.appendChild(grid);
+
+        wrap.appendChild(Utils.el('h6', { textContent: 'Members', style: 'margin:12px 0 6px;font-size:13px;font-weight:600' }));
+
+        if (!members.length) {
+            wrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px' , textContent: 'No members.' }));
+        } else {
+            const mThead = Utils.el('thead', {}, [
+                Utils.el('tr', {}, [
+                    Utils.el('th', { textContent: 'Username' }),
+                    Utils.el('th', { textContent: 'Role' }),
+                    Utils.el('th', { textContent: 'Key' }),
+                    Utils.el('th', { textContent: 'Joined' }),
+                ]),
+            ]);
+            const mTbody = Utils.el('tbody');
+            for (const m of members) {
+                mTbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: m.username }),
+                    Utils.el('td', { textContent: m.role_name || '—' }),
+                    Utils.el('td', { textContent: m.key_confirmed ? 'Confirmed' : 'Pending' }),
+                    Utils.el('td', { textContent: m.joined_at ? m.joined_at.slice(0, 10) : '—' }),
+                ]));
+            }
+            wrap.appendChild(Utils.el('table', { className: 'admin-table', style: 'font-size:12px' }, [mThead, mTbody]));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1042,11 +1233,19 @@ const Admin = (() => {
             },
         });
 
-        const deleteBtn = role.is_system ? null : Utils.el('button', {
+        const deleteBtn = Utils.el('button', {
             className: 'btn btn-danger btn-sm',
             textContent: 'Delete Role',
             onClick: async () => {
-                if (!confirm(`Delete role "${role.name}"? All users currently holding this role will lose it.`)) return;
+                const warningText = role.is_system
+                    ? `DELETE SYSTEM ROLE "${role.name}"?\n\n`
+                        + `This is a built-in role. Deleting it will:\n`
+                        + `• Remove it from every user who currently holds it\n`
+                        + `• Break any integrations that reference the role ID "${role.id}" directly\n`
+                        + `• Require server_admin privilege (tier 1)\n\n`
+                        + `This cannot be undone without re-creating the role. Proceed?`
+                    : `Delete role "${role.name}"? All users currently holding this role will lose it.`;
+                if (!confirm(warningText)) return;
                 try {
                     await Api.del(`${_api()}/admin/roles/${role.id}`);
                     Utils.showToast(`Role "${role.name}" deleted`, 'success');
@@ -1090,15 +1289,16 @@ const Admin = (() => {
                     ].filter(Boolean);
 
                     return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') + (isLocked ? ' flag-locked' : '') }, [
-                        Utils.el('label', { className: 'flag-label' }, [
-                            chk,
-                            Utils.el('span', { className: 'flag-name', textContent: f.flag }),
-                            ...badges,
+                        Utils.el('div', { className: 'flag-lock-cell' }, [
+                            Utils.el('label', { className: 'flag-lock-label', title: 'Lock this flag' }, [lockChk]),
                         ]),
-                        Utils.el('span', { className: 'flag-desc', textContent: f.description }),
-                        Utils.el('label', { className: 'flag-lock-label', title: 'Lock this flag' }, [
-                            lockChk,
-                            Utils.el('span', { className: 'flag-lock-text', textContent: 'Lock' }),
+                        Utils.el('div', { className: 'flag-content-cell' }, [
+                            Utils.el('label', { className: 'flag-label' }, [
+                                chk,
+                                Utils.el('span', { className: 'flag-name', textContent: f.flag }),
+                                ...badges,
+                            ]),
+                            Utils.el('span', { className: 'flag-desc', textContent: f.description }),
                         ]),
                     ]);
                 });
@@ -1148,6 +1348,17 @@ const Admin = (() => {
             ]),
             Utils.el('div', { className: 'role-flags' }, [
                 Utils.el('h4', { className: 'role-flags-title', textContent: 'Permission Flags' }),
+                Utils.el('div', { className: 'flag-columns-header' }, [
+                    Utils.el('div', { className: 'flag-lock-col-header' }, [
+                        Utils.el('span', { textContent: 'Lock' }),
+                        Utils.el('span', {
+                            className: 'flag-lock-help',
+                            textContent: '?',
+                            title: 'Locking stops these users from being able to further delegate management of this permission to lower-level admins.',
+                        }),
+                    ]),
+                    Utils.el('span', {}),
+                ]),
                 ...flagSections,
                 Utils.el('div', { className: 'role-flags-actions' }, [saveFlagsBtn]),
             ]),
@@ -1888,8 +2099,9 @@ const Admin = (() => {
         const scopeTypeEl = Utils.el('select', { className: 'input-sm' });
         ['org', 'team'].forEach(t => scopeTypeEl.appendChild(Utils.el('option', { value: t, textContent: t })));
         const scopeIdWrap = Utils.el('div', { style: 'display:none' }, [
-            Utils.el('label', { textContent: 'Team ID' }),
-            Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Team UUID', id: 'new-policy-scope-id' }),
+            Utils.el('label', { textContent: 'Team ID or Name' }),
+            Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Team UUID or name', id: 'new-policy-scope-id' }),
+            Utils.el('p', { className: 'text-muted', style: 'font-size:12px;margin:2px 0 0', textContent: 'Enter the team\'s UUID or name. If multiple teams share a name, use the UUID.' }),
         ]);
         scopeTypeEl.addEventListener('change', () => {
             scopeIdWrap.style.display = scopeTypeEl.value === 'team' ? '' : 'none';
@@ -2730,6 +2942,278 @@ const Admin = (() => {
 
     // --- Audit table helpers ---
 
+    // -----------------------------------------------------------------------
+    // User detail modal (B1 + B2)
+    // -----------------------------------------------------------------------
+
+    async function _showUserDetailModal(userId, username) {
+        const wrap = Utils.el('div', { style: 'min-width:520px;max-width:680px' });
+        wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
+        Utils.showModal(`User: ${username || userId}`, wrap);
+
+        let user, allRoles;
+        try {
+            [{ user }, { roles: allRoles }] = await Promise.all([
+                Api.get(`${_api()}/admin/users/${userId}`),
+                Api.get(`${_api()}/admin/roles`),
+            ]);
+        } catch (e) {
+            wrap.innerHTML = '';
+            wrap.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load: ' + e.message }));
+            return;
+        }
+
+        wrap.innerHTML = '';
+
+        // ---- Identity card ----
+        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:14px;font-size:13px' });
+        const _row = (label, value) => {
+            grid.appendChild(Utils.el('span', { textContent: label + ':', style: 'font-weight:600;color:var(--color-text-muted)' }));
+            grid.appendChild(Utils.el('span', { textContent: value || '—', style: 'word-break:break-all' }));
+        };
+        _row('UUID', user.id);
+        _row('Username', user.username);
+        _row('Auth method', user.auth_method);
+        _row('Status', user.is_active ? 'Active' : 'Locked');
+        _row('Created', user.created_at ? user.created_at.replace('T', ' ').slice(0, 19) : '—');
+        _row('Last login', user.last_login_at ? user.last_login_at.replace('T', ' ').slice(0, 19) : '—');
+        _row('Last login IP', user.last_login_ip);
+        wrap.appendChild(grid);
+
+        // ---- Action buttons ----
+        const actRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap' });
+        const errEl = Utils.el('p', { className: 'text-error', style: 'display:none;margin:4px 0 0;font-size:12px' });
+
+        const _actionBtn = (label, cls, onClick) => {
+            const btn = Utils.el('button', { className: `btn btn-sm ${cls}`, textContent: label });
+            btn.addEventListener('click', async () => {
+                btn.disabled = true;
+                errEl.style.display = 'none';
+                try { await onClick(); } catch (e) {
+                    errEl.textContent = e.message;
+                    errEl.style.display = '';
+                } finally { btn.disabled = false; }
+            });
+            return btn;
+        };
+
+        if (user.is_active) {
+            actRow.appendChild(_actionBtn('Lock account', 'btn-danger', async () => {
+                await Api.post(`${_api()}/admin/users/${user.id}/lock`, {});
+                Utils.showToast('Account locked', 'warning');
+                Utils.closeModal();
+            }));
+        } else {
+            actRow.appendChild(_actionBtn('Unlock account', 'btn-secondary', async () => {
+                await Api.post(`${_api()}/admin/users/${user.id}/unlock`, {});
+                Utils.showToast('Account unlocked', 'success');
+                Utils.closeModal();
+            }));
+        }
+        actRow.appendChild(_actionBtn('Revoke all sessions', 'btn-secondary', async () => {
+            if (!confirm(`Revoke all sessions for ${user.username}? They will be logged out everywhere.`)) return;
+            const result = await Api.post(`${_api()}/admin/users/${user.id}/reset-password`, {});
+            Utils.showToast(result.message || 'Sessions revoked', 'success');
+        }));
+        wrap.appendChild(actRow);
+        wrap.appendChild(errEl);
+
+        // ---- Danger Zone ----
+        const dangerZone = Utils.el('div', { style: 'border-top:1px solid var(--color-danger,#dc2626);margin-top:14px;padding-top:10px' });
+        dangerZone.appendChild(Utils.el('h6', { textContent: 'Danger Zone', style: 'color:var(--color-danger,#dc2626);margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em' }));
+
+        const emergencyForm = Utils.el('div', { style: 'display:none;margin-top:8px;padding:10px;background:rgba(220,38,38,.07);border-radius:4px' });
+        const reasonInput = Utils.el('input', {
+            type: 'text', className: 'prompt-dialog-input',
+            placeholder: 'Reason for revocation (required)',
+            style: 'margin-bottom:6px;width:100%;box-sizing:border-box',
+        });
+        const scopeSel = Utils.el('select', { className: 'input-sm', style: 'width:100%;box-sizing:border-box;margin-bottom:6px' }, [
+            Utils.el('option', { value: 'owned_only',  textContent: 'Lock owned files only' }),
+            Utils.el('option', { value: 'all_access',  textContent: 'Lock all accessible files (owned + team)' }),
+        ]);
+        const notifyCheckId = `emergency-notify-${user.id}`;
+        const notifyCheck   = Utils.el('input', { type: 'checkbox', id: notifyCheckId });
+        const notifyRow     = Utils.el('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px' }, [
+            notifyCheck, Utils.el('label', { htmlFor: notifyCheckId, textContent: 'Notify escrow agents', style: 'font-size:12px;cursor:pointer' }),
+        ]);
+        const confirmRevokeBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Confirm Emergency Revoke' });
+        const cancelRevokeBtn  = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', style: 'margin-left:6px' });
+        confirmRevokeBtn.addEventListener('click', async () => {
+            const reason = reasonInput.value.trim();
+            if (!reason) { Utils.showToast('A reason is required', 'error'); return; }
+            if (!confirm(`EMERGENCY REVOKE "${user.username}"?\n\nThis will deactivate the account, revoke all sessions and shares, and transfer-lock files. This cannot be undone.`)) return;
+            confirmRevokeBtn.disabled = true;
+            try {
+                const r = await Api.post(`${_api()}/admin/users/${user.id}/emergency-revoke`, {
+                    reason, scope: scopeSel.value, notify_escrow: notifyCheck.checked,
+                });
+                Utils.showToast(`Emergency revoke: ${r.files_locked} file(s) locked, ${r.tokens_revoked} session(s) revoked`, 'success');
+                Utils.closeModal();
+            } catch (err) {
+                Utils.showToast('Emergency revoke failed: ' + err.message, 'error');
+                confirmRevokeBtn.disabled = false;
+            }
+        });
+        cancelRevokeBtn.addEventListener('click', () => { emergencyForm.style.display = 'none'; });
+        emergencyForm.append(
+            Utils.el('p', { textContent: 'Deactivates the account, revokes all sessions and shares, and transfer-locks files.', style: 'font-size:12px;color:var(--color-text-muted);margin:0 0 8px' }),
+            reasonInput, scopeSel, notifyRow,
+            Utils.el('div', {}, [confirmRevokeBtn, cancelRevokeBtn]),
+        );
+
+        const locksWrap = Utils.el('div', { style: 'margin-top:8px' });
+
+        const dangerActRow = Utils.el('div', { className: 'modal-actions', style: 'flex-wrap:wrap;gap:6px;margin-bottom:8px' });
+
+        dangerActRow.appendChild(_actionBtn('Emergency Revoke…', 'btn-danger', () => {
+            emergencyForm.style.display = emergencyForm.style.display === 'none' ? '' : 'none';
+        }));
+
+        const locksBtn = _actionBtn('View Transfer Locks', 'btn-secondary', async () => {
+            const data = await Api.get(`${_api()}/admin/users/${user.id}/transfer-locks`);
+            locksWrap.innerHTML = '';
+            if (!data.files || !data.files.length) {
+                locksWrap.appendChild(Utils.el('p', { textContent: 'No transfer locks on record.', className: 'text-muted', style: 'font-size:12px;margin:4px 0' }));
+                return;
+            }
+            const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-top:4px' });
+            tbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
+                Utils.el('th', { textContent: 'File' }),
+                Utils.el('th', { textContent: 'Locked at' }),
+                Utils.el('th', { textContent: 'Locked by' }),
+                Utils.el('th'),
+            ])]));
+            const tbody = Utils.el('tbody');
+            for (const f of data.files) {
+                const clearBtn = Utils.el('button', { className: 'btn btn-xs btn-secondary', textContent: 'Clear lock' });
+                clearBtn.addEventListener('click', async () => {
+                    if (!confirm(`Clear transfer lock on "${f.sanitized_name}"?`)) return;
+                    clearBtn.disabled = true;
+                    try {
+                        await Api.del(`${_api()}/admin/files/${f.id}/transfer-lock`);
+                        clearBtn.closest('tr').remove();
+                        Utils.showToast('Transfer lock cleared', 'success');
+                    } catch (err) {
+                        Utils.showToast('Clear failed: ' + err.message, 'error');
+                        clearBtn.disabled = false;
+                    }
+                });
+                tbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: f.sanitized_name }),
+                    Utils.el('td', { textContent: f.locked_at ? String(f.locked_at).slice(0, 16).replace('T', ' ') : '' }),
+                    Utils.el('td', { textContent: f.locked_by_username || '' }),
+                    Utils.el('td', {}, [clearBtn]),
+                ]));
+            }
+            tbl.appendChild(tbody);
+            locksWrap.appendChild(tbl);
+        });
+        dangerActRow.appendChild(locksBtn);
+
+        dangerActRow.appendChild(_actionBtn('Delete Asymmetric Keys…', 'btn-danger', async () => {
+            if (!confirm(`Delete asymmetric keys for "${user.username}"?\n\nThis will break team crypto for this user and is irreversible.`)) return;
+            if (!confirm('Second confirmation: permanently delete asymmetric keys?')) return;
+            try {
+                await Api.del(`${_api()}/admin/users/${user.id}/asymmetric-keys`);
+                Utils.showToast('Asymmetric keys deleted', 'warning');
+            } catch (err) {
+                Utils.showToast('Delete failed: ' + err.message, 'error');
+            }
+        }));
+
+        dangerZone.append(dangerActRow, emergencyForm, locksWrap);
+        wrap.appendChild(dangerZone);
+
+        // ---- Roles (B2: add/remove) ----
+        wrap.appendChild(Utils.el('h5', { textContent: 'Roles', style: 'margin:0 0 6px' }));
+        const rolesWrap = Utils.el('div', { style: 'margin-bottom:14px' });
+        wrap.appendChild(rolesWrap);
+
+        const _renderRoles = (currentRoles) => {
+            rolesWrap.innerHTML = '';
+            if (!currentRoles.length) {
+                rolesWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:12px', textContent: 'No roles assigned.' }));
+            }
+            for (const r of currentRoles) {
+                const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
+                row.appendChild(Utils.el('span', { textContent: r.name || r.id, style: 'font-size:13px;flex:1' }));
+                const remBtn = Utils.el('button', { className: 'btn btn-xs btn-danger', textContent: 'Remove' });
+                remBtn.addEventListener('click', async () => {
+                    remBtn.disabled = true;
+                    try {
+                        await Api.del(`${_api()}/admin/users/${user.id}/roles/${r.id}`);
+                        Utils.showToast(`Role ${r.name || r.id} removed`, 'success');
+                        const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
+                        _renderRoles(fresh.user.roles);
+                    } catch (e) {
+                        Utils.showToast('Remove failed: ' + e.message, 'error');
+                        remBtn.disabled = false;
+                    }
+                });
+                row.appendChild(remBtn);
+                rolesWrap.appendChild(row);
+            }
+            // Add role row
+            const assignedIds = new Set(currentRoles.map(r => r.id));
+            const available = (allRoles || []).filter(r => !assignedIds.has(r.id));
+            if (available.length) {
+                const addRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-top:6px' });
+                const roleSel = Utils.el('select', { className: 'input-sm', style: 'flex:1' });
+                available.forEach(r => roleSel.appendChild(Utils.el('option', { value: r.id, textContent: r.name || r.id })));
+                const addBtn = Utils.el('button', { className: 'btn btn-xs btn-primary', textContent: '+ Add role' });
+                addBtn.addEventListener('click', async () => {
+                    addBtn.disabled = true;
+                    try {
+                        await Api.post(`${_api()}/admin/users/${user.id}/roles/${roleSel.value}`, {});
+                        Utils.showToast('Role added', 'success');
+                        const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
+                        _renderRoles(fresh.user.roles);
+                    } catch (e) {
+                        Utils.showToast('Add failed: ' + e.message, 'error');
+                        addBtn.disabled = false;
+                    }
+                });
+                addRow.append(roleSel, addBtn);
+                rolesWrap.appendChild(addRow);
+            }
+        };
+        _renderRoles(user.roles || []);
+
+        // ---- Teams ----
+        if (user.teams && user.teams.length) {
+            wrap.appendChild(Utils.el('h5', { textContent: 'Team Memberships', style: 'margin:0 0 6px' }));
+            const teamList = Utils.el('ul', { style: 'font-size:13px;margin:0 0 14px;padding-left:18px' });
+            for (const t of user.teams) {
+                teamList.appendChild(Utils.el('li', { textContent: `${t.team_name}${t.team_role_name ? ' — ' + t.team_role_name : ''}` }));
+            }
+            wrap.appendChild(teamList);
+        }
+
+        // ---- Recent audit ----
+        if (user.recent_audit && user.recent_audit.length) {
+            wrap.appendChild(Utils.el('h5', { textContent: 'Recent Audit (last 10)', style: 'margin:0 0 6px' }));
+            const auditTbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-bottom:8px' });
+            auditTbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
+                Utils.el('th', { textContent: 'Time' }),
+                Utils.el('th', { textContent: 'Event' }),
+                Utils.el('th', { textContent: 'Outcome' }),
+                Utils.el('th', { textContent: 'IP' }),
+            ])]));
+            const atbody = Utils.el('tbody');
+            for (const e of user.recent_audit) {
+                atbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: e.timestamp ? e.timestamp.replace('T', ' ').slice(0, 19) : '' }),
+                    Utils.el('td', { textContent: e.event_type }),
+                    Utils.el('td', { textContent: e.outcome || '' }),
+                    Utils.el('td', { textContent: e.ip_address || '' }),
+                ]));
+            }
+            auditTbl.appendChild(atbody);
+            wrap.appendChild(auditTbl);
+        }
+    }
+
     function _buildAuditTable(events) {
         const table = Utils.el('table', { className: 'admin-table' });
         table.appendChild(Utils.el('thead', {}, [
@@ -2738,7 +3222,7 @@ const Admin = (() => {
                 Utils.el('th', { textContent: 'Type' }),
                 Utils.el('th', { textContent: 'Sev' }),
                 Utils.el('th', { textContent: 'Outcome' }),
-                Utils.el('th', { textContent: 'Actor' }),
+                Utils.el('th', { textContent: 'User' }),
                 Utils.el('th', { textContent: 'Target' }),
             ]),
         ]));
@@ -2767,12 +3251,30 @@ const Admin = (() => {
         if (ev.severity === 'critical') sevClass = 'badge-error';
         else if (ev.severity === 'warning') sevClass = 'badge-warning';
         else sevClass = 'badge-neutral';
+
+        const displayName = ev.actor_username || ev.actor_user_id || '';
+        let actorCell;
+        if (ev.actor_user_id && displayName) {
+            const link = Utils.el('a', {
+                textContent: displayName,
+                href: '#',
+                style: 'cursor:pointer',
+            });
+            link.addEventListener('click', (e) => {
+                e.preventDefault();
+                _showUserDetailModal(ev.actor_user_id, ev.actor_username);
+            });
+            actorCell = Utils.el('td', {}, [link]);
+        } else {
+            actorCell = Utils.el('td', { textContent: displayName });
+        }
+
         return Utils.el('tr', {}, [
             Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '' }),
             Utils.el('td', { textContent: ev.event_type }),
             Utils.el('td', {}, [Utils.el('span', { className: `badge ${sevClass}`, textContent: ev.severity || 'info' })]),
             Utils.el('td', { textContent: ev.outcome || '' }),
-            Utils.el('td', { textContent: ev.actor_username || ev.actor_user_id || '' }),
+            actorCell,
             Utils.el('td', { textContent: ev.target_name || ev.target_id || '' }),
         ]);
     }
@@ -2877,7 +3379,8 @@ const Admin = (() => {
     function _showSiemModal(dest, listContainer, filterProfiles) {
         const isEdit = dest !== null;
         const title  = isEdit ? 'Edit SIEM Destination' : 'Add SIEM Destination';
-        const { body, close } = Utils.openModal(title);
+        const body   = Utils.el('div');
+        const close  = Utils.showModal(title, body);
 
         const nameIn   = Utils.el('input', { type: 'text',     className: 'input-sm', value: dest?.name || '',    placeholder: 'Friendly name', style: 'width:100%; margin-bottom:8px' });
         const typeSel  = Utils.el('select', { className: 'input-sm', style: 'margin-bottom:8px' });
@@ -3175,6 +3678,23 @@ const Admin = (() => {
             Utils.el('label', { htmlFor: 'warn-bytes', className: 'settings-label', textContent: 'Warn when free space below (bytes)' }),
             warnBytesIn,
         ]));
+
+        const tierBtnRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-top:12px;flex-wrap:wrap' });
+        const triggerBtn = Utils.el('button', { className: 'btn btn-secondary', textContent: 'Trigger Tiering Now' });
+        triggerBtn.addEventListener('click', async () => {
+            if (!confirm('Manually trigger a tiering pass now?')) return;
+            triggerBtn.disabled = true;
+            try {
+                const r = await Api.post(`${_api()}/admin/storage/tiering/trigger`, {});
+                Utils.showToast(r.message || 'Tiering pass triggered', 'success');
+            } catch (err) {
+                Utils.showToast('Trigger failed: ' + err.message, 'error');
+            } finally {
+                triggerBtn.disabled = false;
+            }
+        });
+        tierBtnRow.appendChild(triggerBtn);
+        wrap.appendChild(tierBtnRow);
 
         wrap.appendChild(Utils.el('button', {
             className: 'btn btn-primary', style: 'margin-top:12px',
@@ -3677,10 +4197,10 @@ const Admin = (() => {
     }
 
     const _KEY_SCOPES = [
-        { value: 'ops_read',           label: 'ops_read',           desc: 'Read operational events (/op-events)' },
-        { value: 'audit_read',         label: 'audit_read',         desc: 'Read security audit logs (/admin/audit/logs)' },
-        { value: 'events.read',        label: 'events.read',        desc: 'Legacy alias for ops_read (backward compat)' },
-        { value: 'notification_write', label: 'notification_write', desc: 'Internal — channel delivery auth' },
+        { value: 'ops_read',           label: 'ops_read — Operational Events',   desc: 'Read live operational events (/op-events). Use for SIEM streaming or monitoring.' },
+        { value: 'audit_read',         label: 'audit_read — Security Audit Log', desc: 'Read security audit logs (/admin/audit/logs). Use for compliance log exports.' },
+        { value: 'events.read',        label: 'events.read — Legacy Alias',      desc: 'Alias for ops_read; included for backward compatibility with older integrations.' },
+        { value: 'notification_write', label: 'notification_write — Delivery',   desc: 'Internal use only — authorises webhook channel delivery. Do not issue to external callers.' },
     ];
 
     function _buildApiKeyRow(k, container) {
@@ -3728,12 +4248,19 @@ const Admin = (() => {
         container.innerHTML = '';
         const wrap = Utils.el('div', { style: 'padding:16px' });
 
-        const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px' });
+        const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px' });
         header.appendChild(Utils.el('h3', { textContent: 'API Keys', style: 'margin:0' }));
         const createBtn = Utils.el('button', { textContent: '+ Create API Key', className: 'btn btn-primary btn-sm' });
         createBtn.addEventListener('click', () => _showApiKeyModal(container));
         header.appendChild(createBtn);
         wrap.appendChild(header);
+        wrap.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'font-size:13px;margin-bottom:16px',
+            textContent: 'API keys authenticate machine-to-machine access — for example, SIEM log ingestion or custom monitoring integrations. '
+                + 'Browser sessions use JWT cookies and do not need API keys. '
+                + 'Scope each key to the minimum required access.',
+        }));
 
         if (keys.length === 0) {
             wrap.appendChild(Utils.el('p', { textContent: 'No API keys.', className: 'text-muted' }));
@@ -4240,6 +4767,10 @@ const Admin = (() => {
                 className: 'text-muted policy-sub-hint',
                 textContent: 'Rules are evaluated in priority order (lowest number first). The first matching deny wins; an explicit allow overrides earlier denies.',
             }),
+            Utils.el('p', {
+                className: 'text-muted',
+                textContent: 'These rules dictate how users may or may not share files or folders. For example, blocking OIDC users from sharing outside of your @example.com domain.',
+            }),
         ]));
 
         const rules = data.rules || [];
@@ -4253,6 +4784,7 @@ const Admin = (() => {
             container.appendChild(list);
         }
 
+        _renderSharingAttributeRef(container);
         _renderSharingTestPanel(container);
     }
 
@@ -4447,8 +4979,8 @@ const Admin = (() => {
                 conditions.forEach((cond, idx) => { // NOSONAR — closures over cond/idx; unavoidable nesting
                     const pathEl = Utils.el('input', {
                         type: 'text', className: 'input-sm', value: cond.attribute_path ?? '',
-                        placeholder: 'source.attr',
-                        style: 'width:140px',
+                        placeholder: 'e.g. internal.email',
+                        style: 'width:150px',
                     });
                     pathEl.addEventListener('input', () => { conditions[idx].attribute_path = pathEl.value; }); // NOSONAR
 
@@ -4561,11 +5093,113 @@ const Admin = (() => {
                 activeCheck,
             ]),
             Utils.el('h5', { textContent: 'Conditions', style: 'margin-top:16px' }),
+            Utils.el('p', {
+                className: 'text-muted',
+                style: 'font-size:0.8em;margin:0 0 6px',
+                textContent: 'Attribute paths: internal.{username|email|display_name|created_at}, ldap.{attr}, oidc.{claim}. See Attribute Reference below for available keys.',
+            }),
             condTable,
             saveBtn,
         ]);
 
         Utils.showModal(isEdit ? `Edit Rule — ${existing.name}` : 'Create Sharing Rule', form);
+    }
+
+    const _INTERNAL_ATTRS = [
+        { path: 'internal.username',     desc: 'Username of the user' },
+        { path: 'internal.email',        desc: 'Email address' },
+        { path: 'internal.display_name', desc: 'Display name' },
+        { path: 'internal.created_at',   desc: 'Account creation timestamp (ISO 8601 string)' },
+    ];
+
+    function _renderSharingAttributeRef(container) {
+        const wrap = Utils.el('div', { className: 'policy-subsection', style: 'margin-top:24px' });
+        const body = Utils.el('div', { style: 'display:none' });
+        let loaded = false;
+
+        const toggle = Utils.el('button', {
+            className: 'btn btn-sm btn-outline-secondary',
+            style: 'margin-bottom:8px',
+            textContent: 'Attribute Reference ▾',
+            onClick: () => {
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : '';
+                toggle.textContent = open ? 'Attribute Reference ▾' : 'Attribute Reference ▴';
+                if (!open && !loaded) {
+                    loaded = true;
+                    _loadSharingAttributeRef(body);
+                }
+            },
+        });
+
+        wrap.appendChild(Utils.el('h4', { textContent: 'Attribute Reference', style: 'margin-bottom:4px' }));
+        wrap.appendChild(Utils.el('p', {
+            className: 'text-muted policy-sub-hint',
+            textContent: 'Attribute paths available for sharing rule conditions, grouped by source.',
+        }));
+        wrap.appendChild(toggle);
+        wrap.appendChild(body);
+        container.appendChild(wrap);
+    }
+
+    async function _loadSharingAttributeRef(body) {
+        body.innerHTML = '<p class="text-muted">Loading…</p>';
+
+        // Built-in attributes table
+        const internalTable = Utils.el('table', { className: 'policy-table', style: 'margin-bottom:16px' });
+        internalTable.innerHTML = `<thead><tr><th>Attribute path</th><th>Description</th></tr></thead>`;
+        const internalTbody = Utils.el('tbody');
+        for (const a of _INTERNAL_ATTRS) {
+            internalTbody.appendChild(Utils.el('tr', {}, [
+                Utils.el('td', {}, [Utils.el('code', { textContent: a.path })]),
+                Utils.el('td', { textContent: a.desc }),
+            ]));
+        }
+        internalTable.appendChild(internalTbody);
+
+        body.innerHTML = '';
+        body.appendChild(Utils.el('h5', { textContent: 'Built-in (internal.*)', style: 'margin-bottom:6px' }));
+        body.appendChild(internalTable);
+
+        // IdP-observed attributes from backend
+        try {
+            const data = await Api.get(`${_api()}/admin/sharing/attributes`);
+            const observed = data.observed || {};
+
+            if (Object.keys(observed).length === 0) {
+                body.appendChild(Utils.el('p', {
+                    className: 'text-muted',
+                    textContent: 'No LDAP or OIDC users found — IdP attribute keys will appear here once users have authenticated via an identity provider.',
+                }));
+            } else {
+                for (const [source, keys] of Object.entries(observed)) {
+                    body.appendChild(Utils.el('h5', {
+                        textContent: source === 'ldap' ? 'LDAP attributes (ldap.*)' : 'OIDC claims (oidc.*)',
+                        style: 'margin:12px 0 6px',
+                    }));
+                    if (keys.length === 0) {
+                        body.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No attributes observed yet.' }));
+                        continue;
+                    }
+                    const idpTable = Utils.el('table', { className: 'policy-table' });
+                    idpTable.innerHTML = `<thead><tr><th>Attribute path</th><th>Notes</th></tr></thead>`;
+                    const idpTbody = Utils.el('tbody');
+                    for (const key of keys) {
+                        idpTbody.appendChild(Utils.el('tr', {}, [
+                            Utils.el('td', {}, [Utils.el('code', { textContent: `${source}.${key}` })]),
+                            Utils.el('td', { className: 'text-muted', textContent: 'Observed in user claims cache' }),
+                        ]));
+                    }
+                    idpTable.appendChild(idpTbody);
+                    body.appendChild(idpTable);
+                }
+            }
+        } catch {
+            body.appendChild(Utils.el('p', {
+                className: 'text-muted',
+                textContent: 'IdP attributes could not be loaded. LDAP attributes use ldap.{attr} and OIDC claims use oidc.{claim}.',
+            }));
+        }
     }
 
     function _renderSharingTestPanel(container) {
@@ -4705,7 +5339,9 @@ const Admin = (() => {
                 Utils.showToast('Delete failed: ' + err.message, 'error');
             }
         });
-        actionsCell.append(rotateBtn, toggleBtn, deleteBtn);
+        const rolesBtn = Utils.el('button', { textContent: 'Roles', className: 'btn btn-sm', style: 'margin-right:4px' });
+        rolesBtn.addEventListener('click', () => _showUserDetailModal(sa.id, sa.username));
+        actionsCell.append(rotateBtn, rolesBtn, toggleBtn, deleteBtn);
         return tr;
     }
 
@@ -4892,64 +5528,213 @@ const Admin = (() => {
         applySection.appendChild(applyBtn);
         container.appendChild(applySection);
 
-        // ---- Export current settings -----------------------------------------
-        const exportSection = Utils.el('div', { style: 'margin-bottom:24px' });
-        exportSection.appendChild(Utils.el('h5', { textContent: 'Export Current Settings', style: 'margin-bottom:8px' }));
-        exportSection.appendChild(Utils.el('p', {
+        container.appendChild(Utils.el('p', {
             className: 'text-muted',
-            style: 'margin-bottom:12px',
-            textContent: 'Download the current security profile as a JSON file. User IDs are stripped; role IDs are preserved.',
+            style: 'font-size:12px;margin-top:8px',
+            textContent: 'To export or import full configuration (roles, policies, integrations, etc.) use the Import / Export tab.',
         }));
-        const exportBtn = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Export Settings' });
+    }
+
+    // ------------------------------------------------------------------
+    // Import / Export tab
+    // ------------------------------------------------------------------
+
+    const _EXPORT_CATEGORIES = [
+        { id: 'security_profile', label: 'Security Profile',       desc: 'Sharing restrictions, escrow settings, and sharing flags for role_user.' },
+        { id: 'roles',            label: 'Roles & Permissions',    desc: 'All roles (system and custom) with their permission flag values.' },
+        { id: 'admin_settings',   label: 'Admin Settings',         desc: 'MFA policy, registration, file size limits, audit retention, etc. (credentials excluded).' },
+        { id: 'policies',         label: 'Policies (org-scoped)',  desc: 'Org-level policy engine policies and conditions. Effects (team/folder grants) are excluded — re-add after import.' },
+        { id: 'policy_fields',    label: 'Custom Policy Fields',   desc: 'Custom LDAP/OIDC attribute definitions added to the policy field registry.' },
+        { id: 'siem',             label: 'SIEM Destinations',      desc: 'Syslog and webhook SIEM destinations. Signing secrets excluded — reconfigure after import.' },
+        { id: 'notifications',    label: 'Notification Channels',  desc: 'Outbound webhook notification channels. Signing secrets excluded — reconfigure after import.' },
+        { id: 'storage',          label: 'Storage Providers',      desc: 'Storage volume metadata (name, provider, tier). Credentials excluded — reconfigure after import. Always merged, never deleted.' },
+    ];
+
+    async function _renderExportSection(container) {
+        container.innerHTML = '';
+        const wrap = Utils.el('div', { style: 'padding:4px 0' });
+
+        // ---- Export -----------------------------------------------------------
+        const exportDiv = Utils.el('div', { style: 'margin-bottom:32px' });
+        exportDiv.appendChild(Utils.el('h5', { textContent: 'Export', style: 'margin-bottom:6px' }));
+        exportDiv.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'margin-bottom:14px',
+            textContent: 'Select the categories to include in the export file. Credentials and instance-specific IDs (user IDs, file IDs) are always excluded.',
+        }));
+
+        const checks = {};
+        const checkList = Utils.el('div', { style: 'margin-bottom:14px' });
+        for (const cat of _EXPORT_CATEGORIES) {
+            const row = Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:8px' });
+            const cb  = Utils.el('input', { type: 'checkbox', checked: true, style: 'margin-top:2px;width:15px;height:15px;flex-shrink:0;cursor:pointer' });
+            const lbl = Utils.el('div', { style: 'cursor:pointer' });
+            lbl.appendChild(Utils.el('span', { textContent: cat.label, style: 'font-weight:600;font-size:13px;display:block' }));
+            lbl.appendChild(Utils.el('span', { textContent: cat.desc, className: 'text-muted', style: 'font-size:12px' }));
+            lbl.addEventListener('click', () => { cb.checked = !cb.checked; });
+            checks[cat.id] = cb;
+            row.append(cb, lbl);
+            checkList.appendChild(row);
+        }
+        exportDiv.appendChild(checkList);
+
+        const exportErrEl = Utils.el('p', { className: 'text-danger', style: 'display:none;font-size:13px;margin-bottom:8px' });
+        exportDiv.appendChild(exportErrEl);
+
+        const exportBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Export Selected →' });
         exportBtn.addEventListener('click', async () => {
+            const cats = _EXPORT_CATEGORIES.map(c => c.id).filter(id => checks[id].checked);
+            if (!cats.length) { exportErrEl.textContent = 'Select at least one category.'; exportErrEl.style.display = ''; return; }
+            exportErrEl.style.display = 'none';
             exportBtn.disabled = true;
             exportBtn.textContent = 'Exporting…';
             try {
-                const data  = await Api.get(`${_api()}/admin/settings/export`);
-                const blob  = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-                const url   = URL.createObjectURL(blob);
-                const a     = document.createElement('a');
-                a.href      = url;
-                a.download  = `filexfer-profile-${new Date().toISOString().slice(0,10)}.json`;
+                const data = await Api.get(`${_api()}/admin/settings/full-export?categories=${encodeURIComponent(cats.join(','))}`);
+                const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+                const url  = URL.createObjectURL(blob);
+                const a    = document.createElement('a');
+                a.href     = url;
+                a.download = `filexfer-export-${new Date().toISOString().slice(0, 10)}.json`;
                 a.click();
                 URL.revokeObjectURL(url);
             } catch (err) {
-                _showError(exportSection, 'Export failed: ' + err.message);
+                exportErrEl.textContent = 'Export failed: ' + err.message;
+                exportErrEl.style.display = '';
             } finally {
                 exportBtn.disabled = false;
-                exportBtn.textContent = 'Export Settings';
+                exportBtn.textContent = 'Export Selected →';
             }
         });
-        exportSection.appendChild(exportBtn);
-        container.appendChild(exportSection);
+        exportDiv.appendChild(exportBtn);
+        wrap.appendChild(exportDiv);
 
-        // ---- Import profile from file ----------------------------------------
-        const importSection = Utils.el('div', { style: 'margin-bottom:24px' });
-        importSection.appendChild(Utils.el('h5', { textContent: 'Import Profile from File', style: 'margin-bottom:8px' }));
-        importSection.appendChild(Utils.el('p', {
+        // ---- Divider -----------------------------------------------------------
+        wrap.appendChild(Utils.el('hr', { style: 'border-color:var(--color-border);margin:0 0 28px' }));
+
+        // ---- Import -----------------------------------------------------------
+        const importDiv = Utils.el('div');
+        importDiv.appendChild(Utils.el('h5', { textContent: 'Import', style: 'margin-bottom:6px' }));
+        importDiv.appendChild(Utils.el('p', {
             className: 'text-muted',
-            style: 'margin-bottom:12px',
-            textContent: 'Load a previously exported profile JSON and apply it to this instance.',
+            style: 'margin-bottom:14px',
+            textContent: 'Import a previously exported configuration file. Only categories present in the file and checked below will be applied.',
         }));
 
-        const fileInput  = Utils.el('input', { type: 'file', accept: '.json', style: 'margin-bottom:8px;display:block' });
-        const modeSelect = Utils.el('select', { className: 'form-select form-select-sm', style: 'width:auto;display:inline-block;margin-right:8px' }, [
-            Utils.el('option', { value: 'replace', textContent: 'Replace all' }),
-            Utils.el('option', { value: 'merge',   textContent: 'Merge (review diff)' }),
+        let _parsedImport = null;
+        let _importCategories = [];
+
+        const fileInp = Utils.el('input', { type: 'file', accept: '.json', style: 'display:block;margin-bottom:8px' });
+        const fileStatus = Utils.el('p', { style: 'font-size:12px;margin:0 0 10px' });
+        importDiv.append(fileInp, fileStatus);
+
+        const importCatWrap = Utils.el('div', { style: 'display:none;margin-bottom:12px' });
+        const importCatList = Utils.el('div', { style: 'margin-bottom:10px' });
+        importCatWrap.appendChild(Utils.el('p', { textContent: 'Categories in file:', style: 'font-weight:600;font-size:13px;margin-bottom:6px' }));
+        importCatWrap.appendChild(importCatList);
+        importDiv.appendChild(importCatWrap);
+
+        const modeRow = Utils.el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:12px' });
+        modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0;font-size:13px;white-space:nowrap' }));
+        const modeSel = Utils.el('select', { className: 'form-select form-select-sm', style: 'width:auto' }, [
+            Utils.el('option', { value: 'replace', textContent: 'Replace — wipe and overwrite each selected category' }),
+            Utils.el('option', { value: 'merge',   textContent: 'Merge — add or update, keep existing entries not in file' }),
         ]);
-        const importBtn  = Utils.el('button', { className: 'btn btn-warning btn-sm', textContent: 'Preview Import' });
-        importBtn.addEventListener('click', async () => {
-            if (!fileInput.files[0]) { alert('Select a profile JSON file first.'); return; }
+        modeRow.appendChild(modeSel);
+        importDiv.appendChild(modeRow);
+
+        const importErrEl  = Utils.el('p', { className: 'text-danger',  style: 'display:none;font-size:13px;margin-bottom:8px' });
+        const importOkEl   = Utils.el('p', { className: 'text-success', style: 'display:none;font-size:13px;margin-bottom:8px' });
+        importDiv.append(importErrEl, importOkEl);
+
+        const importBtn = Utils.el('button', { className: 'btn btn-warning btn-sm', textContent: 'Apply Import', disabled: true });
+        importDiv.appendChild(importBtn);
+
+        const importCatChecks = {};
+
+        fileInp.addEventListener('change', async () => {
+            _parsedImport = null;
+            _importCategories = [];
+            importCatWrap.style.display = 'none';
+            importCatList.innerHTML = '';
+            importBtn.disabled = true;
+            importErrEl.style.display = 'none';
+            importOkEl.style.display = 'none';
+            if (!fileInp.files[0]) return;
             try {
-                const text = await fileInput.files[0].text();
-                const profileJson = JSON.parse(text);
-                _showImportProfileModal(profileJson, modeSelect.value, () => _renderProfilesSection(container));
-            } catch {
-                alert('Failed to parse profile file. Ensure it is valid JSON.');
+                const text = await fileInp.files[0].text();
+                _parsedImport = JSON.parse(text);
+                const meta = _parsedImport._meta || {};
+                const fmtVer = meta.format_version || '?';
+                const cats   = meta.categories || Object.keys(_parsedImport).filter(k => !k.startsWith('_'));
+                _importCategories = cats;
+
+                fileStatus.style.color = 'var(--color-success)';
+                fileStatus.textContent = `✓ Loaded (format v${fmtVer}, exported ${meta.exported_at ? meta.exported_at.slice(0,10) : '?'})`;
+
+                // Build category checkboxes
+                importCatList.innerHTML = '';
+                for (const catId of cats) {
+                    const catMeta = _EXPORT_CATEGORIES.find(c => c.id === catId);
+                    const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:6px' });
+                    const cb  = Utils.el('input', { type: 'checkbox', checked: true, style: 'width:15px;height:15px;cursor:pointer' });
+                    const lbl = Utils.el('span', { textContent: catMeta ? catMeta.label : catId, style: 'font-size:13px;cursor:pointer' });
+                    lbl.addEventListener('click', () => { cb.checked = !cb.checked; });
+                    importCatChecks[catId] = cb;
+                    row.append(cb, lbl);
+                    importCatList.appendChild(row);
+                }
+
+                if (_parsedImport._warnings?.length) {
+                    const warnBox = Utils.el('div', { style: 'background:var(--color-warning-muted,#fff3cd);border:1px solid var(--color-warning,#ffc107);border-radius:4px;padding:8px;margin-top:8px' });
+                    for (const w of _parsedImport._warnings) {
+                        warnBox.appendChild(Utils.el('p', { textContent: w, style: 'font-size:12px;margin:2px 0' }));
+                    }
+                    importCatList.appendChild(warnBox);
+                }
+
+                importCatWrap.style.display = '';
+                importBtn.disabled = false;
+            } catch (e) {
+                fileStatus.style.color = 'var(--color-danger)';
+                fileStatus.textContent = '✗ Could not parse file — confirm it is valid JSON';
             }
         });
-        importSection.append(fileInput, Utils.el('div', {}, [modeSelect, importBtn]));
-        container.appendChild(importSection);
+
+        importBtn.addEventListener('click', async () => {
+            if (!_parsedImport) return;
+            const selCats = _importCategories.filter(id => importCatChecks[id]?.checked);
+            if (!selCats.length) { importErrEl.textContent = 'Select at least one category.'; importErrEl.style.display = ''; return; }
+            const mode = modeSel.value;
+            const confirmMsg = mode === 'replace'
+                ? `Replace selected categories (${selCats.join(', ')}) with data from the file?\n\nThis will overwrite existing entries for these categories. Continue?`
+                : `Merge selected categories (${selCats.join(', ')}) from file into current config?\n\nExisting entries not in the file are kept.`;
+            if (!confirm(confirmMsg)) return;
+            importBtn.disabled = true;
+            importBtn.textContent = 'Applying…';
+            importErrEl.style.display = 'none';
+            importOkEl.style.display = 'none';
+            try {
+                const result = await Api.post(`${_api()}/admin/settings/full-import`, {
+                    data: _parsedImport,
+                    categories: selCats,
+                    mode,
+                });
+                const summary = Object.entries(result.items_applied || {})
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join(', ');
+                importOkEl.textContent = `✓ Import applied. Items: ${summary || 'none'}`;
+                importOkEl.style.display = '';
+            } catch (err) {
+                importErrEl.textContent = 'Import failed: ' + err.message;
+                importErrEl.style.display = '';
+            } finally {
+                importBtn.disabled = false;
+                importBtn.textContent = 'Apply Import';
+            }
+        });
+
+        wrap.appendChild(importDiv);
+        container.appendChild(wrap);
     }
 
     function _showApplyProfileModal(profileId, refreshFn) {

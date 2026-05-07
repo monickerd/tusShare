@@ -57,6 +57,8 @@ _SETTINGS_VALIDATORS = {
     "mfa_oidc_exempt":        lambda v: v in ("0", "1"),
     # Emergency revocation
     "notify_escrow_on_revocation": lambda v: v in ("0", "1"),
+    # Escrow coverage enforcement
+    "escrow_require_coverage":     lambda v: v in ("0", "1"),
     # Self-service account deletion
     "allow_user_delete_own_account": lambda v: v in ("true", "false"),
     "can_delete_owned_shared":       lambda v: v in ("true", "false"),
@@ -384,6 +386,11 @@ _LOGO_ALLOWED_MIME: frozenset[str] = frozenset({
     "image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/webp",
 })
 
+_FAVICON_MAX_BYTES = 256 * 1024  # 256 KB
+_FAVICON_ALLOWED_MIME: frozenset[str] = frozenset({
+    "image/png", "image/x-icon", "image/vnd.microsoft.icon", "image/svg+xml",
+})
+
 
 @router.post("/theme/logo", responses={400: {"description": "Bad Request"}, 413: {"description": "413"}, 500: {"description": "Internal Server Error"}})
 async def upload_theme_logo(
@@ -449,6 +456,66 @@ async def upload_theme_logo(
     load_theme(settings.DATA_DIR)
 
     return {"message": "Logo uploaded", "logo_path": safe_name, "logo_url": "/api/v1/theme/logo"}
+
+
+@router.post("/theme/favicon", responses={400: {"description": "Bad Request"}, 413: {"description": "413"}, 500: {"description": "Internal Server Error"}})
+async def upload_theme_favicon(
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    file: Annotated[UploadFile, File(...)],
+):
+    """Upload an org favicon to DATA_DIR and wire it into theme.json.
+
+    Accepts PNG, ICO, and SVG.  Max 256 KB.  Triggers a hot-reload after saving.
+    """
+    import re as _re
+    from pathlib import Path as _Path
+    from app.util.theme import inject_theme, load_theme, _LOGO_FILENAME_RE
+
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    content_type, _ = mimetypes.guess_type(file.filename)
+    if content_type not in _FAVICON_ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail="Favicon must be PNG, ICO, or SVG",
+        )
+
+    safe_name = _re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+    if not _LOGO_FILENAME_RE.match(safe_name):
+        raise HTTPException(status_code=400, detail="Invalid favicon filename")
+
+    data = await file.read(_FAVICON_MAX_BYTES + 1)
+    if len(data) > _FAVICON_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Favicon must be ≤ 256 KB")
+
+    dest = settings.DATA_DIR / safe_name
+    try:
+        dest.write_bytes(data)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save favicon: {exc}")
+
+    path = settings.DATA_DIR / "theme.json"
+    existing: dict = {}
+    if path.exists():
+        try:
+            existing = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            existing = {}
+    existing["favicon_path"] = safe_name
+
+    tmp = path.with_suffix(".json.tmp")
+    try:
+        tmp.write_text(_json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to update theme.json: {exc}")
+
+    frontend_dir = _Path(__file__).parent.parent.parent / "frontend"
+    inject_theme(frontend_dir, settings.DATA_DIR)
+    load_theme(settings.DATA_DIR)
+
+    return {"message": "Favicon uploaded", "favicon_path": safe_name, "favicon_url": "/api/v1/theme/favicon"}
 
 
 class CreateInviteShortLinkRequest(BaseModel):

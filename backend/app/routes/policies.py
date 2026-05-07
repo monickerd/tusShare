@@ -211,7 +211,26 @@ async def create_policy(
     if body.scope_type == "team":
         if not body.scope_id:
             raise HTTPException(status_code=400, detail="scope_id (team_id) is required for team-scoped policies")
-        scope_id = validate_uuid(body.scope_id)
+        try:
+            scope_id = validate_uuid(body.scope_id)
+        except ValueError:
+            # Input isn't a UUID — try resolving as a team name
+            cursor = await db.execute(
+                "SELECT id FROM teams WHERE LOWER(name) = LOWER(?)",
+                (body.scope_id,),
+            )
+            rows = await cursor.fetchall()
+            if not rows:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"'{body.scope_id}' is not a valid team UUID or name. Use the team's UUID as scope_id.",
+                )
+            if len(rows) > 1:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Multiple teams match '{body.scope_id}'. Use the team's UUID as scope_id.",
+                )
+            scope_id = rows[0]["id"]
         cursor = await db.execute(_SQL_TEAM_EXISTS, (scope_id,))
         if await cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)

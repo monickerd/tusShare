@@ -17,6 +17,15 @@ const App = (() => {
             if (_themeConfig.brand_name) {
                 document.title = _themeConfig.brand_name;
             }
+            if (_themeConfig.favicon_url) {
+                let link = document.querySelector("link[rel~='icon']");
+                if (!link) {
+                    link = document.createElement('link');
+                    link.rel = 'icon';
+                    document.head.appendChild(link);
+                }
+                link.href = _themeConfig.favicon_url;
+            }
         } catch {
             _themeConfig = {};
         }
@@ -62,6 +71,7 @@ const App = (() => {
         { pattern: /^#\/admin$/,                                                              handler: _routeAdmin },
         { pattern: /^#\/setup$/,                                                              handler: _routeSetup },
         { pattern: /^#\/join\/([0-9a-f-]+)\/([0-9a-f-]+)\/([A-Za-z0-9_-]+)$/,               handler: _routeEphemeralJoin },
+        { pattern: /^#\/search(\?.*)?$/,                                                      handler: _routeSearch },
         { pattern: /^#\/mfa$/,                                                                handler: _routeMfa },
         { pattern: /^#\/s\/(.+)$/,                                                            handler: _routePublicShare },
         { pattern: /^#\/l\/(.+)$/,                                                            handler: _routeShortLink },
@@ -167,6 +177,7 @@ const App = (() => {
         if (await _checkKeyAndMfa()) return;
 
         Auth.startIdentityWatch();
+        await _loadPinnedFolders();
 
         const defaultHash = Auth.getCurrentUser()?.is_admin ? '#/admin' : '#/files';
         if (!globalThis.location.hash || globalThis.location.hash === '#/') {
@@ -247,13 +258,170 @@ const App = (() => {
         Auth.renderLogin(container);
     }
 
+    // -----------------------------------------------------------------------
+    // Pinned Folders — DB-backed (ui_prefs.pinned_folders)
+    // -----------------------------------------------------------------------
+
+    let _pinnedFolders = [];
+
+    function _getPinnedFolders() {
+        return _pinnedFolders;
+    }
+
+    function _savePinnedFolders(pins) {
+        _pinnedFolders = pins;
+        Api.patch(`${Config.app.apiPrefix}/auth/me/prefs`, { pinned_folders: pins }).catch(() => {});
+    }
+
+    async function _loadPinnedFolders() {
+        try {
+            const data = await Api.get(`${Config.app.apiPrefix}/auth/me/prefs`);
+            _pinnedFolders = data.ui_prefs?.pinned_folders || [];
+        } catch {
+            _pinnedFolders = [];
+        }
+    }
+
+    function _pinFolder(id, name, hash) {
+        const pins = _getPinnedFolders().filter(p => p.id !== id);
+        pins.push({ id, name, hash });
+        _savePinnedFolders(pins);
+        const el = document.getElementById('pinned-folders-sidebar');
+        if (el) _renderPinnedSidebar(el);
+    }
+
+    function _unpinFolder(id) {
+        _savePinnedFolders(_getPinnedFolders().filter(p => p.id !== id));
+        const el = document.getElementById('pinned-folders-sidebar');
+        if (el) _renderPinnedSidebar(el);
+    }
+
+    function _renderPinnedSidebar(container) {
+        container.innerHTML = '';
+        const pins = _getPinnedFolders();
+        if (!pins.length) return;
+
+        container.appendChild(Utils.el('div', { className: 'sidebar-section-label', textContent: 'Favourites' }));
+        for (const pin of pins) {
+            const row = Utils.el('div', { className: 'pinned-folder-row' });
+            row.appendChild(Utils.el('a', {
+                href: pin.hash || `#/files/${pin.id}`,
+                className: 'sidebar-link sidebar-sublink pinned-folder-link',
+                textContent: pin.name,
+                style: 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
+            }));
+            const unpinBtn = Utils.el('button', {
+                className: 'pinned-unpin-btn',
+                title: 'Remove from Favourites',
+                textContent: '×',
+            });
+            unpinBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                _unpinFolder(pin.id);
+            });
+            row.appendChild(unpinBtn);
+            container.appendChild(row);
+        }
+    }
+
     function _routePinned(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
-        main.appendChild(Utils.el('div', { className: 'page-content' }, [
-            Utils.el('h2', { textContent: 'Pinned' }),
-            Utils.el('p', { className: 'text-muted', textContent: 'No pinned items yet. Pinning files and folders for quick access is coming soon.' }),
-        ]));
+        const pins = _getPinnedFolders();
+        const page = Utils.el('div', { className: 'page-content' }, [
+            Utils.el('h2', { textContent: 'Favourites' }),
+        ]);
+        if (!pins.length) {
+            page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No favourites yet. Navigate to a folder and click the star icon in the breadcrumb trail.' }));
+        } else {
+            const ul = Utils.el('ul', { style: 'list-style:none;padding:0' });
+            for (const pin of pins) {
+                ul.appendChild(Utils.el('li', { style: 'margin:6px 0' }, [
+                    Utils.el('a', { href: pin.hash || `#/files/${pin.id}`, textContent: pin.name, className: 'folder-link' }),
+                ]));
+            }
+            page.appendChild(ul);
+        }
+        main.appendChild(page);
+    }
+
+    // Expose pinFolder so files.js can call it
+    function pinCurrentFolder(id, name, hash) {
+        _pinFolder(id, name, hash);
+    }
+
+    async function _routeSearch(container) {
+        _renderShell(container);
+        const main = document.getElementById('main-content');
+        const params = new URLSearchParams(globalThis.location.hash.split('?')[1] || '');
+        const q = params.get('q') || '';
+
+        const page = Utils.el('div', { className: 'page-content' });
+        page.appendChild(Utils.el('h2', { textContent: q ? `Search: ${q}` : 'File Search', style: 'margin-bottom:12px' }));
+
+        const searchRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-bottom:16px' });
+        const input = Utils.el('input', {
+            type: 'text',
+            className: 'input-sm',
+            value: q,
+            placeholder: 'Search filenames…',
+            style: 'width:280px',
+        });
+        const btn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Search' });
+        searchRow.append(input, btn);
+        page.appendChild(searchRow);
+
+        const resultsEl = Utils.el('div');
+        page.appendChild(resultsEl);
+        main.appendChild(page);
+
+        const _doSearch = async (term) => {
+            if (!term.trim()) { resultsEl.innerHTML = ''; return; }
+            resultsEl.textContent = 'Searching…';
+            try {
+                const data = await Api.get(`${Config.app.apiPrefix}/files/search?q=${encodeURIComponent(term.trim())}`);
+                resultsEl.innerHTML = '';
+                const files = data.files || [];
+                if (!files.length) {
+                    resultsEl.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No files found.' }));
+                    return;
+                }
+                const tbl = Utils.el('table', { className: 'file-table' });
+                tbl.innerHTML = '<thead><tr><th>Name</th><th>Size</th><th>Location</th><th>Modified</th></tr></thead>';
+                const tbody = Utils.el('tbody');
+                for (const f of files) {
+                    const nameLink = Utils.el('a', { href: '#', textContent: f.original_name, className: 'file-name-link' });
+                    nameLink.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        Files.downloadFileById(f.id, f);
+                    });
+                    const folderLink = f.folder_id
+                        ? Utils.el('a', { href: `#/files/${f.folder_id}`, textContent: f.folder_path || f.folder_id, className: 'folder-link' })
+                        : Utils.el('span', { textContent: '(root)', className: 'text-muted' });
+                    tbody.appendChild(Utils.el('tr', {}, [
+                        Utils.el('td', {}, [nameLink]),
+                        Utils.el('td', { textContent: Utils.formatBytes(f.size_bytes) }),
+                        Utils.el('td', {}, [folderLink]),
+                        Utils.el('td', { textContent: Utils.timeAgo(f.created_at) }),
+                    ]));
+                }
+                tbl.appendChild(tbody);
+                resultsEl.appendChild(tbl);
+            } catch (e) {
+                resultsEl.innerHTML = '';
+                resultsEl.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Search failed: ' + e.message }));
+            }
+        };
+
+        btn.addEventListener('click', () => {
+            globalThis.location.hash = `#/search?q=${encodeURIComponent(input.value.trim())}`;
+            _doSearch(input.value.trim());
+        });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') btn.click();
+        });
+
+        if (q) _doSearch(q);
     }
 
     function _routeFiles(container) {
@@ -304,12 +472,18 @@ const App = (() => {
 
     function _routeTeams(container) {
         _renderShell(container);
-        Teams.renderTeamsPage(document.getElementById('main-content'));
+        const main = document.getElementById('main-content');
+        const wrap = Utils.el('div', { className: 'page-content' });
+        main.appendChild(wrap);
+        Teams.renderTeamsPage(wrap);
     }
 
     function _routeTeamDetail(container, teamId) {
         _renderShell(container);
-        Teams.renderTeamDetailPage(document.getElementById('main-content'), teamId);
+        const main = document.getElementById('main-content');
+        const wrap = Utils.el('div', { className: 'page-content' });
+        main.appendChild(wrap);
+        Teams.renderTeamDetailPage(wrap, teamId);
     }
 
     async function _routeAdmin(container) {
@@ -674,13 +848,34 @@ const App = (() => {
         const activityList = Utils.el('div', { className: 'account-section-body' });
         activityList.textContent = 'Loading…';
         activitySection.appendChild(activityList);
+        const _ACTIVITY_LABELS = {
+            upload:                    'Uploaded file',
+            download:                  'Downloaded file',
+            view:                      'Viewed file',
+            delete:                    'Deleted file',
+            share:                     'Shared file',
+            login_success:             'Logged in',
+            login_failed:              'Login failed',
+            mfa_totp_verified:         'MFA verified (TOTP)',
+            mfa_webauthn_verified:     'MFA verified (security key)',
+            mfa_recovery_code_used:    'Used recovery code',
+            mfa_credential_removed:    'Removed MFA credential',
+            step_up_granted:           'Step-up verified',
+            step_up_failed:            'Step-up failed',
+            step_up_lockout:           'Step-up locked out',
+            session_unlock_webauthn:   'Session unlocked',
+            password_changed:          'Password changed',
+            team_created:              'Created team',
+        };
         Api.get(`${Config.app.apiPrefix}/auth/me/activity`).then(data => {
             activityList.textContent = '';
             if (!data.events.length) { activityList.textContent = 'No activity recorded.'; return; }
             const ul = Utils.el('ul', { className: 'activity-list' });
             for (const ev of data.events.slice(0, 10)) {
+                const label = _ACTIVITY_LABELS[ev.event_type] || ev.event_type.replace(/_/g, ' ');
+                const detail = ev.target_name ? `: ${ev.target_name}` : (ev.detail_text ? `: ${ev.detail_text}` : '');
                 ul.appendChild(Utils.el('li', { className: 'activity-item' }, [
-                    Utils.el('span', { className: 'activity-type', textContent: ev.event_type }),
+                    Utils.el('span', { className: 'activity-type', textContent: label + detail }),
                     Utils.el('span', { className: 'activity-time', textContent: Utils.timeAgo(ev.timestamp) }),
                 ]));
             }
@@ -759,8 +954,6 @@ const App = (() => {
         });
 
         const nav = Utils.el('nav', { className: 'sidebar-nav' }, [
-            Utils.el('a', { href: '#/pinned', className: 'sidebar-link', id: 'nav-pinned', textContent: 'Pinned' }),
-
             Utils.el('a', { href: '#/files', className: 'sidebar-link', id: 'nav-files', textContent: 'My Files' }),
             Utils.el('div', { className: 'sidebar-submenu' }, [
                 Utils.el('a', { href: '#/shares', className: 'sidebar-link sidebar-sublink', id: 'nav-shares', textContent: 'Shared From Me' }),
@@ -792,12 +985,27 @@ const App = (() => {
             unreadDot.classList.toggle('header-unread-dot--active', count > 0);
         });
 
+        // Global file search bar
+        const searchInput = Utils.el('input', {
+            type: 'text',
+            className: 'global-search-input',
+            placeholder: 'Search files…',
+            style: 'width:40%',
+        });
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && searchInput.value.trim()) {
+                globalThis.location.hash = `#/search?q=${encodeURIComponent(searchInput.value.trim())}`;
+                searchInput.value = '';
+            }
+        });
+
         const shellChildren = [
             Utils.el('header', { className: 'app-header' }, [
                 Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
                     sidebarToggle,
                     _buildBrandEl(),
                 ]),
+                searchInput,
                 Utils.el('div', { className: 'header-actions' }, [
                     accountBtn,
                     Utils.el('button', {
@@ -854,11 +1062,14 @@ const App = (() => {
             shellChildren.push(escrowBanner);
         }
 
+        const pinnedSection = Utils.el('div', { id: 'pinned-folders-sidebar', className: 'pinned-folders-sidebar' });
+        _renderPinnedSidebar(pinnedSection);
+
         shellChildren.push(
             Utils.el('div', { className: 'app-body' }, [
                 Utils.el('aside', { className: 'sidebar', id: 'folder-sidebar' }, [
                     nav,
-                    Utils.el('div', { id: 'folder-tree', className: 'folder-tree' }),
+                    pinnedSection,
                 ]),
                 Utils.el('div', { id: 'main-content', className: 'app-main' }),
             ]),
@@ -892,5 +1103,5 @@ const App = (() => {
         init();
     }
 
-    return { init };
+    return { init, pinCurrentFolder, reloadTheme: _loadTheme };
 })();

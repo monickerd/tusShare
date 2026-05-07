@@ -380,7 +380,6 @@ const Teams = (() => {
      */
     async function renderTeamsPage(container) {
         _clearEl(container);
-        container.appendChild(Utils.el('h2', { textContent: 'My Teams' }));
 
         let teams;
         try {
@@ -391,46 +390,57 @@ const Teams = (() => {
             return;
         }
 
-        // Create team button
-        const createBtn = Utils.el('button', {
-            className: 'btn btn-primary btn-new-team',
+        // Header row: "My Teams" left, "+ New Team" right
+        const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px' });
+        header.appendChild(Utils.el('h2', { textContent: 'My Teams', style: 'margin:0' }));
+        header.appendChild(Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
             textContent: '+ New Team',
             onClick: () => _openCreateTeamDialog(container),
-        });
-        container.appendChild(createBtn);
+        }));
+        container.appendChild(header);
 
         if (teams.length === 0) {
-            container.appendChild(Utils.el('p', {
-                className: 'empty-state',
-                textContent: 'You have no teams yet.',
-            }));
+            container.appendChild(Utils.el('p', { className: 'empty-state', textContent: 'You have no teams yet.' }));
             return;
         }
 
-        const list = Utils.el('div', { className: 'team-list' });
+        // Live-filter search bar
+        const filterInput = Utils.el('input', {
+            type: 'text',
+            className: 'input-sm',
+            placeholder: 'Search teams…',
+            style: 'width:240px;margin-bottom:12px',
+        });
+        container.appendChild(filterInput);
+
+        const list = Utils.el('div', { className: 'team-list', style: 'padding:8px 0' });
         for (const team of teams) {
             list.appendChild(_createTeamCard(team));
         }
         container.appendChild(list);
+
+        Utils.inlineFilter(filterInput, () => list.querySelectorAll('.team-card'), card => card.dataset.name || '');
     }
 
     function _createTeamCard(team) {
         const roleLabel = {
             team_admin:   'Owner',
             team_manager: 'Supervisor',
-            team_member:     'Member',
+            team_member:  'Member',
         }[team.my_role] || team.my_role;
 
-        const card = Utils.el('div', { className: 'team-card' }, [
-            Utils.el('div', { className: 'team-card-header' }, [
-                Utils.el('a', {
-                    href: `#/teams/${team.id}`,
-                    className: 'team-card-name',
-                    textContent: team.name,
-                }),
-                Utils.el('span', { className: 'team-role-badge', textContent: roleLabel }),
-            ]),
+        const card = Utils.el('a', {
+            href: `#/teams/${team.id}`,
+            className: 'team-card team-card-link',
+            dataset: { name: team.name },
+        });
+
+        const cardHeader = Utils.el('div', { className: 'team-card-header' }, [
+            Utils.el('span', { className: 'team-card-name', textContent: team.name }),
+            Utils.el('span', { className: 'team-role-badge', textContent: roleLabel }),
         ]);
+        card.appendChild(cardHeader);
 
         if (team.description) {
             card.appendChild(Utils.el('p', { className: 'team-card-desc', textContent: team.description }));
@@ -1729,11 +1739,7 @@ const Teams = (() => {
 
     async function renderTeamFoldersPage(container) {
         _clearEl(container);
-
-        const loadingEl = Utils.el('div', { className: 'empty-state' }, [
-            Utils.el('span', { textContent: 'Loading team folders…' }),
-        ]);
-        container.appendChild(loadingEl);
+        container.appendChild(Utils.el('div', { className: 'empty-state', textContent: 'Loading team folders…' }));
 
         try {
             const data = await Api.get(`${_api}/teams`);
@@ -1741,9 +1747,7 @@ const Teams = (() => {
 
             if (teams.length === 0) {
                 _clearEl(container);
-                container.appendChild(Utils.el('div', { className: 'empty-state' }, [
-                    Utils.el('span', { textContent: 'You are not a member of any teams.' }),
-                ]));
+                container.appendChild(Utils.el('div', { className: 'empty-state', textContent: 'You are not a member of any teams.' }));
                 return;
             }
 
@@ -1751,44 +1755,57 @@ const Teams = (() => {
 
             _clearEl(container);
             const page = Utils.el('div', { className: 'page-content' });
-            page.appendChild(Utils.el('h2', { textContent: 'Team Folders' }));
 
-            let anyFolders = false;
+            // Header + search bar
+            page.appendChild(Utils.el('h2', { textContent: 'Team Folders', style: 'margin-bottom:8px' }));
+            const filterInput = Utils.el('input', {
+                type: 'text',
+                className: 'input-sm',
+                placeholder: 'Search folders…',
+                style: 'width:240px;margin-bottom:16px',
+            });
+            page.appendChild(filterInput);
+
+            // Build one tile per folder
+            const tileGrid = Utils.el('div', { className: 'team-list', style: 'padding:4px 0' });
+
             for (const detail of details) {
                 const folders = detail.folders || [];
-                if (folders.length === 0) continue;
-                anyFolders = true;
+                const members = detail.members || [];
+                const teamName = detail.team.name;
+                const teamDesc = detail.team.description || '';
+                const ownerMember = members.find(m => m.user_id === detail.team.owner_id);
+                const ownerLabel = ownerMember ? ownerMember.username : detail.team.owner_id;
 
-                const section = Utils.el('div', { className: 'team-folders-group' });
-                section.appendChild(Utils.el('h3', { className: 'team-folders-group-name', textContent: detail.team.name }));
-
-                const list = Utils.el('ul', { className: 'team-folder-list' });
                 for (const f of folders) {
-                    list.appendChild(Utils.el('li', { className: 'team-folder-item' }, [
-                        Utils.el('a', {
-                            href: `#/team-folders/${f.folder_id}`,
-                            className: 'folder-link',
-                            textContent: f.folder_name,
-                        }),
+                    const tile = Utils.el('a', {
+                        href: `#/team-folders/${f.folder_id}`,
+                        className: 'team-card team-card-link',
+                        dataset: { name: `${teamName} ${f.folder_name}` },
+                    });
+                    tile.appendChild(Utils.el('div', { className: 'team-card-header' }, [
+                        Utils.el('span', { className: 'team-card-name', textContent: f.folder_name }),
+                        Utils.el('span', { className: 'team-role-badge', textContent: teamName }),
                     ]));
+                    tile.appendChild(Utils.el('p', {
+                        className: 'team-card-desc',
+                        textContent: `Owner: ${ownerLabel}${teamDesc ? ' — ' + teamDesc : ''}`,
+                    }));
+                    tileGrid.appendChild(tile);
                 }
-                section.appendChild(list);
-                page.appendChild(section);
             }
 
-            if (!anyFolders) {
-                page.appendChild(Utils.el('p', {
-                    className: 'text-muted',
-                    textContent: 'No folders have been added to your teams yet.',
-                }));
+            if (!tileGrid.children.length) {
+                page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folders have been added to your teams yet.' }));
+            } else {
+                page.appendChild(tileGrid);
+                Utils.inlineFilter(filterInput, () => tileGrid.querySelectorAll('.team-card'), card => card.dataset.name || '');
             }
 
             container.appendChild(page);
         } catch (err) {
             _clearEl(container);
-            container.appendChild(Utils.el('div', { className: 'page-content' }, [
-                Utils.el('p', { className: 'text-muted', textContent: 'Failed to load team folders: ' + err.message }),
-            ]));
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Failed to load team folders: ' + err.message }));
         }
     }
 

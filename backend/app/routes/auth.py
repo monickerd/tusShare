@@ -225,8 +225,13 @@ async def get_my_prefs(
     return {"ui_prefs": prefs}
 
 
+_MAX_PINS = 100
+_PIN_STR_MAX = 255
+
+
 class UpdatePrefsRequest(BaseModel):
     admin_layout: dict | None = None
+    pinned_folders: list | None = None
 
 
 @router.patch("/me/prefs")
@@ -242,6 +247,18 @@ async def update_my_prefs(
 
     if body.admin_layout is not None:
         prefs["admin_layout"] = body.admin_layout
+
+    if body.pinned_folders is not None:
+        cleaned = []
+        for item in body.pinned_folders[:_MAX_PINS]:
+            if not isinstance(item, dict):
+                continue
+            fid = str(item.get("id", ""))[:64]
+            name = str(item.get("name", ""))[:_PIN_STR_MAX]
+            hash_ = str(item.get("hash", ""))[:_PIN_STR_MAX]
+            if fid:
+                cleaned.append({"id": fid, "name": name, "hash": hash_})
+        prefs["pinned_folders"] = cleaned
 
     await db.execute(
         "UPDATE users SET ui_prefs = ? WHERE id = ?",
@@ -674,25 +691,41 @@ async def my_activity(
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    """Return the last 50 security events for the calling user.
+    """Return the last 50 activity events for the calling user.
 
-    Filtered strictly by session token — user_id is never taken from a query param.
+    Merges security_events (login, MFA, step-up) with access_logs (file
+    upload/download/delete/share).  Filtered strictly by session token —
+    user_id is never taken from a query param.
     """
     cursor = await db.execute(
         """
-        SELECT event_type, severity, outcome, ip_address, actor_session_id,
+        SELECT source, event_type, severity, outcome, ip_address, actor_session_id,
                timestamp, target_type, target_id, target_name, detail
-        FROM security_events
-        WHERE user_id = ?
+        FROM (
+            SELECT 'security'::text AS source, event_type, severity, outcome, ip_address,
+                   actor_session_id, timestamp, target_type, target_id, target_name, detail
+            FROM security_events
+            WHERE user_id = ?
+            UNION ALL
+            SELECT 'access'::text AS source, al.action AS event_type,
+                   NULL::text AS severity, NULL::text AS outcome, al.ip_address,
+                   NULL::text AS actor_session_id, al.timestamp,
+                   'file'::text AS target_type, al.file_id AS target_id,
+                   f.name AS target_name, NULL::text AS detail
+            FROM access_logs al
+            LEFT JOIN files f ON f.id = al.file_id
+            WHERE al.user_id = ?
+        ) combined
         ORDER BY timestamp DESC
         LIMIT 50
         """,
-        (user.id,),
+        (user.id, user.id),
     )
     rows = await cursor.fetchall()
     return {
         "events": [
             {
+                "source":           row["source"],
                 "event_type":       row["event_type"],
                 "severity":         row["severity"] or "info",
                 "outcome":          row["outcome"],

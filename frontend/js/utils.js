@@ -303,6 +303,23 @@ const Utils = (() => {
         };
     }
 
+    /**
+     * Wire up a live-filter text input against a list of DOM rows.
+     *
+     * @param {HTMLInputElement} input   The filter text field.
+     * @param {() => Element[]} getRows  Returns the current set of rows/items.
+     * @param {(row: Element) => string} getText  Extracts searchable text from each row.
+     */
+    function inlineFilter(input, getRows, getText) {
+        input.addEventListener('input', () => {
+            const term = input.value.toLowerCase();
+            for (const row of getRows()) {
+                const visible = !term || getText(row).toLowerCase().includes(term);
+                row.style.display = visible ? '' : 'none';
+            }
+        });
+    }
+
     return {
         formatBytes,
         formatDate,
@@ -321,5 +338,6 @@ const Utils = (() => {
         closeModal,
         parseCookie,
         debounce,
+        inlineFilter,
     };
 })();

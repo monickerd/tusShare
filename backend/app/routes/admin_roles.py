@@ -331,12 +331,17 @@ async def delete_role(
     admin: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    """Delete a custom role. System roles (is_system=1) cannot be deleted."""
+    """Delete a role. System roles may be deleted by server_admin — downstream
+    effects (e.g. loss of default user role) are the caller's responsibility.
+    """
     require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
 
     row = await _load_role(db, role_id)
-    if row["is_system"]:
-        raise HTTPException(status_code=400, detail="System roles cannot be deleted")
+    if row["is_system"] and admin_best_tier(admin.roles) > 1:
+        raise HTTPException(
+            status_code=403,
+            detail="Only server_admin (tier 1) may delete system roles",
+        )
 
     # CASCADE on role_permissions and user_roles removes child rows automatically
     await db.execute("DELETE FROM roles WHERE id = ?", (role_id,))

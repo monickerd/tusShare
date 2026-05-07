@@ -55,7 +55,7 @@ from app.conf.teams import (
     TEAM_ROLE_SUPERVISOR,
     VALID_TEAM_ROLES,
 )
-from app.database import Database, get_db
+from app.database import Database, DuplicateError, get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.util.bls_verify import (
     verify_rk_consistency,
@@ -515,11 +515,14 @@ async def create_team(
     ur_id   = str(uuid.uuid4())
     utk_id  = str(uuid.uuid4())
 
-    await db.execute(
-        "INSERT INTO teams (id, name, description, owner_id, pre_public_key) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (team_id, body.name, body.description, user.id, body.pre_public_key),
-    )
+    try:
+        await db.execute(
+            "INSERT INTO teams (id, name, description, owner_id, pre_public_key) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (team_id, body.name, body.description, user.id, body.pre_public_key),
+        )
+    except DuplicateError:
+        raise HTTPException(status_code=409, detail="A team with this name already exists")
     # Grant team_owner role (scoped)
     await db.execute(
         "INSERT INTO user_roles (id, user_id, role_id, scope_type, scope_id, granted_by) "
