@@ -1782,7 +1782,7 @@ const Auth = (() => {
 
     function _b64ToBytes(b64) {
         const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
-        const bin = atob(padded.replaceAll(/-/g, '+').replaceAll(/_/g, '/'));
+        const bin = atob(padded.replaceAll('-', '+').replaceAll('_', '/'));
         return Uint8Array.from(bin, c => c.codePointAt(0));
     }
 
@@ -1806,7 +1806,7 @@ const Auth = (() => {
 
     function _bytesToB64url(bytes) {
         return btoa(String.fromCodePoint(...new Uint8Array(bytes)))
-            .replaceAll(/\+/g, '-').replaceAll(/\//g, '_').replaceAll(/=/g, '');
+            .replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '');
     }
 
     function _serializeAttestation(cred) {

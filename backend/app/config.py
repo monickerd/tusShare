@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     # Refresh token TTL for sessions where the user checked "Public Device" at login.
     # Intentionally much shorter than the normal REFRESH_TOKEN_EXPIRE_DAYS to limit
     # the exposure window if the user forgets to log out.
-    # TODO: expose this in theme.json so admins can tune it without a restart.
+    # TODO: expose this in theme.json so admins can tune it without a restart.  # NOSONAR
     PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES: int = 60  # 1 hour
 
     # Share session tokens

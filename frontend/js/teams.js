@@ -71,11 +71,11 @@ const Teams = (() => {
     }
 
     function _bytesToB64url(bytes) {
-        return _bytesToB64(bytes).replaceAll(/\+/g, '-').replaceAll(/\//g, '_').replace(/=+$/, '');
+        return _bytesToB64(bytes).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
     }
 
     function _b64urlToBytes(b64url) {
-        return _b64ToBytes(b64url.replaceAll(/-/g, '+').replaceAll(/_/g, '/'));
+        return _b64ToBytes(b64url.replaceAll('-', '+').replaceAll('_', '/'));
     }
 
     function _bigintTo32Bytes(n) {

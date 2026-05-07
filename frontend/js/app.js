@@ -30,7 +30,7 @@ const App = (() => {
         const ui = _themeConfig?.ui || {};
         for (const [flag, value] of Object.entries(ui)) {
             document.body.setAttribute(
-                'data-ui-' + flag.replaceAll(/_/g, '-'),
+                'data-ui-' + flag.replaceAll('_', '-'),
                 value ? 'true' : 'false',
             );
         }

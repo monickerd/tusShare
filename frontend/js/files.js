@@ -1705,7 +1705,7 @@ const Files = (() => {
      * Requires Auth.getMasterKeyObj() to return a valid CryptoKey.
      */
     async function _uploadFiles(files, targetFolderId) {
-        const folderId = targetFolderId !== undefined ? targetFolderId : _currentFolderId;
+        const folderId = targetFolderId === undefined ? _currentFolderId : targetFolderId;
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey) {  // NOSONAR — guard clause; inverting would require indenting the entire function body
             Utils.showToast('Master key not available — please re-enter your password.', 'error');

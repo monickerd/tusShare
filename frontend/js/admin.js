@@ -4956,7 +4956,7 @@ const Admin = (() => {
         const modal = Utils.el('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;display:flex;align-items:center;justify-content:center' });
         const box   = Utils.el('div', { style: 'background:var(--color-bg,#fff);border-radius:8px;padding:24px;width:640px;max-width:95vw;max-height:80vh;overflow-y:auto' });
 
-        box.appendChild(Utils.el('h4', { textContent: `Apply Profile: ${profileId.replaceAll(/_/g,' ')}`, style: 'margin-bottom:16px' }));
+        box.appendChild(Utils.el('h4', { textContent: `Apply Profile: ${profileId.replaceAll('_', ' ')}`, style: 'margin-bottom:16px' }));
 
         const modeRow = Utils.el('div', { style: 'display:flex;gap:12px;margin-bottom:16px;align-items:center' });
         modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0' }));
