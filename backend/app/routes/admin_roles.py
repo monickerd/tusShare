@@ -26,8 +26,10 @@ from app.database import Database, get_db
 from app.models.role import (
     FLAG_CREATE_ROLES,
     FLAG_MANAGE_ROLES,
+    FLAG_MANAGE_USERS,
     ROLE_ORG_ADMIN,
     ROLE_SERVER_ADMIN,
+    ROLE_TIER,
     SENSITIVE_FLAGS,
     admin_best_tier,
 )
@@ -195,6 +197,51 @@ async def list_roles(
 
 
 # ---------------------------------------------------------------------------
+# GET /roles/capabilities — what can the calling admin grant?
+# ---------------------------------------------------------------------------
+
+@router.get("/capabilities")
+async def get_admin_capabilities(
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return the calling admin's grantable flags, roles, and scope.
+
+    Used by the frontend to dynamically populate permission checkboxes and role
+    dropdowns so that each admin only sees what they can actually grant.
+    No specific flag required — every admin may query their own capabilities.
+    """
+    my_tier = admin_best_tier(admin.roles)
+
+    # Flags the caller currently holds (inheritance cap for create-role modal)
+    grantable_flags = [f for f, v in (admin.flags or {}).items() if v == "1"]
+
+    # Roles the caller can assign: requires can_manage_roles; tier cap applies
+    if admin.has_flag(FLAG_MANAGE_ROLES):
+        cursor = await db.execute("SELECT id FROM roles ORDER BY id")
+        all_role_ids = [r["id"] for r in await cursor.fetchall()]
+        grantable_role_ids = [
+            rid for rid in all_role_ids
+            if (ROLE_TIER.get(rid) is None or ROLE_TIER.get(rid) >= my_tier)
+        ]
+    else:
+        grantable_role_ids = []
+
+    # Scope: None means org-wide; a set means restricted to those team IDs
+    team_ids = admin.get_team_ids_with_flag(FLAG_MANAGE_USERS)
+
+    return {
+        "admin_tier": my_tier,
+        "grantable_flags": grantable_flags,
+        "grantable_role_ids": grantable_role_ids,
+        "scope": {
+            "org_wide": team_ids is None,
+            "team_ids": sorted(team_ids) if team_ids is not None else None,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # POST /roles — create a custom role
 # ---------------------------------------------------------------------------
 
@@ -331,16 +378,14 @@ async def delete_role(
     admin: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    """Delete a role. System roles may be deleted by server_admin — downstream
-    effects (e.g. loss of default user role) are the caller's responsibility.
-    """
+    """Delete a custom role. System roles cannot be deleted."""
     require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
 
     row = await _load_role(db, role_id)
-    if row["is_system"] and admin_best_tier(admin.roles) > 1:
+    if row["is_system"]:
         raise HTTPException(
             status_code=403,
-            detail="Only server_admin (tier 1) may delete system roles",
+            detail="System roles cannot be deleted",
         )
 
     # CASCADE on role_permissions and user_roles removes child rows automatically

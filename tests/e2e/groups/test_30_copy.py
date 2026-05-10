@@ -277,9 +277,10 @@ async def test_30_05_team_to_personal():
 @pytest.mark.asyncio(loop_scope="session")
 async def test_30_06_flag_copy_files_revoked(admin_client: AdminClient):
     """Revoking FLAG_COPY_FILES from role_user blocks all copy operations with 403."""
-    api = _alice["api"]
+    api = _viewer["api"]
+    src_folder = await create_folder(api, "FlagTestSrc30")
     src = await upload_file_api(api, "flag_test.txt", b"flag test",
-                                folder_id=_folder_a["id"])
+                                folder_id=src_folder["id"])
     dest = await create_folder(api, "FlagTestDest30")
 
     try:

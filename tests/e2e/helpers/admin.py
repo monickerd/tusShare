@@ -71,7 +71,8 @@ class AdminClient:
     async def get_settings(self) -> dict[str, str]:
         r = await self._client.get(f"{API}/admin/settings")
         r.raise_for_status()
-        return r.json()["settings"]
+        raw = r.json()["settings"]
+        return {k: (v["value"] if isinstance(v, dict) else v) for k, v in raw.items()}
 
     async def set_setting(self, key: str, value: str) -> None:
         r = await self._client.put(

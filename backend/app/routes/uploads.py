@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.auth.dependencies import require_user_role
-from app.routes._access import copy_folder_permissions
+from app.routes._access import check_data_permission, copy_folder_permissions
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.database import Database, get_db
@@ -98,7 +98,7 @@ def _validate_metadata_fields(meta: dict) -> tuple:
 
 
 async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> str | None:
-    """Validate folder UUID and ownership. Returns validated folder_id or None."""
+    """Validate folder UUID and write access. Returns validated folder_id or None."""
     if not folder_id_raw:
         return None
     try:
@@ -106,11 +106,17 @@ async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> s
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid folder_id in metadata")
     cursor = await db.execute(
-        "SELECT id FROM folders WHERE id = ? AND owner_id = ?",
-        (folder_id, user_id),
+        "SELECT id, owner_id FROM folders WHERE id = ?",
+        (folder_id,),
     )
-    if not await cursor.fetchone():
+    row = await cursor.fetchone()
+    if row is None:
         raise HTTPException(status_code=404, detail="Folder not found")
+    if row["owner_id"] == user_id:
+        return folder_id
+    allowed = await check_data_permission(db, "folder", folder_id, user_id, "write")
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Folder access denied")
     return folder_id
 
 

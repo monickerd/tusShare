@@ -149,10 +149,10 @@ async def test_08_01_admin_can_access_all_admin_endpoints(admin_client: AdminCli
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_08_02_alice_cannot_access_admin():
-    alice_api = ApiClient.from_session(_users["alice_08"]["session"])
-    async with alice_api:
-        blocked = not await can_access_admin(alice_api)
-    assert blocked, "alice_08 (no admin role) should be blocked from admin settings"
+    outsider_api = ApiClient.from_session(_users["outsider_08"]["session"])
+    async with outsider_api:
+        blocked = not await can_access_admin(outsider_api)
+    assert blocked, "outsider_08 (no admin role) should be blocked from admin settings"
 
 
 # ---------------------------------------------------------------------------

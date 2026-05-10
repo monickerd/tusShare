@@ -238,6 +238,42 @@ async def create_link_share(
 _SERVER_DEFAULT_CHUNK_SIZE = 5_242_880  # must match settings.DEFAULT_CHUNK_SIZE
 
 
+async def tus_create_request(
+    client:    ApiClient,
+    folder_id: str,
+    filename:  str = "test.bin",
+    size:      int = 4,
+) -> "httpx.Response":
+    """Attempt to start a TUS upload (POST /uploads) and return the raw response.
+
+    Use this to test upload access control without actually sending any data.
+    """
+    import base64 as _b64mod
+    from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12
+
+    def _enc(s: str) -> str:
+        return _b64mod.b64encode(s.encode()).decode()
+
+    metadata = ", ".join([
+        f"filename {_enc(filename)}",
+        f"filetype {_enc('application/octet-stream')}",
+        f"encrypted_file_key {_enc(fake_aes256_key())}",
+        f"key_iv {_enc(fake_iv_12())}",
+        f"chunk_size {_enc(str(_SERVER_DEFAULT_CHUNK_SIZE))}",
+        f"original_size {_enc(str(size))}",
+        f"folder_id {_enc(folder_id)}",
+    ])
+    return await client.post(
+        "/uploads",
+        headers={
+            "Tus-Resumable": "1.0.0",
+            "Upload-Length": str(size),
+            "Upload-Metadata": metadata,
+            "Content-Length": "0",
+        },
+    )
+
+
 async def upload_file_api(
     client:    ApiClient,
     filename:  str,
