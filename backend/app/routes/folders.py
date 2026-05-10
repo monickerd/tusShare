@@ -22,6 +22,14 @@ _SQL_FOLDER_BY_ID = "SELECT * FROM folders WHERE id = ?"
 _ERR_FOLDER_NOT_FOUND = "Folder not found"
 _ERR_ACCESS_DENIED = "Access denied"
 
+
+async def _check_parent_write_access(db, parent: dict, user: AuthenticatedUser, parent_id: str) -> None:
+    if parent["owner_id"] == user.id or user.is_admin:
+        return
+    if not await is_in_shared_tree(db, parent_id):
+        if not await check_data_permission(db, "folder", parent_id, user.id, "write"):
+            raise HTTPException(status_code=403, detail="No write access to parent folder")
+
 # Permission levels that imply manage_permissions capability
 _MANAGE_LEVELS = ("admin", "manage_permissions")
 
@@ -161,11 +169,7 @@ async def create_folder(
         parent = await cursor.fetchone()
         if parent is None:
             raise HTTPException(status_code=404, detail="Parent folder not found")
-        # Check write access: owner, admin, public shared tree, or Phase 1 permission chain.
-        if parent["owner_id"] != user.id and not user.is_admin:
-            if not await is_in_shared_tree(db, body.parent_id):
-                if not await check_data_permission(db, "folder", body.parent_id, user.id, "write"):
-                    raise HTTPException(status_code=403, detail="No write access to parent folder")
+        await _check_parent_write_access(db, parent, user, body.parent_id)
 
     try:
         await db.execute(

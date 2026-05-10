@@ -834,7 +834,7 @@ CREATE TABLE permissions (
     resource_type    TEXT    NOT NULL CHECK(resource_type IN ('file', 'folder')),
     resource_id      TEXT    NOT NULL,
     user_id          TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    permission       TEXT    NOT NULL CHECK(permission IN ('read', 'write', 'admin', 'download', 'delete', 'rename', 'manage_permissions', 'deny')),
+    permission       TEXT    NOT NULL CHECK(permission IN ('read', 'write', 'admin', 'download', 'delete', 'rename', 'manage_permissions', 'deny')), -- NOSONAR
     recursive        INTEGER NOT NULL DEFAULT 0,
     granted_by       TEXT    REFERENCES users(id) ON DELETE SET NULL,
     created_at       TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),

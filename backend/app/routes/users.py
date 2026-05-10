@@ -33,6 +33,7 @@ from typing import Annotated
 
 _ERR_PERM_MANAGE_USERS = "can_manage_users permission required"
 _ERR_USER_NOT_FOUND = "User not found"
+_SQL_USERNAME_BY_ID = "SELECT username FROM users WHERE id = ?"
 
 _bg_tasks: set = set()
 
@@ -104,6 +105,61 @@ class GrantRoleRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Role grant/revoke validation helpers
+# ---------------------------------------------------------------------------
+
+def _validate_role_grant_scope(
+    admin: AuthenticatedUser,
+    scope_type: str | None,
+    scope_id: str | None,
+    role_id: str,
+) -> str | None:
+    if scope_type is not None:
+        if not scope_id:
+            raise HTTPException(status_code=400, detail="scope_id required when scope_type is set")
+        scope_id = validate_uuid(scope_id)
+        require_team_scope(admin, scope_id, FLAG_MANAGE_TEAMS)
+        return scope_id
+    granted_tier = ROLE_TIER.get(role_id)
+    if granted_tier is not None:
+        my_tier = admin_best_tier(admin.roles)
+        if granted_tier < my_tier:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot grant a role with higher authority than your own tier",
+            )
+    return None
+
+
+def _validate_role_revoke_scope(
+    admin: AuthenticatedUser,
+    user_id: str,
+    scope_type: str | None,
+    scope_id: str | None,
+    role_id: str,
+) -> str | None:
+    if scope_type is not None:
+        if scope_type != "team":
+            raise HTTPException(status_code=400, detail="scope_type must be 'team'")
+        if not scope_id:
+            raise HTTPException(status_code=400, detail="scope_id required when scope_type is set")
+        scope_id = validate_uuid(scope_id)
+        require_team_scope(admin, scope_id, FLAG_MANAGE_TEAMS)
+        return scope_id
+    if user_id == admin.id and role_id in ADMIN_ROLE_IDS:
+        raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
+    revoked_tier = ROLE_TIER.get(role_id)
+    if revoked_tier is not None:
+        my_tier = admin_best_tier(admin.roles)
+        if revoked_tier < my_tier:
+            raise HTTPException(
+                status_code=403,
+                detail="Cannot revoke a role with higher authority than your own tier",
+            )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Scope helper
 # ---------------------------------------------------------------------------
 
@@ -117,14 +173,14 @@ async def _require_user_in_scope(db, admin: AuthenticatedUser, user_id: str) -> 
     if allowed is None:
         return  # org-wide grant — unrestricted
     if not allowed:
-        raise HTTPException(status_code=403, detail="Admin scope has no teams with can_manage_users")
+        raise HTTPException(status_code=403, detail="Admin scope has no teams with can_manage_users")  # NOSONAR
     placeholders = ",".join("?" * len(allowed))
     cursor = await db.execute(
         f"SELECT 1 FROM user_team_keys WHERE user_id = ? AND team_id IN ({placeholders}) LIMIT 1",
         (user_id, *allowed),
     )
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=403, detail="Admin scope does not include this user")
+        raise HTTPException(status_code=403, detail="Admin scope does not include this user")  # NOSONAR
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +480,7 @@ async def reset_user_password(
         raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     user_id = validate_uuid(user_id)
     await _require_user_in_scope(db, admin, user_id)
-    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    cursor = await db.execute(_SQL_USERNAME_BY_ID, (user_id,))
     target = await cursor.fetchone()
     if target is None:
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
@@ -555,7 +611,7 @@ async def list_user_roles(
     }
 
 
-@router.post("/{user_id}/roles/{role_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.post("/{user_id}/roles/{role_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def add_role_to_user(
     request: Request,
     user_id: str,
@@ -583,22 +639,7 @@ async def add_role_to_user(
     scope_type = body.scope_type if body else None
     scope_id   = body.scope_id   if body else None
 
-    if scope_type is not None:
-        # Scoped grant: admin must hold FLAG_MANAGE_TEAMS for this team.
-        if not scope_id:
-            raise HTTPException(status_code=400, detail="scope_id required when scope_type is set")
-        scope_id = validate_uuid(scope_id)
-        require_team_scope(admin, scope_id, FLAG_MANAGE_TEAMS)
-    else:
-        # Global grant: tier escalation guard for system roles.
-        granted_tier = ROLE_TIER.get(role_id)
-        if granted_tier is not None:
-            my_tier = admin_best_tier(admin.roles)
-            if granted_tier < my_tier:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Cannot grant a role with higher authority than your own tier",
-                )
+    scope_id = _validate_role_grant_scope(admin, scope_type, scope_id, role_id)
 
     # Verify role exists
     cursor = await db.execute("SELECT id FROM roles WHERE id = ?", (role_id,))
@@ -654,30 +695,10 @@ async def remove_role_from_user(
 
     user_id = validate_uuid(user_id)
 
-    if scope_type is not None:
-        if scope_type != "team":
-            raise HTTPException(status_code=400, detail="scope_type must be 'team'")
-        if not scope_id:
-            raise HTTPException(status_code=400, detail="scope_id required when scope_type is set")
-        scope_id = validate_uuid(scope_id)
-        require_team_scope(admin, scope_id, FLAG_MANAGE_TEAMS)
-    else:
-        # Cannot remove your own admin role globally
-        if user_id == admin.id and role_id in ADMIN_ROLE_IDS:
-            raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
-
-        # Tier cap: cannot strip a role with higher authority than your own
-        revoked_tier = ROLE_TIER.get(role_id)
-        if revoked_tier is not None:
-            my_tier = admin_best_tier(admin.roles)
-            if revoked_tier < my_tier:
-                raise HTTPException(
-                    status_code=403,
-                    detail="Cannot revoke a role with higher authority than your own tier",
-                )
+    scope_id = _validate_role_revoke_scope(admin, user_id, scope_type, scope_id, role_id)
 
     # Fetch target username for the audit event before deletion
-    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    cursor = await db.execute(_SQL_USERNAME_BY_ID, (user_id,))
     target_row = await cursor.fetchone()
 
     removed = await revoke_role(db, user_id, role_id, scope_type=scope_type, scope_id=scope_id)
@@ -731,7 +752,7 @@ async def delete_user(
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
 
     # Fetch username before deletion for the audit event
-    cursor = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    cursor = await db.execute(_SQL_USERNAME_BY_ID, (user_id,))
     target_row = await cursor.fetchone()
 
     # Collect file id+key pairs before CASCADE deletes the file rows

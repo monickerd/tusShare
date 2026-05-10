@@ -116,7 +116,7 @@ async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> s
         return folder_id
     allowed = await check_data_permission(db, "folder", folder_id, user_id, "write")
     if not allowed:
-        raise HTTPException(status_code=403, detail="Folder access denied")
+        raise HTTPException(status_code=403, detail="Folder access denied")  # NOSONAR
     return folder_id
 
 

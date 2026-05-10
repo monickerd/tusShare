@@ -257,8 +257,8 @@ async def _process_single_file_move(db, item, dest_id, dest_team_id, gate_active
 
 @router.get("/search")
 async def search_files(
-    q: str = Query(default="", max_length=200),
-    limit: int = Query(default=50, ge=1, le=200),
+    q: Annotated[str, Query(max_length=200)] = "",
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)] = None,
     db: Annotated[Database, Depends(get_db)] = None,
 ):

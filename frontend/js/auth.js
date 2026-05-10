@@ -1651,7 +1651,7 @@ const Auth = (() => {
         startBtn.addEventListener('click', async () => {
             startBtn.disabled = true;
             try {
-                const { totp_uri, secret_b32, cred_id, qr_data_url } = await Api.post(
+                const { secret_b32, cred_id, qr_data_url } = await Api.post(
                     `${Config.app.apiPrefix}/auth/totp/enroll/start`
                 );
 

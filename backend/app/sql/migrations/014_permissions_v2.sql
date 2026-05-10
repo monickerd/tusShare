@@ -134,22 +134,3 @@ BEGIN
 END
 $$;
 
-
--- ============================================================
--- OPTIONAL CLEAN-SLATE CLEANUP
--- Uncomment and run manually when ready to migrate to the new model.
--- WARNING: this permanently deletes all existing ACL grants and role
--- assignments.  Admins must reconfigure the system afterward.
--- ============================================================
-
--- -- Remove all non-policy-sourced ACL grants (manual permissions rows).
--- DELETE FROM permissions WHERE policy_effect_id IS NULL;
---
--- -- Remove all non-policy-sourced role assignments (manual user_roles rows).
--- DELETE FROM user_roles WHERE policy_effect_id IS NULL;
---
--- -- Clear team_folder_role_levels overrides (revert to system defaults).
--- TRUNCATE team_folder_role_levels;
---
--- -- Clear admin_scope_grants (all team-scoped flag grants).
--- TRUNCATE admin_scope_grants;

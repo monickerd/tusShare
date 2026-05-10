@@ -20,6 +20,7 @@ from app.util.theme import get_logo_filename_re, get_theme_config, get_ui_flags
 router = APIRouter()
 
 _NOT_FOUND = "Logo file not found on disk"
+_FAVICON_NOT_FOUND = "Favicon file not found on disk"
 
 # Only serve recognised image MIME types for the logo.
 _ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset({
@@ -102,21 +103,21 @@ async def get_theme_favicon():
         raise HTTPException(status_code=404, detail="No favicon configured")
 
     if not get_logo_filename_re().match(filename):
-        raise HTTPException(status_code=404, detail="Favicon file not found on disk")
+        raise HTTPException(status_code=404, detail=_FAVICON_NOT_FOUND)
 
     favicon_path = settings.DATA_DIR / filename
     try:
         resolved = favicon_path.resolve()
         resolved.relative_to(settings.DATA_DIR.resolve())
     except (OSError, ValueError):
-        raise HTTPException(status_code=404, detail="Favicon file not found on disk")
+        raise HTTPException(status_code=404, detail=_FAVICON_NOT_FOUND)
 
     if not resolved.is_file():
-        raise HTTPException(status_code=404, detail="Favicon file not found on disk")
+        raise HTTPException(status_code=404, detail=_FAVICON_NOT_FOUND)
 
     content_type, _ = mimetypes.guess_type(str(resolved))
     if content_type not in _ALLOWED_FAVICON_TYPES:
-        raise HTTPException(status_code=404, detail="Favicon file not found on disk")
+        raise HTTPException(status_code=404, detail=_FAVICON_NOT_FOUND)
 
     return FileResponse(
         str(resolved),

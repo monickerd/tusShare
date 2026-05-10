@@ -27,6 +27,9 @@ _bg_tasks: set = set()
 
 router = APIRouter()
 
+_THEME_JSON = "theme.json"
+_THEME_JSON_TMP = ".json.tmp"
+
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
@@ -152,6 +155,21 @@ async def update_settings(
     return {"message": "Settings updated"}
 
 
+def _validate_single_lock(key: str, lock_spec: dict, admin_tier: int) -> None:
+    if key not in _SETTINGS_VALIDATORS:
+        raise HTTPException(status_code=400, detail=f"Unknown setting: {key}")
+    new_locked = bool(lock_spec.get("is_locked", False))
+    new_min_tier = lock_spec.get("locked_min_tier")
+    if new_locked and new_min_tier is not None:
+        if not isinstance(new_min_tier, int) or new_min_tier < 1:
+            raise HTTPException(status_code=400, detail=f"locked_min_tier must be a positive integer for {key}")
+        if new_min_tier < admin_tier:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot lock {key} at tier {new_min_tier} — that would exclude your own tier ({admin_tier})",
+            )
+
+
 @router.put("/settings/locks", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def update_setting_locks(
     body: UpdateSettingLocksRequest,
@@ -170,19 +188,7 @@ async def update_setting_locks(
     admin_tier = admin_best_tier(admin.roles)
 
     for key, lock_spec in body.locks.items():
-        if key not in _SETTINGS_VALIDATORS:
-            raise HTTPException(status_code=400, detail=f"Unknown setting: {key}")
-        new_locked     = bool(lock_spec.get("is_locked", False))
-        new_min_tier   = lock_spec.get("locked_min_tier")
-        if new_locked and new_min_tier is not None:
-            if not isinstance(new_min_tier, int) or new_min_tier < 1:
-                raise HTTPException(status_code=400, detail=f"locked_min_tier must be a positive integer for {key}")
-            # Caller cannot set a tier ceiling that excludes themselves.
-            if new_min_tier < admin_tier:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Cannot lock {key} at tier {new_min_tier} — that would exclude your own tier ({admin_tier})",
-                )
+        _validate_single_lock(key, lock_spec, admin_tier)
 
     await db.execute("BEGIN")
     try:
@@ -416,7 +422,7 @@ async def update_theme(
         inject_theme, load_theme, _BRAND_NAME_MAX, _UI_FLAG_DEFAULTS,
     )
 
-    path = settings.DATA_DIR / "theme.json"
+    path = settings.DATA_DIR / _THEME_JSON
     existing: dict = {}
     if path.exists():
         try:
@@ -440,7 +446,7 @@ async def update_theme(
             ui_block[key] = bool(val)
         existing["ui"] = ui_block
 
-    tmp = path.with_suffix(".json.tmp")
+    tmp = path.with_suffix(_THEME_JSON_TMP)
     try:
         tmp.write_text(_json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
@@ -513,7 +519,7 @@ async def upload_theme_logo(
         raise HTTPException(status_code=500, detail=f"Failed to save logo: {exc}")
 
     # Write logo_path into theme.json
-    path = settings.DATA_DIR / "theme.json"
+    path = settings.DATA_DIR / _THEME_JSON
     existing: dict = {}
     if path.exists():
         try:
@@ -522,7 +528,7 @@ async def upload_theme_logo(
             existing = {}
     existing["logo_path"] = safe_name
 
-    tmp = path.with_suffix(".json.tmp")
+    tmp = path.with_suffix(_THEME_JSON_TMP)
     try:
         tmp.write_text(_json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)
@@ -573,7 +579,7 @@ async def upload_theme_favicon(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save favicon: {exc}")
 
-    path = settings.DATA_DIR / "theme.json"
+    path = settings.DATA_DIR / _THEME_JSON
     existing: dict = {}
     if path.exists():
         try:
@@ -582,7 +588,7 @@ async def upload_theme_favicon(
             existing = {}
     existing["favicon_path"] = safe_name
 
-    tmp = path.with_suffix(".json.tmp")
+    tmp = path.with_suffix(_THEME_JSON_TMP)
     try:
         tmp.write_text(_json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(path)

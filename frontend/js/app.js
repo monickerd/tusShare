@@ -331,7 +331,7 @@ const App = (() => {
         const page = Utils.el('div', { className: 'page-content' }, [
             Utils.el('h2', { textContent: 'Favourites' }),
         ]);
-        if (!pins.length) {
+        if (pins.length === 0) {
             page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No favourites yet. Navigate to a folder and click the star icon in the breadcrumb trail.' }));
         } else {
             const ul = Utils.el('ul', { style: 'list-style:none;padding:0' });
@@ -874,8 +874,10 @@ const App = (() => {
             if (!data.events.length) { activityList.textContent = 'No activity recorded.'; return; }
             const ul = Utils.el('ul', { className: 'activity-list' });
             for (const ev of data.events.slice(0, 10)) {
-                const label = _ACTIVITY_LABELS[ev.event_type] || ev.event_type.replace(/_/g, ' ');
-                const detail = ev.target_name ? `: ${ev.target_name}` : (ev.detail_text ? `: ${ev.detail_text}` : '');
+                const label = _ACTIVITY_LABELS[ev.event_type] || ev.event_type.replaceAll('_', ' ');
+                let detail = '';
+                if (ev.target_name) detail = `: ${ev.target_name}`;
+                else if (ev.detail_text) detail = `: ${ev.detail_text}`;
                 ul.appendChild(Utils.el('li', { className: 'activity-item' }, [
                     Utils.el('span', { className: 'activity-type', textContent: label + detail }),
                     Utils.el('span', { className: 'activity-time', textContent: Utils.timeAgo(ev.timestamp) }),

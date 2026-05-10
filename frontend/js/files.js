@@ -128,29 +128,6 @@ const Files = (() => {
         }
     }
 
-    async function _loadFolderTree() {
-        const treeEl = document.getElementById('folder-tree');
-        if (!treeEl) return;
-        _clearContainer(treeEl);
-        try {
-            const data = await Api.get(`${Config.app.apiPrefix}/folders`);
-            if (data.folders.length === 0) {
-                treeEl.appendChild(Utils.el('div', {
-                    className: 'tree-empty',
-                    textContent: 'No folders yet',
-                }));
-                return;
-            }
-            const list = Utils.el('ul', { className: 'tree-list' });
-            for (const folder of data.folders) {
-                list.appendChild(_createTreeNode(folder));
-            }
-            treeEl.appendChild(list);
-        } catch {
-            // Silently fail — tree is supplementary navigation
-        }
-    }
-
     function _createTreeNode(folder) {
         const li = Utils.el('li', { className: 'tree-node' });
 
@@ -255,9 +232,11 @@ const Files = (() => {
 
         // "Go up one level" button (shown when inside a folder)
         if (currentFolder) {
-            const parentHash = ancestors.length > 0
-                ? (_isTeamView ? `#/team-folders/${ancestors[ancestors.length - 1].id}` : `#/files/${ancestors[ancestors.length - 1].id}`)
-                : rootHash;
+            let parentHash = rootHash;
+            if (ancestors.length > 0) {
+                const lastAnc = ancestors[ancestors.length - 1];
+                parentHash = _isTeamView ? `#/team-folders/${lastAnc.id}` : `#/files/${lastAnc.id}`;
+            }
             el.appendChild(Utils.el('a', {
                 href: parentHash,
                 className: 'breadcrumb-up',
@@ -572,7 +551,7 @@ const Files = (() => {
 
         const _esc = (s) => {
             if (s == null) return '—';
-            return String(s).replace(/[^a-zA-Z0-9 .\-_]/g, c => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'));
+            return String(s).replace(/[^a-zA-Z0-9 .\-_]/g, c => '%' + c.codePointAt(0).toString(16).padStart(2, '0'));
         };
 
         const wrap = Utils.el('div', { style: 'min-width:400px' });
@@ -588,7 +567,7 @@ const Files = (() => {
         _row('Downloads', String(info.download_count));
         wrap.appendChild(grid);
 
-        if (info.audit && info.audit.length) {
+        if (info.audit?.length) {
             wrap.appendChild(Utils.el('h5', { textContent: 'Recent Access', style: 'margin:0 0 6px' }));
             const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;width:100%' });
             tbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
@@ -1122,35 +1101,8 @@ const Files = (() => {
         Shares.openShareDialog(files);
     }
 
-    async function _bulkAddToTeam(items) {
-        const fileItems = items.filter(i => i.type === 'file');
-        if (fileItems.length === 0) {
-            Utils.showToast('Select files to add to a team', 'info');
-            return;
-        }
-
-        // Fetch full file metadata (need encrypted_file_key + key_iv)
-        const files = [];
-        for (const item of fileItems) {
-            try {
-                const data = await Api.get(`${Config.app.apiPrefix}/files/${item.id}`);
-                if (data.file) files.push(data.file);
-            } catch (err) {
-                Utils.showToast(`Failed to load file ${item.id}: ${err.message}`, 'error');
-                return;
-            }
-        }
-
-        Teams.openAddToTeamDialog(files);
-    }
-
     // ── Move files / folders ──────────────────────────────────────────────────
 
-    /**
-     * Open the move-destination picker modal.
-     * items: [{ type: 'file'|'folder', id: string, name: string }]
-     * sourceIsTeam derived from _isTeamView at call time.
-     */
     async function _openMoveCopyModal(items) {
         const files = items.filter(i => i.type === 'file');
         if (items.length === 0) return;
@@ -1296,116 +1248,6 @@ const Files = (() => {
         }
     }
 
-    async function _openMoveModal(items) {
-        if (items.length === 0) return;
-
-        const sourceIsTeam = _isTeamView;
-        let selectedDest = null; // { id: string|null, label: string, isTeam: boolean }
-        let currentSelectedEl = null;
-
-        const moveBtn = Utils.el('button', {
-            className: 'btn btn-primary',
-            textContent: 'Move here',
-            disabled: true,
-            onClick: async () => {
-                overlay.remove();
-                await _confirmAndExecuteMoves(items, selectedDest, sourceIsTeam);
-            },
-        });
-
-        function _selectDest(optionEl, dest) {
-            if (currentSelectedEl) currentSelectedEl.classList.remove('selected');
-            optionEl.classList.add('selected');
-            currentSelectedEl = optionEl;
-            selectedDest = dest;
-            moveBtn.disabled = false;
-        }
-
-        const pickerList = Utils.el('ul', { className: 'folder-picker' });
-
-        // Personal section header
-        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: 'My Files' }));
-
-        // My Files root option
-        const rootRow = Utils.el('div', { className: 'folder-picker-option' }, [
-            Utils.el('span', { className: 'picker-folder-name', textContent: 'My Files (root)' }),
-        ]);
-        rootRow.addEventListener('click', () => _selectDest(rootRow, { id: null, label: 'My Files (root)', isTeam: false }));
-        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-item' }, [rootRow]));
-
-        const loadingLi = Utils.el('li', { className: 'folder-picker-loading', textContent: 'Loading…' });
-        pickerList.appendChild(loadingLi);
-
-        const overlay = Utils.el('div', {
-            className: 'modal-overlay',
-            onClick: (e) => { if (e.target === overlay) overlay.remove(); },
-        });
-
-        const title = items.length === 1
-            ? `Move "${items[0].name}"`
-            : `Move ${items.length} items`;
-
-        overlay.appendChild(Utils.el('div', { className: 'modal move-modal' }, [
-            Utils.el('h3', { textContent: title }),
-            pickerList,
-            Utils.el('div', { className: 'modal-actions' }, [
-                Utils.el('button', {
-                    className: 'btn btn-secondary',
-                    textContent: 'Cancel',
-                    onClick: () => overlay.remove(),
-                }),
-                moveBtn,
-            ]),
-        ]));
-        document.body.appendChild(overlay);
-
-        // Load personal folders and teams in parallel, then team folders sequentially
-        try {
-            const [foldersData, teamsData] = await Promise.all([
-                Api.get(`${Config.app.apiPrefix}/folders`),
-                Api.get(`${Config.app.apiPrefix}/teams`),
-            ]);
-            loadingLi.remove();
-
-            // Personal folders
-            for (const folder of (foldersData.folders || [])) {
-                pickerList.appendChild(_createPickerFolderNode(folder, 0, _selectDest, false));
-            }
-
-            // One section per team with its root-level team folders
-            for (const team of (teamsData.teams || [])) {
-                pickerList.appendChild(Utils.el('li', {
-                    className: 'folder-picker-section',
-                    textContent: team.name,
-                }));
-                try {
-                    const tfData = await Api.get(`${Config.app.apiPrefix}/teams/${team.id}/folders`);
-                    const teamFolders = tfData.folders || [];
-                    if (teamFolders.length === 0) {
-                        pickerList.appendChild(Utils.el('li', {
-                            className: 'folder-picker-loading',
-                            textContent: 'No folders in this team',
-                        }));
-                    } else {
-                        for (const tf of teamFolders) {
-                            // TeamFolder shape: { folder_id, folder_name, ... }
-                            pickerList.appendChild(_createPickerFolderNode(
-                                { id: tf.folder_id, name: tf.folder_name },
-                                0, _selectDest, true,
-                            ));
-                        }
-                    }
-                } catch {
-                    pickerList.appendChild(Utils.el('li', {
-                        className: 'folder-picker-error',
-                        textContent: 'Failed to load folders',
-                    }));
-                }
-            }
-        } catch {
-            if (loadingLi.parentNode) loadingLi.textContent = 'Failed to load folders';
-        }
-    }
 
     /**
      * Build a lazily-expandable folder node for the move picker.
@@ -1645,103 +1487,6 @@ const Files = (() => {
         _reloadCurrentView();
     }
 
-    /**
-     * Open the folder-picker modal for a copy operation.
-     * Only file items are copied (folder items are silently filtered out).
-     */
-    function _openCopyModal(items) {
-        const files = items.filter(i => i.type === 'file');
-        if (files.length === 0) {
-            Utils.showToast('Only files can be copied — select at least one file.', 'warning');
-            return;
-        }
-
-        let selectedDest = null;
-        let currentSelectedEl = null;
-
-        const copyBtn = Utils.el('button', {
-            className: 'btn btn-primary',
-            textContent: 'Copy here',
-            disabled: true,
-            onClick: async () => {
-                overlay.remove();
-                await _executeCopies(files, selectedDest);
-            },
-        });
-
-        function _selectDest(optionEl, dest) {
-            if (currentSelectedEl) currentSelectedEl.classList.remove('selected');
-            optionEl.classList.add('selected');
-            currentSelectedEl = optionEl;
-            selectedDest = dest;
-            copyBtn.disabled = false;
-        }
-
-        const pickerList = Utils.el('ul', { className: 'folder-picker' });
-        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: 'My Files' }));
-
-        const rootRow = Utils.el('div', { className: 'folder-picker-option' }, [
-            Utils.el('span', { className: 'picker-folder-name', textContent: 'My Files (root)' }),
-        ]);
-        rootRow.addEventListener('click', () => _selectDest(rootRow, { id: null, label: 'My Files (root)', isTeam: false }));
-        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-item' }, [rootRow]));
-
-        const loadingLi = Utils.el('li', { className: 'folder-picker-loading', textContent: 'Loading…' });
-        pickerList.appendChild(loadingLi);
-
-        const overlay = Utils.el('div', {
-            className: 'modal-overlay',
-            onClick: (e) => { if (e.target === overlay) overlay.remove(); },
-        });
-
-        const title = files.length === 1
-            ? `Copy "${files[0].name}"`
-            : `Copy ${files.length} files`;
-
-        overlay.appendChild(Utils.el('div', { className: 'modal move-modal' }, [
-            Utils.el('h3', { textContent: title }),
-            pickerList,
-            Utils.el('div', { className: 'modal-actions' }, [
-                Utils.el('button', {
-                    className: 'btn btn-secondary',
-                    textContent: 'Cancel',
-                    onClick: () => overlay.remove(),
-                }),
-                copyBtn,
-            ]),
-        ]));
-        document.body.appendChild(overlay);
-
-        Promise.all([
-            Api.get(`${Config.app.apiPrefix}/folders`),
-            Api.get(`${Config.app.apiPrefix}/teams`),
-        ]).then(async ([foldersData, teamsData]) => {
-            loadingLi.remove();
-            for (const folder of (foldersData.folders || [])) {
-                pickerList.appendChild(_createPickerFolderNode(folder, 0, _selectDest, false));
-            }
-            for (const team of (teamsData.teams || [])) {
-                pickerList.appendChild(Utils.el('li', { className: 'folder-picker-section', textContent: team.name }));
-                try {
-                    const tfData = await Api.get(`${Config.app.apiPrefix}/teams/${team.id}/folders`);
-                    const teamFolders = tfData.folders || [];
-                    if (teamFolders.length === 0) {
-                        pickerList.appendChild(Utils.el('li', { className: 'folder-picker-loading', textContent: 'No folders in this team' }));
-                    } else {
-                        for (const tf of teamFolders) {
-                            pickerList.appendChild(_createPickerFolderNode(
-                                { id: tf.folder_id, name: tf.folder_name }, 0, _selectDest, true
-                            ));
-                        }
-                    }
-                } catch {
-                    pickerList.appendChild(Utils.el('li', { className: 'folder-picker-error', textContent: 'Failed to load folders' }));
-                }
-            }
-        }).catch(() => {
-            if (loadingLi.parentNode) loadingLi.textContent = 'Failed to load folders';
-        });
-    }
 
     /**
      * Load source team SK, file key map, and optionally the rk scalar for cross-team copies.

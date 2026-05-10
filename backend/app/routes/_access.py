@@ -45,6 +45,9 @@ _TEAM_ROLE_DEFAULTS: dict[str, str] = {
 # Legacy alias used by callers that only need truthy / falsy.
 _TEAM_ROLE_LEVELS = _TEAM_ROLE_DEFAULTS
 
+_SQL_TEAM_FOLDER = "SELECT team_id FROM team_folders WHERE folder_id = ?"
+_SQL_FOLDER_PARENT = "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?"
+
 
 def require_flag(user: AuthenticatedUser, flag: str, detail: str | None = None) -> None:
     """Raise 403 if *user* does not hold *flag*.
@@ -110,6 +113,32 @@ async def _team_level_for_user(db, team_id: str, user_id: str) -> str | None:
 # Core data-plane permission evaluator (Phase 1)
 # ---------------------------------------------------------------------------
 
+async def _check_team_grant(db, folder_id: str, user_id: str, action: str) -> bool:
+    cursor = await db.execute(_SQL_TEAM_FOLDER, (folder_id,))
+    tf_row = await cursor.fetchone()
+    if not tf_row:
+        return False
+    level = await _team_level_for_user(db, tf_row["team_id"], user_id)
+    return bool(level and level != "none" and action in _LEVEL_ACTIONS.get(level, frozenset()))
+
+
+async def _seed_folder_walk(
+    db, resource_type: str, resource_id: str, user_id: str, action: str
+) -> tuple[str | None, bool | None, bool]:
+    """Return (folder_id, early_result, first_folder).
+    early_result is set when a definitive answer is known before the walk."""
+    if resource_type != "file":
+        return resource_id, None, False
+    file_allowed = await _check_acl(db, "file", resource_id, user_id, action, exact=True)
+    if file_allowed is not None:
+        return None, file_allowed, False
+    cursor = await db.execute("SELECT folder_id FROM files WHERE id = ?", (resource_id,))
+    frow = await cursor.fetchone()
+    if not frow or not frow["folder_id"]:
+        return None, False, False
+    return frow["folder_id"], None, True
+
+
 async def check_data_permission(
     db,
     resource_type: str,
@@ -128,21 +157,9 @@ async def check_data_permission(
     the folder itself and ascends via parent_id, stopping at any folder with
     restrict_permissions=TRUE.
     """
-    # Seed the walk: for files, check file-level ACL first then move to folder.
-    if resource_type == "file":
-        file_allowed = await _check_acl(db, "file", resource_id, user_id, action, exact=True)
-        if file_allowed is not None:
-            return file_allowed
-        # Retrieve the containing folder to continue the walk.
-        cursor = await db.execute("SELECT folder_id FROM files WHERE id = ?", (resource_id,))
-        frow = await cursor.fetchone()
-        if not frow or not frow["folder_id"]:
-            return False
-        folder_id: str | None = frow["folder_id"]
-        first_folder = True  # don't require recursive=1 on the direct parent
-    else:
-        folder_id = resource_id
-        first_folder = False  # the resource itself — exact match, no recursive required
+    folder_id, early_result, first_folder = await _seed_folder_walk(db, resource_type, resource_id, user_id, action)
+    if early_result is not None:
+        return early_result
 
     visited: set[str] = set()
     while folder_id and folder_id not in visited:
@@ -150,27 +167,15 @@ async def check_data_permission(
         is_exact = (resource_type == "folder" and folder_id == resource_id) or first_folder
         first_folder = False
 
-        # 1 & 2: explicit ACL (deny or allow) at this folder node.
         acl_result = await _check_acl(db, "folder", folder_id, user_id, action, exact=is_exact)
         if acl_result is not None:
             return acl_result
 
         # 3: team-based grant.
-        cursor = await db.execute(
-            "SELECT team_id FROM team_folders WHERE folder_id = ?", (folder_id,)
-        )
-        tf_row = await cursor.fetchone()
-        if tf_row:
-            level = await _team_level_for_user(db, tf_row["team_id"], user_id)
-            if level and level != "none":
-                if action in _LEVEL_ACTIONS.get(level, frozenset()):
-                    return True
-            # Non-member or level 'none' → not allowed via team; continue walk.
+        if await _check_team_grant(db, folder_id, user_id, action):
+            return True
 
-        # 4 & 5: check restrict_permissions boundary and move to parent.
-        cursor = await db.execute(
-            "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (folder_id,)
-        )
+        cursor = await db.execute(_SQL_FOLDER_PARENT, (folder_id,))
         row = await cursor.fetchone()
         if not row or row["restrict_permissions"]:
             return False
@@ -230,7 +235,7 @@ async def is_team_folder_member(db, folder_id: str, user_id: str) -> str | None:
     while current_id and current_id not in visited:
         visited.add(current_id)
         cursor = await db.execute(
-            "SELECT team_id FROM team_folders WHERE folder_id = ?", (current_id,)
+            _SQL_TEAM_FOLDER, (current_id,)
         )
         tf_row = await cursor.fetchone()
         if tf_row:
@@ -239,7 +244,7 @@ async def is_team_folder_member(db, folder_id: str, user_id: str) -> str | None:
                 return level
             return None
         cursor = await db.execute(
-            "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (current_id,)
+            _SQL_FOLDER_PARENT, (current_id,)
         )
         row = await cursor.fetchone()
         if not row or row["restrict_permissions"]:
@@ -285,7 +290,7 @@ async def get_folder_team_id(db, folder_id: str) -> str | None:
     while current_id and current_id not in visited:
         visited.add(current_id)
         cursor = await db.execute(
-            "SELECT team_id FROM team_folders WHERE folder_id = ?", (current_id,)
+            _SQL_TEAM_FOLDER, (current_id,)
         )
         tf_row = await cursor.fetchone()
         if tf_row:
@@ -349,7 +354,7 @@ async def has_folder_permission(db, folder_id: str, user_id: str) -> bool:
         if row and (current_id == folder_id or row["recursive"]):
             return True
         cursor = await db.execute(
-            "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (current_id,)
+            _SQL_FOLDER_PARENT, (current_id,)
         )
         prow = await cursor.fetchone()
         if not prow or prow["restrict_permissions"]:

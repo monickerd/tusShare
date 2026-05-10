@@ -1795,7 +1795,7 @@ const Teams = (() => {
                 }
             }
 
-            if (!tileGrid.children.length) {
+            if (tileGrid.children.length === 0) {
                 page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folders have been added to your teams yet.' }));
             } else {
                 page.appendChild(tileGrid);

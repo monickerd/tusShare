@@ -372,7 +372,7 @@ async def update_role(
 # DELETE /roles/{role_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{role_id}", responses={400: {"description": "Bad Request"}})
+@router.delete("/{role_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def delete_role(
     role_id: str,
     admin: Annotated[AuthenticatedUser, Depends(get_current_user)],

@@ -520,7 +520,7 @@ const Admin = (() => {
             try {
                 const result = await Api.get(`${_api()}/admin/hw-scan`);
                 hwResultWrap.innerHTML = '';
-                if (result.recommendations && result.recommendations.length) {
+                if (result.recommendations?.length) {
                     const list = Utils.el('ul', { style: 'font-size:var(--font-size-sm);margin:8px 0 0;padding-left:18px' });
                     for (const rec of result.recommendations) {
                         list.appendChild(Utils.el('li', { textContent: rec }));
@@ -847,7 +847,7 @@ const Admin = (() => {
 
         wrap.appendChild(Utils.el('h6', { textContent: 'Members', style: 'margin:12px 0 6px;font-size:13px;font-weight:600' }));
 
-        if (!members.length) {
+        if (members.length === 0) {
             wrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px' , textContent: 'No members.' }));
         } else {
             const mThead = Utils.el('thead', {}, [
@@ -1427,19 +1427,21 @@ const Admin = (() => {
             .map(cat => {
                 const rows = (flagsByCategory[cat.key] || []).map(f => {
                     const canGrant = grantableFlags.has(f.flag);
+                    let chkTitle = '';
+                    if (f.is_sensitive) chkTitle = 'Sensitive — only Server/Org Admin may activate';
+                    else if (!canGrant) chkTitle = 'You do not hold this permission and cannot grant it';
                     const chk = Utils.el('input', {
                         type: 'checkbox',
                         disabled: !canGrant,
-                        title: f.is_sensitive
-                            ? 'Sensitive — only Server/Org Admin may activate'
-                            : !canGrant ? 'You do not hold this permission and cannot grant it' : '',
+                        title: chkTitle,
                     });
                     flagInputs[f.flag] = chk;
                     const badges = [
                         f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
-                        !canGrant ? Utils.el('span', { className: 'flag-locked-badge', textContent: 'not held' }) : null,
+                        canGrant ? null : Utils.el('span', { className: 'flag-locked-badge', textContent: 'not held' }),
                     ].filter(Boolean);
-                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') + (!canGrant ? ' flag-locked' : '') }, [
+                    const lockedClass = canGrant ? '' : ' flag-locked';
+                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') + lockedClass }, [
                         Utils.el('div', { className: 'flag-lock-cell' }),
                         Utils.el('div', { className: 'flag-content-cell' }, [
                             Utils.el('label', { className: 'flag-label' }, [
@@ -3001,6 +3003,50 @@ const Admin = (() => {
     // User detail modal (B1 + B2)
     // -----------------------------------------------------------------------
 
+    async function _renderTransferLocks(locksWrap, userId) {
+        const data = await Api.get(`${_api()}/admin/users/${userId}/transfer-locks`);
+        locksWrap.innerHTML = '';
+        if (!data.files?.length) {
+            locksWrap.appendChild(Utils.el('p', { textContent: 'No transfer locks on record.', className: 'text-muted', style: 'font-size:12px;margin:4px 0' }));
+            return;
+        }
+        const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-top:4px' });
+        tbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
+            Utils.el('th', { textContent: 'File' }),
+            Utils.el('th', { textContent: 'Locked at' }),
+            Utils.el('th', { textContent: 'Locked by' }),
+            Utils.el('th'),
+        ])]));
+        const tbody = Utils.el('tbody');
+        for (const f of data.files) {
+            tbody.appendChild(_buildTransferLockRow(f));
+        }
+        tbl.appendChild(tbody);
+        locksWrap.appendChild(tbl);
+    }
+
+    function _buildTransferLockRow(f) {
+        const clearBtn = Utils.el('button', { className: 'btn btn-xs btn-secondary', textContent: 'Clear lock' });
+        clearBtn.addEventListener('click', async () => {
+            if (!confirm(`Clear transfer lock on "${f.sanitized_name}"?`)) return;
+            clearBtn.disabled = true;
+            try {
+                await Api.del(`${_api()}/admin/files/${f.id}/transfer-lock`);
+                clearBtn.closest('tr').remove();
+                Utils.showToast('Transfer lock cleared', 'success');
+            } catch (err) {
+                Utils.showToast('Clear failed: ' + err.message, 'error');
+                clearBtn.disabled = false;
+            }
+        });
+        return Utils.el('tr', {}, [
+            Utils.el('td', { textContent: f.sanitized_name }),
+            Utils.el('td', { textContent: f.locked_at ? String(f.locked_at).slice(0, 16).replace('T', ' ') : '' }),
+            Utils.el('td', { textContent: f.locked_by_username || '' }),
+            Utils.el('td', {}, [clearBtn]),
+        ]);
+    }
+
     async function _showUserDetailModal(userId, username) {
         const wrap = Utils.el('div', { style: 'min-width:520px;max-width:680px' });
         wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
@@ -3127,45 +3173,7 @@ const Admin = (() => {
             emergencyForm.style.display = emergencyForm.style.display === 'none' ? '' : 'none';
         }));
 
-        const locksBtn = _actionBtn('View Transfer Locks', 'btn-secondary', async () => {
-            const data = await Api.get(`${_api()}/admin/users/${user.id}/transfer-locks`);
-            locksWrap.innerHTML = '';
-            if (!data.files || !data.files.length) {
-                locksWrap.appendChild(Utils.el('p', { textContent: 'No transfer locks on record.', className: 'text-muted', style: 'font-size:12px;margin:4px 0' }));
-                return;
-            }
-            const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-top:4px' });
-            tbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
-                Utils.el('th', { textContent: 'File' }),
-                Utils.el('th', { textContent: 'Locked at' }),
-                Utils.el('th', { textContent: 'Locked by' }),
-                Utils.el('th'),
-            ])]));
-            const tbody = Utils.el('tbody');
-            for (const f of data.files) {
-                const clearBtn = Utils.el('button', { className: 'btn btn-xs btn-secondary', textContent: 'Clear lock' });
-                clearBtn.addEventListener('click', async () => {
-                    if (!confirm(`Clear transfer lock on "${f.sanitized_name}"?`)) return;
-                    clearBtn.disabled = true;
-                    try {
-                        await Api.del(`${_api()}/admin/files/${f.id}/transfer-lock`);
-                        clearBtn.closest('tr').remove();
-                        Utils.showToast('Transfer lock cleared', 'success');
-                    } catch (err) {
-                        Utils.showToast('Clear failed: ' + err.message, 'error');
-                        clearBtn.disabled = false;
-                    }
-                });
-                tbody.appendChild(Utils.el('tr', {}, [
-                    Utils.el('td', { textContent: f.sanitized_name }),
-                    Utils.el('td', { textContent: f.locked_at ? String(f.locked_at).slice(0, 16).replace('T', ' ') : '' }),
-                    Utils.el('td', { textContent: f.locked_by_username || '' }),
-                    Utils.el('td', {}, [clearBtn]),
-                ]));
-            }
-            tbl.appendChild(tbody);
-            locksWrap.appendChild(tbl);
-        });
+        const locksBtn = _actionBtn('View Transfer Locks', 'btn-secondary', () => _renderTransferLocks(locksWrap, user.id));
         dangerActRow.appendChild(locksBtn);
 
         dangerActRow.appendChild(_actionBtn('Delete Asymmetric Keys…', 'btn-danger', async () => {
@@ -3245,7 +3253,7 @@ const Admin = (() => {
         _renderRoles(user.roles || []);
 
         // ---- Teams ----
-        if (user.teams && user.teams.length) {
+        if (user.teams?.length) {
             wrap.appendChild(Utils.el('h5', { textContent: 'Team Memberships', style: 'margin:0 0 6px' }));
             const teamList = Utils.el('ul', { style: 'font-size:13px;margin:0 0 14px;padding-left:18px' });
             for (const t of user.teams) {
@@ -3255,7 +3263,7 @@ const Admin = (() => {
         }
 
         // ---- Recent audit ----
-        if (user.recent_audit && user.recent_audit.length) {
+        if (user.recent_audit?.length) {
             wrap.appendChild(Utils.el('h5', { textContent: 'Recent Audit (last 10)', style: 'margin:0 0 6px' }));
             const auditTbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-bottom:8px' });
             auditTbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
@@ -5758,7 +5766,7 @@ const Admin = (() => {
 
                 importCatWrap.style.display = '';
                 importBtn.disabled = false;
-            } catch (e) {
+            } catch {
                 fileStatus.style.color = 'var(--color-danger)';
                 fileStatus.textContent = '✗ Could not parse file — confirm it is valid JSON';
             }
@@ -5884,78 +5892,6 @@ const Admin = (() => {
                 _showError(box, 'Apply failed: ' + err.message);
                 applyBtn.disabled = false;
                 applyBtn.textContent = 'Apply';
-            }
-        });
-
-        modal.appendChild(box);
-        document.body.appendChild(modal);
-    }
-
-    function _showImportProfileModal(profileJson, mode, refreshFn) {
-        const modal = Utils.el('div', { style: 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;display:flex;align-items:center;justify-content:center' });
-        const box   = Utils.el('div', { style: 'background:var(--color-bg,#fff);border-radius:8px;padding:24px;width:640px;max-width:95vw;max-height:80vh;overflow-y:auto' });
-
-        box.appendChild(Utils.el('h4', { textContent: 'Import Profile', style: 'margin-bottom:8px' }));
-
-        if (profileJson._warnings?.length) {
-            const warnBox = Utils.el('div', { style: 'background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:10px;margin-bottom:12px' });
-            for (const w of profileJson._warnings) {
-                warnBox.appendChild(Utils.el('p', { textContent: w, style: 'margin:0 0 4px' }));
-            }
-            box.appendChild(warnBox);
-        }
-
-        const diffArea = Utils.el('div', { style: 'margin-bottom:16px', textContent: 'Loading diff…' });
-        box.appendChild(diffArea);
-
-        const confirmRow = Utils.el('div', { style: `display:${mode === 'replace' ? '' : 'none'};margin-bottom:12px` });
-        const confirmInp = Utils.el('input', { type: 'text', className: 'form-control form-control-sm', placeholder: 'Type REPLACE to confirm' });
-        confirmRow.appendChild(Utils.el('p', { style: 'color:var(--color-danger,#dc3545);margin-bottom:4px', textContent: 'This will replace all sharing rules and security settings. Type REPLACE to confirm.' }));
-        confirmRow.appendChild(confirmInp);
-        box.appendChild(confirmRow);
-
-        const btnRow  = Utils.el('div', { style: 'display:flex;gap:8px' });
-        const applyBtn  = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Apply Import', disabled: true });
-        const cancelBtn = Utils.el('button', { className: 'btn btn-light btn-sm', textContent: 'Cancel' });
-        btnRow.append(applyBtn, cancelBtn);
-        box.appendChild(btnRow);
-
-        cancelBtn.addEventListener('click', () => modal.remove());
-
-        let diffData = null;
-
-        Api.post(`${_api()}/admin/settings/import`, { profile_json: profileJson, mode, confirm: false })
-            .then(resp => {
-                diffData = resp.diff || [];
-                _renderDiffTable(diffArea, diffData, mode);
-                applyBtn.disabled = false;
-            })
-            .catch(err => { diffArea.textContent = 'Error: ' + err.message; });
-
-        applyBtn.addEventListener('click', async () => {
-            if (mode === 'replace' && confirmInp.value !== 'REPLACE') {
-                alert('Type REPLACE to confirm.'); return;
-            }
-            applyBtn.disabled = true;
-            applyBtn.textContent = 'Importing…';
-            try {
-                const decisions = {};
-                if (mode === 'merge') {
-                    diffArea.querySelectorAll('[data-decision-key]').forEach(sel => {
-                        decisions[sel.dataset.decisionKey] = sel.value;
-                    });
-                }
-                await Api.post(`${_api()}/admin/settings/import`, {
-                    profile_json: profileJson, mode, confirm: true,
-                    confirmation_text: mode === 'replace' ? confirmInp.value : 'REPLACE',
-                    decisions,
-                });
-                modal.remove();
-                refreshFn();
-            } catch (err) {
-                _showError(box, 'Import failed: ' + err.message);
-                applyBtn.disabled = false;
-                applyBtn.textContent = 'Apply Import';
             }
         });
 

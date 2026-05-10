@@ -61,6 +61,28 @@ _ERR_TEAM_NOT_FOUND   = "Team not found"
 
 
 
+async def _resolve_team_scope_id(db, scope_id_input: str) -> str:
+    try:
+        return validate_uuid(scope_id_input)
+    except ValueError:
+        cursor = await db.execute(
+            "SELECT id FROM teams WHERE LOWER(name) = LOWER(?)",
+            (scope_id_input,),
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{scope_id_input}' is not a valid team UUID or name. Use the team's UUID as scope_id.",
+            )
+        if len(rows) > 1:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Multiple teams match '{scope_id_input}'. Use the team's UUID as scope_id.",
+            )
+        return rows[0]["id"]
+
+
 async def _bg_sweep(policy_id: str) -> None:
     """Run sweep_policy_for_all_users in a background task with its own DB connection.
 
@@ -189,7 +211,7 @@ async def list_policies(
 # POST /admin/policies — create a policy
 # ---------------------------------------------------------------------------
 
-@router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+@router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
 async def create_policy(
     body: CreatePolicyRequest,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -211,26 +233,7 @@ async def create_policy(
     if body.scope_type == "team":
         if not body.scope_id:
             raise HTTPException(status_code=400, detail="scope_id (team_id) is required for team-scoped policies")
-        try:
-            scope_id = validate_uuid(body.scope_id)
-        except ValueError:
-            # Input isn't a UUID — try resolving as a team name
-            cursor = await db.execute(
-                "SELECT id FROM teams WHERE LOWER(name) = LOWER(?)",
-                (body.scope_id,),
-            )
-            rows = await cursor.fetchall()
-            if not rows:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"'{body.scope_id}' is not a valid team UUID or name. Use the team's UUID as scope_id.",
-                )
-            if len(rows) > 1:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Multiple teams match '{body.scope_id}'. Use the team's UUID as scope_id.",
-                )
-            scope_id = rows[0]["id"]
+        scope_id = await _resolve_team_scope_id(db, body.scope_id)
         cursor = await db.execute(_SQL_TEAM_EXISTS, (scope_id,))
         if await cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)

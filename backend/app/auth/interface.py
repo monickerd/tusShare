@@ -81,7 +81,7 @@ class AuthenticatedUser:
             for entry in self.scoped_roles
         )
 
-    def get_team_ids_with_flag(self, flag: str) -> set[str]:
+    def get_team_ids_with_flag(self, flag: str) -> set[str] | None:
         """Return the set of team IDs where this user holds *flag*.
 
         Returns None (sentinel) if the user holds the flag globally (org-wide),

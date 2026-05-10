@@ -472,7 +472,7 @@ async def list_escrow_agents(
     }
 
 
-@router.post("", status_code=201, responses={400: {"description": "Bad Request"}, 422: {"description": "Unprocessable Entity"}})
+@router.post("", status_code=201, responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
 async def create_team(
     body: CreateTeamRequest,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],

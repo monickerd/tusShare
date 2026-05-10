@@ -13,10 +13,13 @@ from app.validation.sanitizers import validate_uuid
 
 router = APIRouter()
 
+_ERR_INVALID_TEAM_ID = "Invalid team ID"
+_ERR_TEAM_NOT_FOUND = "Team not found"
+
 
 def _require_team_admin(admin: AuthenticatedUser) -> None:
     if not admin.has_flag(FLAG_MANAGE_TEAMS):
-        raise HTTPException(status_code=403, detail="Requires can_manage_teams permission")
+        raise HTTPException(status_code=403, detail="Requires can_manage_teams permission")  # NOSONAR
 
 
 @router.get("/teams")
@@ -84,7 +87,7 @@ async def list_all_teams(
     }
 
 
-@router.get("/teams/{team_id}")
+@router.get("/teams/{team_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def get_team_detail(
     team_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -92,7 +95,7 @@ async def get_team_detail(
 ):
     _require_team_admin(admin)
     if not validate_uuid(team_id):
-        raise HTTPException(status_code=400, detail="Invalid team ID")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
     require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
 
     cursor = await db.execute(
@@ -108,7 +111,7 @@ async def get_team_detail(
     )
     team_row = await cursor.fetchone()
     if team_row is None:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
 
     cursor2 = await db.execute(
         """
@@ -154,7 +157,7 @@ async def get_team_detail(
     }
 
 
-@router.delete("/teams/{team_id}")
+@router.delete("/teams/{team_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def admin_delete_team(
     team_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -162,19 +165,19 @@ async def admin_delete_team(
 ):
     _require_team_admin(admin)
     if not validate_uuid(team_id):
-        raise HTTPException(status_code=400, detail="Invalid team ID")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
     require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
 
     cursor = await db.execute("SELECT id, name FROM teams WHERE id = ?", (team_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
 
     await db.execute("DELETE FROM teams WHERE id = ?", (team_id,))
     return {"deleted": True, "name": row["name"]}
 
 
-@router.get("/teams/{team_id}/folder-role-levels")
+@router.get("/teams/{team_id}/folder-role-levels", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def get_team_folder_role_levels(
     team_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -186,12 +189,12 @@ async def get_team_folder_role_levels(
     """
     _require_team_admin(admin)
     if not validate_uuid(team_id):
-        raise HTTPException(status_code=400, detail="Invalid team ID")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
     require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
 
     cursor = await db.execute("SELECT id FROM teams WHERE id = ?", (team_id,))
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
 
     cursor = await db.execute(
         "SELECT role_id, level FROM team_folder_role_levels WHERE team_id = ?",
@@ -209,7 +212,7 @@ async def get_team_folder_role_levels(
     return {"team_id": team_id, "levels": levels}
 
 
-@router.put("/teams/{team_id}/folder-role-levels")
+@router.put("/teams/{team_id}/folder-role-levels", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def set_team_folder_role_levels(
     team_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -223,12 +226,12 @@ async def set_team_folder_role_levels(
     """
     _require_team_admin(admin)
     if not validate_uuid(team_id):
-        raise HTTPException(status_code=400, detail="Invalid team ID")
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
     require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
 
     cursor = await db.execute("SELECT id FROM teams WHERE id = ?", (team_id,))
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="Team not found")
+        raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
 
     levels: dict = body.get("levels", {})
     if not isinstance(levels, dict):

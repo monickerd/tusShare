@@ -167,6 +167,21 @@ const Wizard = (() => {
         btn.textContent = label;
     }
 
+    async function _postThemeAsset(endpoint, file) {
+        const fd = new FormData();
+        fd.append('file', file);
+        const resp = await fetch(`${_api()}${endpoint}`, {
+            method: 'POST',
+            headers: { 'X-CSRF-Token': Api.getCsrfToken() },
+            body: fd,
+            credentials: 'same-origin',
+        });
+        if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            throw new Error(body.detail || `HTTP ${resp.status}`);
+        }
+    }
+
     function _checkImageDimensions(file, maxW, maxH) {
         return new Promise((resolve, reject) => {
             if (file.type === 'image/svg+xml') { resolve(); return; }
@@ -274,44 +289,16 @@ const Wizard = (() => {
                     }
                     if (logoInp.files[0]) {
                         const logoFile = logoInp.files[0];
-                        if (logoFile.size > 2 * 1024 * 1024) {
-                            throw new Error('Logo must be ≤ 2 MB');
-                        }
+                        if (logoFile.size > 2 * 1024 * 1024) throw new Error('Logo must be ≤ 2 MB');
                         await _checkImageDimensions(logoFile, 800, 300);
-                        const csrf = Api.getCsrfToken();
-                        const fd = new FormData();
-                        fd.append('file', logoFile);
-                        const resp = await fetch(`${_api()}/admin/theme/logo`, {
-                            method: 'POST',
-                            headers: { 'X-CSRF-Token': csrf },
-                            body: fd,
-                            credentials: 'same-origin',
-                        });
-                        if (!resp.ok) {
-                            const body = await resp.json().catch(() => ({}));
-                            throw new Error(body.detail || `HTTP ${resp.status}`);
-                        }
+                        await _postThemeAsset('/admin/theme/logo', logoFile);
                         _state.logoUploaded = true;
                     }
                     if (faviconInp.files[0]) {
                         const faviconFile = faviconInp.files[0];
-                        if (faviconFile.size > 256 * 1024) {
-                            throw new Error('Favicon must be ≤ 256 KB');
-                        }
+                        if (faviconFile.size > 256 * 1024) throw new Error('Favicon must be ≤ 256 KB');
                         await _checkImageDimensions(faviconFile, 256, 256);
-                        const csrf = Api.getCsrfToken();
-                        const fd = new FormData();
-                        fd.append('file', faviconFile);
-                        const resp = await fetch(`${_api()}/admin/theme/favicon`, {
-                            method: 'POST',
-                            headers: { 'X-CSRF-Token': csrf },
-                            body: fd,
-                            credentials: 'same-origin',
-                        });
-                        if (!resp.ok) {
-                            const body = await resp.json().catch(() => ({}));
-                            throw new Error(body.detail || `HTTP ${resp.status}`);
-                        }
+                        await _postThemeAsset('/admin/theme/favicon', faviconFile);
                     }
                     if (typeof App !== 'undefined' && App.reloadTheme) {
                         await App.reloadTheme();

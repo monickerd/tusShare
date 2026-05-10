@@ -32,11 +32,13 @@ from app.models.role import admin_best_tier
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
 from app.util.db import get_admin_setting
+from app.validation.sanitizers import validate_uuid as _vuuid
 from typing import Annotated
 
 router = APIRouter()
 
 _STEPUP_ACTION = "admin.settings.security.*"
+_ERR_MODE_REPLACE_OR_MERGE = "mode must be 'replace' or 'merge'"
 
 # ---------------------------------------------------------------------------
 # Built-in profile definitions
@@ -395,13 +397,13 @@ async def _apply_merge(
 def _validate_role_flag_overrides(overrides: dict) -> None:
     for role_id, flags in overrides.items():
         if not isinstance(flags, dict):
-            raise HTTPException(
+            raise HTTPException(  # NOSONAR
                 status_code=400,
                 detail=f"role_flag_overrides.{role_id} must be a dict of flags",
             )
         for flag, fu in flags.items():
             if not isinstance(fu, dict) or "value" not in fu:
-                raise HTTPException(
+                raise HTTPException(  # NOSONAR
                     status_code=400,
                     detail=f"role_flag_overrides.{role_id}.{flag} must be an object with a 'value' field",
                 )
@@ -412,11 +414,11 @@ def _validate_profile_structure(profile_json: dict) -> None:
     allowed_keys = {"_warnings", "_meta", "admin_settings", "role_flag_overrides", "sharing_rules"}
     unknown = set(profile_json.keys()) - allowed_keys
     if unknown:
-        raise HTTPException(status_code=400, detail=f"Unknown profile keys: {sorted(unknown)}")
+        raise HTTPException(status_code=400, detail=f"Unknown profile keys: {sorted(unknown)}")  # NOSONAR
 
     for key, setting in profile_json.get("admin_settings", {}).items():
         if not isinstance(setting, dict) or "value" not in setting:
-            raise HTTPException(
+            raise HTTPException(  # NOSONAR
                 status_code=400,
                 detail=f"admin_settings.{key} must be an object with a 'value' field",
             )
@@ -425,7 +427,7 @@ def _validate_profile_structure(profile_json: dict) -> None:
 
     for i, rule in enumerate(profile_json.get("sharing_rules", [])):
         if not isinstance(rule, dict) or "name" not in rule or "subject" not in rule:
-            raise HTTPException(
+            raise HTTPException(  # NOSONAR
                 status_code=400,
                 detail=f"sharing_rules[{i}] is missing required fields (name, subject)",
             )
@@ -562,7 +564,7 @@ async def apply_profile(
             detail=f"Unknown profile '{body.profile}'. Valid: {list(_PROFILES)}",
         )
     if body.mode not in ("replace", "merge"):
-        raise HTTPException(status_code=400, detail="mode must be 'replace' or 'merge'")
+        raise HTTPException(status_code=400, detail=_ERR_MODE_REPLACE_OR_MERGE)
 
     profile = _PROFILES[body.profile]
     current = await _read_current(db)
@@ -608,7 +610,7 @@ async def apply_profile(
     return {"message": "Profile applied", "profile": body.profile, "mode": body.mode}
 
 
-@router.post("/settings/import", responses={400: {"description": "Bad Request"}})
+@router.post("/settings/import", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def import_profile(
     body: ImportProfileRequest,
     request: Request,
@@ -649,7 +651,7 @@ async def import_profile(
             )
 
     if body.mode not in ("replace", "merge"):
-        raise HTTPException(status_code=400, detail="mode must be 'replace' or 'merge'")
+        raise HTTPException(status_code=400, detail=_ERR_MODE_REPLACE_OR_MERGE)
 
     _validate_profile_structure(body.profile_json)
 
@@ -723,7 +725,65 @@ class FullImportRequest(BaseModel):
     mode:       str = "replace"
 
 
-async def _full_read(db, categories: set) -> dict:
+async def _read_roles_for_export(db) -> list[dict]:
+    cursor = await db.execute(
+        "SELECT id, name, description, is_system FROM roles ORDER BY is_system DESC, id"
+    )
+    roles = []
+    for rr in await cursor.fetchall():
+        cursor2 = await db.execute(
+            "SELECT flag, value, is_locked, locked_min_tier "
+            "FROM role_permissions WHERE role_id = ?",
+            (rr["id"],),
+        )
+        perms = {
+            r["flag"]: {
+                "value": r["value"],
+                "is_locked": bool(r["is_locked"]),
+                "locked_min_tier": r["locked_min_tier"],
+            }
+            for r in await cursor2.fetchall()
+        }
+        roles.append({
+            "id": rr["id"],
+            "name": rr["name"],
+            "description": rr["description"] or "",
+            "is_system": bool(rr["is_system"]),
+            "permissions": perms,
+        })
+    return roles
+
+
+async def _read_policies_for_export(db) -> list[dict]:
+    cursor = await db.execute(
+        "SELECT id, name, scope_type, escrow_enabled "
+        "FROM policies WHERE scope_type = 'org' ORDER BY name"
+    )
+    policies = []
+    for pr in await cursor.fetchall():
+        cursor2 = await db.execute(
+            "SELECT field, operator, value, block_on_missing_attribute "
+            "FROM policy_conditions WHERE policy_id = ? ORDER BY field",
+            (pr["id"],),
+        )
+        conditions = [
+            {
+                "field": c["field"],
+                "operator": c["operator"],
+                "value": c["value"],
+                "block_on_missing_attribute": bool(c["block_on_missing_attribute"]),
+            }
+            for c in await cursor2.fetchall()
+        ]
+        policies.append({
+            "name": pr["name"],
+            "escrow_enabled": pr["escrow_enabled"],
+            "conditions": conditions,
+        })
+    return policies
+
+
+async def _full_read(db, categories: set) -> tuple[dict, list[str]]:
     out: dict = {}
     warnings: list[str] = []
 
@@ -731,32 +791,7 @@ async def _full_read(db, categories: set) -> dict:
         out["security_profile"] = await _read_current(db)
 
     if "roles" in categories:
-        cursor = await db.execute(
-            "SELECT id, name, description, is_system FROM roles ORDER BY is_system DESC, id"
-        )
-        roles = []
-        for rr in await cursor.fetchall():
-            cursor2 = await db.execute(
-                "SELECT flag, value, is_locked, locked_min_tier "
-                "FROM role_permissions WHERE role_id = ?",
-                (rr["id"],),
-            )
-            perms = {
-                r["flag"]: {
-                    "value": r["value"],
-                    "is_locked": bool(r["is_locked"]),
-                    "locked_min_tier": r["locked_min_tier"],
-                }
-                for r in await cursor2.fetchall()
-            }
-            roles.append({
-                "id": rr["id"],
-                "name": rr["name"],
-                "description": rr["description"] or "",
-                "is_system": bool(rr["is_system"]),
-                "permissions": perms,
-            })
-        out["roles"] = roles
+        out["roles"] = await _read_roles_for_export(db)
 
     if "admin_settings" in categories:
         placeholders = ",".join("?" * len(_FULL_EXPORT_SETTING_KEYS))
@@ -767,32 +802,7 @@ async def _full_read(db, categories: set) -> dict:
         out["admin_settings"] = {r["key"]: r["value"] for r in await cursor.fetchall()}
 
     if "policies" in categories:
-        cursor = await db.execute(
-            "SELECT id, name, scope_type, escrow_enabled "
-            "FROM policies WHERE scope_type = 'org' ORDER BY name"
-        )
-        policies = []
-        for pr in await cursor.fetchall():
-            cursor2 = await db.execute(
-                "SELECT field, operator, value, block_on_missing_attribute "
-                "FROM policy_conditions WHERE policy_id = ? ORDER BY field",
-                (pr["id"],),
-            )
-            conditions = [
-                {
-                    "field": c["field"],
-                    "operator": c["operator"],
-                    "value": c["value"],
-                    "block_on_missing_attribute": bool(c["block_on_missing_attribute"]),
-                }
-                for c in await cursor2.fetchall()
-            ]
-            policies.append({
-                "name": pr["name"],
-                "escrow_enabled": pr["escrow_enabled"],
-                "conditions": conditions,
-            })
-        out["policies"] = policies
+        out["policies"] = await _read_policies_for_export(db)
         warnings.append(
             "NOTE: policy effects (team membership, folder ACL, escrow overrides) "
             "are NOT exported because they reference instance-specific user/team IDs."
@@ -849,7 +859,7 @@ async def _full_read(db, categories: set) -> dict:
     return out, warnings
 
 
-@router.get("/settings/full-export")
+@router.get("/settings/full-export", responses={400: {"description": "Bad Request"}})
 async def full_export_settings(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     _: Annotated[None, Depends(require_step_up(_STEPUP_ACTION))],
@@ -903,7 +913,229 @@ async def full_export_settings(
     )
 
 
-@router.post("/settings/full-import")
+async def _import_security_profile(db, data: dict, replace: bool, admin_id: str, tier: int) -> int:
+    sp = data["security_profile"]
+    _validate_profile_structure(sp)
+    if replace:
+        await _apply_replace(db, sp, admin_id, tier)
+    else:
+        await _apply_merge(db, sp, {}, admin_id, tier)
+    return (
+        len(sp.get("admin_settings", {}))
+        + sum(len(v) for v in sp.get("role_flag_overrides", {}).values())
+        + len(sp.get("sharing_rules", []))
+    )
+
+
+async def _import_roles(db, data: dict, replace: bool) -> int:
+    roles_list = data["roles"]
+    if not isinstance(roles_list, list):
+        raise HTTPException(status_code=400, detail="data.roles must be a list")
+    count = 0
+    if replace:
+        export_ids = {r["id"] for r in roles_list if isinstance(r, dict) and "id" in r}
+        cursor = await db.execute(
+            "SELECT id FROM roles WHERE is_system = 0 AND id NOT IN "
+            f"({','.join('?' * len(export_ids)) if export_ids else 'NULL'})",
+            list(export_ids) if export_ids else [],
+        )
+        for row in await cursor.fetchall():
+            await db.execute("DELETE FROM roles WHERE id = ?", (row["id"],))
+    for role in roles_list:
+        if not isinstance(role, dict) or "id" not in role or "name" not in role:
+            continue
+        rid = role["id"]
+        await db.execute(
+            "INSERT INTO roles (id, name, description, is_system) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET name = excluded.name, "
+            "description = excluded.description",
+            (rid, role["name"], role.get("description", ""), 1 if role.get("is_system") else 0),
+        )
+        for flag, fu in (role.get("permissions") or {}).items():
+            if not isinstance(fu, dict) or "value" not in fu:
+                continue
+            await db.execute(
+                "INSERT INTO role_permissions (role_id, flag, value, is_locked, locked_min_tier) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (role_id, flag) DO UPDATE SET "
+                "value = excluded.value, is_locked = excluded.is_locked, "
+                "locked_min_tier = excluded.locked_min_tier",
+                (rid, flag, fu["value"], bool(fu.get("is_locked", False)),
+                 fu.get("locked_min_tier")),
+            )
+        count += 1
+    return count
+
+
+async def _import_admin_settings(db, data: dict) -> int:
+    from app.routes.admin import _SETTINGS_VALIDATORS
+    settings_dict = data["admin_settings"]
+    if not isinstance(settings_dict, dict):
+        raise HTTPException(status_code=400, detail="data.admin_settings must be a dict")
+    count = 0
+    for key, value in settings_dict.items():
+        if key not in _SETTINGS_VALIDATORS:
+            continue
+        if not _SETTINGS_VALIDATORS[key](str(value)):
+            continue
+        await db.execute(
+            "INSERT INTO admin_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+        count += 1
+    return count
+
+
+async def _import_policies(db, data: dict, replace: bool, admin_id: str) -> int:
+    policies_list = data["policies"]
+    if not isinstance(policies_list, list):
+        raise HTTPException(status_code=400, detail="data.policies must be a list")
+    if replace:
+        await db.execute(
+            "DELETE FROM policies WHERE scope_type = 'org' AND id NOT IN "
+            "(SELECT DISTINCT policy_id FROM policy_effects)"
+        )
+    count = 0
+    for pol in policies_list:
+        if not isinstance(pol, dict) or "name" not in pol:
+            continue
+        pol_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO policies (id, name, scope_type, escrow_enabled, created_by) "
+            "VALUES (?, ?, 'org', ?, ?) "
+            "ON CONFLICT DO NOTHING",
+            (pol_id, pol["name"], pol.get("escrow_enabled"), admin_id),
+        )
+        cursor = await db.execute(
+            "SELECT id FROM policies WHERE name = ? AND scope_type = 'org'",
+            (pol["name"],),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            continue
+        actual_id = row["id"]
+        for cond in (pol.get("conditions") or []):
+            if not isinstance(cond, dict) or "field" not in cond:
+                continue
+            await db.execute(
+                "INSERT INTO policy_conditions "
+                "(id, policy_id, field, operator, value, block_on_missing_attribute) "
+                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                (str(uuid.uuid4()), actual_id,
+                 cond["field"], cond.get("operator", "="),
+                 cond.get("value"), 1 if cond.get("block_on_missing_attribute", True) else 0),
+            )
+        count += 1
+    return count
+
+
+async def _import_policy_fields(db, data: dict) -> int:
+    fields_list = data["policy_fields"]
+    if not isinstance(fields_list, list):
+        raise HTTPException(status_code=400, detail="data.policy_fields must be a list")
+    count = 0
+    for f in fields_list:
+        if not isinstance(f, dict) or "name" not in f or "source" not in f:
+            continue
+        if f["source"] == "internal":
+            continue
+        await db.execute(
+            "INSERT INTO policy_field_definitions (name, display_label, source) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT (name) DO UPDATE SET display_label = excluded.display_label, "
+            "source = excluded.source",
+            (f["name"], f.get("display_label", f["name"]), f["source"]),
+        )
+        count += 1
+    return count
+
+
+async def _import_siem(db, data: dict, replace: bool) -> int:
+    siem_list = data["siem"]
+    if not isinstance(siem_list, list):
+        raise HTTPException(status_code=400, detail="data.siem must be a list")
+    if replace:
+        await db.execute("DELETE FROM siem_destinations")
+    count = 0
+    for dest in siem_list:
+        if not isinstance(dest, dict) or "name" not in dest or "type" not in dest:
+            continue
+        dest_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO siem_destinations "
+            "(id, name, type, is_active, host, port, protocol, syslog_format, "
+            "facility, url, secret_enc, batch_size, filter_profile) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) "
+            "ON CONFLICT DO NOTHING",
+            (
+                dest_id, dest["name"], dest["type"],
+                1 if dest.get("is_active", True) else 0,
+                dest.get("host"), dest.get("port"),
+                dest.get("protocol"), dest.get("syslog_format"),
+                dest.get("facility"), dest.get("url"),
+                dest.get("batch_size"), dest.get("filter_profile"),
+            ),
+        )
+        count += 1
+    return count
+
+
+async def _import_notifications(db, data: dict, replace: bool) -> int:
+    notif_list = data["notifications"]
+    if not isinstance(notif_list, list):
+        raise HTTPException(status_code=400, detail="data.notifications must be a list")
+    if replace:
+        await db.execute("DELETE FROM notification_channels")
+    count = 0
+    for ch in notif_list:
+        if not isinstance(ch, dict) or "name" not in ch or "endpoint_url" not in ch:
+            continue
+        ch_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO notification_channels "
+            "(id, name, endpoint_url, secret_enc, event_filter, "
+            "batch_size, batch_interval_s, enabled, created_at) "
+            "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            (
+                ch_id, ch["name"], ch["endpoint_url"],
+                ch.get("event_filter", "[]"),
+                ch.get("batch_size"), ch.get("batch_interval_s"),
+                1 if ch.get("enabled", True) else 0,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        count += 1
+    return count
+
+
+async def _import_storage(db, data: dict) -> int:
+    storage_list = data["storage"]
+    if not isinstance(storage_list, list):
+        raise HTTPException(status_code=400, detail="data.storage must be a list")
+    valid_providers = {"local", "s3", "b2", "azure", "gcs"}
+    count = 0
+    for vol in storage_list:
+        if not isinstance(vol, dict) or "name" not in vol or "provider" not in vol:
+            continue
+        if vol["provider"] not in valid_providers:
+            continue
+        vol_id = str(uuid.uuid4())
+        await db.execute(
+            "INSERT INTO storage_volumes (id, name, provider, config_enc, tier, is_default, priority) "
+            "VALUES (?, ?, ?, NULL, ?, 0, ?) "
+            "ON CONFLICT (name) DO NOTHING",
+            (
+                vol_id, vol["name"], vol["provider"],
+                vol.get("tier", "hot"),
+                vol.get("priority", 0),
+            ),
+        )
+        count += 1
+    return count
+
+
+@router.post("/settings/full-import", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def full_import_settings(
     body: FullImportRequest,
     request: Request,
@@ -913,7 +1145,6 @@ async def full_import_settings(
     """Import one or more configuration categories from a full-export JSON."""
     _require_server_admin(admin)
 
-    # Step-up always required for full import (no wizard bypass)
     if sensitive_config.is_sensitive(_STEPUP_ACTION):
         token = request.headers.get("X-Step-Up-Token", "")
         if not token:
@@ -937,7 +1168,7 @@ async def full_import_settings(
             )
 
     if body.mode not in ("replace", "merge"):
-        raise HTTPException(status_code=400, detail="mode must be 'replace' or 'merge'")
+        raise HTTPException(status_code=400, detail=_ERR_MODE_REPLACE_OR_MERGE)
 
     requested = set(body.categories)
     unknown = requested - _ALL_CATEGORIES
@@ -954,229 +1185,21 @@ async def full_import_settings(
     items_applied: dict[str, int] = {}
 
     if "security_profile" in requested and "security_profile" in data:
-        sp = data["security_profile"]
-        _validate_profile_structure(sp)
-        if replace:
-            await _apply_replace(db, sp, admin_id, tier)
-        else:
-            await _apply_merge(db, sp, {}, admin_id, tier)
-        items_applied["security_profile"] = (
-            len(sp.get("admin_settings", {}))
-            + sum(len(v) for v in sp.get("role_flag_overrides", {}).values())
-            + len(sp.get("sharing_rules", []))
-        )
-
+        items_applied["security_profile"] = await _import_security_profile(db, data, replace, admin_id, tier)
     if "roles" in requested and "roles" in data:
-        from app.validation.sanitizers import validate_uuid as _vuuid
-        roles_list = data["roles"]
-        if not isinstance(roles_list, list):
-            raise HTTPException(status_code=400, detail="data.roles must be a list")
-        count = 0
-        if replace:
-            # Delete non-system custom roles not present in the export
-            export_ids = {r["id"] for r in roles_list if isinstance(r, dict) and "id" in r}
-            cursor = await db.execute(
-                "SELECT id FROM roles WHERE is_system = 0 AND id NOT IN "
-                f"({','.join('?' * len(export_ids)) if export_ids else 'NULL'})",
-                list(export_ids) if export_ids else [],
-            )
-            for row in await cursor.fetchall():
-                await db.execute("DELETE FROM roles WHERE id = ?", (row["id"],))
-        for role in roles_list:
-            if not isinstance(role, dict) or "id" not in role or "name" not in role:
-                continue
-            rid = role["id"]
-            # Upsert role metadata
-            await db.execute(
-                "INSERT INTO roles (id, name, description, is_system) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET name = excluded.name, "
-                "description = excluded.description",
-                (rid, role["name"], role.get("description", ""), 1 if role.get("is_system") else 0),
-            )
-            # Upsert permissions
-            for flag, fu in (role.get("permissions") or {}).items():
-                if not isinstance(fu, dict) or "value" not in fu:
-                    continue
-                await db.execute(
-                    "INSERT INTO role_permissions (role_id, flag, value, is_locked, locked_min_tier) "
-                    "VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT (role_id, flag) DO UPDATE SET "
-                    "value = excluded.value, is_locked = excluded.is_locked, "
-                    "locked_min_tier = excluded.locked_min_tier",
-                    (rid, flag, fu["value"], bool(fu.get("is_locked", False)),
-                     fu.get("locked_min_tier")),
-                )
-            count += 1
-        items_applied["roles"] = count
-
+        items_applied["roles"] = await _import_roles(db, data, replace)
     if "admin_settings" in requested and "admin_settings" in data:
-        from app.routes.admin import _SETTINGS_VALIDATORS
-        settings_dict = data["admin_settings"]
-        if not isinstance(settings_dict, dict):
-            raise HTTPException(status_code=400, detail="data.admin_settings must be a dict")
-        count = 0
-        for key, value in settings_dict.items():
-            if key not in _SETTINGS_VALIDATORS:
-                continue  # skip unknown; don't error on full import
-            if not _SETTINGS_VALIDATORS[key](str(value)):
-                continue
-            await db.execute(
-                "INSERT INTO admin_settings (key, value) VALUES (?, ?) "
-                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-                (key, str(value)),
-            )
-            count += 1
-        items_applied["admin_settings"] = count
-
+        items_applied["admin_settings"] = await _import_admin_settings(db, data)
     if "policies" in requested and "policies" in data:
-        policies_list = data["policies"]
-        if not isinstance(policies_list, list):
-            raise HTTPException(status_code=400, detail="data.policies must be a list")
-        if replace:
-            # Remove org-scoped policies that have no effects (safe to wipe)
-            # For safety, only delete policies with no conditions/effects
-            await db.execute(
-                "DELETE FROM policies WHERE scope_type = 'org' AND id NOT IN "
-                "(SELECT DISTINCT policy_id FROM policy_effects)"
-            )
-        count = 0
-        for pol in policies_list:
-            if not isinstance(pol, dict) or "name" not in pol:
-                continue
-            pol_id = str(uuid.uuid4())
-            await db.execute(
-                "INSERT INTO policies (id, name, scope_type, escrow_enabled, created_by) "
-                "VALUES (?, ?, 'org', ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                (pol_id, pol["name"],
-                 pol.get("escrow_enabled"),
-                 admin_id),
-            )
-            # Fetch actual id (may differ if ON CONFLICT skipped insert)
-            cursor = await db.execute(
-                "SELECT id FROM policies WHERE name = ? AND scope_type = 'org'",
-                (pol["name"],),
-            )
-            row = await cursor.fetchone()
-            if row is None:
-                continue
-            actual_id = row["id"]
-            # Upsert conditions
-            for cond in (pol.get("conditions") or []):
-                if not isinstance(cond, dict) or "field" not in cond:
-                    continue
-                await db.execute(
-                    "INSERT INTO policy_conditions "
-                    "(id, policy_id, field, operator, value, block_on_missing_attribute) "
-                    "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                    (str(uuid.uuid4()), actual_id,
-                     cond["field"], cond.get("operator", "="),
-                     cond.get("value"), 1 if cond.get("block_on_missing_attribute", True) else 0),
-                )
-            count += 1
-        items_applied["policies"] = count
-
+        items_applied["policies"] = await _import_policies(db, data, replace, admin_id)
     if "policy_fields" in requested and "policy_fields" in data:
-        fields_list = data["policy_fields"]
-        if not isinstance(fields_list, list):
-            raise HTTPException(status_code=400, detail="data.policy_fields must be a list")
-        count = 0
-        for f in fields_list:
-            if not isinstance(f, dict) or "name" not in f or "source" not in f:
-                continue
-            if f["source"] == "internal":
-                continue  # never overwrite internal fields
-            await db.execute(
-                "INSERT INTO policy_field_definitions (name, display_label, source) "
-                "VALUES (?, ?, ?) "
-                "ON CONFLICT (name) DO UPDATE SET display_label = excluded.display_label, "
-                "source = excluded.source",
-                (f["name"], f.get("display_label", f["name"]), f["source"]),
-            )
-            count += 1
-        items_applied["policy_fields"] = count
-
+        items_applied["policy_fields"] = await _import_policy_fields(db, data)
     if "siem" in requested and "siem" in data:
-        siem_list = data["siem"]
-        if not isinstance(siem_list, list):
-            raise HTTPException(status_code=400, detail="data.siem must be a list")
-        if replace:
-            await db.execute("DELETE FROM siem_destinations")
-        count = 0
-        for dest in siem_list:
-            if not isinstance(dest, dict) or "name" not in dest or "type" not in dest:
-                continue
-            dest_id = str(uuid.uuid4())
-            await db.execute(
-                "INSERT INTO siem_destinations "
-                "(id, name, type, is_active, host, port, protocol, syslog_format, "
-                "facility, url, secret_enc, batch_size, filter_profile) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                (
-                    dest_id, dest["name"], dest["type"],
-                    1 if dest.get("is_active", True) else 0,
-                    dest.get("host"), dest.get("port"),
-                    dest.get("protocol"), dest.get("syslog_format"),
-                    dest.get("facility"), dest.get("url"),
-                    dest.get("batch_size"), dest.get("filter_profile"),
-                ),
-            )
-            count += 1
-        items_applied["siem"] = count
-
+        items_applied["siem"] = await _import_siem(db, data, replace)
     if "notifications" in requested and "notifications" in data:
-        notif_list = data["notifications"]
-        if not isinstance(notif_list, list):
-            raise HTTPException(status_code=400, detail="data.notifications must be a list")
-        if replace:
-            await db.execute("DELETE FROM notification_channels")
-        count = 0
-        for ch in notif_list:
-            if not isinstance(ch, dict) or "name" not in ch or "endpoint_url" not in ch:
-                continue
-            ch_id = str(uuid.uuid4())
-            await db.execute(
-                "INSERT INTO notification_channels "
-                "(id, name, endpoint_url, secret_enc, event_filter, "
-                "batch_size, batch_interval_s, enabled, created_at) "
-                "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                (
-                    ch_id, ch["name"], ch["endpoint_url"],
-                    ch.get("event_filter", "[]"),
-                    ch.get("batch_size"), ch.get("batch_interval_s"),
-                    1 if ch.get("enabled", True) else 0,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-            count += 1
-        items_applied["notifications"] = count
-
+        items_applied["notifications"] = await _import_notifications(db, data, replace)
     if "storage" in requested and "storage" in data:
-        storage_list = data["storage"]
-        if not isinstance(storage_list, list):
-            raise HTTPException(status_code=400, detail="data.storage must be a list")
-        # Storage is always merged — never delete volumes (they may hold files)
-        count = 0
-        for vol in storage_list:
-            if not isinstance(vol, dict) or "name" not in vol or "provider" not in vol:
-                continue
-            valid_providers = {"local", "s3", "b2", "azure", "gcs"}
-            if vol["provider"] not in valid_providers:
-                continue
-            vol_id = str(uuid.uuid4())
-            await db.execute(
-                "INSERT INTO storage_volumes (id, name, provider, config_enc, tier, is_default, priority) "
-                "VALUES (?, ?, ?, NULL, ?, 0, ?) "
-                "ON CONFLICT (name) DO NOTHING",
-                (
-                    vol_id, vol["name"], vol["provider"],
-                    vol.get("tier", "hot"),
-                    vol.get("priority", 0),
-                ),
-            )
-            count += 1
-        items_applied["storage"] = count
+        items_applied["storage"] = await _import_storage(db, data)
 
     await db.commit()
 
