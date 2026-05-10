@@ -1025,9 +1025,11 @@ const App = (() => {
         // Dismissed by clicking X (removes it from DOM and clears the sessionStorage flag
         // so it does not re-appear on route changes within the same tab).
         const cfg = Config.publicDevice;
-        if (cfg.bannerVisible && sessionStorage.getItem(cfg.sessionStorageKey) === '1') {
+        const _bannerVisible = _themeConfig?.ui?.public_device_banner_visible ?? true;
+        const _bannerText    = _themeConfig?.public_device_banner_text ?? cfg.bannerText;
+        if (_bannerVisible && sessionStorage.getItem(cfg.sessionStorageKey) === '1') {
             const banner = Utils.el('div', { className: 'public-device-banner' }, [
-                Utils.el('span', { textContent: cfg.bannerText }),
+                Utils.el('span', { textContent: _bannerText }),
                 Utils.el('button', {
                     className: 'public-device-banner-dismiss',
                     title: 'Dismiss',

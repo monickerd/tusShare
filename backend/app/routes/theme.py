@@ -41,10 +41,11 @@ async def get_theme():
     """
     config = get_theme_config()
     return {
-        "brand_name":  config.get("brand_name"),
-        "logo_url":    "/api/v1/theme/logo"    if "logo_path"    in config else None,
-        "favicon_url": "/api/v1/theme/favicon" if "favicon_path" in config else None,
-        "ui":          get_ui_flags(),
+        "brand_name":                 config.get("brand_name"),
+        "logo_url":                   "/api/v1/theme/logo"    if "logo_path"    in config else None,
+        "favicon_url":                "/api/v1/theme/favicon" if "favicon_path" in config else None,
+        "ui":                         get_ui_flags(),
+        "public_device_banner_text":  config.get("public_device_banner_text"),
     }
 
 

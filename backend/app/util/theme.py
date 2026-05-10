@@ -7,17 +7,19 @@ without touching the theme CSS files (which carry SRI hashes).
 
 theme.json schema (all fields optional):
     {
-        "brand_name": "Acme Corp Files",   // 1-64 chars
-        "logo_path":  "logo.png",          // filename under DATA_DIR
+        "brand_name": "Acme Corp Files",        // 1-64 chars
+        "logo_path":  "logo.png",               // filename under DATA_DIR
+        "public_device_banner_text": "...",     // 1-500 chars; overrides the hardcoded default
         "colors": {
-            "--color-primary": "#ff5500",  // whitelisted CSS variable names only
+            "--color-primary": "#ff5500",       // whitelisted CSS variable names only
             ...
         },
         "ui": {
             // Boolean feature flags.  The frontend applies each flag as a
             // data-ui-<flag-name> attribute on <body> (snake → kebab).
             // CSS targets body[data-ui-<flag>="false"] to suppress elements.
-            "admin_transparency_banner": true   // default true when absent
+            "admin_transparency_banner":    true,   // default true when absent
+            "public_device_banner_visible": true    // default true when absent
         }
     }
 """
@@ -95,6 +97,7 @@ _CSS_SHADOW_RE = re.compile(r'^[0-9a-z%#.,\s()\-]+$', re.IGNORECASE)
 _LOGO_FILENAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$')
 
 _BRAND_NAME_MAX = 64
+_BANNER_TEXT_MAX = 500
 
 # UI feature flag keys: lowercase letters, digits, underscores; 1-64 chars.
 _UI_FLAG_RE = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
@@ -102,7 +105,8 @@ _UI_FLAG_RE = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
 # Recognised UI flags and their defaults (used when theme.json omits the key).
 # Add new UI flags here as features are introduced.
 _UI_FLAG_DEFAULTS: dict[str, bool] = {
-    "admin_transparency_banner": True,
+    "admin_transparency_banner":    True,
+    "public_device_banner_visible": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -151,6 +155,16 @@ def _load_favicon_path(config: dict, raw: dict) -> None:
         config["favicon_path"] = favicon
     else:
         logger.warning("Theme: favicon_path must be a simple filename with no path separators, ignoring")
+
+
+def _load_banner_text(config: dict, raw: dict) -> None:
+    text = raw.get("public_device_banner_text")
+    if text is None:
+        return
+    if isinstance(text, str) and 1 <= len(text) <= _BANNER_TEXT_MAX:
+        config["public_device_banner_text"] = text
+    else:
+        logger.warning("Theme: public_device_banner_text must be 1–%d chars, ignoring", _BANNER_TEXT_MAX)
 
 
 def _load_colors(config: dict, raw: dict) -> None:
@@ -226,6 +240,7 @@ def load_theme(data_dir: Path) -> dict[str, Any]:
     _load_brand_name(config, raw)
     _load_logo_path(config, raw)
     _load_favicon_path(config, raw)
+    _load_banner_text(config, raw)
     _load_colors(config, raw)
     _load_ui_flags(config, raw)
 

@@ -108,11 +108,8 @@ const Config = Object.freeze({
     }),
 
     /* --- Public / shared device mode --- */
-    // TODO: migrate bannerVisible and bannerText into theme.json so  // NOSONAR
-    // admins can customise them without touching source files.
     publicDevice: Object.freeze({
         sessionStorageKey: 'publicDevice',
-        bannerVisible: true,
         bannerText: 'Public Device: Consider avoiding transferring particularly sensitive files. Remember to log out or close the tab when finished.',
     }),
 

@@ -18,12 +18,9 @@ Users
 Roles
     viewer_role   — can_view_admin_panel=True, everything else False
 
-Teams (created via browser due to PQ key gen)
+Teams
     Team A        — alice, bob as members
     Team B        — bob, carol as members
-
-    NOTE: If team creation UI isn't available yet, team access tests are
-    skipped individually and left as TODOs.
 
 Policies
     "auth_provider=local" policy → grants access to a specific folder
