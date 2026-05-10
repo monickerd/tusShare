@@ -10,7 +10,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
-from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
+from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import get_admin_setting
@@ -21,6 +21,42 @@ from typing import Annotated
 _SQL_FOLDER_BY_ID = "SELECT * FROM folders WHERE id = ?"
 _ERR_FOLDER_NOT_FOUND = "Folder not found"
 _ERR_ACCESS_DENIED = "Access denied"
+
+# Permission levels that imply manage_permissions capability
+_MANAGE_LEVELS = ("admin", "manage_permissions")
+
+
+async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: list[dict]) -> None:
+    """Annotate each dict in folder_dicts with user_can_manage: bool (in-place).
+
+    True when: caller is an org admin, OR the folder is owned by the caller,
+    OR the caller has an explicit ACL grant at admin/manage_permissions level.
+    Team-based grants are not checked here — the backend PUT endpoint enforces
+    owner-or-admin anyway, so false negatives on team folders are safe.
+    """
+    if is_admin:
+        for fd in folder_dicts:
+            fd["user_can_manage"] = True
+        return
+
+    can_manage: set[str] = {fd["id"] for fd in folder_dicts if fd["owner_id"] == user_id}
+    non_owned = [fd["id"] for fd in folder_dicts if fd["id"] not in can_manage]
+
+    if non_owned:
+        placeholders = ",".join("?" * len(non_owned))
+        level_placeholders = ",".join("?" * len(_MANAGE_LEVELS))
+        cursor = await db.execute(
+            f"SELECT DISTINCT resource_id FROM permissions "
+            f"WHERE resource_type = 'folder' AND user_id = ? "
+            f"AND resource_id IN ({placeholders}) "
+            f"AND permission IN ({level_placeholders})",
+            (user_id, *non_owned, *_MANAGE_LEVELS),
+        )
+        for row in await cursor.fetchall():
+            can_manage.add(row["resource_id"])
+
+    for fd in folder_dicts:
+        fd["user_can_manage"] = fd["id"] in can_manage
 
 router = APIRouter(dependencies=[Depends(check_management_rate_limit)])
 
@@ -72,6 +108,8 @@ async def list_root_folders(
         (user.id,),
     )
     own_folders = [Folder.from_row(r).to_dict() for r in await cursor.fetchall()]
+    for fd in own_folders:
+        fd["user_can_manage"] = True
 
     # User's root-level files (no folder), excluding deleted files
     cursor = await db.execute(
@@ -123,10 +161,11 @@ async def create_folder(
         parent = await cursor.fetchone()
         if parent is None:
             raise HTTPException(status_code=404, detail="Parent folder not found")
-        # Check ownership or shared folder tree access
+        # Check write access: owner, admin, public shared tree, or Phase 1 permission chain.
         if parent["owner_id"] != user.id and not user.is_admin:
             if not await is_in_shared_tree(db, body.parent_id):
-                raise HTTPException(status_code=403, detail="No write access to parent folder")
+                if not await check_data_permission(db, "folder", body.parent_id, user.id, "write"):
+                    raise HTTPException(status_code=403, detail="No write access to parent folder")
 
     try:
         await db.execute(
@@ -169,12 +208,11 @@ async def get_folder_contents(
 
     folder = Folder.from_row(folder_row)
 
-    # Access check: owner, admin, shared tree, team member, or explicit permission
+    # Access check: owner, admin, public shared tree, or Phase 1 permission chain.
     if folder.owner_id != user.id and not user.is_admin:
-        if not await is_in_shared_tree(db, folder_id) and \
-           not await is_team_folder_member(db, folder_id, user.id) and \
-           not await has_folder_permission(db, folder_id, user.id):
-            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        if not await is_in_shared_tree(db, folder_id):
+            if not await check_data_permission(db, "folder", folder_id, user.id, "read"):
+                raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # Child folders (excluding soft-deleted)
     cursor = await db.execute(
@@ -182,6 +220,7 @@ async def get_folder_contents(
         (folder_id,),
     )
     child_folders = [Folder.from_row(r).to_dict() for r in await cursor.fetchall()]
+    await _annotate_can_manage(db, user.id, user.is_admin, child_folders)
 
     # Files in this folder (excluding soft-deleted)
     cursor = await db.execute(

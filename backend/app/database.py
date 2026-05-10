@@ -299,6 +299,54 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             # copy_boundary admin setting (any | same_team | disabled)
             "INSERT INTO admin_settings (key, value) VALUES ('copy_boundary', 'any') ON CONFLICT DO NOTHING",
         ]),
+        # Phase 1 permissions overhaul — foundation schema
+        ("migrate_phase1_permissions_v1", [
+            # Configurable team-role → folder permission level mapping.
+            # One row per (team, role) pair where the default has been overridden.
+            # Missing rows fall back to the hardcoded default in _access.py.
+            """
+            CREATE TABLE IF NOT EXISTS team_folder_role_levels (
+                team_id    TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                role_id    TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                level      TEXT NOT NULL DEFAULT 'write'
+                               CHECK (level IN ('admin', 'write', 'read', 'none')),
+                updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (team_id, role_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_tfrl_team ON team_folder_role_levels(team_id)",
+            # Extend permissions.permission to support fine-grained grants and explicit deny.
+            # Preserves existing read/write/admin semantics (read still implies download).
+            "ALTER TABLE permissions DROP CONSTRAINT IF EXISTS permissions_permission_check",
+            """
+            ALTER TABLE permissions ADD CONSTRAINT permissions_permission_check
+                CHECK (permission IN (
+                    'read', 'write', 'admin',
+                    'download', 'delete', 'rename', 'manage_permissions',
+                    'deny'
+                ))
+            """,
+            # Scoped admin flag grants: allow users to hold admin permission flags
+            # limited to a specific team scope without holding the flag org-wide.
+            # One row per (user, flag, scope) triple — supplements role_permissions
+            # for delegated admins whose authority is narrower than org-wide.
+            """
+            CREATE TABLE IF NOT EXISTS admin_scope_grants (
+                id         TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                flag       TEXT NOT NULL REFERENCES role_permission_flags(flag) ON DELETE CASCADE,
+                scope_type TEXT NOT NULL CHECK (scope_type IN ('team')),
+                scope_id   TEXT NOT NULL,
+                granted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE (user_id, flag, scope_type, scope_id)
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_asg_user       ON admin_scope_grants(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_asg_scope      ON admin_scope_grants(scope_type, scope_id)",
+            "CREATE INDEX IF NOT EXISTS idx_asg_user_flag  ON admin_scope_grants(user_id, flag)",
+        ]),
     ]
     for name, stmts in _INCREMENTAL_MIGRATIONS:
         if name not in applied:

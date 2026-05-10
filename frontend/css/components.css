@@ -1482,6 +1482,28 @@
     flex: 1;
 }
 
+.role-card-alias {
+    font-size: var(--font-size-xs);
+    color: var(--color-text-muted);
+    margin-right: var(--space-2);
+}
+
+.roles-section-header {
+    margin: var(--space-6) 0 var(--space-3);
+    padding-top: var(--space-4);
+    border-top: 1px solid var(--color-border);
+}
+
+.roles-section-header h3 {
+    margin: 0 0 var(--space-1);
+    font-size: var(--font-size-base);
+}
+
+.roles-section-note {
+    margin: 0;
+    font-size: var(--font-size-sm);
+}
+
 .role-card-badge {
     font-size: var(--font-size-xs);
     font-weight: 500;
@@ -1658,6 +1680,15 @@
     font-weight: 600;
 }
 
+.flag-locked-badge {
+    font-size: var(--font-size-xs);
+    padding: 1px var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-active);
+    color: var(--color-text-muted);
+    font-weight: 500;
+}
+
 .flag-desc {
     font-size: var(--font-size-xs);
     color: var(--color-text-muted);
@@ -1667,6 +1698,19 @@
     background: color-mix(in srgb, var(--color-warn, #ffc107) 5%, transparent);
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-2);
+}
+
+.flag-row.flag-locked {
+    opacity: 0.65;
+}
+
+.admin-scope-banner {
+    font-size: var(--font-size-sm);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--color-primary-muted);
+    color: var(--color-primary);
+    margin-bottom: var(--space-3);
 }
 
 .role-flags-actions {

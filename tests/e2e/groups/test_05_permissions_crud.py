@@ -14,16 +14,18 @@ flags actually enforce access at the HTTP layer.
 
 Permission flags tested
 -----------------------
-can_view_admin_panel      → GET /api/v1/admin/settings (200 vs 403)
-can_manage_users          → GET /api/v1/admin/users    (200 vs 403)
-can_manage_roles          → GET /api/v1/admin/roles    (200 vs 403)
-can_create_invites        → POST /api/v1/admin/invites (200 vs 403)
-can_view_all_users        → GET /api/v1/admin/users    (200 vs 403)
+can_view_admin_panel      → GET /api/v1/admin/settings        (200 vs 403)
+can_manage_users          → GET /api/v1/admin/users           (200 vs 403)
+can_manage_roles          → GET /api/v1/admin/roles           (200 vs 403)
+can_create_invites        → POST /api/v1/admin/invites        (200 vs 403)
+can_manage_teams          → GET /api/v1/admin/teams           (200 vs 403)
+can_create_roles          → POST /api/v1/admin/roles          (200 vs 403)
+can_manage_org_settings   → PUT /api/v1/admin/settings/locks  (200 vs 403)
 
 Additional edge cases
 ---------------------
-05-09  A user with no extra roles cannot access any admin endpoint
-05-10  Granting then revoking a flag restores the blocked state
+05-12  A user with no extra roles cannot access any admin endpoint
+05-13  Granting then revoking a flag restores the blocked state
 """
 
 from __future__ import annotations
@@ -46,9 +48,9 @@ _test_role: dict = {}
 # ---------------------------------------------------------------------------
 # SIEM manifest — events this group's actions must produce
 #
-# auth.forbidden: 05-01 (no flag), 05-09 (plain user hits 4 admin paths).
-# admin.role.granted: 05-02 (grant role), 05-10 (cycle grant).
-# admin.role.revoked: 05-10 (cycle revoke).
+# auth.forbidden: 05-01 (no flag), 05-12 (plain user hits 4 admin paths).
+# admin.role.granted: 05-02 (grant role), 05-13 (cycle grant).
+# admin.role.revoked: 05-13 (cycle revoke).
 # ---------------------------------------------------------------------------
 _SIEM_MANIFEST: list[ExpectedSiemEvent] = [
     ExpectedSiemEvent("auth.forbidden",     outcome="failure", severity="warning", tier=2),
@@ -200,8 +202,116 @@ async def test_05_08_can_create_invites_flag(admin_client: AdminClient):
 # Edge cases
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# can_manage_teams
+# ---------------------------------------------------------------------------
+
 @pytest.mark.asyncio(loop_scope="session")
-async def test_05_09_plain_user_blocked_from_all_admin(
+async def test_05_09_can_manage_teams_flag(admin_client: AdminClient):
+    """can_manage_teams gates GET /admin/teams."""
+    await admin_client.set_role_permissions(
+        _test_role["id"],
+        {"can_view_admin_panel": True, "can_manage_teams": True},
+    )
+    r_status = await _check(_test_user["session"], "get", "/admin/teams")
+    assert r_status == 200, "User with can_manage_teams should list admin teams"
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_05_09b_removing_manage_teams_blocks(admin_client: AdminClient):
+    await admin_client.set_role_permissions(
+        _test_role["id"],
+        {"can_view_admin_panel": True, "can_manage_teams": False},
+    )
+    r_status = await _check(_test_user["session"], "get", "/admin/teams")
+    assert r_status == 403, "Without can_manage_teams should be blocked from admin teams"
+
+
+# ---------------------------------------------------------------------------
+# can_create_roles
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_05_10_can_create_roles_flag(admin_client: AdminClient):
+    """can_create_roles gates POST /admin/roles (distinct from can_manage_roles)."""
+    await admin_client.set_role_permissions(
+        _test_role["id"],
+        {"can_view_admin_panel": True, "can_create_roles": True},
+    )
+    api = ApiClient.from_session(_test_user["session"])
+    async with api:
+        r = await api.post(
+            "/admin/roles",
+            json={"id": "test_create_flag_role", "name": "Flag Test Role"},
+        )
+    # 200/201 = created (flag works); 409 = already exists (also means flag worked)
+    assert r.status_code in (200, 201, 409), (
+        f"User with can_create_roles should create a role; got {r.status_code}: {r.text}"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_05_10b_removing_create_roles_blocks(admin_client: AdminClient):
+    await admin_client.set_role_permissions(
+        _test_role["id"],
+        {"can_view_admin_panel": True, "can_create_roles": False},
+    )
+    api = ApiClient.from_session(_test_user["session"])
+    async with api:
+        r = await api.post(
+            "/admin/roles",
+            json={"id": "test_create_flag_role_2", "name": "Flag Test Role 2"},
+        )
+    assert r.status_code == 403, (
+        f"Without can_create_roles should be blocked; got {r.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# can_manage_org_settings
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_05_11_can_manage_org_settings_flag(admin_client: AdminClient):
+    """can_manage_org_settings gates PUT /admin/settings/locks."""
+    await admin_client.set_role_permissions(
+        _test_role["id"],
+        {"can_view_admin_panel": True, "can_manage_org_settings": True},
+    )
+    api = ApiClient.from_session(_test_user["session"])
+    async with api:
+        r = await api.put(
+            "/admin/settings/locks",
+            json={"locks": {"audit_retention_days": {"is_locked": False, "locked_min_tier": None}}},
+        )
+    assert r.status_code == 200, (
+        f"User with can_manage_org_settings should update locks; got {r.status_code}: {r.text}"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_05_11b_removing_org_settings_blocks(admin_client: AdminClient):
+    await admin_client.set_role_permissions(
+        _test_role["id"],
+        {"can_view_admin_panel": True, "can_manage_org_settings": False},
+    )
+    api = ApiClient.from_session(_test_user["session"])
+    async with api:
+        r = await api.put(
+            "/admin/settings/locks",
+            json={"locks": {"audit_retention_days": {"is_locked": False, "locked_min_tier": None}}},
+        )
+    assert r.status_code == 403, (
+        f"Without can_manage_org_settings should be blocked; got {r.status_code}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 05-12  Plain user and grant/revoke cycle (renumbered from former 05-09/05-10)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_05_12_plain_user_blocked_from_all_admin(
     browser: Browser,
     admin_client: AdminClient,
 ):
@@ -221,7 +331,7 @@ async def test_05_09_plain_user_blocked_from_all_admin(
 
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_05_10_grant_revoke_cycle(admin_client: AdminClient):
+async def test_05_13_grant_revoke_cycle(admin_client: AdminClient):
     """Grant → verify access → revoke → verify blocked (full cycle)."""
     await admin_client.set_role_permissions(
         _test_role["id"], {"can_view_admin_panel": True}
@@ -236,10 +346,10 @@ async def test_05_10_grant_revoke_cycle(admin_client: AdminClient):
 
 
 # ---------------------------------------------------------------------------
-# 05-11  SIEM manifest
+# 05-14  SIEM manifest
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_05_11_siem_manifest():
+async def test_05_14_siem_manifest():
     """Verify expected SIEM events appeared in the capture file during this test group."""
     assert_manifest(_SIEM_MANIFEST)

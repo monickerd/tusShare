@@ -15,10 +15,10 @@ from pydantic import BaseModel
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
-from app.models.role import FLAG_MANAGE_INVITES
+from app.models.role import FLAG_MANAGE_INVITES, FLAG_MANAGE_ORG_SETTINGS, ROLE_TIER, admin_best_tier
 from app.database import Database, get_db
 import app.storage.manager as storage
-from app.util.db import get_admin_setting
+from app.util.db import check_admin_setting_lock, get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.wordlist import insert_invite_short_link_with_unique_slug
 from typing import Annotated
@@ -86,29 +86,55 @@ class UpdateSettingsRequest(BaseModel):
     settings: dict[str, str]
 
 
+class UpdateSettingLocksRequest(BaseModel):
+    locks: dict[str, dict]  # key → {is_locked: bool, locked_min_tier: int | None}
+
+
 @router.get("/settings")
 async def get_settings(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    """Get all admin settings."""
-    cursor = await db.execute("SELECT key, value FROM admin_settings")
+    """Get all admin settings including lock metadata."""
+    cursor = await db.execute("SELECT key, value, is_locked, locked_min_tier FROM admin_settings")
     rows = await cursor.fetchall()
-    return {"settings": {row["key"]: row["value"] for row in rows}}
+    return {
+        "settings": {
+            row["key"]: {
+                "value":          row["value"],
+                "is_locked":      bool(row["is_locked"]),
+                "locked_min_tier": row["locked_min_tier"],
+            }
+            for row in rows
+        }
+    }
 
 
-@router.put("/settings", responses={400: {"description": "Bad Request"}})
+@router.put("/settings", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def update_settings(
     body: UpdateSettingsRequest,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    """Update admin settings. All updates are applied atomically."""
+    """Update admin settings. Locked settings require the caller's tier ≤ locked_min_tier."""
     for key, value in body.settings.items():
         if key not in _SETTINGS_VALIDATORS:
             raise HTTPException(status_code=400, detail=f"Unknown setting: {key}")
         if not _SETTINGS_VALIDATORS[key](value):
             raise HTTPException(status_code=400, detail=f"Invalid value for {key}: {value}")
+
+    admin_tier = admin_best_tier(admin.roles)
+
+    # Fetch current lock state for all keys being modified in one query.
+    keys_list = list(body.settings.keys())
+    placeholders = ", ".join("?" * len(keys_list))
+    cursor = await db.execute(
+        f"SELECT key, is_locked, locked_min_tier FROM admin_settings WHERE key IN ({placeholders})",
+        tuple(keys_list),
+    )
+    lock_rows = {row["key"]: row for row in await cursor.fetchall()}
+    for key in keys_list:
+        check_admin_setting_lock(lock_rows.get(key), admin_tier)
 
     await db.execute("BEGIN")
     try:
@@ -124,6 +150,58 @@ async def update_settings(
         raise
 
     return {"message": "Settings updated"}
+
+
+@router.put("/settings/locks", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+async def update_setting_locks(
+    body: UpdateSettingLocksRequest,
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Set or clear lock state on admin settings.
+
+    Only admins holding can_manage_org_settings may call this endpoint.
+    An admin can only lock a setting at a tier ≥ their own (they cannot lock
+    out themselves or anyone more privileged).
+    """
+    if not admin.has_flag(FLAG_MANAGE_ORG_SETTINGS):
+        raise HTTPException(status_code=403, detail="can_manage_org_settings required")
+
+    admin_tier = admin_best_tier(admin.roles)
+
+    for key, lock_spec in body.locks.items():
+        if key not in _SETTINGS_VALIDATORS:
+            raise HTTPException(status_code=400, detail=f"Unknown setting: {key}")
+        new_locked     = bool(lock_spec.get("is_locked", False))
+        new_min_tier   = lock_spec.get("locked_min_tier")
+        if new_locked and new_min_tier is not None:
+            if not isinstance(new_min_tier, int) or new_min_tier < 1:
+                raise HTTPException(status_code=400, detail=f"locked_min_tier must be a positive integer for {key}")
+            # Caller cannot set a tier ceiling that excludes themselves.
+            if new_min_tier < admin_tier:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Cannot lock {key} at tier {new_min_tier} — that would exclude your own tier ({admin_tier})",
+                )
+
+    await db.execute("BEGIN")
+    try:
+        for key, lock_spec in body.locks.items():
+            new_locked   = bool(lock_spec.get("is_locked", False))
+            new_min_tier = lock_spec.get("locked_min_tier")
+            await db.execute(
+                "INSERT INTO admin_settings (key, value, is_locked, locked_min_tier) "
+                "VALUES (?, COALESCE((SELECT value FROM admin_settings WHERE key = ?), ''), ?, ?) "
+                "ON CONFLICT (key) DO UPDATE SET is_locked = EXCLUDED.is_locked, "
+                "locked_min_tier = EXCLUDED.locked_min_tier, updated_at = NOW()",
+                (key, key, new_locked, new_min_tier),
+            )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    return {"message": "Locks updated"}
 
 
 # ---------------------------------------------------------------------------

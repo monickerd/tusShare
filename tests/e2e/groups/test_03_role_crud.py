@@ -19,6 +19,8 @@ Tests
 03-11  Admin cannot delete a system role
 03-12  Admin can delete a custom role
 03-13  Deleting a role removes it from all users who held it
+03-15  can_create_roles required to create a role (can_manage_roles alone is not enough)
+03-16  Inheritance cap: cannot create a role with flags the creator does not hold
 """
 
 from __future__ import annotations
@@ -26,7 +28,8 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin import AdminClient
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth  import register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 SYSTEM_ROLE_NAMES = {
@@ -44,8 +47,8 @@ _user_for_role: dict = {}
 # ---------------------------------------------------------------------------
 # SIEM manifest — events this group's actions must produce
 #
-# admin.role.granted from 03-07 and 03-13 (grant_role emits via users.py).
-# admin.role.revoked from 03-09 (revoke_role emits via users.py).
+# admin.role.granted: 03-07, 03-13, 03-15, 03-16 (grant_role emits via users.py).
+# admin.role.revoked: 03-09 (revoke_role emits via users.py).
 # ---------------------------------------------------------------------------
 _SIEM_MANIFEST: list[ExpectedSiemEvent] = [
     ExpectedSiemEvent("admin.role.granted", outcome="success", severity="warning", tier=2),
@@ -194,10 +197,103 @@ async def test_03_13_deleting_role_removes_from_users(admin_client: AdminClient)
 
 
 # ---------------------------------------------------------------------------
-# 03-14  SIEM manifest
+# 03-15  can_create_roles required to create (separate from can_manage_roles)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_03_14_siem_manifest():
+async def test_03_15_can_create_roles_required(
+    browser: Browser,
+    admin_client: AdminClient,
+):
+    """A user with only can_manage_roles (but not can_create_roles) cannot create a role.
+
+    Verifies the Phase 1 overhaul split: create_role now requires the
+    dedicated can_create_roles flag; can_manage_roles alone only covers
+    update/delete/assign operations.
+    """
+    url  = await admin_client.create_invite_url()
+    sess = await register_via_invite(browser, url, "role_mgr_03", "R0le!Mgr99")
+    users = await admin_client.list_users()
+    mgr = next(u for u in users if u["username"].lower() == "role_mgr_03")
+
+    # Grant a custom role that has can_manage_roles but not can_create_roles
+    mgr_role = await admin_client.create_role(name="manage_only_role_03")
+    await admin_client.set_role_permissions(
+        mgr_role["id"],
+        {"can_view_admin_panel": True, "can_manage_roles": True, "can_create_roles": False},
+    )
+    await admin_client.grant_role(mgr["id"], mgr_role["id"])
+
+    api = ApiClient.from_session(sess)
+    try:
+        r = await api.post(
+            "/admin/roles",
+            json={"id": "should_be_blocked_03", "name": "Should Not Create"},
+        )
+        assert r.status_code == 403, (
+            f"can_manage_roles without can_create_roles must block role creation; "
+            f"got {r.status_code}: {r.text}"
+        )
+    finally:
+        await api.aclose()
+        await sess.ctx.close()
+        await admin_client.delete_role(mgr_role["id"])
+
+
+# ---------------------------------------------------------------------------
+# 03-16  Inheritance cap: cannot create a role granting a flag you do not hold
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_03_16_inheritance_cap_blocks_unowned_flag(
+    browser: Browser,
+    admin_client: AdminClient,
+):
+    """A limited admin cannot create a role that grants a flag they do not hold.
+
+    The inheritance cap (enforced in create_role) prevents privilege escalation
+    by ensuring new roles are strict subsets of the creator's own flag set.
+    Here can_access_all_files is a sensitive flag the limited admin does not have;
+    trying to create a role with that flag must return 403.
+    """
+    url  = await admin_client.create_invite_url()
+    sess = await register_via_invite(browser, url, "limited_admin_03", "L1m1ted!Admin03")
+    users = await admin_client.list_users()
+    la = next(u for u in users if u["username"].lower() == "limited_admin_03")
+
+    # Grant only can_view_admin_panel + can_create_roles (not can_access_all_files)
+    la_role = await admin_client.create_role(name="limited_creator_role_03")
+    await admin_client.set_role_permissions(
+        la_role["id"],
+        {"can_view_admin_panel": True, "can_create_roles": True},
+    )
+    await admin_client.grant_role(la["id"], la_role["id"])
+
+    api = ApiClient.from_session(sess)
+    try:
+        r = await api.post(
+            "/admin/roles",
+            json={
+                "id":          "escalation_attempt_03",
+                "name":        "Escalation Attempt",
+                "permissions": {"can_access_all_files": "1"},
+            },
+        )
+        assert r.status_code == 403, (
+            f"Inheritance cap must block granting an unowned flag; "
+            f"got {r.status_code}: {r.text}"
+        )
+    finally:
+        await api.aclose()
+        await sess.ctx.close()
+        await admin_client.delete_role(la_role["id"])
+
+
+# ---------------------------------------------------------------------------
+# 03-17  SIEM manifest
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_03_17_siem_manifest():
     """Verify expected SIEM events appeared in the capture file during this test group."""
     assert_manifest(_SIEM_MANIFEST)

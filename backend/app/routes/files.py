@@ -18,7 +18,7 @@ from app.database import Database, db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import _get_client_ip
 from app.models.file import File, FileChunk
-from app.routes._access import copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
+from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import event_bus, sse_broker
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
@@ -37,19 +37,20 @@ logger = logging.getLogger(__name__)
 
 
 async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
-    """Verify user has access to a file. Raises 403 if denied.
+    """Verify user has read access to a file. Raises 403 if denied.
 
-    Shared helper used by get_file_metadata, get_file_chunks, etc.
-    Full permission-tree check will replace this in Phase 6.
+    Evaluation order:
+      1. Owner or FLAG_ACCESS_ALL_FILES → allow immediately.
+      2. Public shared-folder tree → allow (backward-compat public sharing).
+      3. Full Phase 1 permission chain via check_data_permission:
+         explicit deny/allow ACL → team-based grant → ancestry walk → deny.
     """
     from app.models.role import FLAG_ACCESS_ALL_FILES
     if file_row["owner_id"] == user.id or user.has_flag(FLAG_ACCESS_ALL_FILES):
         return
     if file_row["folder_id"] and await is_in_shared_tree(db, file_row["folder_id"]):
         return
-    if file_row["folder_id"] and await is_team_folder_member(db, file_row["folder_id"], user.id):
-        return
-    if file_row["folder_id"] and await has_folder_permission(db, file_row["folder_id"], user.id):
+    if await check_data_permission(db, "file", file_row["id"], user.id, "read"):
         return
     raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — helper; 403 documented in callers
 

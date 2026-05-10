@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fastapi import HTTPException
+
 
 async def get_admin_setting(db, key: str, default=None, *, dtype=None):
     """Fetch a single value from admin_settings by key.
@@ -16,6 +18,20 @@ async def get_admin_setting(db, key: str, default=None, *, dtype=None):
     if row is None or not row["value"]:
         return default
     return dtype(row["value"]) if dtype is not None else row["value"]
+
+
+def check_admin_setting_lock(row, admin_tier: int) -> None:
+    """Raise 403 if *row* is locked and caller's tier exceeds locked_min_tier.
+
+    Pass the full admin_settings row (must have is_locked, locked_min_tier).
+    Lower tier number = more privileged (server_admin = 1).
+    """
+    if row and row["is_locked"] and row["locked_min_tier"] is not None:
+        if admin_tier > row["locked_min_tier"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"This setting is locked and requires role tier ≤ {row['locked_min_tier']}",
+            )
 
 
 def build_update(fields: dict, table: str, where_col: str, where_val) -> tuple[str, list]:

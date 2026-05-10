@@ -834,7 +834,7 @@ CREATE TABLE permissions (
     resource_type    TEXT    NOT NULL CHECK(resource_type IN ('file', 'folder')),
     resource_id      TEXT    NOT NULL,
     user_id          TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    permission       TEXT    NOT NULL CHECK(permission IN ('read', 'write', 'admin')),
+    permission       TEXT    NOT NULL CHECK(permission IN ('read', 'write', 'admin', 'download', 'delete', 'rename', 'manage_permissions', 'deny')),
     recursive        INTEGER NOT NULL DEFAULT 0,
     granted_by       TEXT    REFERENCES users(id) ON DELETE SET NULL,
     created_at       TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
@@ -845,6 +845,39 @@ CREATE INDEX idx_perm_resource             ON permissions(resource_type, resourc
 CREATE INDEX idx_perm_user                 ON permissions(user_id);
 CREATE UNIQUE INDEX idx_perm_unique        ON permissions(resource_type, resource_id, user_id);
 CREATE INDEX idx_permissions_policy_effect ON permissions(policy_effect_id);
+
+-------------------------------------------------
+-- TEAM FOLDER ROLE LEVELS (Phase 1)
+-- Per-team override: what folder permission level each team role grants.
+-- Rows absent here fall back to _TEAM_ROLE_DEFAULTS in _access.py.
+-------------------------------------------------
+CREATE TABLE IF NOT EXISTS team_folder_role_levels (
+    team_id    TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    role_id    TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    level      TEXT NOT NULL CHECK(level IN ('admin', 'write', 'read', 'none')),
+    updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (team_id, role_id)
+);
+
+-------------------------------------------------
+-- ADMIN SCOPE GRANTS (Phase 1)
+-- Individual permission-flag grants scoped to a specific team, without
+-- a full role assignment.  Loaded alongside scoped role rows at login.
+-------------------------------------------------
+CREATE TABLE IF NOT EXISTS admin_scope_grants (
+    id         TEXT NOT NULL PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    flag       TEXT NOT NULL REFERENCES role_permission_flags(flag) ON DELETE CASCADE,
+    scope_type TEXT NOT NULL CHECK(scope_type IN ('team')),
+    scope_id   TEXT NOT NULL,
+    granted_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, flag, scope_type, scope_id)
+);
+
+CREATE INDEX idx_admin_scope_grants_user  ON admin_scope_grants(user_id);
+CREATE INDEX idx_admin_scope_grants_scope ON admin_scope_grants(scope_type, scope_id);
 
 -------------------------------------------------
 -- ADMIN SETTINGS (runtime-configurable key-value store)

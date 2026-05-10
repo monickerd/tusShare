@@ -38,6 +38,7 @@ from app.middleware.stepup import require_step_up
 from app.models.role import FLAG_MANAGE_ESCROW, ROLE_TIER, admin_best_tier
 from app.routes._access import require_flag
 from app.services.escrow import resolve_effective_escrow_agents
+from app.util.db import check_admin_setting_lock
 from app.validation.sanitizers import validate_uuid
 from typing import Annotated
 
@@ -58,16 +59,6 @@ _STEPUP = "policy.escrow.*"
 
 def _admin_tier(admin: AuthenticatedUser) -> int:
     return admin_best_tier(admin.roles)
-
-
-def _check_setting_lock(row, admin_tier: int) -> None:
-    """Raise 403 if the admin_settings row is locked and the caller lacks authority."""
-    if row and row["is_locked"] and row["locked_min_tier"] is not None:
-        if admin_tier > row["locked_min_tier"]:
-            raise HTTPException(  # NOSONAR — helper; 403 documented in callers
-                status_code=403,
-                detail=f"This setting is locked and requires role tier ≤ {row['locked_min_tier']}",
-            )
 
 
 def _check_policy_lock(policy_row, admin_tier: int) -> None:
@@ -204,7 +195,7 @@ async def update_escrow_settings(
     )
     rows = {r["key"]: r for r in await cursor.fetchall()}
     sample = next(iter(rows.values()), None)
-    _check_setting_lock(sample, my_tier)
+    check_admin_setting_lock(sample, my_tier)
 
     # Validate lock change doesn't set a tier the caller can't access
     new_is_locked = body.is_locked

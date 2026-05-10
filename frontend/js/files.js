@@ -451,8 +451,12 @@ const Files = (() => {
                     { label: 'Share', action: () => Shares.openFolderShareDialog(folder) },
                     { label: 'Move/Copy', action: () => _openMoveCopyModal([{ type: 'folder', id: folder.id, name: folder.name }]) },
                     { label: 'Rename', action: () => _renameFolder(folder) },
+                    folder.user_can_manage ? {
+                        label: folder.restrict_permissions ? '✓ Block inherited permissions' : 'Block inherited permissions',
+                        action: () => _toggleFolderInheritance(folder),
+                    } : null,
                     { label: 'Delete', action: () => _deleteFolder(folder), danger: true },
-                ]),
+                ].filter(Boolean)),
             ]),
         ]);
     }
@@ -866,6 +870,24 @@ const Files = (() => {
         try {
             await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`, { name });
             Utils.showToast('Folder renamed', 'success');
+            _reloadCurrentView();
+        } catch (err) {
+            Utils.showToast(err.message, 'error');
+        }
+    }
+
+    async function _toggleFolderInheritance(folder) {
+        const newVal = !folder.restrict_permissions;
+        const msg = newVal
+            ? 'Block inherited permissions on this folder? Users will need explicit access grants here.'
+            : 'Remove the inheritance block? This folder will inherit permissions from its ancestors again.';
+        if (!confirm(msg)) return;
+        try {
+            await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`, { restrict_permissions: newVal });
+            Utils.showToast(
+                newVal ? 'Inheritance blocked — access to this folder is now self-contained.' : 'Inheritance restored.',
+                'success',
+            );
             _reloadCurrentView();
         } catch (err) {
             Utils.showToast(err.message, 'error');

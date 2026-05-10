@@ -25,6 +25,9 @@ class AuthenticatedUser:
     auth_method: str  # 'opaque'
     roles: Optional[set[str]] = None   # set of global role IDs
     flags: Optional[dict[str, str]] = None  # effective permission flags from global roles {flag: value}
+    # Scoped role entries: list of {role_id, scope_type, scope_id, flags} dicts.
+    # Populated at auth time; used by has_flag_in_scope and get_team_ids_with_flag.
+    scoped_roles: Optional[list[dict]] = None
     wrapped_master_key: str | None = None
     wrapped_master_key_iv: str | None = None
     recovery_key_wrapped: str | None = None
@@ -45,15 +48,67 @@ class AuthenticatedUser:
             self.roles = set()
         if self.flags is None:
             self.flags = {}
+        if self.scoped_roles is None:
+            self.scoped_roles = []
 
     def has_flag(self, flag: str) -> bool:
-        """Return True if this user's effective permissions include the given flag."""
-        return self.flags.get(flag, "0") not in ("0", "", "false", "False", "no")
+        """Return True if this user's effective permissions include the given flag.
+
+        Checks global (unscoped) flags first, then any scoped role that grants
+        the flag — allowing a team-scoped admin to pass a global has_flag check
+        before the scope guard narrows down which teams they can actually touch.
+        """
+        if self.flags.get(flag, "0") not in ("0", "", "false", "False", "no"):
+            return True
+        # Any scoped role that grants this flag also counts for panel access.
+        return any(
+            entry["flags"].get(flag, "0") not in ("0", "", "false", "False", "no")
+            for entry in self.scoped_roles
+        )
+
+    def has_flag_in_scope(self, flag: str, scope_type: str, scope_id: str) -> bool:
+        """Return True if this user holds *flag* within the given scope.
+
+        A global grant of the flag (scope_type IS NULL) also satisfies any
+        scoped check — org-wide admins can always act within any team.
+        """
+        if self.flags.get(flag, "0") not in ("0", "", "false", "False", "no"):
+            return True
+        return any(
+            entry["scope_type"] == scope_type
+            and entry["scope_id"] == scope_id
+            and entry["flags"].get(flag, "0") not in ("0", "", "false", "False", "no")
+            for entry in self.scoped_roles
+        )
+
+    def get_team_ids_with_flag(self, flag: str) -> set[str]:
+        """Return the set of team IDs where this user holds *flag*.
+
+        Returns None (sentinel) if the user holds the flag globally (org-wide),
+        meaning no scope restriction applies.  Returns an empty set if the user
+        holds no grant for this flag at any scope.
+        """
+        if self.flags.get(flag, "0") not in ("0", "", "false", "False", "no"):
+            return None  # org-wide: no restriction
+        return {
+            entry["scope_id"]
+            for entry in self.scoped_roles
+            if entry["scope_type"] == "team"
+            and entry["flags"].get(flag, "0") not in ("0", "", "false", "False", "no")
+        }
 
     @property
     def is_admin(self) -> bool:
         from app.models.role import ADMIN_ROLE_IDS
-        return bool(self.roles & ADMIN_ROLE_IDS)
+        if bool(self.roles & ADMIN_ROLE_IDS):
+            return True
+        # Scoped team admins (team_admin/team_manager roles in a team scope) are
+        # also admins — they can access the admin panel within their scope.
+        return any(
+            entry["role_id"] in ADMIN_ROLE_IDS or entry["role_id"] is None
+            for entry in self.scoped_roles
+            if entry["flags"].get("can_view_admin_panel", "0") not in ("0", "", "false", "False", "no")
+        )
 
     @property
     def is_user(self) -> bool:

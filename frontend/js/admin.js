@@ -1124,6 +1124,14 @@ const Admin = (() => {
     // Section 6: Roles & Permissions
     // ------------------------------------------------------------------
 
+    // Team role IDs and their labels as shown in the Teams UI
+    const _TEAM_ROLE_IDS = new Set(['team_admin', 'team_manager', 'team_member']);
+    const _TEAM_ROLE_ALIAS = {
+        team_admin:   'Owner',
+        team_manager: 'Supervisor',
+        team_member:  'Member',
+    };
+
     // Category display order and labels
     const _FLAG_CATEGORIES = [
         { key: 'admin',        label: 'Administration' },
@@ -1139,15 +1147,22 @@ const Admin = (() => {
 
     async function _renderRoles(container) {
         container.innerHTML = '<p class="text-muted">Loading…</p>';
-        let data;
+        let data, capData;
         try {
-            data = await Api.get(`${_api()}/admin/roles`);
+            [data, capData] = await Promise.all([
+                Api.get(`${_api()}/admin/roles`),
+                Api.get(`${_api()}/admin/capabilities`),
+            ]);
         } catch (err) {
             _showError(container, 'Failed to load roles: ' + err.message);
             return;
         }
 
         const { roles, flags, admin_tier: adminTier } = data;
+        const grantableFlags = new Set(capData.grantable_flags || []);
+        const scopeBanner = (!capData.scope.org_wide && capData.scope.team_ids)
+            ? `Scoped admin — managing teams: ${capData.scope.team_ids.join(', ') || '(none)'}`
+            : null;
 
         // Index flags by category for grouped rendering
         const flagsByCategory = {};
@@ -1159,20 +1174,42 @@ const Admin = (() => {
         const createBtn = Utils.el('button', {
             className: 'btn btn-primary btn-sm',
             textContent: 'Create Custom Role',
-            onClick: () => _showCreateRoleModal(flags, () => _renderRoles(container)),
+            onClick: () => _showCreateRoleModal(flags, grantableFlags, () => _renderRoles(container)),
         });
 
-        const roleList = Utils.el('div', { className: 'roles-list' });
-        for (const role of roles) {
-            roleList.appendChild(_buildRoleCard(role, flags, flagsByCategory, adminTier, () => _renderRoles(container)));
-        }
+        const refresh = () => _renderRoles(container);
+        const teamRoles  = roles.filter(r => _TEAM_ROLE_IDS.has(r.id));
+        const otherRoles = roles.filter(r => !_TEAM_ROLE_IDS.has(r.id));
+
+        const buildList = (list, withAlias) => {
+            const el = Utils.el('div', { className: 'roles-list' });
+            for (const role of list) {
+                el.appendChild(_buildRoleCard(
+                    role, flags, flagsByCategory, adminTier, refresh,
+                    withAlias ? _TEAM_ROLE_ALIAS[role.id] : undefined,
+                ));
+            }
+            return el;
+        };
 
         container.innerHTML = '';
+        if (scopeBanner) {
+            container.appendChild(Utils.el('p', {
+                className: 'admin-scope-banner',
+                textContent: scopeBanner,
+            }));
+        }
         container.appendChild(Utils.el('div', { className: 'roles-header' }, [createBtn]));
-        container.appendChild(roleList);
+        container.appendChild(buildList(otherRoles, false));
+        container.appendChild(Utils.el('div', { className: 'roles-section-header' }, [
+            Utils.el('h3', { textContent: 'Team Roles' }),
+            Utils.el('p', { className: 'text-muted roles-section-note',
+                textContent: 'These roles are assigned per-team and control what members can do within their team\'s folders. The label used in the Teams view is shown in parentheses.' }),
+        ]));
+        container.appendChild(buildList(teamRoles, true));
     }
 
-    function _buildRoleCard(role, flags, flagsByCategory, adminTier, refreshFn) {
+    function _buildRoleCard(role, flags, flagsByCategory, adminTier, refreshFn, alias) {
         const body = Utils.el('div', { className: 'role-card-body', style: 'display:none' });
         let bodyLoaded = false;
 
@@ -1189,6 +1226,9 @@ const Admin = (() => {
             },
         });
         toggleBtn.appendChild(Utils.el('span', { className: 'role-card-name', textContent: role.name }));
+        if (alias) {
+            toggleBtn.appendChild(Utils.el('span', { className: 'role-card-alias', textContent: `(${alias})` }));
+        }
         toggleBtn.appendChild(Utils.el('span', {
             className: 'role-card-badge' + (role.is_system ? ' badge-system' : ' badge-custom'),
             textContent: role.is_system ? 'system' : 'custom',
@@ -1369,7 +1409,7 @@ const Admin = (() => {
         ]));
     }
 
-    function _showCreateRoleModal(flags, refreshFn) {
+    function _showCreateRoleModal(flags, grantableFlags, refreshFn) {
         // Reuse the existing modal infrastructure — build a form in a dialog
         const flagsByCategory = {};
         for (const f of flags) {
@@ -1386,19 +1426,27 @@ const Admin = (() => {
             .filter(cat => flagsByCategory[cat.key])
             .map(cat => {
                 const rows = (flagsByCategory[cat.key] || []).map(f => {
+                    const canGrant = grantableFlags.has(f.flag);
                     const chk = Utils.el('input', {
                         type: 'checkbox',
-                        title: f.is_sensitive ? 'Sensitive — only Server/Org Admin may activate' : '',
+                        disabled: !canGrant,
+                        title: f.is_sensitive
+                            ? 'Sensitive — only Server/Org Admin may activate'
+                            : !canGrant ? 'You do not hold this permission and cannot grant it' : '',
                     });
                     flagInputs[f.flag] = chk;
-                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') }, [
+                    const badges = [
+                        f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
+                        !canGrant ? Utils.el('span', { className: 'flag-locked-badge', textContent: 'not held' }) : null,
+                    ].filter(Boolean);
+                    return Utils.el('div', { className: 'flag-row' + (f.is_sensitive ? ' flag-sensitive' : '') + (!canGrant ? ' flag-locked' : '') }, [
                         Utils.el('div', { className: 'flag-lock-cell' }),
                         Utils.el('div', { className: 'flag-content-cell' }, [
                             Utils.el('label', { className: 'flag-label' }, [
                                 chk,
                                 Utils.el('span', { className: 'flag-name', textContent: f.flag }),
-                                f.is_sensitive ? Utils.el('span', { className: 'flag-sensitive-badge', textContent: 'sensitive' }) : null,
-                            ].filter(Boolean)),
+                                ...badges,
+                            ]),
                             Utils.el('span', { className: 'flag-desc', textContent: f.description }),
                         ]),
                     ]);
@@ -2958,17 +3006,19 @@ const Admin = (() => {
         wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
         Utils.showModal(`User: ${username || userId}`, wrap);
 
-        let user, allRoles;
+        let user, allRoles, capData;
         try {
-            [{ user }, { roles: allRoles }] = await Promise.all([
+            [{ user }, { roles: allRoles }, capData] = await Promise.all([
                 Api.get(`${_api()}/admin/users/${userId}`),
-                Api.get(`${_api()}/admin/roles`),
+                Api.get(`${_api()}/admin/roles`).catch(() => ({ roles: [] })),
+                Api.get(`${_api()}/admin/capabilities`),
             ]);
         } catch (e) {
             wrap.innerHTML = '';
             wrap.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load: ' + e.message }));
             return;
         }
+        const grantableRoleIds = new Set(capData.grantable_role_ids || []);
 
         wrap.innerHTML = '';
 
@@ -3134,6 +3184,13 @@ const Admin = (() => {
 
         // ---- Roles (B2: add/remove) ----
         wrap.appendChild(Utils.el('h5', { textContent: 'Roles', style: 'margin:0 0 6px' }));
+        if (!capData.scope.org_wide) {
+            wrap.appendChild(Utils.el('p', {
+                className: 'admin-scope-banner',
+                style: 'margin:0 0 8px',
+                textContent: `Scoped admin — role assignment limited to grantable roles within your team scope.`,
+            }));
+        }
         const rolesWrap = Utils.el('div', { style: 'margin-bottom:14px' });
         wrap.appendChild(rolesWrap);
 
@@ -3161,9 +3218,9 @@ const Admin = (() => {
                 row.appendChild(remBtn);
                 rolesWrap.appendChild(row);
             }
-            // Add role row
+            // Add role row — only show roles the caller can actually grant
             const assignedIds = new Set(currentRoles.map(r => r.id));
-            const available = (allRoles || []).filter(r => !assignedIds.has(r.id));
+            const available = (allRoles || []).filter(r => !assignedIds.has(r.id) && grantableRoleIds.has(r.id));
             if (available.length) {
                 const addRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-top:6px' });
                 const roleSel = Utils.el('select', { className: 'input-sm', style: 'flex:1' });

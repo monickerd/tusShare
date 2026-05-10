@@ -1,10 +1,49 @@
-"""Shared access-control helpers used by file and folder routes."""
+"""Shared access-control helpers used by file and folder routes.
+
+Phase 1 evaluation order (per resource level, then ancestry walk):
+  1. Explicit deny in ACL              → DENY  (stops walk)
+  2. Explicit allow in ACL             → ALLOW if action ⊆ level's implied set
+  3. Team-based grant                  → ALLOW if team membership + role level covers action
+  4. restrict_permissions boundary     → STOP walk
+  5. Move to parent; repeat from step 1
+  6. Default                           → DENY
+"""
 
 import uuid
 
 from fastapi import HTTPException
 
 from app.auth.interface import AuthenticatedUser
+from app.conf.teams import TEAM_ROLE_MEMBER, TEAM_ROLE_OWNER, TEAM_ROLE_SUPERVISOR
+
+# ---------------------------------------------------------------------------
+# Permission level → implied action set
+# read  preserves the pre-Phase-1 behaviour: it still implies download so that
+# existing 'read' rows in the permissions table continue to allow file retrieval.
+# New grants that should be view-only (no download) can use a future 'view' level.
+# ---------------------------------------------------------------------------
+_LEVEL_ACTIONS: dict[str, frozenset[str]] = {
+    "admin":              frozenset({"read", "write", "delete", "download", "rename", "manage_permissions"}),
+    "write":              frozenset({"read", "write", "delete", "download", "rename"}),
+    "read":               frozenset({"read", "download"}),   # backward-compat: read ⇒ download
+    "download":           frozenset({"read", "download"}),
+    "delete":             frozenset({"read", "delete"}),
+    "rename":             frozenset({"read", "rename"}),
+    "manage_permissions": frozenset({"read", "manage_permissions"}),
+    "deny":               frozenset(),
+    "none":               frozenset(),
+}
+
+# Default folder permission level granted by each built-in team role.
+# Overridden per-team via the team_folder_role_levels table.
+_TEAM_ROLE_DEFAULTS: dict[str, str] = {
+    TEAM_ROLE_OWNER:      "admin",
+    TEAM_ROLE_SUPERVISOR: "write",
+    TEAM_ROLE_MEMBER:     "write",
+}
+
+# Legacy alias used by callers that only need truthy / falsy.
+_TEAM_ROLE_LEVELS = _TEAM_ROLE_DEFAULTS
 
 
 def require_flag(user: AuthenticatedUser, flag: str, detail: str | None = None) -> None:
@@ -17,39 +56,196 @@ def require_flag(user: AuthenticatedUser, flag: str, detail: str | None = None) 
         raise HTTPException(status_code=403, detail=detail or f"{flag} permission required")
 
 
-async def is_team_folder_member(db, folder_id: str, user_id: str) -> bool:
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+async def _get_team_role_level(db, team_id: str, role_id: str) -> str:
+    """Return the folder permission level for role_id within team_id.
+
+    Checks the team_folder_role_levels override table first; falls back to
+    _TEAM_ROLE_DEFAULTS if no row exists.
+    """
+    try:
+        cursor = await db.execute(
+            "SELECT level FROM team_folder_role_levels WHERE team_id = ? AND role_id = ?",
+            (team_id, role_id),
+        )
+        row = await cursor.fetchone()
+        if row:
+            return row["level"]
+    except Exception:
+        pass  # table may not exist on old schema; fall through to default
+    return _TEAM_ROLE_DEFAULTS.get(role_id, "write")
+
+
+async def _team_level_for_user(db, team_id: str, user_id: str) -> str | None:
+    """Return the effective folder permission level for user_id within team_id.
+
+    Returns None if the user is not a member of the team.
+    """
+    cursor = await db.execute(
+        """SELECT ur.role_id
+           FROM user_team_keys utk
+           LEFT JOIN user_roles ur
+             ON ur.user_id    = utk.user_id
+            AND ur.scope_type = 'team'
+            AND ur.scope_id   = utk.team_id
+           WHERE utk.team_id = ? AND utk.user_id = ?""",
+        (team_id, user_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    role_id = row["role_id"]
+    if role_id is None:
+        # Key slot exists but no team role assigned — deny team-folder access.
+        # This prevents the _TEAM_ROLE_DEFAULTS fallback from silently granting
+        # write access to users who lack an explicit role assignment.
+        return None
+    return await _get_team_role_level(db, team_id, role_id)
+
+
+# ---------------------------------------------------------------------------
+# Core data-plane permission evaluator (Phase 1)
+# ---------------------------------------------------------------------------
+
+async def check_data_permission(
+    db,
+    resource_type: str,
+    resource_id: str,
+    user_id: str,
+    action: str,
+) -> bool:
+    """Evaluate full Phase 1 permission chain for a data-plane action.
+
+    resource_type: 'file' or 'folder'
+    action: one of the keys in _LEVEL_ACTIONS (read, write, delete, download,
+            rename, manage_permissions)
+
+    For files the check starts at the file's own permission row then falls
+    through to the containing folder tree.  For folders the walk starts at
+    the folder itself and ascends via parent_id, stopping at any folder with
+    restrict_permissions=TRUE.
+    """
+    # Seed the walk: for files, check file-level ACL first then move to folder.
+    if resource_type == "file":
+        file_allowed = await _check_acl(db, "file", resource_id, user_id, action, exact=True)
+        if file_allowed is not None:
+            return file_allowed
+        # Retrieve the containing folder to continue the walk.
+        cursor = await db.execute("SELECT folder_id FROM files WHERE id = ?", (resource_id,))
+        frow = await cursor.fetchone()
+        if not frow or not frow["folder_id"]:
+            return False
+        folder_id: str | None = frow["folder_id"]
+        first_folder = True  # don't require recursive=1 on the direct parent
+    else:
+        folder_id = resource_id
+        first_folder = False  # the resource itself — exact match, no recursive required
+
+    visited: set[str] = set()
+    while folder_id and folder_id not in visited:
+        visited.add(folder_id)
+        is_exact = (resource_type == "folder" and folder_id == resource_id) or first_folder
+        first_folder = False
+
+        # 1 & 2: explicit ACL (deny or allow) at this folder node.
+        acl_result = await _check_acl(db, "folder", folder_id, user_id, action, exact=is_exact)
+        if acl_result is not None:
+            return acl_result
+
+        # 3: team-based grant.
+        cursor = await db.execute(
+            "SELECT team_id FROM team_folders WHERE folder_id = ?", (folder_id,)
+        )
+        tf_row = await cursor.fetchone()
+        if tf_row:
+            level = await _team_level_for_user(db, tf_row["team_id"], user_id)
+            if level and level != "none":
+                if action in _LEVEL_ACTIONS.get(level, frozenset()):
+                    return True
+            # Non-member or level 'none' → not allowed via team; continue walk.
+
+        # 4 & 5: check restrict_permissions boundary and move to parent.
+        cursor = await db.execute(
+            "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (folder_id,)
+        )
+        row = await cursor.fetchone()
+        if not row or row["restrict_permissions"]:
+            return False
+        folder_id = row["parent_id"]
+
+    return False
+
+
+async def _check_acl(
+    db,
+    resource_type: str,
+    resource_id: str,
+    user_id: str,
+    action: str,
+    exact: bool,
+) -> bool | None:
+    """Check the permissions table for an explicit ACL entry.
+
+    Returns True (allow), False (deny), or None (no applicable row found).
+    *exact=True*  → also accepts non-recursive rows (the resource itself).
+    *exact=False* → only recursive rows count as inherited grants.
+    """
+    cursor = await db.execute(
+        "SELECT permission, recursive FROM permissions "
+        "WHERE resource_type = ? AND resource_id = ? AND user_id = ?",
+        (resource_type, resource_id, user_id),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+    recursive = bool(row["recursive"])
+    if not exact and not recursive:
+        return None  # non-recursive grant doesn't propagate to ancestors
+    perm = row["permission"]
+    if perm == "deny":
+        return False
+    return action in _LEVEL_ACTIONS.get(perm, frozenset()) or None
+
+
+# ---------------------------------------------------------------------------
+# Ancestry helpers (unchanged from pre-Phase-1; still used by several routes)
+# ---------------------------------------------------------------------------
+
+async def is_team_folder_member(db, folder_id: str, user_id: str) -> str | None:
     """Walk the folder ancestry to check if any ancestor (or self) is a team folder,
     and if so, whether user_id is a member of that team.
 
     Stops at folders with restrict_permissions = TRUE: team membership in an
     ancestor team folder does not grant access across a permission boundary.
-    Returns True if the user has team-based access to this folder.
+    Returns the effective permission level ("admin", "write", or "read") derived
+    from the user's team role (via team_folder_role_levels with default fallback),
+    or None if they have no team-based access.  Callers that only need a boolean
+    can treat the return value as truthy/falsy.
     """
     visited: set[str] = set()
     current_id = folder_id
     while current_id and current_id not in visited:
         visited.add(current_id)
-        # Check if this folder is a team folder
         cursor = await db.execute(
             "SELECT team_id FROM team_folders WHERE folder_id = ?", (current_id,)
         )
         tf_row = await cursor.fetchone()
         if tf_row:
-            # Confirm user is an active member of the team
-            cursor = await db.execute(
-                "SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id = ?",
-                (tf_row["team_id"], user_id),
-            )
-            return await cursor.fetchone() is not None
-        # Walk up the tree; stop at permission boundaries
+            level = await _team_level_for_user(db, tf_row["team_id"], user_id)
+            if level and level != "none":
+                return level
+            return None
         cursor = await db.execute(
             "SELECT parent_id, restrict_permissions FROM folders WHERE id = ?", (current_id,)
         )
         row = await cursor.fetchone()
         if not row or row["restrict_permissions"]:
-            return False
+            return None
         current_id = row["parent_id"]
-    return False
+    return None
 
 
 async def is_in_shared_tree(db, folder_id: str) -> bool:
@@ -136,6 +332,9 @@ async def has_folder_permission(db, folder_id: str, user_id: str) -> bool:
     Stops at folders with restrict_permissions = TRUE: recursive grants from above
     a permission boundary do not propagate into the restricted subtree.
     Used to honour policy-engine folder_acl effects and manual user-share grants.
+
+    For new code prefer check_data_permission() which evaluates the full
+    Phase 1 chain including team-based grants and explicit denies.
     """
     visited: set[str] = set()
     current_id: str | None = folder_id

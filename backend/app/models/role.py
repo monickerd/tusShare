@@ -222,3 +222,71 @@ async def get_scoped_roles(db, scope_type: str, scope_id: str) -> list[UserRole]
         (scope_type, scope_id),
     )
     return [UserRole.from_row(r) for r in await cursor.fetchall()]
+
+
+async def get_user_scoped_roles(db, user_id: str) -> list[dict]:
+    """Return all scoped role assignments for a user as plain dicts.
+
+    Each dict has keys: role_id, scope_type, scope_id, flags (dict[str,str]).
+    Flags are the effective permission flags from that role — same logic as
+    get_user_global_flags but resolved per scoped assignment.
+
+    Also includes any rows from admin_scope_grants, which grant individual
+    permission flags for a specific scope without a full role assignment.
+    """
+    # Scoped role assignments with their permission flags
+    cursor = await db.execute(
+        """
+        SELECT ur.role_id, ur.scope_type, ur.scope_id,
+               rp.flag, MAX(rp.value) AS value
+        FROM user_roles ur
+        JOIN role_permissions rp ON rp.role_id = ur.role_id
+        WHERE ur.user_id = ? AND ur.scope_type IS NOT NULL
+        GROUP BY ur.role_id, ur.scope_type, ur.scope_id, rp.flag
+        """,
+        (user_id,),
+    )
+    rows = await cursor.fetchall()
+
+    # Aggregate flags per (role_id, scope_type, scope_id) triple
+    from collections import defaultdict
+    role_map: dict[tuple, dict] = {}
+    for row in rows:
+        key = (row["role_id"], row["scope_type"], row["scope_id"])
+        if key not in role_map:
+            role_map[key] = {
+                "role_id":    row["role_id"],
+                "scope_type": row["scope_type"],
+                "scope_id":   row["scope_id"],
+                "flags":      {},
+            }
+        role_map[key]["flags"][row["flag"]] = row["value"]
+
+    result = list(role_map.values())
+
+    # Individual flag grants from admin_scope_grants (supplemental; no role row)
+    try:
+        cursor2 = await db.execute(
+            "SELECT flag, scope_type, scope_id FROM admin_scope_grants WHERE user_id = ?",
+            (user_id,),
+        )
+        grant_rows = await cursor2.fetchall()
+    except Exception:
+        # Table may not exist yet on old schema; ignore gracefully.
+        grant_rows = []
+
+    # Merge individual grants into a synthetic role entry keyed by scope
+    grant_map: dict[tuple, dict] = {}
+    for gr in grant_rows:
+        key = ("__grants__", gr["scope_type"], gr["scope_id"])
+        if key not in grant_map:
+            grant_map[key] = {
+                "role_id":    None,
+                "scope_type": gr["scope_type"],
+                "scope_id":   gr["scope_id"],
+                "flags":      {},
+            }
+        grant_map[key]["flags"][gr["flag"]] = "1"
+
+    result.extend(grant_map.values())
+    return result
