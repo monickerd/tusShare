@@ -841,6 +841,14 @@ async def delete_my_account(
         async with db_session() as _db:
             for row in rows_snapshot:
                 try:
+                    # Skip if another files row still shares this storage_key (B5 copy dedup)
+                    cur = await _db.execute(
+                        "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?",
+                        (row["storage_key"],)
+                    )
+                    cnt = await cur.fetchone()
+                    if cnt and cnt["cnt"] > 0:
+                        continue
                     await mgr.delete_blob(_db, row["id"], row["storage_key"])
                 except Exception as exc:
                     logger.warning("Failed to delete blob %s during self-delete: %s", row["storage_key"], exc)
