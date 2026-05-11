@@ -3328,10 +3328,11 @@ const Admin = (() => {
         const table = Utils.el('table', { className: 'admin-table' });
         table.appendChild(Utils.el('thead', {}, [
             Utils.el('tr', {}, [
-                Utils.el('th', { textContent: 'Time' }),
-                Utils.el('th', { textContent: 'Type' }),
-                Utils.el('th', { textContent: 'Sev' }),
-                Utils.el('th', { textContent: 'Outcome' }),
+                Utils.el('th', { textContent: 'Time',    style: 'width:145px; white-space:nowrap' }),
+                Utils.el('th', { textContent: 'Type',    style: 'white-space:nowrap' }),
+                Utils.el('th', { textContent: 'Sev',     style: 'width:70px' }),
+                Utils.el('th', { textContent: 'Outcome', style: 'width:75px' }),
+                Utils.el('th', { textContent: 'Path' }),
                 Utils.el('th', { textContent: 'User' }),
                 Utils.el('th', { textContent: 'Target' }),
             ]),
@@ -3347,7 +3348,7 @@ const Admin = (() => {
         tbody.innerHTML = '';
         if (!events.length) {
             tbody.appendChild(Utils.el('tr', {}, [
-                Utils.el('td', { colSpan: 6, className: 'text-muted', textContent: 'No events.', style: 'text-align:center; padding:12px' }),
+                Utils.el('td', { colSpan: 7, className: 'text-muted', textContent: 'No events.', style: 'text-align:center; padding:12px' }),
             ]));
             return;
         }
@@ -3431,11 +3432,14 @@ const Admin = (() => {
             onClick: (e) => { e.preventDefault(); _showEventDetailModal(ev); },
         });
 
+        const pathText = (ev.detail && ev.detail.path) ? ev.detail.path : '';
+
         return Utils.el('tr', {}, [
-            Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '' }),
+            Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '', style: 'white-space:nowrap' }),
             Utils.el('td', {}, [typeLink]),
             Utils.el('td', {}, [Utils.el('span', { className: `badge ${sevClass}`, textContent: ev.severity || 'info' })]),
             Utils.el('td', { textContent: ev.outcome || '' }),
+            Utils.el('td', { textContent: pathText, title: pathText, style: 'max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:11px' }),
             actorCell,
             Utils.el('td', { textContent: ev.target_name || ev.target_id || '' }),
         ]);

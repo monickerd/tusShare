@@ -1977,6 +1977,7 @@ const Auth = (() => {
     }
 
     async function checkSession() {
+        if (!sessionStorage.getItem(Config.auth.sessionStorageKey)) return false;
         try {
             const data = await Api.get(`${Config.app.apiPrefix}/auth/me`);
             _currentUser = data.user;
