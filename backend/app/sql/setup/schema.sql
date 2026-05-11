@@ -1492,9 +1492,11 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
 -- BUILT-IN POLICY FIELD DEFINITIONS (internal source)
 -------------------------------------------------
 INSERT INTO policy_field_definitions (name, display_label, source, data_type, claim_path) VALUES
-    ('totp_enabled',      'TOTP MFA Enabled',  'internal', 'boolean', NULL),
-    ('auth_provider',     'Auth Provider',     'internal', 'string',  NULL),
-    ('identity_provider', 'Identity Provider', 'internal', 'string',  NULL);
+    ('totp_enabled',      'TOTP MFA Enabled',              'internal', 'boolean', NULL),
+    ('auth_provider',     'Auth Provider',                 'internal', 'string',  NULL),
+    ('identity_provider', 'Identity Provider',             'internal', 'string',  NULL),
+    ('mfa_enabled',       'MFA Enabled (TOTP or WebAuthn)','internal', 'boolean', NULL),
+    ('role',              'Global Role',                   'internal', 'string',  NULL);
 
 -------------------------------------------------
 -- ADMIN SETTINGS SEEDS

@@ -205,6 +205,29 @@ async def seed_admin_settings(db: Database) -> None:
     await db.commit()
 
 
+async def seed_policy_fields(db: Database) -> None:
+    """Ensure built-in internal policy fields are present.
+
+    Safe to re-run on every startup: uses INSERT ... ON CONFLICT DO NOTHING.
+    Keeps existing installs in sync when new internal fields are added.
+    """
+    fields = [
+        ('totp_enabled',      'TOTP MFA Enabled',               'internal', 'boolean'),
+        ('auth_provider',     'Auth Provider',                   'internal', 'string'),
+        ('identity_provider', 'Identity Provider',               'internal', 'string'),
+        ('mfa_enabled',       'MFA Enabled (TOTP or WebAuthn)',  'internal', 'boolean'),
+        ('role',              'Global Role',                     'internal', 'string'),
+    ]
+    for name, label, source, data_type in fields:
+        await db.execute(
+            "INSERT INTO policy_field_definitions "
+            "(name, display_label, source, data_type, claim_path) "
+            "VALUES (?, ?, ?, ?, NULL) ON CONFLICT DO NOTHING",
+            (name, label, source, data_type),
+        )
+    await db.commit()
+
+
 async def init_db() -> None:
     """Create the connection pool, initialise the schema, and seed defaults."""
     global _pool
@@ -219,6 +242,7 @@ async def init_db() -> None:
         db = Database(conn)
         await _run_migrations(db, conn)
         await seed_admin_settings(db)
+        await seed_policy_fields(db)
 
     logger.info('Database pool initialised: %s', settings.DATABASE_URL)
 

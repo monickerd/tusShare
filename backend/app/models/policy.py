@@ -274,6 +274,42 @@ async def _resolve_totp_field(db, user_id: str) -> str:
         return "0"
 
 
+async def _resolve_mfa_enabled_field(db, user_id: str) -> str:
+    """Return '1' if the user has any active TOTP or WebAuthn credential."""
+    try:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM user_mfa_credentials "
+            "WHERE user_id = ? AND is_active = true AND method IN ('totp', 'webauthn')",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return "1" if (row and row[0] > 0) else "0"
+    except Exception:
+        return "0"
+
+
+async def _resolve_role_field(db, user_id: str) -> str:
+    """Return the most-privileged global role ID held by this user.
+
+    'Most-privileged' is the role with the lowest ROLE_TIER value.  Custom roles
+    and role_user are assigned tier 99 and only win when no admin tier is present.
+    Returns '' if the user has no global role assignments at all.
+    """
+    from app.models.role import ROLE_TIER
+    try:
+        cursor = await db.execute(
+            "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type IS NULL",
+            (user_id,),
+        )
+        rows = await cursor.fetchall()
+        role_ids = {r["role_id"] for r in rows}
+        if not role_ids:
+            return ""
+        return min(role_ids, key=lambda r: ROLE_TIER.get(r, 99))
+    except Exception:
+        return ""
+
+
 def _set_provider_result(result: dict, fields: set, provider_type: str | None, name: str | None) -> None:
     if "auth_provider" in fields:
         result["auth_provider"] = provider_type or "opaque"
@@ -311,8 +347,10 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
 
     Supported internal fields (seeded in schema.sql):
       totp_enabled      — '1' if user has TOTP active, '0' otherwise
+      mfa_enabled       — '1' if user has any active TOTP or WebAuthn credential
       auth_provider     — 'opaque' | 'oidc' | 'ldap'
-      identity_provider — the identity_providers.name for non-opaque users, or None
+      identity_provider — the identity_providers.name for non-opaque users, or ''
+      role              — most-privileged global role ID (e.g. 'role_user', 'org_admin')
     """
     if not fields:
         return {}
@@ -322,8 +360,14 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
     if "totp_enabled" in fields:
         result["totp_enabled"] = await _resolve_totp_field(db, user_id)
 
+    if "mfa_enabled" in fields:
+        result["mfa_enabled"] = await _resolve_mfa_enabled_field(db, user_id)
+
     if "auth_provider" in fields or "identity_provider" in fields:
         result.update(await _resolve_provider_fields(db, user_id, fields))
+
+    if "role" in fields:
+        result["role"] = await _resolve_role_field(db, user_id)
 
     return result
 
