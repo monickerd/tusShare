@@ -3364,6 +3364,10 @@ const Admin = (() => {
                 Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:12px', textContent: String(value) }),
             ]);
         }
+        const detail = (ev.detail && typeof ev.detail === 'object') ? ev.detail : {};
+        const remainingDetail = Object.fromEntries(
+            Object.entries(detail).filter(([k]) => k !== 'path' && k !== 'method')
+        );
         const tbody = Utils.el('tbody');
         const rows = [
             kv('Event ID',      ev.event_id),
@@ -3372,6 +3376,8 @@ const Admin = (() => {
             kv('Severity',      ev.severity),
             kv('Outcome',       ev.outcome),
             kv('Action key',    ev.action_key),
+            kv('Method',        detail.method),
+            kv('Path',          detail.path),
             kv('Actor',         ev.actor_username || ev.actor_user_id),
             kv('Actor user ID', ev.actor_user_id),
             kv('Actor IP',      ev.actor_ip),
@@ -3385,11 +3391,11 @@ const Admin = (() => {
         for (const r of rows) { if (r) tbody.appendChild(r); }
         const table = Utils.el('table', { style: 'border-collapse:collapse;width:100%' }, [tbody]);
         const wrap = Utils.el('div', { style: 'min-width:500px;max-width:700px' }, [table]);
-        if (ev.detail && typeof ev.detail === 'object' && Object.keys(ev.detail).length) {
+        if (Object.keys(remainingDetail).length) {
             wrap.appendChild(Utils.el('h5', { textContent: 'Detail', style: 'margin:14px 0 6px' }));
             wrap.appendChild(Utils.el('pre', {
                 style: 'background:#f5f5f5;padding:10px;border-radius:4px;overflow:auto;font-size:12px;max-height:220px;margin:0',
-                textContent: JSON.stringify(ev.detail, null, 2),
+                textContent: JSON.stringify(remainingDetail, null, 2),
             }));
         }
         Utils.showModal(`Event: ${ev.event_type}`, wrap);
