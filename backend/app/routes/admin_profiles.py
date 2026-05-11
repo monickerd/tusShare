@@ -927,6 +927,31 @@ async def _import_security_profile(db, data: dict, replace: bool, admin_id: str,
     )
 
 
+async def _delete_unreferenced_roles(db, export_ids: set) -> None:
+    cursor = await db.execute(
+        "SELECT id FROM roles WHERE is_system = 0 AND id NOT IN "
+        f"({','.join('?' * len(export_ids)) if export_ids else 'NULL'})",
+        list(export_ids) if export_ids else [],
+    )
+    for row in await cursor.fetchall():
+        await db.execute("DELETE FROM roles WHERE id = ?", (row["id"],))
+
+
+async def _upsert_role_permissions(db, rid: str, permissions: dict) -> None:
+    for flag, fu in permissions.items():
+        if not isinstance(fu, dict) or "value" not in fu:
+            continue
+        await db.execute(
+            "INSERT INTO role_permissions (role_id, flag, value, is_locked, locked_min_tier) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT (role_id, flag) DO UPDATE SET "
+            "value = excluded.value, is_locked = excluded.is_locked, "
+            "locked_min_tier = excluded.locked_min_tier",
+            (rid, flag, fu["value"], bool(fu.get("is_locked", False)),
+             fu.get("locked_min_tier")),
+        )
+
+
 async def _import_roles(db, data: dict, replace: bool) -> int:
     roles_list = data["roles"]
     if not isinstance(roles_list, list):
@@ -934,13 +959,7 @@ async def _import_roles(db, data: dict, replace: bool) -> int:
     count = 0
     if replace:
         export_ids = {r["id"] for r in roles_list if isinstance(r, dict) and "id" in r}
-        cursor = await db.execute(
-            "SELECT id FROM roles WHERE is_system = 0 AND id NOT IN "
-            f"({','.join('?' * len(export_ids)) if export_ids else 'NULL'})",
-            list(export_ids) if export_ids else [],
-        )
-        for row in await cursor.fetchall():
-            await db.execute("DELETE FROM roles WHERE id = ?", (row["id"],))
+        await _delete_unreferenced_roles(db, export_ids)
     for role in roles_list:
         if not isinstance(role, dict) or "id" not in role or "name" not in role:
             continue
@@ -951,18 +970,7 @@ async def _import_roles(db, data: dict, replace: bool) -> int:
             "description = excluded.description",
             (rid, role["name"], role.get("description", ""), 1 if role.get("is_system") else 0),
         )
-        for flag, fu in (role.get("permissions") or {}).items():
-            if not isinstance(fu, dict) or "value" not in fu:
-                continue
-            await db.execute(
-                "INSERT INTO role_permissions (role_id, flag, value, is_locked, locked_min_tier) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT (role_id, flag) DO UPDATE SET "
-                "value = excluded.value, is_locked = excluded.is_locked, "
-                "locked_min_tier = excluded.locked_min_tier",
-                (rid, flag, fu["value"], bool(fu.get("is_locked", False)),
-                 fu.get("locked_min_tier")),
-            )
+        await _upsert_role_permissions(db, rid, role.get("permissions") or {})
         count += 1
     return count
 
@@ -985,6 +993,20 @@ async def _import_admin_settings(db, data: dict) -> int:
         )
         count += 1
     return count
+
+
+async def _upsert_policy_conditions(db, policy_id: str, conditions: list) -> None:
+    for cond in conditions:
+        if not isinstance(cond, dict) or "field" not in cond:
+            continue
+        await db.execute(
+            "INSERT INTO policy_conditions "
+            "(id, policy_id, field, operator, value, block_on_missing_attribute) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            (str(uuid.uuid4()), policy_id,
+             cond["field"], cond.get("operator", "="),
+             cond.get("value"), 1 if cond.get("block_on_missing_attribute", True) else 0),
+        )
 
 
 async def _import_policies(db, data: dict, replace: bool, admin_id: str) -> int:
@@ -1014,18 +1036,7 @@ async def _import_policies(db, data: dict, replace: bool, admin_id: str) -> int:
         row = await cursor.fetchone()
         if row is None:
             continue
-        actual_id = row["id"]
-        for cond in (pol.get("conditions") or []):
-            if not isinstance(cond, dict) or "field" not in cond:
-                continue
-            await db.execute(
-                "INSERT INTO policy_conditions "
-                "(id, policy_id, field, operator, value, block_on_missing_attribute) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-                (str(uuid.uuid4()), actual_id,
-                 cond["field"], cond.get("operator", "="),
-                 cond.get("value"), 1 if cond.get("block_on_missing_attribute", True) else 0),
-            )
+        await _upsert_policy_conditions(db, row["id"], pol.get("conditions") or [])
         count += 1
     return count
 
@@ -1135,6 +1146,30 @@ async def _import_storage(db, data: dict) -> int:
     return count
 
 
+def _enforce_step_up_import(request: Request, admin: AuthenticatedUser) -> None:
+    if not sensitive_config.is_sensitive(_STEPUP_ACTION):
+        return
+    token = request.headers.get("X-Step-Up-Token", "")
+    if not token:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "step_up_required",
+                "action": _STEPUP_ACTION,
+                "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+            },
+        )
+    if not verify_step_up_token(token, admin.id, _STEPUP_ACTION, session_id=admin.session_id):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "step_up_invalid",
+                "action": _STEPUP_ACTION,
+                "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
+            },
+        )
+
+
 @router.post("/settings/full-import", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def full_import_settings(
     body: FullImportRequest,
@@ -1144,28 +1179,7 @@ async def full_import_settings(
 ):
     """Import one or more configuration categories from a full-export JSON."""
     _require_server_admin(admin)
-
-    if sensitive_config.is_sensitive(_STEPUP_ACTION):
-        token = request.headers.get("X-Step-Up-Token", "")
-        if not token:
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "step_up_required",
-                    "action": _STEPUP_ACTION,
-                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
-                },
-            )
-        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION,
-                                    session_id=admin.session_id):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "step_up_invalid",
-                    "action": _STEPUP_ACTION,
-                    "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
-                },
-            )
+    _enforce_step_up_import(request, admin)
 
     if body.mode not in ("replace", "merge"):
         raise HTTPException(status_code=400, detail=_ERR_MODE_REPLACE_OR_MERGE)
@@ -1184,22 +1198,19 @@ async def full_import_settings(
     replace = body.mode == "replace"
     items_applied: dict[str, int] = {}
 
-    if "security_profile" in requested and "security_profile" in data:
-        items_applied["security_profile"] = await _import_security_profile(db, data, replace, admin_id, tier)
-    if "roles" in requested and "roles" in data:
-        items_applied["roles"] = await _import_roles(db, data, replace)
-    if "admin_settings" in requested and "admin_settings" in data:
-        items_applied["admin_settings"] = await _import_admin_settings(db, data)
-    if "policies" in requested and "policies" in data:
-        items_applied["policies"] = await _import_policies(db, data, replace, admin_id)
-    if "policy_fields" in requested and "policy_fields" in data:
-        items_applied["policy_fields"] = await _import_policy_fields(db, data)
-    if "siem" in requested and "siem" in data:
-        items_applied["siem"] = await _import_siem(db, data, replace)
-    if "notifications" in requested and "notifications" in data:
-        items_applied["notifications"] = await _import_notifications(db, data, replace)
-    if "storage" in requested and "storage" in data:
-        items_applied["storage"] = await _import_storage(db, data)
+    _dispatch = {
+        "security_profile": lambda: _import_security_profile(db, data, replace, admin_id, tier),
+        "roles":            lambda: _import_roles(db, data, replace),
+        "admin_settings":   lambda: _import_admin_settings(db, data),
+        "policies":         lambda: _import_policies(db, data, replace, admin_id),
+        "policy_fields":    lambda: _import_policy_fields(db, data),
+        "siem":             lambda: _import_siem(db, data, replace),
+        "notifications":    lambda: _import_notifications(db, data, replace),
+        "storage":          lambda: _import_storage(db, data),
+    }
+    for cat in requested:
+        if cat in data and cat in _dispatch:
+            items_applied[cat] = await _dispatch[cat]()
 
     await db.commit()
 

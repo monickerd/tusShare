@@ -3047,6 +3047,38 @@ const Admin = (() => {
         ]);
     }
 
+    function _appendTeamsAndAudit(wrap, user) {
+        if (user.teams?.length) {
+            wrap.appendChild(Utils.el('h5', { textContent: 'Team Memberships', style: 'margin:0 0 6px' }));
+            const teamList = Utils.el('ul', { style: 'font-size:13px;margin:0 0 14px;padding-left:18px' });
+            for (const t of user.teams) {
+                teamList.appendChild(Utils.el('li', { textContent: `${t.team_name}${t.team_role_name ? ' — ' + t.team_role_name : ''}` }));
+            }
+            wrap.appendChild(teamList);
+        }
+        if (user.recent_audit?.length) {
+            wrap.appendChild(Utils.el('h5', { textContent: 'Recent Audit (last 10)', style: 'margin:0 0 6px' }));
+            const auditTbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-bottom:8px' });
+            auditTbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
+                Utils.el('th', { textContent: 'Time' }),
+                Utils.el('th', { textContent: 'Event' }),
+                Utils.el('th', { textContent: 'Outcome' }),
+                Utils.el('th', { textContent: 'IP' }),
+            ])]));
+            const atbody = Utils.el('tbody');
+            for (const e of user.recent_audit) {
+                atbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: e.timestamp ? e.timestamp.replace('T', ' ').slice(0, 19) : '' }),
+                    Utils.el('td', { textContent: e.event_type }),
+                    Utils.el('td', { textContent: e.outcome || '' }),
+                    Utils.el('td', { textContent: e.ip_address || '' }),
+                ]));
+            }
+            auditTbl.appendChild(atbody);
+            wrap.appendChild(auditTbl);
+        }
+    }
+
     async function _showUserDetailModal(userId, username) {
         const wrap = Utils.el('div', { style: 'min-width:520px;max-width:680px' });
         wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
@@ -3252,38 +3284,8 @@ const Admin = (() => {
         };
         _renderRoles(user.roles || []);
 
-        // ---- Teams ----
-        if (user.teams?.length) {
-            wrap.appendChild(Utils.el('h5', { textContent: 'Team Memberships', style: 'margin:0 0 6px' }));
-            const teamList = Utils.el('ul', { style: 'font-size:13px;margin:0 0 14px;padding-left:18px' });
-            for (const t of user.teams) {
-                teamList.appendChild(Utils.el('li', { textContent: `${t.team_name}${t.team_role_name ? ' — ' + t.team_role_name : ''}` }));
-            }
-            wrap.appendChild(teamList);
-        }
-
-        // ---- Recent audit ----
-        if (user.recent_audit?.length) {
-            wrap.appendChild(Utils.el('h5', { textContent: 'Recent Audit (last 10)', style: 'margin:0 0 6px' }));
-            const auditTbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-bottom:8px' });
-            auditTbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
-                Utils.el('th', { textContent: 'Time' }),
-                Utils.el('th', { textContent: 'Event' }),
-                Utils.el('th', { textContent: 'Outcome' }),
-                Utils.el('th', { textContent: 'IP' }),
-            ])]));
-            const atbody = Utils.el('tbody');
-            for (const e of user.recent_audit) {
-                atbody.appendChild(Utils.el('tr', {}, [
-                    Utils.el('td', { textContent: e.timestamp ? e.timestamp.replace('T', ' ').slice(0, 19) : '' }),
-                    Utils.el('td', { textContent: e.event_type }),
-                    Utils.el('td', { textContent: e.outcome || '' }),
-                    Utils.el('td', { textContent: e.ip_address || '' }),
-                ]));
-            }
-            auditTbl.appendChild(atbody);
-            wrap.appendChild(auditTbl);
-        }
+        // ---- Teams & Recent audit ----
+        _appendTeamsAndAudit(wrap, user);
     }
 
     function _buildAuditTable(events) {
@@ -3876,6 +3878,39 @@ const Admin = (() => {
         ]);
     }
 
+    function _buildVolumeConfig(prov, configWrap, isEdit) {
+        if (prov === 'local') {
+            const cfg = {};
+            const fd = configWrap.querySelector('#sv-files-dir')?.value.trim();
+            const ud = configWrap.querySelector('#sv-uploads-dir')?.value.trim();
+            if (fd) cfg.files_dir = fd;
+            if (ud) cfg.uploads_dir = ud;
+            return cfg;
+        }
+        if (prov === 'azure') {
+            const connStr = configWrap.querySelector('#sv-azure-conn')?.value || '';
+            const cfg = { container_name: configWrap.querySelector('#sv-azure-container')?.value.trim() };
+            if (connStr) cfg.connection_string = connStr;
+            return cfg;
+        }
+        if (prov === 'gcs') {
+            const saJson = configWrap.querySelector('#sv-gcs-sa-json')?.value.trim();
+            const cfg = {
+                project_id:  configWrap.querySelector('#sv-gcs-project')?.value.trim(),
+                bucket_name: configWrap.querySelector('#sv-gcs-bucket')?.value.trim(),
+            };
+            if (saJson) cfg.service_account_json = saJson;
+            return cfg;
+        }
+        return {
+            endpoint_url:      configWrap.querySelector('#sv-endpoint')?.value.trim() || null,
+            bucket:            configWrap.querySelector('#sv-bucket')?.value.trim(),
+            region:            configWrap.querySelector('#sv-region')?.value.trim() || 'us-east-1',
+            access_key_id:     configWrap.querySelector('#sv-key-id')?.value.trim(),
+            secret_access_key: configWrap.querySelector('#sv-secret')?.value || (isEdit ? '••••••••' : ''),
+        };
+    }
+
     function _showStorageVolumeModal(vol, container) {
         const isEdit = !!vol;
         const { body, close } = Utils.createModal(isEdit ? 'Edit Storage Volume' : 'Add Storage Volume');
@@ -3963,34 +3998,7 @@ const Admin = (() => {
             className: 'btn btn-primary', textContent: isEdit ? 'Save' : 'Add',
             onClick: async () => {
                 saveBtn.disabled = true;
-                let cfg = {};
-                if (provSel.value === 'local') {
-                    const fd = configWrap.querySelector('#sv-files-dir')?.value.trim();
-                    const ud = configWrap.querySelector('#sv-uploads-dir')?.value.trim();
-                    if (fd) cfg.files_dir = fd;
-                    if (ud) cfg.uploads_dir = ud;
-                } else if (provSel.value === 'azure') {
-                    const connStr = configWrap.querySelector('#sv-azure-conn')?.value || '';
-                    cfg = {
-                        container_name: configWrap.querySelector('#sv-azure-container')?.value.trim(),
-                    };
-                    if (connStr) cfg.connection_string = connStr;
-                } else if (provSel.value === 'gcs') {
-                    const saJson = configWrap.querySelector('#sv-gcs-sa-json')?.value.trim();
-                    cfg = {
-                        project_id:  configWrap.querySelector('#sv-gcs-project')?.value.trim(),
-                        bucket_name: configWrap.querySelector('#sv-gcs-bucket')?.value.trim(),
-                    };
-                    if (saJson) cfg.service_account_json = saJson;
-                } else {
-                    cfg = {
-                        endpoint_url:      configWrap.querySelector('#sv-endpoint')?.value.trim() || null,
-                        bucket:            configWrap.querySelector('#sv-bucket')?.value.trim(),
-                        region:            configWrap.querySelector('#sv-region')?.value.trim() || 'us-east-1',
-                        access_key_id:     configWrap.querySelector('#sv-key-id')?.value.trim(),
-                        secret_access_key: configWrap.querySelector('#sv-secret')?.value || (isEdit ? '••••••••' : ''),
-                    };
-                }
+                const cfg = _buildVolumeConfig(provSel.value, configWrap, isEdit);
                 try {
                     const payload = { name: nameIn.value.trim(), provider: provSel.value, tier: tierSel.value, config: cfg };
                     if (isEdit) {

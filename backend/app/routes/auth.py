@@ -42,6 +42,23 @@ _bg_tasks: set = set()
 
 logger = logging.getLogger(__name__)
 
+
+async def _delete_user_blobs(rows_snapshot: list) -> None:
+    mgr = storage.get_manager()
+    async with db_session() as _db:
+        for row in rows_snapshot:
+            try:
+                cur = await _db.execute(
+                    "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?",
+                    (row["storage_key"],)
+                )
+                cnt = await cur.fetchone()
+                if cnt and cnt["cnt"] > 0:
+                    continue
+                await mgr.delete_blob(_db, row["id"], row["storage_key"])
+            except Exception as exc:
+                logger.warning("Failed to delete blob %s during self-delete: %s", row["storage_key"], exc)
+
 router = APIRouter()
 
 
@@ -836,24 +853,7 @@ async def delete_my_account(
 
     rows_snapshot = list(file_rows)
 
-    async def _cleanup_blobs():
-        mgr = storage.get_manager()
-        async with db_session() as _db:
-            for row in rows_snapshot:
-                try:
-                    # Skip if another files row still shares this storage_key (B5 copy dedup)
-                    cur = await _db.execute(
-                        "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?",
-                        (row["storage_key"],)
-                    )
-                    cnt = await cur.fetchone()
-                    if cnt and cnt["cnt"] > 0:
-                        continue
-                    await mgr.delete_blob(_db, row["id"], row["storage_key"])
-                except Exception as exc:
-                    logger.warning("Failed to delete blob %s during self-delete: %s", row["storage_key"], exc)
-
-    _t = asyncio.create_task(_cleanup_blobs())
+    _t = asyncio.create_task(_delete_user_blobs(rows_snapshot))
     _bg_tasks.add(_t)
     _t.add_done_callback(_bg_tasks.discard)
 

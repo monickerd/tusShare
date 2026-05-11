@@ -223,7 +223,7 @@ const Upload = (() => {
     async function _encryptChunk(file, index, chunkSize, fileKey) {
         const start = index * chunkSize;
         const plain = await file.slice(start, Math.min(start + chunkSize, file.size)).arrayBuffer();
-        return Crypto.encryptChunk(plain, fileKey); // { ciphertext, ivB64 }
+        return Crypto.encryptChunk(plain, fileKey);
     }
 
     function _csrf() {

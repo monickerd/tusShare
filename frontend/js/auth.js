@@ -1759,11 +1759,14 @@ const Auth = (() => {
                     const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
                     _renderMfaSettingsContent(wrapRef, updated);
                 } catch (err) {
-                    const msg = err.name === 'SecurityError'
-                        ? 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.'
-                        : err.name === 'NotAllowedError'
-                            ? 'Registration was cancelled or timed out.'
-                            : (err.message || 'Registration failed.');
+                    let msg;
+                    if (err.name === 'SecurityError') {
+                        msg = 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.';
+                    } else if (err.name === 'NotAllowedError') {
+                        msg = 'Registration was cancelled or timed out.';
+                    } else {
+                        msg = err.message || 'Registration failed.';
+                    }
                     Utils.showToast(msg, 'error');
                     btn.disabled = false;
                 }

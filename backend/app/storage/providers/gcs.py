@@ -298,8 +298,6 @@ async def _gcs_stream(
     start: int,
     end: int,
 ) -> AsyncGenerator[bytes, None]:
-    length = end - start + 1
-
     def _download():
         client = client_factory()
         blob = client.bucket(bucket_name).blob(storage_key)
