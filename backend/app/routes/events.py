@@ -62,6 +62,50 @@ def _sse_response(topic: str) -> StreamingResponse:
     )
 
 
+def _multi_topic_sse_response(topics: list[str]) -> StreamingResponse:
+    """Return a StreamingResponse that fans in events from multiple broker topics.
+
+    All topics are subscribed concurrently. Each forwarder task pushes events
+    into a shared merged queue; the main loop reads from that queue and yields
+    SSE frames. Heartbeats are emitted whenever the queue is idle for
+    _HEARTBEAT_INTERVAL seconds.
+    """
+    async def event_stream():
+        merged: asyncio.Queue = asyncio.Queue(maxsize=64)
+
+        async def _forward(topic: str) -> None:
+            q = sse_broker.subscribe(topic)
+            try:
+                while True:
+                    event = await q.get()
+                    await merged.put(event)
+            finally:
+                sse_broker.unsubscribe(topic, q)
+
+        tasks = [asyncio.create_task(_forward(t)) for t in topics]
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(merged.get(), timeout=_HEARTBEAT_INTERVAL)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        finally:
+            for task in tasks:
+                task.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.get("/events")
 async def folder_events(
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -93,4 +137,4 @@ async def identity_events(
 
     Event shape: {"type": "identity_changed", "reason": "<reason>"}
     """
-    return _sse_response(f"identity:{user.id}")
+    return _multi_topic_sse_response([f"identity:{user.id}", "broadcast"])

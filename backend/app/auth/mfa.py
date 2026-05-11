@@ -35,6 +35,7 @@ import jwt
 
 from app.auth.stepup import hkdf_sha256
 from app.config import settings
+from app.services import live_settings
 from app.util.crypto import aesgcm_decrypt_blob, aesgcm_encrypt_blob
 
 # ---------------------------------------------------------------------------
@@ -92,7 +93,7 @@ def issue_pending_token(user_id: str) -> str:
         "jti": jti,
         "purpose": _MFA_PENDING_PURPOSE,
         "iat": now,
-        "exp": now + settings.MFA_PENDING_TOKEN_TTL,
+        "exp": now + live_settings.get_int("mfa_pending_token_ttl", settings.MFA_PENDING_TOKEN_TTL),
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
@@ -141,7 +142,7 @@ async def consume_pending_token(db, token: str) -> tuple[str, bool] | None:
 async def store_pending_token(db, jti: str, user_id: str, is_public_device: bool) -> None:
     """Insert the jti row that backs an issued pending token."""
     now = int(time.time())
-    expires_at = now + settings.MFA_PENDING_TOKEN_TTL
+    expires_at = now + live_settings.get_int("mfa_pending_token_ttl", settings.MFA_PENDING_TOKEN_TTL)
     await db.execute(
         "INSERT INTO mfa_pending_tokens (jti, user_id, created_at, expires_at, is_public_device) "
         "VALUES (?, ?, ?, ?, ?)",

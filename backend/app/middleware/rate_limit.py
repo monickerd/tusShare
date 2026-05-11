@@ -26,7 +26,7 @@ from app.conf.middleware import (
 )
 from app.config import settings
 from app.schemas.security_event import EventActor, SecurityEvent
-from app.services import event_bus
+from app.services import event_bus, live_settings
 
 logger = logging.getLogger(__name__)
 
@@ -149,9 +149,12 @@ class _ErrorRateTracker:
         Returns True if this error pushed the IP into escalated mode for the
         first time (so the caller can log the escalation event).
         """
-        threshold = settings.RATE_LIMIT_ERROR_THRESHOLD
+        threshold = live_settings.get_int("rate_limit_error_threshold", settings.RATE_LIMIT_ERROR_THRESHOLD)
         if threshold <= 0:
             return False
+
+        error_window = live_settings.get_int("rate_limit_error_window",    settings.RATE_LIMIT_ERROR_WINDOW)
+        esc_duration = live_settings.get_int("rate_limit_escalated_duration", settings.RATE_LIMIT_ESCALATED_DURATION)
 
         from app.redis_client import get_redis
         r = get_redis()
@@ -162,9 +165,9 @@ class _ErrorRateTracker:
                     2,
                     f"errtk:{ip}", f"errtk:esc:{ip}",
                     time.time(),
-                    settings.RATE_LIMIT_ERROR_WINDOW,
+                    error_window,
                     threshold,
-                    settings.RATE_LIMIT_ESCALATED_DURATION,
+                    esc_duration,
                     str(uuid.uuid4()),
                 )
                 return int(result) == 2  # 2 = just escalated
@@ -173,7 +176,7 @@ class _ErrorRateTracker:
 
         # In-process fallback
         now = time.monotonic()
-        cutoff = now - settings.RATE_LIMIT_ERROR_WINDOW
+        cutoff = now - error_window
         async with self._lock:
             self._errors[ip] = [t for t in self._errors[ip] if t > cutoff]
             self._errors[ip].append(now)
@@ -181,13 +184,13 @@ class _ErrorRateTracker:
                 ip in self._escalated_until and self._escalated_until[ip] > now
             )
             if not already_escalated and len(self._errors[ip]) >= threshold:
-                self._escalated_until[ip] = now + settings.RATE_LIMIT_ESCALATED_DURATION
+                self._escalated_until[ip] = now + esc_duration
                 return True
         return False
 
     async def is_escalated(self, ip: str) -> bool:
         """Return True if the IP is currently in escalated throttle mode."""
-        if settings.RATE_LIMIT_ERROR_THRESHOLD <= 0:
+        if live_settings.get_int("rate_limit_error_threshold", settings.RATE_LIMIT_ERROR_THRESHOLD) <= 0:
             return False
 
         from app.redis_client import get_redis
@@ -248,27 +251,30 @@ def _get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-# Route-specific rate limit rules: (path_prefix, methods, max_requests, window_seconds)
+# Route-specific rate limit rules.
+# Entries are either 4-tuples (prefix, methods, max_requests, window_seconds) with a
+# hardcoded max, or 5-tuples (prefix, methods, live_key, default, window) where
+# max_requests is read live from live_settings at dispatch time.
 _ROUTE_LIMITS = [
-    ("/api/v1/auth/login",      {"POST"},         settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/me/password", {"POST", "PUT"},  settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/login",      {"POST"},        "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/me/password", {"POST", "PUT"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # Registration via invite — same limit as login to prevent invite brute-force
-    ("/api/v1/auth/register",   {"POST"},         settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/register",   {"POST"},        "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # OPAQUE login and registration — same limits as above
-    ("/api/v1/auth/opaque/login/",    {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/register/", {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/step-up/",  {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/migrate/",         {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/recover/",         {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/password-change/", {"POST"}, settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/login/",    {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/register/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/step-up/",  {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/migrate/",         {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/recover/",         {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/password-change/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # Invite validation — tighter window to slow token enumeration
-    ("/api/v1/auth/invite/",    {"GET"},          20,                        60),
+    ("/api/v1/auth/invite/",    {"GET"},   20, 60),
     # Public share resolution — keyed by IP to slow token enumeration
-    ("/s/",                     {"GET"},          60,                        60),
+    ("/s/",                     {"GET"},   60, 60),
     # Share uploads — prevent disk-exhaustion DoS from a single IP
-    ("/s/",                     {"POST"},         10,                        60),
+    ("/s/",                     {"POST"},  10, 60),
     # Bootstrap status — rate-limit to reduce first-run oracle exposure
-    ("/api/v1/auth/opaque/bootstrap/", {"GET"},   10,                        60),
+    ("/api/v1/auth/opaque/bootstrap/", {"GET"}, 10, 60),
 ]
 
 
@@ -280,11 +286,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Escalated throttle check: IPs that recently exceeded the error threshold
         # are throttled to ESCALATED_MAX requests per ESCALATED_WINDOW seconds.
         if await _error_tracker.is_escalated(client_ip):
-            if not await _counter.is_allowed(
-                f"esc:{client_ip}",
-                settings.RATE_LIMIT_ESCALATED_MAX,
-                settings.RATE_LIMIT_ESCALATED_WINDOW,
-            ):
+            esc_max    = live_settings.get_int("rate_limit_escalated_max",    settings.RATE_LIMIT_ESCALATED_MAX)
+            esc_window = live_settings.get_int("rate_limit_escalated_window", settings.RATE_LIMIT_ESCALATED_WINDOW)
+            if not await _counter.is_allowed(f"esc:{client_ip}", esc_max, esc_window):
                 logger.warning(
                     "Escalated rate limit enforced: ip=%s on %s %s",
                     client_ip, request.method, path,
@@ -304,11 +308,17 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                             "message": _TOO_MANY_REQUESTS_MSG,
                         }
                     },
-                    headers={"Retry-After": str(settings.RATE_LIMIT_ESCALATED_WINDOW)},
+                    headers={"Retry-After": str(esc_window)},
                 )
 
-        # Route-specific limits
-        for prefix, methods, max_req, window in _ROUTE_LIMITS:
+        # Route-specific limits — entries are 4-tuples (prefix, methods, max_req, window)
+        # or 5-tuples (prefix, methods, live_key, default, window).
+        for entry in _ROUTE_LIMITS:
+            if len(entry) == 5:
+                prefix, methods, live_key, default_req, window = entry
+                max_req = live_settings.get_int(live_key, default_req)
+            else:
+                prefix, methods, max_req, window = entry
             if path.startswith(prefix) and request.method in methods:
                 key = f"rate:{prefix}:{client_ip}"
                 if not await _counter.is_allowed(key, max_req, window):
@@ -355,8 +365,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     detail={
                         "path": path,
                         "method": request.method,
-                        "threshold": settings.RATE_LIMIT_ERROR_THRESHOLD,
-                        "window_seconds": settings.RATE_LIMIT_ERROR_WINDOW,
+                        "threshold": live_settings.get_int("rate_limit_error_threshold", settings.RATE_LIMIT_ERROR_THRESHOLD),
+                        "window_seconds": live_settings.get_int("rate_limit_error_window", settings.RATE_LIMIT_ERROR_WINDOW),
                     },
                 ))
 
@@ -375,7 +385,7 @@ async def check_upload_rate_limit(
     """
     allowed = await _counter.is_allowed(
         f"upload:{user.id}",
-        settings.RATE_LIMIT_UPLOAD,
+        live_settings.get_int("rate_limit_upload", settings.RATE_LIMIT_UPLOAD),
         RATE_LIMIT_MANAGEMENT_WINDOW,
     )
     if not allowed:
@@ -398,7 +408,7 @@ async def check_management_rate_limit(
     """
     allowed = await _counter.is_allowed(
         f"mgmt:{user.id}",
-        settings.RATE_LIMIT_MANAGEMENT,
+        live_settings.get_int("rate_limit_management", settings.RATE_LIMIT_MANAGEMENT),
         RATE_LIMIT_MANAGEMENT_WINDOW,
     )
     if not allowed:

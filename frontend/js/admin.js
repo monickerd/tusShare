@@ -66,10 +66,12 @@ const Admin = (() => {
             id: 'security',
             label: 'Security & Privacy',
             sections: [
-                ['profiles',  'Settings Profile',     _renderProfilesSection],
-                ['api-keys',  'API Keys',              _renderApiKeysSection],
-                ['antivirus', 'Antivirus',             _renderAntivirusSection],
-                ['sharing',   'Sharing Restrictions',  _renderSharingSection],
+                ['profiles',        'Settings Profile',       _renderProfilesSection],
+                ['api-keys',        'API Keys',               _renderApiKeysSection],
+                ['antivirus',       'Antivirus',              _renderAntivirusSection],
+                ['sharing',         'Sharing Restrictions',   _renderSharingSection],
+                ['rate-limits',     'Rate Limiting',          _renderRateLimits],
+                ['session-policy',  'Session & Auth Policy',  _renderSessionPolicy],
             ],
         },
         {
@@ -465,6 +467,25 @@ const Admin = (() => {
             checked: s['allow_multi_team_owner'] === 'true',
         });
 
+        // Server Tuning fields (Phase 3) — use safe accessor for nested settings format
+        const _sv = (key, def) => s[key]?.value ?? s[key] ?? def;
+        const fldTusExpiry = Utils.el('input', {
+            type: 'number', min: '1', max: '168', className: 'input-sm',
+            value: String(Number.parseInt(_sv('tus_upload_expiry_hours', '24'), 10)),
+        });
+        const fldEvictStride = Utils.el('input', {
+            type: 'number', min: '0', max: '256', className: 'input-sm',
+            value: String(Number.parseInt(_sv('upload_evict_stride_mb', '32'), 10)),
+        });
+        const fldRpName = Utils.el('input', {
+            type: 'text', className: 'input-sm', maxLength: '128',
+            value: _sv('webauthn_rp_name', 'tusShare'),
+        });
+        const fldAllowHttpIdp = Utils.el('input', {
+            type: 'checkbox',
+            checked: _sv('allow_http_idp', 'false') === 'true',
+        });
+
         const saveBtn = Utils.el('button', {
             className: 'btn btn-primary btn-sm',
             textContent: 'Save Settings',
@@ -472,6 +493,11 @@ const Admin = (() => {
                 const chunkMb = Number.parseInt(fldChunkSize.value, 10);
                 if (Number.isNaN(chunkMb) || chunkMb < 1) {
                     Utils.showToast('Default chunk size must be at least 1 MB', 'error');
+                    return;
+                }
+                const rpName = fldRpName.value.trim();
+                if (!rpName) {
+                    Utils.showToast('WebAuthn display name cannot be empty', 'error');
                     return;
                 }
                 const payload = {
@@ -482,6 +508,10 @@ const Admin = (() => {
                     open_registration:              fldOpenReg.checked ? 'true' : 'false',
                     allow_user_delete_own_account:  fldAllowSelfDelete.checked ? 'true' : 'false',
                     allow_multi_team_owner:         fldMultiOwner.checked ? 'true' : 'false',
+                    tus_upload_expiry_hours:        String(Number.parseInt(fldTusExpiry.value, 10)),
+                    upload_evict_stride_mb:         String(Number.parseInt(fldEvictStride.value, 10)),
+                    webauthn_rp_name:               rpName,
+                    allow_http_idp:                 fldAllowHttpIdp.checked ? 'true' : 'false',
                 };
                 saveBtn.disabled = true;
                 try {
@@ -504,6 +534,12 @@ const Admin = (() => {
             _row('Open registration', 'Allow anyone to register without an invite', fldOpenReg),
             _row('Allow users to delete their own account', 'When enabled, users can permanently delete their account from the account menu', fldAllowSelfDelete),
             _row('Allow multiple team owners', 'When enabled, team owners may promote supervisors to co-owner', fldMultiOwner),
+            Utils.el('div', { className: 'settings-divider', style: 'margin:16px 0 12px;border-top:1px solid var(--color-border);' }),
+            Utils.el('h4', { textContent: 'Server Tuning', style: 'margin:0 0 10px;font-size:var(--font-size-sm);text-transform:uppercase;color:var(--color-muted,#888);letter-spacing:.05em' }),
+            _row('Incomplete upload expiry (hours)', 'How long incomplete TUS uploads are retained before cleanup', fldTusExpiry),
+            _row('Page-cache eviction stride (MB)', '0 = disabled. Lower (8–32) for RAM-constrained hosts; higher (64–256) for NFS/SMB', fldEvictStride),
+            _row('WebAuthn display name', 'Human-readable name shown in authenticator dialogs (e.g. passkey registration prompts)', fldRpName),
+            _row('Allow HTTP OIDC issuers', '⚠ Only enable on trusted internal networks without TLS', fldAllowHttpIdp),
             Utils.el('div', { className: 'settings-actions' }, [saveBtn]),
         ]));
 
@@ -4855,6 +4891,155 @@ const Admin = (() => {
     // -----------------------------------------------------------------------
     // Sharing Restrictions
     // -----------------------------------------------------------------------
+
+    // ------------------------------------------------------------------
+    // Section: Rate Limiting
+    // ------------------------------------------------------------------
+
+    async function _renderRateLimits(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+        let s;
+        try {
+            const data = await Api.get(`${_api()}/admin/settings`);
+            s = data.settings;
+        } catch (err) {
+            _showError(container, 'Failed to load settings: ' + err.message);
+            return;
+        }
+
+        const _iv = (key, def = 0) => String(Number.parseInt(s[key]?.value ?? s[key] ?? def, 10));
+
+        const fldLogin    = Utils.el('input', { type: 'number', min: '1', max: '1000',  className: 'input-sm', value: _iv('rate_limit_login', 5) });
+        const fldApi      = Utils.el('input', { type: 'number', min: '1', max: '10000', className: 'input-sm', value: _iv('rate_limit_api', 60) });
+        const fldShare    = Utils.el('input', { type: 'number', min: '1', max: '1000',  className: 'input-sm', value: _iv('rate_limit_share_create', 5) });
+        const fldUpload   = Utils.el('input', { type: 'number', min: '1', max: '10000', className: 'input-sm', value: _iv('rate_limit_upload', 300) });
+        const fldMgmt     = Utils.el('input', { type: 'number', min: '1', max: '10000', className: 'input-sm', value: _iv('rate_limit_management', 120) });
+
+        const fldErrThresh  = Utils.el('input', { type: 'number', min: '0', max: '100', className: 'input-sm', value: _iv('rate_limit_error_threshold', 5) });
+        const fldErrWindow  = Utils.el('input', { type: 'number', min: '1', max: '3600', className: 'input-sm', value: _iv('rate_limit_error_window', 60) });
+        const fldEscMax     = Utils.el('input', { type: 'number', min: '1', max: '1000', className: 'input-sm', value: _iv('rate_limit_escalated_max', 1) });
+        const fldEscWindow  = Utils.el('input', { type: 'number', min: '1', max: '60',   className: 'input-sm', value: _iv('rate_limit_escalated_window', 1) });
+        const fldEscDur     = Utils.el('input', { type: 'number', min: '1', max: '86400', className: 'input-sm', value: _iv('rate_limit_escalated_duration', 300) });
+
+        const saveBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Save Rate Limits',
+            onClick: async () => {
+                saveBtn.disabled = true;
+                try {
+                    await Api.put(`${_api()}/admin/settings`, {
+                        settings: {
+                            rate_limit_login:              String(Number.parseInt(fldLogin.value, 10)),
+                            rate_limit_api:                String(Number.parseInt(fldApi.value, 10)),
+                            rate_limit_share_create:       String(Number.parseInt(fldShare.value, 10)),
+                            rate_limit_upload:             String(Number.parseInt(fldUpload.value, 10)),
+                            rate_limit_management:         String(Number.parseInt(fldMgmt.value, 10)),
+                            rate_limit_error_threshold:    String(Number.parseInt(fldErrThresh.value, 10)),
+                            rate_limit_error_window:       String(Number.parseInt(fldErrWindow.value, 10)),
+                            rate_limit_escalated_max:      String(Number.parseInt(fldEscMax.value, 10)),
+                            rate_limit_escalated_window:   String(Number.parseInt(fldEscWindow.value, 10)),
+                            rate_limit_escalated_duration: String(Number.parseInt(fldEscDur.value, 10)),
+                        },
+                    });
+                    Utils.showToast('Rate limits saved', 'success');
+                } catch (err) {
+                    Utils.showToast('Save failed: ' + err.message, 'error');
+                } finally {
+                    saveBtn.disabled = false;
+                }
+            },
+        });
+
+        container.innerHTML = '';
+        container.appendChild(Utils.el('div', { className: 'settings-form' }, [
+            Utils.el('h4', { textContent: 'Standard Limits', style: 'margin:0 0 10px;font-size:var(--font-size-sm);text-transform:uppercase;color:var(--color-muted,#888);letter-spacing:.05em' }),
+            _row('Login / register', 'requests per 15 min per IP', fldLogin),
+            _row('API (general)', 'requests per minute per user', fldApi),
+            _row('Share creation', 'requests per minute per user', fldShare),
+            _row('Upload initiation', 'requests per minute per user — increase for high-volume automation', fldUpload),
+            _row('Folder / share management', 'requests per minute per user', fldMgmt),
+            Utils.el('div', { className: 'settings-divider', style: 'margin:16px 0 12px;border-top:1px solid var(--color-border);' }),
+            Utils.el('h4', { textContent: 'Error Escalation', style: 'margin:0 0 4px;font-size:var(--font-size-sm);text-transform:uppercase;color:var(--color-muted,#888);letter-spacing:.05em' }),
+            Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm);margin:0 0 10px', textContent: 'IPs that accumulate ≥ threshold non-429 errors within the window are throttled to escalated-max reqs per escalated-window for escalated-duration seconds. Set threshold to 0 to disable.' }),
+            _row('Error threshold', 'errors before escalation (0 = disabled)', fldErrThresh),
+            _row('Error window (seconds)', 'window over which errors are counted', fldErrWindow),
+            _row('Escalated max requests', 'max requests allowed per escalated window', fldEscMax),
+            _row('Escalated window (seconds)', 'seconds per escalated request slot', fldEscWindow),
+            _row('Escalated duration (seconds)', 'how long the IP stays throttled', fldEscDur),
+            Utils.el('div', { className: 'settings-actions' }, [saveBtn]),
+        ]));
+    }
+
+    // ------------------------------------------------------------------
+    // Section: Session & Auth Policy
+    // ------------------------------------------------------------------
+
+    async function _renderSessionPolicy(container) {
+        container.innerHTML = '<p class="text-muted">Loading…</p>';
+        let s;
+        try {
+            const data = await Api.get(`${_api()}/admin/settings`);
+            s = data.settings;
+        } catch (err) {
+            _showError(container, 'Failed to load settings: ' + err.message);
+            return;
+        }
+
+        const _iv = (key, def = 0) => String(Number.parseInt(s[key]?.value ?? s[key] ?? def, 10));
+
+        const fldAccess       = Utils.el('input', { type: 'number', min: '1', max: '60',    className: 'input-sm', value: _iv('access_token_expire_minutes', 5) });
+        const fldRefresh      = Utils.el('input', { type: 'number', min: '1', max: '365',   className: 'input-sm', value: _iv('refresh_token_expire_days', 7) });
+        const fldIdle         = Utils.el('input', { type: 'number', min: '1', max: '1440',  className: 'input-sm', value: _iv('session_idle_timeout_minutes', 10) });
+        const fldShareSess    = Utils.el('input', { type: 'number', min: '1', max: '168',   className: 'input-sm', value: _iv('share_session_expire_hours', 2) });
+        const fldPublicDev    = Utils.el('input', { type: 'number', min: '1', max: '1440',  className: 'input-sm', value: _iv('public_device_refresh_minutes', 60) });
+        const fldMfaTtl       = Utils.el('input', { type: 'number', min: '10', max: '600',  className: 'input-sm', value: _iv('mfa_pending_token_ttl', 90) });
+        const fldStepUpWindow = Utils.el('input', { type: 'number', min: '0', max: '86400', className: 'input-sm', value: _iv('step_up_window_seconds', 300) });
+        const fldStepUpFail   = Utils.el('input', { type: 'number', min: '1', max: '20',    className: 'input-sm', value: _iv('step_up_max_failures', 3) });
+
+        const saveBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Save Session Policy',
+            onClick: async () => {
+                saveBtn.disabled = true;
+                try {
+                    await Api.put(`${_api()}/admin/settings`, {
+                        settings: {
+                            access_token_expire_minutes:   String(Number.parseInt(fldAccess.value, 10)),
+                            refresh_token_expire_days:     String(Number.parseInt(fldRefresh.value, 10)),
+                            session_idle_timeout_minutes:  String(Number.parseInt(fldIdle.value, 10)),
+                            share_session_expire_hours:    String(Number.parseInt(fldShareSess.value, 10)),
+                            public_device_refresh_minutes: String(Number.parseInt(fldPublicDev.value, 10)),
+                            mfa_pending_token_ttl:         String(Number.parseInt(fldMfaTtl.value, 10)),
+                            step_up_window_seconds:        String(Number.parseInt(fldStepUpWindow.value, 10)),
+                            step_up_max_failures:          String(Number.parseInt(fldStepUpFail.value, 10)),
+                        },
+                    });
+                    Utils.showToast('Session policy saved', 'success');
+                } catch (err) {
+                    Utils.showToast('Save failed: ' + err.message, 'error');
+                } finally {
+                    saveBtn.disabled = false;
+                }
+            },
+        });
+
+        container.innerHTML = '';
+        container.appendChild(Utils.el('div', { className: 'settings-form' }, [
+            Utils.el('h4', { textContent: 'Token Lifetimes', style: 'margin:0 0 4px;font-size:var(--font-size-sm);text-transform:uppercase;color:var(--color-muted,#888);letter-spacing:.05em' }),
+            Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm);margin:0 0 10px', textContent: 'TTL changes apply to new sessions only — existing sessions keep their current expiry.' }),
+            _row('Access token (minutes)', 'Short-lived JWT lifetime; lower = more frequent silent refresh', fldAccess),
+            _row('Refresh token (days)', 'How long a logged-in session lasts without activity', fldRefresh),
+            _row('Session idle timeout (minutes)', 'Inactivity window before a session is automatically revoked', fldIdle),
+            _row('Share session (hours)', 'Lifetime of the IP-bound JWT issued for public share access', fldShareSess),
+            _row('Public device session (minutes)', 'Shorter TTL when the user checks "Public Device" at login', fldPublicDev),
+            Utils.el('div', { className: 'settings-divider', style: 'margin:16px 0 12px;border-top:1px solid var(--color-border);' }),
+            Utils.el('h4', { textContent: 'MFA & Step-Up', style: 'margin:0 0 10px;font-size:var(--font-size-sm);text-transform:uppercase;color:var(--color-muted,#888);letter-spacing:.05em' }),
+            _row('MFA pending token TTL (seconds)', 'Window between login/finish and MFA challenge completion', fldMfaTtl),
+            _row('Step-up sudo window (seconds)', '0 = single-use (each action needs re-auth); >0 = grants cover any sensitive action within the window', fldStepUpWindow),
+            _row('Step-up max failures', 'Failed attempts before the session is revoked', fldStepUpFail),
+            Utils.el('div', { className: 'settings-actions' }, [saveBtn]),
+        ]));
+    }
 
     const _SHARING_OPERATORS = [
         'eq', 'neq', 'contains', 'not_contains', 'starts_with', 'ends_with',

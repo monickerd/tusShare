@@ -18,6 +18,7 @@ from app.config import settings
 from app.models.role import FLAG_MANAGE_INVITES, FLAG_MANAGE_ORG_SETTINGS, ROLE_TIER, admin_best_tier
 from app.database import Database, get_db
 import app.storage.manager as storage
+from app.services import live_settings, sse_broker
 from app.util.db import check_admin_setting_lock, get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.wordlist import insert_invite_short_link_with_unique_slug
@@ -82,7 +83,36 @@ _SETTINGS_VALIDATORS = {
     # Trash / soft-delete
     "trash_enabled":          lambda v: v in ("true", "false"),
     "trash_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
+    # Rate limits (Phase 1)
+    "rate_limit_login":              lambda v: v.isdigit() and 1 <= int(v) <= 1000,
+    "rate_limit_api":                lambda v: v.isdigit() and 1 <= int(v) <= 10000,
+    "rate_limit_share_create":       lambda v: v.isdigit() and 1 <= int(v) <= 1000,
+    "rate_limit_upload":             lambda v: v.isdigit() and 1 <= int(v) <= 10000,
+    "rate_limit_management":         lambda v: v.isdigit() and 1 <= int(v) <= 10000,
+    "rate_limit_error_threshold":    lambda v: v.isdigit() and 0 <= int(v) <= 100,
+    "rate_limit_error_window":       lambda v: v.isdigit() and 1 <= int(v) <= 3600,
+    "rate_limit_escalated_max":      lambda v: v.isdigit() and 1 <= int(v) <= 1000,
+    "rate_limit_escalated_window":   lambda v: v.isdigit() and 1 <= int(v) <= 60,
+    "rate_limit_escalated_duration": lambda v: v.isdigit() and 1 <= int(v) <= 86400,
+    # Session & auth policy (Phase 2)
+    "access_token_expire_minutes":   lambda v: v.isdigit() and 1 <= int(v) <= 60,
+    "refresh_token_expire_days":     lambda v: v.isdigit() and 1 <= int(v) <= 365,
+    "session_idle_timeout_minutes":  lambda v: v.isdigit() and 1 <= int(v) <= 1440,
+    "share_session_expire_hours":    lambda v: v.isdigit() and 1 <= int(v) <= 168,
+    "public_device_refresh_minutes": lambda v: v.isdigit() and 1 <= int(v) <= 1440,
+    "mfa_pending_token_ttl":         lambda v: v.isdigit() and 10 <= int(v) <= 600,
+    "step_up_window_seconds":        lambda v: v.isdigit() and 0 <= int(v) <= 86400,
+    "step_up_max_failures":          lambda v: v.isdigit() and 1 <= int(v) <= 20,
+    # Operational tuning (Phase 3)
+    "tus_upload_expiry_hours": lambda v: v.isdigit() and 1 <= int(v) <= 168,
+    "upload_evict_stride_mb":  lambda v: v.isdigit() and 0 <= int(v) <= 256,
+    "webauthn_rp_name":        lambda v: 1 <= len(v.strip()) <= 128,
+    "allow_http_idp":          lambda v: v in ("true", "false"),
 }
+
+
+# Keys whose current values are communicated to clients (via user_response_dict and SSE).
+_CLIENT_RELEVANT_SETTINGS = {"rate_limit_upload", "step_up_window_seconds"}
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -151,6 +181,17 @@ async def update_settings(
     except Exception:
         await db.rollback()
         raise
+
+    live_settings.update_many(body.settings)
+
+    if any(k in _CLIENT_RELEVANT_SETTINGS for k in body.settings):
+        sse_broker.publish("broadcast", {
+            "type": "config_changed",
+            "config": {
+                "upload_rate_limit":      live_settings.get_int("rate_limit_upload", settings.RATE_LIMIT_UPLOAD),
+                "step_up_window_seconds": live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
+            },
+        })
 
     return {"message": "Settings updated"}
 

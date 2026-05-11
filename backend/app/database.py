@@ -171,6 +171,31 @@ async def seed_admin_settings(db: Database) -> None:
         'disk_warning_threshold':      str(settings.DISK_WARNING_THRESHOLD),
         'default_chunk_size':          str(settings.DEFAULT_CHUNK_SIZE),
         'allow_ephemeral_team_invites': 'false',
+        # Rate limits (Phase 1)
+        'rate_limit_login':              str(settings.RATE_LIMIT_LOGIN),
+        'rate_limit_api':                str(settings.RATE_LIMIT_API),
+        'rate_limit_share_create':       str(settings.RATE_LIMIT_SHARE_CREATE),
+        'rate_limit_upload':             str(settings.RATE_LIMIT_UPLOAD),
+        'rate_limit_management':         str(settings.RATE_LIMIT_MANAGEMENT),
+        'rate_limit_error_threshold':    str(settings.RATE_LIMIT_ERROR_THRESHOLD),
+        'rate_limit_error_window':       str(settings.RATE_LIMIT_ERROR_WINDOW),
+        'rate_limit_escalated_max':      str(settings.RATE_LIMIT_ESCALATED_MAX),
+        'rate_limit_escalated_window':   str(settings.RATE_LIMIT_ESCALATED_WINDOW),
+        'rate_limit_escalated_duration': str(settings.RATE_LIMIT_ESCALATED_DURATION),
+        # Session & auth policy (Phase 2)
+        'access_token_expire_minutes':        str(settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        'refresh_token_expire_days':          str(settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        'session_idle_timeout_minutes':       str(settings.SESSION_IDLE_TIMEOUT_MINUTES),
+        'share_session_expire_hours':         str(settings.SHARE_SESSION_EXPIRE_HOURS),
+        'public_device_refresh_minutes':      str(settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES),
+        'mfa_pending_token_ttl':              str(settings.MFA_PENDING_TOKEN_TTL),
+        'step_up_window_seconds':             str(settings.STEP_UP_WINDOW_SECONDS),
+        'step_up_max_failures':               str(settings.STEP_UP_MAX_FAILURES),
+        # Operational tuning (Phase 3)
+        'tus_upload_expiry_hours':  str(settings.TUS_UPLOAD_EXPIRY_HOURS),
+        'upload_evict_stride_mb':   str(settings.UPLOAD_EVICT_STRIDE_MB),
+        'webauthn_rp_name':         settings.WEBAUTHN_RP_NAME,
+        'allow_http_idp':           'true' if settings.ALLOW_HTTP_IDP else 'false',
     }
     for key, value in defaults.items():
         await db.execute(

@@ -47,6 +47,7 @@ from webauthn.helpers.structs import (
 
 from app.auth.mfa import decrypt_credential, encrypt_credential
 from app.config import settings
+from app.services import live_settings
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
     challenge_id, challenge_bytes = await _create_challenge(db, user_id, "registration")
     options = webauthn.generate_registration_options(
         rp_id=settings.WEBAUTHN_RP_ID,
-        rp_name=settings.WEBAUTHN_RP_NAME,
+        rp_name=live_settings.get("webauthn_rp_name", settings.WEBAUTHN_RP_NAME),
         user_id=user_id.encode(),
         user_name=username,
         user_display_name=username,

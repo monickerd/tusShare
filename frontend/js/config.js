@@ -38,10 +38,7 @@ const Config = Object.freeze({
         // NOTE: the raw key bytes are stored in sessionStorage (same-origin only, cleared
         // on tab close) for this duration. Acceptable trade-off for long upload sessions.
         keyGracePeriodMs: 30 * 60 * 1000,  // 30 minutes
-        // Step-up sudo window (seconds). Must match TUSSHARE_STEP_UP_WINDOW_SECONDS on the server.
-        // The step-up token cache uses 90% of this value to avoid racing server expiry.
-        // Set to 0 to disable caching (single-use mode).
-        stepUpWindowSeconds: 300,
+        // Step-up window is now server-driven: read from Auth.getCurrentUser().step_up_window_seconds
     }),
 
     /* --- Cryptography --- */

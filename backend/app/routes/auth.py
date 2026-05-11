@@ -32,6 +32,7 @@ from app.auth.stepup import (
 from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import Database, db_session, get_db
+from app.services import live_settings
 from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 import app.sensitive_config as sensitive_config
@@ -160,11 +161,11 @@ async def refresh(
         new_now = datetime.now(timezone.utc).isoformat()
         if is_public_device:
             new_expires_at = (
-                datetime.now(timezone.utc) + timedelta(minutes=settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
+                datetime.now(timezone.utc) + timedelta(minutes=live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES))
             ).isoformat()
         else:
             new_expires_at = (
-                datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+                datetime.now(timezone.utc) + timedelta(days=live_settings.get_int("refresh_token_expire_days", settings.REFRESH_TOKEN_EXPIRE_DAYS))
             ).isoformat()
         await db.execute(
             "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at, is_public_device) "
@@ -181,7 +182,7 @@ async def refresh(
 
     access_token = create_access_token(user.id, session_id=new_token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
-    rt_max_age = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES * 60 if is_public_device else None
+    rt_max_age = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES) * 60 if is_public_device else None
     set_auth_cookies(response, access_token, new_raw_refresh, csrf_token, max_age=rt_max_age)
 
     return {"message": "Token refreshed"}
@@ -559,18 +560,19 @@ async def step_up(
 
     if not verified:
         # Log the failure first so the DB count includes it, then query for persistence.
+        _step_up_max = live_settings.get_int("step_up_max_failures", settings.STEP_UP_MAX_FAILURES)
         await log_security_event(
             db, "step_up_failed", user.id, client_ip, user_agent,
             action_key=body.action_key,
-            detail={"max_failures": settings.STEP_UP_MAX_FAILURES},
+            detail={"max_failures": _step_up_max},
         )
         count = await _count_step_up_failures(db, user.id)
         logger.warning(  # NOSONAR — server-side audit log; values are Pydantic-validated
             "Step-up failed: user=%s action=%s ip=%s (failure %d/%d)",
-            user.id, body.action_key, client_ip, count, settings.STEP_UP_MAX_FAILURES,
+            user.id, body.action_key, client_ip, count, _step_up_max,
         )
 
-        if count >= settings.STEP_UP_MAX_FAILURES:
+        if count >= _step_up_max:
             await db.execute(
                 "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?",
                 (user.id,),
@@ -599,12 +601,12 @@ async def step_up(
         action_key=body.action_key,
         detail={
             "payload_hash": body.payload_hash,
-            "window_seconds": settings.STEP_UP_WINDOW_SECONDS,
+            "window_seconds": live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
         },
     )
     logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "Step-up granted: user=%s action=%s ip=%s window=%ds",
-        user.id, body.action_key, client_ip, settings.STEP_UP_WINDOW_SECONDS,
+        user.id, body.action_key, client_ip, live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
     )
 
     # Trigger 1 — fire-and-forget policy evaluation on step-up.

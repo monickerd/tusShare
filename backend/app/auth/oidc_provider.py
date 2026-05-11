@@ -37,6 +37,7 @@ from typing import Any
 from urllib.parse import urlencode, urlparse
 
 from app.auth.idp_crypto import decrypt_idp_config, encrypt_token, decrypt_token
+from app.services import live_settings
 from app.util.ssrf import validate_endpoint_url
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,7 @@ def validate_oidc_config(cfg: dict[str, Any]) -> None:
     parsed = urlparse(cfg["issuer_url"])
     if parsed.scheme not in ("https", "http"):
         raise ValueError("issuer_url must use http or https scheme")
-    if parsed.scheme == "http" and not _settings.ALLOW_HTTP_IDP:
+    if parsed.scheme == "http" and not live_settings.get_bool("allow_http_idp", _settings.ALLOW_HTTP_IDP):
         raise ValueError(
             "issuer_url must use HTTPS to protect discovery and JWKS fetches "
             "from MITM attacks.  To allow HTTP for internal deployments, set "
@@ -98,8 +99,8 @@ async def _get_oidc_client(cfg: dict[str, Any]):
     # the IdP may resolve to a RFC 1918 address — skip the private-IP check too.
     await validate_endpoint_url(
         discovery_url,
-        allow_http=_s.ALLOW_HTTP_IDP,
-        allow_private=_s.ALLOW_HTTP_IDP,
+        allow_http=live_settings.get_bool("allow_http_idp", _s.ALLOW_HTTP_IDP),
+        allow_private=live_settings.get_bool("allow_http_idp", _s.ALLOW_HTTP_IDP),
     )
     # follow_redirects=False: a redirect could bypass the HTTPS/IP check above.
     async with httpx.AsyncClient(follow_redirects=False) as discovery_http:

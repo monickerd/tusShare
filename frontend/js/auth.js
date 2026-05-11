@@ -1911,6 +1911,12 @@ const Auth = (() => {
         src.onmessage = (e) => {
             let event;
             try { event = JSON.parse(e.data); } catch { return; }
+
+            if (event.type === 'config_changed') {
+                if (_currentUser && event.config) Object.assign(_currentUser, event.config);
+                return;
+            }
+
             if (event.type !== 'identity_changed') return;
             // Force logout — the admin has deactivated this account or revoked sessions.
             src.close();
@@ -2215,7 +2221,7 @@ const StepUp = (() => {
                 const token = data.step_up_token;
 
                 // Cache for sudo window (server window; we use 90% to avoid racing expiry)
-                _cache(actionKey, token, Config.auth.stepUpWindowSeconds ?? 300);
+                _cache(actionKey, token, Auth.getCurrentUser()?.step_up_window_seconds ?? 300);
 
                 _dismiss();
                 resolve(token);

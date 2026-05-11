@@ -34,7 +34,7 @@ import jwt
 from app.conf.auth import STEP_UP_TIMESTAMP_TOLERANCE
 from app.config import settings
 from app.schemas.security_event import EventActor, SecurityEvent
-from app.services import event_bus
+from app.services import event_bus, live_settings
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ def create_step_up_token(user_id: str, action_key: str, payload_hash: str, sessi
     token if it is presented from a different session (T1-M3).
     """
     now = datetime.now(timezone.utc)
-    window = settings.STEP_UP_WINDOW_SECONDS
+    window = live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS)
 
     if window > 0:
         scope = "*"

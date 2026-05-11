@@ -60,6 +60,7 @@ from app.auth.mfa import (
 from app.auth.stepup import log_security_event
 from app.config import settings
 from app.database import Database, DuplicateError, get_db
+from app.services import live_settings
 from app.models.role import ROLE_USER, grant_role
 from app.middleware.rate_limit import _counter, _get_client_ip
 from app.validation.sanitizers import validate_uuid
@@ -186,7 +187,7 @@ async def _finish_with_cookies(
 ) -> dict:
     """Issue session cookies and return the user response dict."""
     if is_public_device:
-        rt_expire_minutes = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+        rt_expire_minutes = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
         rt_max_age = rt_expire_minutes * 60
     else:
         rt_expire_minutes = None

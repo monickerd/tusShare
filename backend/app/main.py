@@ -18,7 +18,7 @@ from app.routes.uploads import run_upload_cleanup
 from app.services.trash import run_trash_cleanup
 from app.services.sse_broker import run_redis_listener
 from app.config import settings
-from app.services import event_bus, op_bus, notification_emitter, siem_syslog, siem_webhook
+from app.services import event_bus, live_settings, op_bus, notification_emitter, siem_syslog, siem_webhook
 import app.storage.manager as storage
 from app.database import Database, db_session, get_db, init_db, close_db
 import app.sensitive_config as sensitive_config
@@ -159,6 +159,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize database
     await init_db()
+
+    # Load live settings cache (must run after init_db so admin_settings rows exist)
+    async with db_session() as db:
+        await live_settings.load(db)
 
     # Load and verify the sensitive function config (must run before routes handle requests)
     async with db_session() as db:

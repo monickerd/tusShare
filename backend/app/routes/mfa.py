@@ -53,6 +53,7 @@ from app.auth.stepup import log_security_event
 from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import Database, get_db
+from app.services import live_settings
 from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import validate_uuid
 
@@ -113,7 +114,7 @@ async def totp_enroll_start(
 ):
     """Begin TOTP enrollment: generate secret, store inactive credential, return QR URI."""
     totp_uri, secret_b32, cred_id = await enroll_start(
-        db, user.id, issuer=settings.WEBAUTHN_RP_NAME
+        db, user.id, issuer=live_settings.get("webauthn_rp_name", settings.WEBAUTHN_RP_NAME)
     )
     qr_data_url = _make_qr_data_url(totp_uri)
     return {"totp_uri": totp_uri, "secret_b32": secret_b32, "cred_id": cred_id, "qr_data_url": qr_data_url}
@@ -625,7 +626,7 @@ async def _issue_session(db, response: Response, user_id: str, is_public_device:
 
     from datetime import timedelta
     if is_public_device:
-        rt_expire_minutes = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+        rt_expire_minutes = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
         rt_max_age = rt_expire_minutes * 60
     else:
         rt_expire_minutes = None

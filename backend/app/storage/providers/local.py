@@ -20,6 +20,7 @@ from typing import AsyncGenerator
 
 from app.storage.base import StorageProvider, VolumeConfig, validate_storage_key
 from app.config import settings
+from app.services import live_settings
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ class LocalProvider(StorageProvider):
             raise OSError(f"Local write_chunk failed for {upload_id}: {exc}") from exc
 
         new_offset = offset + len(data)
-        evict_stride = settings.UPLOAD_EVICT_STRIDE_MB * 1024 * 1024
+        evict_stride = live_settings.get_int("upload_evict_stride_mb", settings.UPLOAD_EVICT_STRIDE_MB) * 1024 * 1024
         if evict_stride > 0:
             last_evicted = await _get_evict_offset(upload_id)
             if new_offset - last_evicted >= evict_stride:

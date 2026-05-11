@@ -25,7 +25,7 @@ from app.config import settings
 from app.database import Database, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import check_upload_rate_limit
-from app.services import sse_broker
+from app.services import live_settings, sse_broker
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
@@ -269,7 +269,7 @@ async def create_upload(
     storage_key = str(uuid.uuid4())
     upload_id = str(uuid.uuid4())
     expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
+        datetime.now(timezone.utc) + timedelta(hours=live_settings.get_int("tus_upload_expiry_hours", settings.TUS_UPLOAD_EXPIRY_HOURS))
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     await db.execute("BEGIN")
@@ -391,7 +391,7 @@ async def _record_chunk_in_db(
 ) -> None:
     chunk_id = str(uuid.uuid4())
     new_expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=settings.TUS_UPLOAD_EXPIRY_HOURS)
+        datetime.now(timezone.utc) + timedelta(hours=live_settings.get_int("tus_upload_expiry_hours", settings.TUS_UPLOAD_EXPIRY_HOURS))
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     chunk_now = datetime.now(timezone.utc).isoformat()
     await db.execute("BEGIN")

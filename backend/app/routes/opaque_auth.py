@@ -41,6 +41,7 @@ from app.auth.jwt import create_access_token, create_refresh_token, generate_csr
 from app.auth.opaque_provider import OPAQUEAuthProvider
 from app.config import settings
 from app.database import Database, DuplicateError, get_db
+from app.services import live_settings
 from app.models.role import ROLE_USER, grant_role
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 from typing import Annotated
@@ -609,7 +610,7 @@ async def opaque_login_finish(
     # (cleared on tab close) — enforced on the client side.
     is_public_device = body.is_public_device
     if is_public_device:
-        rt_expire_minutes = settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+        rt_expire_minutes = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
         rt_max_age = rt_expire_minutes * 60
     else:
         rt_expire_minutes = None  # uses default REFRESH_TOKEN_EXPIRE_DAYS
