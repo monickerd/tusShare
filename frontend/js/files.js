@@ -629,6 +629,7 @@ const Files = (() => {
             }, abortCtrl.signal);
             overlay.remove();
             transfer.complete();
+            Utils.showToast(`"${file.original_name}" downloaded`, 'success');
         } catch (err) {
             overlay.remove();
             if (err.name === 'AbortError') {
@@ -1039,6 +1040,7 @@ const Files = (() => {
                 abortCtrl.signal,
             );
             transfer.complete();
+            Utils.showToast(`${annotated.length} ${annotated.length === 1 ? 'item' : 'items'} downloaded`, 'success');
         } catch (err) {
             if (err.name === 'AbortError') {
                 transfer.cancelled();
@@ -1791,7 +1793,7 @@ const Files = (() => {
      * Upload an array of File objects sequentially, showing a progress overlay.
      * Requires Auth.getMasterKeyObj() to return a valid CryptoKey.
      */
-    async function _uploadFiles(files, targetFolderId) {
+    async function _uploadFiles(files, targetFolderId, _ctx = null) {
         const folderId = targetFolderId === undefined ? _currentFolderId : targetFolderId;
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey) {  // NOSONAR — guard clause; inverting would require indenting the entire function body
@@ -1799,10 +1801,59 @@ const Files = (() => {
             return;
         }
 
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
+        const isStandalone = _ctx === null;
+        if (isStandalone) {
+            _ctx = {
+                results: { ok: 0, failed: [], firstName: null },
+                conflictState: { decisionDifferent: null, decisionIdentical: null },
+                fileCache: new Map(),
+            };
+        }
 
+        const existingFiles = await _getExistingFiles(folderId, _ctx.fileCache);
+        const existingByName = new Map(existingFiles.map(f => [f.original_name.toLowerCase(), f]));
+
+        for (let i = 0; i < files.length; i++) {
+            let file = files[i];
+
+            // Conflict detection
+            let deletedForReplace = false;
+            const existingFile = existingByName.get(file.name.toLowerCase());
+            if (existingFile) {
+                const isIdentical = existingFile.last_modified_ms != null
+                                 && existingFile.last_modified_ms === file.lastModified
+                                 && existingFile.size_bytes === file.size;
+                let resolution;
+                if (!isIdentical && _ctx.conflictState.decisionDifferent !== null) {
+                    resolution = { action: _ctx.conflictState.decisionDifferent };
+                } else if (isIdentical && _ctx.conflictState.decisionIdentical !== null) {
+                    resolution = { action: _ctx.conflictState.decisionIdentical };
+                } else {
+                    resolution = await _showConflictModal(file, existingFile, isIdentical);
+                    if (resolution.applyToAll) {
+                        if (isIdentical) _ctx.conflictState.decisionIdentical = resolution.action;
+                        else             _ctx.conflictState.decisionDifferent = resolution.action;
+                    }
+                }
+
+                if (resolution.action === 'skip') {
+                    continue;
+                } else if (resolution.action === 'replace') {
+                    try {
+                        await Api.del(`${Config.app.apiPrefix}/files/${existingFile.id}`);
+                        existingByName.delete(file.name.toLowerCase());
+                        deletedForReplace = true;
+                    } catch (delErr) {
+                        Utils.showToast(`Failed to replace "${file.name}": ${delErr.message}`, 'error');
+                        _ctx.results.failed.push(file.name);
+                        continue;
+                    }
+                } else if (resolution.action === 'rename') {
+                    file = _renameWithSuffix(file, existingByName);
+                }
+            }
+
+            const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
             const ctrl = _makeUploadCtrl(folderId, file.name);
             const overlay = _showUploadOverlay(label);
             const transfer = TransferManager.start(label, 'upload', {
@@ -1825,7 +1876,8 @@ const Files = (() => {
                 await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(
                     teamKeyErr => console.warn('Failed to register team file key for', result.fileId, teamKeyErr),
                 );
-                Utils.showToast(`"${file.name}" uploaded`, 'success');
+                _ctx.results.ok++;
+                if (!_ctx.results.firstName) _ctx.results.firstName = file.name;
             } catch (err) {
                 overlay.remove();
                 if (err instanceof Upload.AbortedError) {
@@ -1838,11 +1890,21 @@ const Files = (() => {
                     break;
                 }
                 transfer.fail();
-                Utils.showToast(`Upload failed: ${err.message}`, 'error');
+                if (deletedForReplace) {
+                    Utils.showToast(`Original deleted but upload failed — "${file.name}" lost. Re-upload manually.`, 'error');
+                } else {
+                    _ctx.results.failed.push(file.name);
+                }
                 ctrl.cleanup();
                 break;
             }
             ctrl.cleanup();
+        }
+
+        if (isStandalone) {
+            if (_ctx.results.ok === 1) Utils.showToast(`"${_ctx.results.firstName}" uploaded`, 'success');
+            else if (_ctx.results.ok > 1) Utils.showToast(`${_ctx.results.ok} files uploaded`, 'success');
+            if (_ctx.results.failed.length > 0) Utils.showToast(`${_ctx.results.failed.length} item(s) failed to upload`, 'error');
         }
 
         _reloadCurrentView();
@@ -1974,15 +2036,133 @@ const Files = (() => {
         });
     }
 
+    async function _getExistingFiles(folderId, cache) {
+        const key = folderId ?? '__root__';
+        if (cache.has(key)) return cache.get(key);
+        let files;
+        try {
+            if (folderId) {
+                const data = await Api.get(`${Config.app.apiPrefix}/folders/${folderId}`);
+                files = data.files || [];
+            } else {
+                const data = await Api.get(`${Config.app.apiPrefix}/folders`);
+                files = data.files || [];
+            }
+        } catch {
+            files = [];
+        }
+        cache.set(key, files);
+        return files;
+    }
+
+    function _renameWithSuffix(file, existingByName) {
+        const lastDot = file.name.lastIndexOf('.');
+        const base = lastDot > 0 ? file.name.slice(0, lastDot) : file.name;
+        const ext  = lastDot > 0 ? file.name.slice(lastDot) : '';
+        let n = 1;
+        let newName;
+        do {
+            newName = `${base} (${n})${ext}`;
+            n++;
+        } while (existingByName.has(newName.toLowerCase()));
+        return new File([file], newName, { type: file.type });
+    }
+
+    function _showConflictModal(file, existingFile, isIdentical) {
+        return new Promise((resolve) => {
+            let overlay = Utils.el('div', { className: 'modal-overlay' });
+            const dismiss = (action, applyToAll) => {
+                if (overlay?.parentNode) overlay.remove();
+                overlay = null;
+                resolve({ action, applyToAll });
+            };
+            const checkbox = Utils.el('input', { type: 'checkbox' });
+            const checkboxRow = Utils.el('label', {
+                style: 'display:flex; align-items:center; gap:8px; margin-top: var(--space-3); cursor:pointer;',
+            }, [checkbox, isIdentical ? ' Do this for all conflicts (identical files)' : ' Do this for all conflicts (different files)']);
+
+            const fmtDate = (val) => new Date(val).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+            const nameStyle = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%;';
+            const metaStyle = 'color:var(--text-muted); font-size:.875rem; margin:2px 0 var(--space-3);';
+
+            const bodyContent = isIdentical
+                ? Utils.el('p', { textContent: `"${file.name}" appears identical to a file already in this folder (same size and date).` })
+                : Utils.el('div', {}, [
+                    Utils.el('p', { textContent: 'Existing:', style: 'font-weight:600; margin-bottom:4px;' }),
+                    Utils.el('div', { textContent: existingFile.original_name, style: nameStyle }),
+                    Utils.el('p', { textContent: `Size: ${Utils.formatBytes(existingFile.size_bytes)} · Uploaded: ${fmtDate(existingFile.created_at)}`, style: metaStyle }),
+                    Utils.el('p', { textContent: 'New file:', style: 'font-weight:600; margin-bottom:4px;' }),
+                    Utils.el('div', { textContent: file.name, style: nameStyle }),
+                    Utils.el('p', { textContent: `Size: ${Utils.formatBytes(file.size)} · Modified: ${fmtDate(file.lastModified)}`, style: metaStyle }),
+                ]);
+
+            const dialog = Utils.el('div', { className: 'modal confirm-dialog' }, [
+                Utils.el('h3', { textContent: 'File already exists', style: 'margin-top:0;' }),
+                bodyContent,
+                checkboxRow,
+                Utils.el('div', { className: 'modal-actions' }, [
+                    Utils.el('button', { className: 'btn btn-secondary', textContent: 'Skip',    onClick: () => dismiss('skip',    checkbox.checked) }),
+                    Utils.el('button', { className: 'btn btn-secondary', textContent: 'Replace', onClick: () => dismiss('replace', checkbox.checked) }),
+                    Utils.el('button', { className: 'btn btn-primary',   textContent: 'Rename',  onClick: () => dismiss('rename',  checkbox.checked) }),
+                ]),
+            ]);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+        });
+    }
+
+    function _showFolderMergeModal(folderName) {
+        return new Promise((resolve) => {
+            let overlay = Utils.el('div', { className: 'modal-overlay' });
+            const dismiss = (action, applyToAll) => {
+                if (overlay?.parentNode) overlay.remove();
+                overlay = null;
+                resolve({ action, applyToAll });
+            };
+            const checkbox = Utils.el('input', { type: 'checkbox' });
+            const checkboxRow = Utils.el('label', {
+                style: 'display:flex; align-items:center; gap:8px; margin-top: var(--space-3); cursor:pointer;',
+            }, [checkbox, ' Do this for all folder conflicts']);
+            const dialog = Utils.el('div', { className: 'modal confirm-dialog' }, [
+                Utils.el('p', { textContent: `"${folderName}" already exists here. Merge new files into it, or skip this folder?` }),
+                checkboxRow,
+                Utils.el('div', { className: 'modal-actions' }, [
+                    Utils.el('button', {
+                        className: 'btn btn-secondary',
+                        textContent: 'Skip',
+                        onClick: () => dismiss('skip', checkbox.checked),
+                    }),
+                    Utils.el('button', {
+                        className: 'btn btn-primary',
+                        textContent: 'Merge',
+                        onClick: () => dismiss('merge', checkbox.checked),
+                    }),
+                ]),
+            ]);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+        });
+    }
+
     /**
      * Recursively upload a list of FileSystemEntry objects (files and/or folders).
      * Folders are created on the server first, then their contents are uploaded.
      */
-    async function _uploadEntries(entries, parentFolderId) {
+    async function _uploadEntries(entries, parentFolderId, _ctx = null) {
+        const isTopLevel = _ctx === null;
+        if (isTopLevel) {
+            _ctx = {
+                results: { ok: 0, failed: [], firstName: null },
+                mergeState: { decision: null },
+                conflictState: { decisionDifferent: null, decisionIdentical: null },
+                fileCache: new Map(),
+            };
+        }
+
         for (const entry of entries) {
             if (entry.isFile) {
                 const file = await new Promise((res, rej) => entry.file(res, rej));
-                await _uploadFiles([file], parentFolderId);
+                await _uploadFiles([file], parentFolderId, _ctx);
             } else if (entry.isDirectory) {
                 // Create the folder on the server, then recurse into it
                 let newFolderId;
@@ -1993,8 +2173,22 @@ const Files = (() => {
                     });
                     newFolderId = created.folder.id;
                 } catch (err) {
-                    Utils.showToast(`Failed to create folder "${entry.name}": ${err.message}`, 'error');
-                    continue;
+                    if (err.status === 409 && err.existingFolderId) {
+                        let action = _ctx.mergeState.decision;
+                        if (!action) {
+                            const choice = await _showFolderMergeModal(entry.name);
+                            if (choice.applyToAll) _ctx.mergeState.decision = choice.action;
+                            action = choice.action;
+                        }
+                        if (action === 'merge') {
+                            newFolderId = err.existingFolderId;
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        _ctx.results.failed.push(entry.name);
+                        continue;
+                    }
                 }
 
                 const reader = entry.createReader();
@@ -2010,9 +2204,15 @@ const Files = (() => {
                     readBatch();
                 });
                 if (children.length > 0) {
-                    await _uploadEntries(children, newFolderId);
+                    await _uploadEntries(children, newFolderId, _ctx);
                 }
             }
+        }
+
+        if (isTopLevel) {
+            if (_ctx.results.ok === 1) Utils.showToast(`"${_ctx.results.firstName}" uploaded`, 'success');
+            else if (_ctx.results.ok > 1) Utils.showToast(`${_ctx.results.ok} files uploaded`, 'success');
+            if (_ctx.results.failed.length > 0) Utils.showToast(`${_ctx.results.failed.length} item(s) failed to upload`, 'error');
         }
     }
 

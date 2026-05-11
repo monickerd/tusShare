@@ -66,6 +66,7 @@ class File:
     updated_at: str
     deleted_at: str | None = None
     deleted_by: str | None = None
+    last_modified_ms: int | None = None
 
     @classmethod
     def from_row(cls, row) -> "File":
@@ -89,6 +90,7 @@ class File:
             updated_at=row["updated_at"],
             deleted_at=row.get("deleted_at"),
             deleted_by=row.get("deleted_by"),
+            last_modified_ms=row.get("last_modified_ms"),
         )
 
     def to_dict(self) -> dict:
@@ -109,6 +111,7 @@ class File:
             "upload_complete": self.upload_complete,
             "created_at": self.created_at,
             "deleted_at": self.deleted_at,
+            "last_modified_ms": self.last_modified_ms,
         }
 
 

@@ -100,6 +100,7 @@ const Upload = (() => {
             key_iv:             keyIvB64,
             chunk_size:         String(chunkSize),
             original_size:      String(file.size),
+            last_modified_ms:   String(file.lastModified),
             ...escrowMeta,
         });
 

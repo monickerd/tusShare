@@ -232,6 +232,14 @@ async def create_upload(
     except (ValueError, OverflowError):
         raise HTTPException(status_code=400, detail="chunk_size and original_size must be integers")
 
+    last_modified_ms_raw = meta.get("last_modified_ms")
+    try:
+        last_modified_ms: int | None = int(last_modified_ms_raw) if last_modified_ms_raw else None
+        if last_modified_ms is not None and last_modified_ms <= 0:
+            raise ValueError("non-positive")
+    except (ValueError, OverflowError):
+        raise HTTPException(status_code=400, detail="last_modified_ms must be a positive integer if provided")
+
     if not (1 <= chunk_size <= _MAX_CHUNK_BYTES - 16):
         raise HTTPException(status_code=400, detail="chunk_size out of range")
 
@@ -270,14 +278,16 @@ async def create_upload(
                 id, original_name, sanitized_name, storage_key, folder_id, owner_id,
                 mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
                 encrypted_file_key, key_iv, upload_complete,
-                escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+                escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
+                last_modified_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             """,
             (
                 file_id, original_name, sanitized_name, storage_key, folder_id, user.id,
                 mime_type, original_size, total_encrypted_size, chunk_size, total_chunks,
                 encrypted_file_key, key_iv,
                 escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
+                last_modified_ms,
             ),
         )
         # Inherit recursive permissions from the parent folder (personal root = no-inherit)

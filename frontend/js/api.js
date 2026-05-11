@@ -94,16 +94,20 @@ const Api = (() => {
         if (resp.ok) Auth.touchKeyCache();
         if (!resp.ok) {
             let detail = `HTTP ${resp.status}`;
+            let existingFolderId = null;
             try {
                 const data = await resp.json();
                 if (Array.isArray(data.detail) && data.detail.length > 0) {
                     detail = data.detail.map(e => (e.msg || String(e)).replace(/^Value error,\s*/i, '')).join('; ');
                 } else {
-                    detail = data.error?.message || data.detail || detail;
+                    const detailObj = (data.detail && typeof data.detail === 'object') ? data.detail : null;
+                    detail = data.error?.message || detailObj?.message || (typeof data.detail === 'string' ? data.detail : null) || detail;
+                    existingFolderId = detailObj?.existing_folder_id ?? null;
                 }
             } catch {}
             const err = new Error(detail);
             err.status = resp.status;
+            err.existingFolderId = existingFolderId;
             throw err;
         }
 
