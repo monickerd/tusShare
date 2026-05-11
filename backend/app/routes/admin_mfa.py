@@ -106,6 +106,7 @@ async def admin_wipe_mfa(
     client_ip, ua = _request_info(request)
     await log_security_event(
         db, "mfa_admin_removed", admin.id, client_ip, ua,
+        username=admin.username,
         detail={"target_user_id": user_id},
     )
     return {"message": "MFA data removed"}
@@ -153,6 +154,7 @@ async def admin_remove_credential(
     client_ip, ua = _request_info(request)
     await log_security_event(
         db, "mfa_admin_removed", admin.id, client_ip, ua,
+        username=admin.username,
         detail={"target_user_id": user_id, "credential_id": cred_id, "method": row["method"]},
     )
     return {"message": "Credential removed"}
@@ -187,6 +189,7 @@ async def admin_reset_mfa(
     client_ip, ua = _request_info(request)
     await log_security_event(
         db, "mfa_admin_reset", admin.id, client_ip, ua,
+        username=admin.username,
         detail={"target_user_id": user_id},
     )
     return {"message": "MFA reset — user must re-enroll on next login"}

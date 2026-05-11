@@ -1249,6 +1249,7 @@ async def opaque_password_change_finish(
     logger.info("Password changed: user=%s id=%s ip=%s", user.username, user.id, client_ip)
     await log_security_event(
         db, "user.password_changed", user.id, client_ip, user_agent,
+        username=user.username,
     )
 
     return {"success": True}

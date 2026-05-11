@@ -434,7 +434,7 @@ async def unlock_webauthn_finish(
     ua = request.headers.get("user-agent", "")
 
     async def _emit(event_type, detail):
-        await log_security_event(db, event_type, user.id, client_ip, ua, detail=detail)
+        await log_security_event(db, event_type, user.id, client_ip, ua, username=user.username, detail=detail)
 
     ok = await finish_authentication(
         db, user.id, body.challenge_id, body.assertion, "unlock",
@@ -443,7 +443,7 @@ async def unlock_webauthn_finish(
     if not ok:
         raise HTTPException(status_code=401, detail="WebAuthn verification failed")
 
-    await log_security_event(db, "session_unlock_webauthn", user.id, client_ip, ua)
+    await log_security_event(db, "session_unlock_webauthn", user.id, client_ip, ua, username=user.username)
     return {"unlocked": True}
 
 
@@ -515,6 +515,7 @@ async def delete_credential(
     ua = request.headers.get("user-agent", "")
     await log_security_event(
         db, "mfa_credential_removed", user.id, client_ip, ua,
+        username=user.username,
         detail={"credential_id": cred_id, "method": row["method"]},
     )
     return {"message": "Credential removed"}

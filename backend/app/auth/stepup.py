@@ -310,6 +310,7 @@ async def log_security_event(
     user_id: str | None,
     ip_address: str,
     user_agent: str,
+    username: str | None = None,
     action_key: str | None = None,
     detail: dict | None = None,
 ) -> None:
@@ -319,14 +320,24 @@ async def log_security_event(
     via emit_fanout_only — the inline DB write above is the canonical record,
     so the bus skips re-persisting to avoid duplicate rows.
     """
+    if user_id and username is None:
+        try:
+            cur = await db.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+            row = await cur.fetchone()
+            if row:
+                username = row["username"]
+        except Exception:
+            pass
+
     try:
         await db.execute(
             "INSERT INTO security_events "
-            "(id, user_id, ip_address, user_agent, event_type, action_key, detail) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(id, user_id, actor_username, ip_address, user_agent, event_type, action_key, detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 str(uuid.uuid4()),
                 user_id,
+                username,
                 ip_address,
                 user_agent,
                 event_type,
@@ -349,7 +360,7 @@ async def log_security_event(
             event_type=mapped_type,
             severity=severity,
             outcome=outcome,
-            actor=EventActor(user_id=user_id, ip=ip_address),
+            actor=EventActor(user_id=user_id, username=username, ip=ip_address),
             detail=merged,
         ))
     except Exception:

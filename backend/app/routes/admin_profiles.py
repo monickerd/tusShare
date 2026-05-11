@@ -498,7 +498,7 @@ async def export_settings(
         event_type="admin.settings.profile_exported",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.id),
+        actor=EventActor(user_id=admin.id, username=admin.username),
         detail={"exported_by_tier": admin_best_tier(admin.roles)},
     ))
 
@@ -599,7 +599,7 @@ async def apply_profile(
         event_type="admin.settings.profile_applied",
         severity="high",
         outcome="success",
-        actor=EventActor(user_id=admin_id),
+        actor=EventActor(user_id=admin_id, username=admin.username),
         detail={
             "profile": body.profile,
             "mode":    body.mode,
@@ -686,7 +686,7 @@ async def import_profile(
         event_type="admin.settings.profile_imported",
         severity=severity,
         outcome="success",
-        actor=EventActor(user_id=admin_id),
+        actor=EventActor(user_id=admin_id, username=admin.username),
         detail={
             "mode":          body.mode,
             "items_changed": sum(1 for d in diff if d["changed"]),
@@ -900,7 +900,7 @@ async def full_export_settings(
         event_type="admin.settings.full_exported",
         severity="info",
         outcome="success",
-        actor=EventActor(user_id=admin.id),
+        actor=EventActor(user_id=admin.id, username=admin.username),
         detail={"categories": sorted(requested), "tier": admin_best_tier(admin.roles)},
     ))
 
@@ -1218,7 +1218,7 @@ async def full_import_settings(
         event_type="admin.settings.full_imported",
         severity="critical" if replace else "high",
         outcome="success",
-        actor=EventActor(user_id=admin_id),
+        actor=EventActor(user_id=admin_id, username=admin.username),
         detail={"mode": body.mode, "categories": sorted(requested), "items": items_applied},
     ))
 

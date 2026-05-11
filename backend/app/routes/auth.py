@@ -563,6 +563,7 @@ async def step_up(
         _step_up_max = live_settings.get_int("step_up_max_failures", settings.STEP_UP_MAX_FAILURES)
         await log_security_event(
             db, "step_up_failed", user.id, client_ip, user_agent,
+            username=user.username,
             action_key=body.action_key,
             detail={"max_failures": _step_up_max},
         )
@@ -580,6 +581,7 @@ async def step_up(
             await db.commit()
             await log_security_event(
                 db, "step_up_lockout", user.id, client_ip, user_agent,
+                username=user.username,
                 action_key=body.action_key,
                 detail={"failure_count": count},
             )
@@ -598,6 +600,7 @@ async def step_up(
 
     await log_security_event(
         db, "step_up_granted", user.id, client_ip, user_agent,
+        username=user.username,
         action_key=body.action_key,
         detail={
             "payload_hash": body.payload_hash,

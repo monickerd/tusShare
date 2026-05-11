@@ -553,7 +553,7 @@ async def oidc_callback(
     if error:
         logger.warning("OIDC callback error: %s — %s", error, error_description)  # NOSONAR — server-side audit log; values are Pydantic-validated
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
-                                 f"IdP error: {error}")
+                                 detail={"error": f"IdP error: {error}"})
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     if not code or not state:
@@ -573,7 +573,7 @@ async def oidc_callback(
     if state_row is None:
         logger.warning("OIDC callback: unknown/expired state")
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
-                                 "unknown or expired state nonce")
+                                 detail={"error": "unknown or expired state nonce"})
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     provider_id = state_row["provider_id"]
@@ -596,7 +596,7 @@ async def oidc_callback(
     except Exception:
         logger.exception("OIDC callback exchange error provider=%s", provider_id)
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
-                                 f"token exchange error provider={provider_id}")
+                                 detail={"error": f"token exchange error provider={provider_id}"})
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     if identity is None:
@@ -617,7 +617,7 @@ async def oidc_callback(
     logger.info("OIDC login: user_id=%s provider=%s sub=%s ip=%s",
                 user_id, provider_id, identity["sub"], client_ip)
     await log_security_event(db, "oidc_login_success", user_id, client_ip, user_agent,
-                             provider_id)
+                             action_key=provider_id)
 
     _fire_policy_eval(user_id)
 
