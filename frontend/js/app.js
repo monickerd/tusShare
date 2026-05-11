@@ -498,7 +498,7 @@ const App = (() => {
         // On error (network/auth) fall through to normal admin panel.
         try {
             const { settings } = await Api.get(`${Config.app.apiPrefix}/admin/settings`);
-            if (settings?.first_run_completed !== '1') {
+            if (settings?.first_run_completed.value !== '1') {
                 globalThis.location.hash = '#/setup';
                 return;
             }
