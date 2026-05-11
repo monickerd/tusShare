@@ -39,6 +39,7 @@ from webauthn.helpers import (
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
     AuthenticatorSelectionCriteria,
+    AuthenticatorTransport,
     PublicKeyCredentialDescriptor,
     ResidentKeyRequirement,
     UserVerificationRequirement,
@@ -214,11 +215,16 @@ async def begin_authentication(db, user_id: str, purpose: str) -> tuple[str, dic
     for cr in cred_rows:
         try:
             payload = decrypt_credential(cr["credential"])
-            transports = payload.get("transports", [])
+            typed_transports: list[AuthenticatorTransport] = []
+            for t in payload.get("transports", []):
+                try:
+                    typed_transports.append(AuthenticatorTransport(t))
+                except ValueError:
+                    pass
             allow_credentials.append(
                 PublicKeyCredentialDescriptor(
                     id=base64url_to_bytes(payload["credential_id"]),
-                    transports=transports or None,
+                    transports=typed_transports or None,
                 )
             )
         except Exception:
