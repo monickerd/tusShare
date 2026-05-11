@@ -347,6 +347,15 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             "CREATE INDEX IF NOT EXISTS idx_asg_scope      ON admin_scope_grants(scope_type, scope_id)",
             "CREATE INDEX IF NOT EXISTS idx_asg_user_flag  ON admin_scope_grants(user_id, flag)",
         ]),
+        # Replace the plain unique index on folders with a partial expression index so that:
+        # (a) soft-deleted folders do not block recreation of the same name, and
+        # (b) root-level personal folders (parent_id IS NULL) are also name-unique per owner.
+        ("migrate_folders_unique_v1", [
+            "DROP INDEX IF EXISTS idx_folders_unique_name",
+            "CREATE UNIQUE INDEX idx_folders_unique_name "
+            "ON folders(COALESCE(parent_id, ''), owner_id, name) "
+            "WHERE deleted_at IS NULL",
+        ]),
     ]
     for name, stmts in _INCREMENTAL_MIGRATIONS:
         if name not in applied:

@@ -561,10 +561,13 @@ async def create_team(
     # Auto-create the team's shared folder and register it
     folder_id = str(uuid.uuid4())
     tf_id     = str(uuid.uuid4())
-    await db.execute(
-        "INSERT INTO folders (id, name, parent_id, owner_id) VALUES (?, ?, NULL, ?)",
-        (folder_id, body.name, user.id),
-    )
+    try:
+        await db.execute(
+            "INSERT INTO folders (id, name, parent_id, owner_id) VALUES (?, ?, NULL, ?)",
+            (folder_id, body.name, user.id),
+        )
+    except DuplicateError:
+        raise HTTPException(status_code=409, detail="A folder with this team name already exists")
     await db.execute(
         "INSERT INTO team_folders (id, team_id, folder_id, added_by) VALUES (?, ?, ?, ?)",
         (tf_id, team_id, folder_id, user.id),

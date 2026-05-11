@@ -7,7 +7,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import get_current_user, require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.database import Database, get_db
+from app.database import Database, DuplicateError, get_db
 from app.middleware.rate_limit import check_management_rate_limit
 from app.models.file import File, Folder
 from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
@@ -180,10 +180,8 @@ async def create_folder(
         if body.parent_id:
             await copy_folder_permissions(db, body.parent_id, "folder", folder_id)
         await db.commit()
-    except Exception as e:
-        if "UNIQUE constraint failed" in str(e):
-            raise HTTPException(status_code=409, detail="Folder with this name already exists here")
-        raise
+    except DuplicateError:
+        raise HTTPException(status_code=409, detail="Folder with this name already exists here")
 
     # Notify the parent folder (or root) that a new subfolder appeared
     sse_broker.publish(body.parent_id or f"root:{user.id}", {"type": "change"})
