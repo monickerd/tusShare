@@ -1,7 +1,6 @@
 -- schema.sql — Complete database schema
 --
 -- Run once on a fresh install; tracked as 'schema_v1' in _migrations.
--- Incremental changes after first production deployment go in migrations/.
 --
 -- Table inventory:
 --   Identity:   identity_providers, identity_provider_users, oidc_states
@@ -341,7 +340,7 @@ CREATE TABLE folders (
 CREATE INDEX idx_folders_parent     ON folders(parent_id);
 CREATE INDEX idx_folders_owner      ON folders(owner_id);
 CREATE INDEX idx_folders_deleted_at ON folders(deleted_at) WHERE deleted_at IS NOT NULL;
-CREATE UNIQUE INDEX idx_folders_unique_name ON folders(parent_id, owner_id, name);
+CREATE UNIQUE INDEX idx_folders_unique_name ON folders(COALESCE(parent_id, ''), owner_id, name) WHERE deleted_at IS NULL;
 
 -------------------------------------------------
 -- FILES
@@ -387,6 +386,9 @@ CREATE TABLE files (
     -- Soft-delete / trash
     deleted_at          TIMESTAMPTZ DEFAULT NULL,
     deleted_by          TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL,
+
+    -- Browser File.lastModified (ms since epoch); NULL for pre-migration rows
+    last_modified_ms    BIGINT DEFAULT NULL,
 
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
