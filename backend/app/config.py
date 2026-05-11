@@ -45,10 +45,6 @@ class Settings(BaseSettings):
     # SESSION_IDLE_TIMEOUT_MINUTES + ACCESS_TOKEN_EXPIRE_MINUTES at most.
     SESSION_IDLE_TIMEOUT_MINUTES: int = 10
 
-    # Admin bootstrap (first run only)
-    ADMIN_USERNAME: str = ""
-    ADMIN_PASSWORD: str = ""
-
     # Upload defaults
     DEFAULT_CHUNK_SIZE: int = 5_242_880  # 5 MB
     TUS_UPLOAD_EXPIRY_HOURS: int = 24

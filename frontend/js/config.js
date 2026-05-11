@@ -65,6 +65,12 @@ const Config = Object.freeze({
                                     // threshold on very small files, e.g. 5 chunks × 2% = 0)
     }),
 
+    /* --- Download --- */
+    download: Object.freeze({
+        maxRetries:     3,
+        retryBaseDelay: 1000,   // ms, doubles each attempt
+    }),
+
     /* --- File validation --- */
     file: Object.freeze({
         nameMaxLength: 255,         // cross-platform NTFS/ext4 component limit

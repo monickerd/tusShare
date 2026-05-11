@@ -670,6 +670,39 @@ async def get_escrow_public_key(
     return {"escrow_public_key": pub_b64}
 
 
+@router.get("/pending")
+async def list_pending_uploads(
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db:   Annotated[Database, Depends(get_db)],
+):
+    """Return all incomplete tus uploads owned by the current user.
+
+    Used by the client Transfers tab to surface interrupted uploads from any
+    folder so the user can navigate back and resume without having to remember
+    which folder the upload was started in.
+    """
+    result = await db.execute(
+        """
+        SELECT tu.id            AS upload_id,
+               f.original_name,
+               f.size_bytes,
+               f.encrypted_file_key,
+               f.key_iv,
+               f.folder_id,
+               tu.current_offset,
+               tu.total_size,
+               tu.expires_at
+          FROM tus_uploads tu
+          JOIN files f ON tu.file_id = f.id
+         WHERE tu.user_id = ?
+         ORDER BY tu.created_at DESC
+        """,
+        (user.id,),
+    )
+    rows = await result.fetchall()
+    return {"pending_uploads": [dict(r) for r in rows]}
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

@@ -9,17 +9,13 @@ Required config keys (stored encrypted in storage_volumes.config_enc):
   region             AWS region (e.g. "us-east-1"; required for AWS, optional for MinIO)
 
 Upload flow:
-  begin_upload   → CreateMultipartUpload → stores multipart_upload_id in _pending
+  begin_upload   → CreateMultipartUpload → stores multipart_upload_id in Redis (or _pending)
   write_chunk    → UploadPart → returns ETag
   finalize_upload → CompleteMultipartUpload with ordered ETag list
   abort_upload   → AbortMultipartUpload
 
-For future Azure Blob and GCS providers, mirror this module:
-  Azure: use azure-storage-blob asyncio SDK; StageBlock/CommitBlockList
-  GCS:   use google-cloud-storage async client; resumable upload for large files
-
-TODO (Azure): implement AzureBlobProvider in providers/azure.py
-TODO (GCS):   implement GCSProvider in providers/gcs.py
+Redis keys: "s3:mpu:{upload_id}" (string, TTL = 3600 s). Falls back to in-process
+_pending when Redis is not configured, preserving single-worker behaviour.
 """
 
 from __future__ import annotations
@@ -42,8 +38,9 @@ class S3CompatProvider(StorageProvider):
         self._access_key_id: str = cfg["access_key_id"]
         self._secret_access_key: str = cfg["secret_access_key"]
 
-        # Multipart upload state: {upload_id → s3_multipart_upload_id}
-        # Process-local; aborted on restart (S3 aborts expire after 7 days by default).
+        # Fallback multipart upload state used when Redis is not configured.
+        # When Redis is available, "s3:mpu:{upload_id}" keys are used instead so
+        # state is shared across workers.
         self._pending: dict[str, str] = {}
 
         self._aioboto3 = _require_aioboto3()
@@ -62,13 +59,42 @@ class S3CompatProvider(StorageProvider):
         return self._session().client("s3", **kwargs)
 
     # ------------------------------------------------------------------
+    # Redis-aware multipart upload state helpers
+    # ------------------------------------------------------------------
+
+    async def _store_mpu(self, upload_id: str, mpu_id: str) -> None:
+        from app.redis_client import get_redis
+        r = get_redis()
+        if r is not None:
+            await r.set(f"s3:mpu:{upload_id}", mpu_id, ex=3600)
+        else:
+            self._pending[upload_id] = mpu_id
+
+    async def _get_mpu(self, upload_id: str) -> str | None:
+        from app.redis_client import get_redis
+        r = get_redis()
+        if r is not None:
+            return await r.get(f"s3:mpu:{upload_id}")
+        return self._pending.get(upload_id)
+
+    async def _del_mpu(self, upload_id: str) -> str | None:
+        from app.redis_client import get_redis
+        r = get_redis()
+        mpu_id: str | None = None
+        if r is not None:
+            mpu_id = await r.get(f"s3:mpu:{upload_id}")
+            await r.delete(f"s3:mpu:{upload_id}")
+        mpu_id = mpu_id or self._pending.pop(upload_id, None)
+        return mpu_id
+
+    # ------------------------------------------------------------------
     # Upload lifecycle
     # ------------------------------------------------------------------
 
     async def begin_upload(self, upload_id: str) -> None:
         async with self._client() as s3:
             resp = await s3.create_multipart_upload(Bucket=self._bucket, Key=upload_id)
-        self._pending[upload_id] = resp["UploadId"]
+        await self._store_mpu(upload_id, resp["UploadId"])
 
     async def write_chunk(
         self,
@@ -77,7 +103,7 @@ class S3CompatProvider(StorageProvider):
         offset: int,
         data: bytes,
     ) -> str | None:
-        mpu_id = self._pending.get(upload_id)
+        mpu_id = await self._get_mpu(upload_id)
         if mpu_id is None:
             raise RuntimeError(f"No active multipart upload for {upload_id}")
 
@@ -98,7 +124,7 @@ class S3CompatProvider(StorageProvider):
         part_tags: list[str],
     ) -> int:
         validate_storage_key(storage_key)
-        mpu_id = self._pending.pop(upload_id, None)
+        mpu_id = await self._del_mpu(upload_id)
         if mpu_id is None:
             raise RuntimeError(f"No active multipart upload to finalize for {upload_id}")
 
@@ -128,7 +154,7 @@ class S3CompatProvider(StorageProvider):
         return resp["ContentLength"]
 
     async def abort_upload(self, upload_id: str) -> None:
-        mpu_id = self._pending.pop(upload_id, None)
+        mpu_id = await self._del_mpu(upload_id)
         if mpu_id is None:
             return
         try:

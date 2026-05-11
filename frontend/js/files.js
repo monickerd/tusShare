@@ -727,7 +727,7 @@ const Files = (() => {
             });
 
             try {
-                await Upload.resumeUpload(location, selectedFile, fileKey, (done, total) => {
+                const result = await Upload.resumeUpload(location, selectedFile, fileKey, (done, total) => {
                     const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                     overlay.update(pct, upload.original_name);
                     transfer.update(pct);
@@ -736,6 +736,9 @@ const Files = (() => {
                 }, ctrl);
                 overlay.remove();
                 transfer.complete();
+                await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(
+                    teamKeyErr => console.warn('Failed to register team file key for', result.fileId, teamKeyErr),
+                );
                 Utils.showToast(`"${upload.original_name}" uploaded`, 'success');
             } catch (err) {
                 overlay.remove();

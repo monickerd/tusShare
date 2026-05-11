@@ -317,8 +317,24 @@ const Download = (() => {
     // Shared helpers
     // ------------------------------------------------------------------
 
+    // Resolves after an exponential back-off delay, or rejects immediately if the
+    // AbortSignal fires during the wait (prevents hanging retries on cancel/logout).
+    function _retryDelay(baseMs, attempt, signal) {
+        return new Promise((resolve, reject) => {
+            const ms = baseMs * Math.pow(2, attempt);
+            const t  = setTimeout(resolve, ms);
+            signal?.addEventListener('abort', () => {
+                clearTimeout(t);
+                const e = new Error('Aborted'); e.name = 'AbortError'; reject(e);
+            }, { once: true });
+        });
+    }
+
     /**
      * Range-fetch and decrypt one chunk of an authenticated file.
+     * Retries on transient network errors (fetch throw or non-206 HTTP response)
+     * up to Config.download.maxRetries times with exponential back-off.
+     * AES-GCM integrity failures are not retried — corrupted data won't fix itself.
      *
      * @param {string}   fileId
      * @param {{offset:number, size_bytes:number, iv:string}} chunk
@@ -329,23 +345,39 @@ const Download = (() => {
      * @returns {Promise<ArrayBuffer>} Decrypted plaintext buffer.
      */
     async function _fetchDecryptChunk(fileId, chunk, chunkIdx, totalChunks, fileKey, signal) {
-        const resp = await fetch(`${_prefix()}/files/${fileId}/content`, {
-            headers:     { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` },
-            credentials: 'same-origin',
-            signal,
-        });
-        if (resp.status !== 206 && !resp.ok) {
-            const body = await resp.json().catch(() => ({}));
-            throw new Error(body.detail || `Fetch failed (${resp.status})`);
-        }
-        const encBuf = await resp.arrayBuffer();
-        try {
-            return await Crypto.decryptChunk(encBuf, chunk.iv, fileKey);
-        } catch {
-            throw new Error(
-                `Chunk ${chunkIdx + 1}/${totalChunks} failed integrity check — ` +
-                `the data may be corrupted (offset ${chunk.offset})`
-            );
+        const cfg = Config.download;
+
+        for (let attempt = 0; ; attempt++) {
+            let resp;
+            try {
+                resp = await fetch(`${_prefix()}/files/${fileId}/content`, {
+                    headers:     { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` },
+                    credentials: 'same-origin',
+                    signal,
+                });
+            } catch (err) {
+                if (err.name === 'AbortError' || attempt >= cfg.maxRetries) throw err;
+                await _retryDelay(cfg.retryBaseDelay, attempt, signal);
+                continue;
+            }
+
+            if (resp.status !== 206 && !resp.ok) {
+                const body = await resp.json().catch(() => ({}));
+                const err  = new Error(body.detail || `Fetch failed (${resp.status})`);
+                if (attempt >= cfg.maxRetries) throw err;
+                await _retryDelay(cfg.retryBaseDelay, attempt, signal);
+                continue;
+            }
+
+            const encBuf = await resp.arrayBuffer();
+            try {
+                return await Crypto.decryptChunk(encBuf, chunk.iv, fileKey);
+            } catch {
+                throw new Error(
+                    `Chunk ${chunkIdx + 1}/${totalChunks} failed integrity check — ` +
+                    `the data may be corrupted (offset ${chunk.offset})`
+                );
+            }
         }
     }
 

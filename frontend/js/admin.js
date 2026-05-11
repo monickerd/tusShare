@@ -3882,7 +3882,7 @@ const Admin = (() => {
 
         const nameIn = Utils.el('input', { type: 'text', className: 'settings-input', value: vol?.name || '', placeholder: 'Display name' });
         const provSel = Utils.el('select', { className: 'settings-input' });
-        for (const p of ['local', 's3', 'b2']) {
+        for (const p of ['local', 's3', 'b2', 'azure', 'gcs']) {
             const o = Utils.el('option', { value: p, textContent: p });
             if (vol?.provider === p) o.selected = true;
             provSel.appendChild(o);
@@ -3922,9 +3922,38 @@ const Admin = (() => {
             Utils.el('input', { type: 'password', className: 'settings-input', id: 'sv-secret', value: '', placeholder: isEdit ? '(unchanged)' : '', autocomplete: 'new-password' }),
         ]);
 
+        const azureFields = Utils.el('div', {}, [
+            Utils.el('p', {
+                className: 'text-muted',
+                style: 'font-size:0.85em; padding:6px 0; border-left:3px solid var(--color-warning,#f0ad4e); padding-left:8px; margin-bottom:8px',
+                textContent: 'Security: use a Storage Account with public blob access disabled. Prefer a connection string scoped to this container via a Shared Access Signature (SAS) with limited permissions.',
+            }),
+            Utils.el('label', { className: 'settings-label', textContent: 'connection_string' }),
+            Utils.el('input', { type: 'password', className: 'settings-input', id: 'sv-azure-conn', value: '', placeholder: isEdit ? '(unchanged)' : 'DefaultEndpointsProtocol=https;AccountName=...', autocomplete: 'new-password' }),
+            Utils.el('label', { className: 'settings-label', textContent: 'container_name' }),
+            Utils.el('input', { type: 'text', className: 'settings-input', id: 'sv-azure-container', value: vol?.config?.container_name || '' }),
+        ]);
+
+        const gcsFields = Utils.el('div', {}, [
+            Utils.el('p', {
+                className: 'text-muted',
+                style: 'font-size:0.85em; padding:6px 0; border-left:3px solid var(--color-warning,#f0ad4e); padding-left:8px; margin-bottom:8px',
+                textContent: 'Security: create a dedicated service account with the Storage Object Admin role scoped to this bucket only. Paste the full JSON key below.',
+            }),
+            Utils.el('label', { className: 'settings-label', textContent: 'project_id' }),
+            Utils.el('input', { type: 'text', className: 'settings-input', id: 'sv-gcs-project', value: vol?.config?.project_id || '' }),
+            Utils.el('label', { className: 'settings-label', textContent: 'bucket_name' }),
+            Utils.el('input', { type: 'text', className: 'settings-input', id: 'sv-gcs-bucket', value: vol?.config?.bucket_name || '' }),
+            Utils.el('label', { className: 'settings-label', textContent: 'service_account_json' }),
+            Utils.el('textarea', { className: 'settings-input', id: 'sv-gcs-sa-json', rows: '6', style: 'font-family:monospace; font-size:0.8em', placeholder: isEdit ? '(unchanged — paste new JSON to rotate key)' : '{ "type": "service_account", ... }' }),
+        ]);
+
         const _updateFields = () => {
             configWrap.innerHTML = '';
-            if (provSel.value === 'local') configWrap.appendChild(localFields);
+            const p = provSel.value;
+            if (p === 'local') configWrap.appendChild(localFields);
+            else if (p === 'azure') configWrap.appendChild(azureFields);
+            else if (p === 'gcs') configWrap.appendChild(gcsFields);
             else configWrap.appendChild(s3Fields);
         };
         provSel.onchange = _updateFields;
@@ -3940,6 +3969,19 @@ const Admin = (() => {
                     const ud = configWrap.querySelector('#sv-uploads-dir')?.value.trim();
                     if (fd) cfg.files_dir = fd;
                     if (ud) cfg.uploads_dir = ud;
+                } else if (provSel.value === 'azure') {
+                    const connStr = configWrap.querySelector('#sv-azure-conn')?.value || '';
+                    cfg = {
+                        container_name: configWrap.querySelector('#sv-azure-container')?.value.trim(),
+                    };
+                    if (connStr) cfg.connection_string = connStr;
+                } else if (provSel.value === 'gcs') {
+                    const saJson = configWrap.querySelector('#sv-gcs-sa-json')?.value.trim();
+                    cfg = {
+                        project_id:  configWrap.querySelector('#sv-gcs-project')?.value.trim(),
+                        bucket_name: configWrap.querySelector('#sv-gcs-bucket')?.value.trim(),
+                    };
+                    if (saJson) cfg.service_account_json = saJson;
                 } else {
                     cfg = {
                         endpoint_url:      configWrap.querySelector('#sv-endpoint')?.value.trim() || null,

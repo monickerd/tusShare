@@ -348,6 +348,94 @@ async def upload_file_api(
     return r3.json()["file"]
 
 
+# ---------------------------------------------------------------------------
+# Pending-upload helpers
+# ---------------------------------------------------------------------------
+
+
+async def list_pending_uploads(client: ApiClient) -> list[dict]:
+    """Return the caller's incomplete TUS uploads from GET /uploads/pending."""
+    r = await client.get("/uploads/pending")
+    r.raise_for_status()
+    return r.json().get("pending_uploads", [])
+
+
+async def tus_upload_begin(
+    client:               ApiClient,
+    filename:             str,
+    total_encrypted_size: int,
+    original_size:        int,
+    chunk_size:           int = _SERVER_DEFAULT_CHUNK_SIZE,
+    folder_id:            Optional[str] = None,
+) -> tuple[str, str]:
+    """Create a TUS upload record without sending any data.
+
+    Returns *(upload_id, location)*.  Pass the location to
+    :func:`tus_upload_chunk` to send individual encrypted chunks.
+    """
+    import base64 as _b64mod
+    from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12
+
+    def _enc(s: str) -> str:
+        return _b64mod.b64encode(s.encode()).decode()
+
+    metadata_parts = [
+        f"filename {_enc(filename)}",
+        f"filetype {_enc('application/octet-stream')}",
+        f"encrypted_file_key {_enc(fake_aes256_key())}",
+        f"key_iv {_enc(fake_iv_12())}",
+        f"chunk_size {_enc(str(chunk_size))}",
+        f"original_size {_enc(str(original_size))}",
+    ]
+    if folder_id:
+        metadata_parts.append(f"folder_id {_enc(folder_id)}")
+
+    r = await client.post(
+        "/uploads",
+        headers={
+            "Tus-Resumable":   "1.0.0",
+            "Upload-Length":   str(total_encrypted_size),
+            "Upload-Metadata": ", ".join(metadata_parts),
+            "Content-Length":  "0",
+        },
+    )
+    r.raise_for_status()
+    location  = r.headers["location"]
+    upload_id = location.rstrip("/").split("/")[-1]
+    return upload_id, location
+
+
+async def tus_upload_chunk(
+    client:    ApiClient,
+    upload_id: str,
+    chunk_data: bytes,
+    offset:    int,
+) -> tuple[int, Optional[str]]:
+    """Send one encrypted chunk via PATCH.
+
+    Returns *(new_offset, file_id)* where *file_id* is non-``None`` only when
+    this chunk completes the upload and the server assigns a file ID.
+    """
+    from tests.e2e.helpers.crypto_stubs import fake_iv_12, chunk_hash
+
+    r = await client.patch(
+        f"/uploads/{upload_id}",
+        content=chunk_data,
+        headers={
+            "Tus-Resumable":  "1.0.0",
+            "Content-Type":   "application/offset+octet-stream",
+            "Upload-Offset":  str(offset),
+            "X-Chunk-IV":     fake_iv_12(),
+            "X-Chunk-Hash":   chunk_hash(chunk_data),
+            "Content-Length": str(len(chunk_data)),
+        },
+    )
+    r.raise_for_status()
+    new_offset = int(r.headers.get("Upload-Offset", offset + len(chunk_data)))
+    file_id    = r.headers.get("x-file-id") or r.headers.get("X-File-ID")
+    return new_offset, file_id or None
+
+
 async def delete_share(client: ApiClient, share_id: str) -> None:
     r = await client.delete(f"/shares/{share_id}")
     r.raise_for_status()

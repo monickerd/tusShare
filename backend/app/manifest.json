@@ -1,20 +1,20 @@
 {
-  "generated": "2026-05-10T23:02:43.806781+00:00",
+  "generated": "2026-05-11T01:17:30.799632+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
-    "frontend/js/admin.js": "sha256-yYlTtnQIseU03yH7i4ULJRdSxA6erfT9hCU8T431uNM=",
+    "frontend/js/admin.js": "sha256-K596c15Mbiqe03m54xbtU/QQQ6tMa3/tYtoqgFCGYSU=",
     "frontend/js/api.js": "sha256-ERmVlDQ9tT3iVIhBtHTxJ1/pz9V8LGa9GEWmlFA0nAg=",
-    "frontend/js/app.js": "sha256-nKeSZXMug1tV43ROcFKjvuQchxeQsiII0zcAaBAPOCo=",
-    "frontend/js/auth.js": "sha256-N+jYrXEg1gleu7pesrtkvCSn84gjUyaMUdpNNHPs7YY=",
-    "frontend/js/config.js": "sha256-xXcK3q/vG9VHzqRtoEBnyS4A+PkAZEON8GiAhgn3xkM=",
+    "frontend/js/app.js": "sha256-vaxEyTktAsLucYfMKxSegvc5yRQTxcyLctBEtR5JcPE=",
+    "frontend/js/auth.js": "sha256-tXNWiDHw2TxGSf9xGxAbqfnf6AO5AwnxzCFvxQOaDjU=",
+    "frontend/js/config.js": "sha256-DMDpQNXCQFRlaX8XpFZvjW/a0jN32zGgkJme+0eU0Gk=",
     "frontend/js/crypto.js": "sha256-R2EdH1uBQhw0yEFYeqSfk5yoDfo8v9Up8BTqgmkA9LY=",
-    "frontend/js/download.js": "sha256-JEVeM1fHamORdmKNelTO6BE0EYTVoQqAdLbstGgUsZI=",
-    "frontend/js/files.js": "sha256-016Ug/Te1JMsHu0rpxReNej3thIS1Gi0PO0r1hECjtM=",
+    "frontend/js/download.js": "sha256-QTOv6yIueDf5x4zX/AXjIMwArlC/gObP05QMbms+FT4=",
+    "frontend/js/files.js": "sha256-zx97BoT+gNAwh8HUToz3yTTk6iL4yneITZFt91rw0WI=",
     "frontend/js/permissions.js": "sha256-cPntZh1Uy1zlR3t/9sh4KQw44SODsz/vj3u5Kt3X/yo=",
     "frontend/js/shares.js": "sha256-KmUAs8ZQUcbkhUdbZlBR2OaiFvCSCEpL82dL64NZofo=",
     "frontend/js/teams.js": "sha256-yXDiEVnltaaGyfndjBbPVPXoRiqeltLIYi5nLwzCbpQ=",
     "frontend/js/transfer-manager.js": "sha256-Md2Pw6/Xib7WuPlykjkjcJJ01KIhqhMGpEjLT02Iw3c=",
-    "frontend/js/upload.js": "sha256-jcuikMasIuQDh1MKVEI1hME3hU9SWRslEBjT2j/zdzQ=",
+    "frontend/js/upload.js": "sha256-c9oD4y1rG6FVFbryOS5lvj2ypN0c8Vt3tyBEvlYlpIk=",
     "frontend/js/utils.js": "sha256-YlBlqxBzCfCJPt3y/Op3BHTwaCVFpMUzNU4B63Vhcoo=",
     "frontend/js/wizard.js": "sha256-6IM6Lh3WppeFEv/QvRu6oz5NO7Pt/0cvfqnc1peDb+A=",
     "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
@@ -27,6 +27,6 @@
     "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",
     "frontend/themes/light/colors.css": "sha256-34MXO41nFwyP15sZR6yyQsorANADMTErAwBzvXzlklk=",
     "frontend/themes/light/toast.css": "sha256-0co+8266j+EO89oMrY13M4KYueyJfOrhz+KTckCqIwM=",
-    "requirements.txt": "sha256-RaKD+D2g4RevQdJwL9cDq6aOgVdXgus7byqRvgu9hd8="
+    "requirements.txt": "sha256-4cDSVskX8uEZ14UDeN6umUVdYqqKwDwLJ+MjptZuo08="
   }
 }

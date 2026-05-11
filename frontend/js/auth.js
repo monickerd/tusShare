@@ -1759,9 +1759,11 @@ const Auth = (() => {
                     const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
                     _renderMfaSettingsContent(wrapRef, updated);
                 } catch (err) {
-                    const msg = err.name === 'SecurityError' || err.name === 'NotAllowedError'
-                        ? 'Security keys require HTTPS or localhost. Please access this page over a secure connection.'
-                        : (err.message || 'Registration failed.');
+                    const msg = err.name === 'SecurityError'
+                        ? 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.'
+                        : err.name === 'NotAllowedError'
+                            ? 'Registration was cancelled or timed out.'
+                            : (err.message || 'Registration failed.');
                     Utils.showToast(msg, 'error');
                     btn.disabled = false;
                 }

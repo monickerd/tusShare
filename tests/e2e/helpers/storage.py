@@ -154,6 +154,75 @@ def seed_warm_volume(
         )
 
 
+# ---------------------------------------------------------------------------
+# Azurite connection constants — must match docker-compose.test.yml
+# ---------------------------------------------------------------------------
+
+# Well-known Azurite development credentials (safe to commit — emulator only)
+AZURITE_ACCOUNT    = "devstoreaccount1"
+AZURITE_ACCOUNT_KEY = (
+    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq"
+    "/K1SZFPTOtr/KBHBeksoGMGw=="
+)
+# docker-internal URL used by the app container
+AZURITE_BLOB_ENDPOINT_INTERNAL = "http://azurite:10000/devstoreaccount1"
+# host-mapped URL used by the test runner
+AZURITE_BLOB_ENDPOINT_HOST     = "http://localhost:10000/devstoreaccount1"
+AZURITE_CONTAINER  = "tusshare-test"
+AZURITE_HOST_PORT  = 10000
+AZURITE_VOLUME_ID  = "c3d4e5f6-a7b8-9012-cdef-012345678903"
+
+# Connection string used by the running app (docker-internal endpoint)
+AZURITE_CONNECTION_STRING_INTERNAL = (
+    f"DefaultEndpointsProtocol=http;"
+    f"AccountName={AZURITE_ACCOUNT};"
+    f"AccountKey={AZURITE_ACCOUNT_KEY};"
+    f"BlobEndpoint={AZURITE_BLOB_ENDPOINT_INTERNAL};"
+)
+
+
+def azurite_reachable() -> bool:
+    """Return True if Azurite is accessible on localhost:10000."""
+    try:
+        with socket.create_connection(("localhost", AZURITE_HOST_PORT), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+def seed_azure_volume(volume_id: str = AZURITE_VOLUME_ID) -> None:
+    """Insert an Azurite storage_volumes row directly into the test DB.
+
+    Also demotes the local-default volume so the Azurite volume becomes the
+    upload target.  After calling this, use restart_app_and_wait() so the
+    StorageManager reloads its volume list.
+
+    Uses the internal docker network endpoint (http://azurite:10000/...) so
+    the running app container can reach the Azurite container by name.
+    """
+    from tests.e2e.helpers.db import _psql, PG_DB_NAME
+
+    config = {
+        "connection_string": AZURITE_CONNECTION_STRING_INTERNAL,
+        "container_name":    AZURITE_CONTAINER,
+    }
+    config_enc = encrypt_test_volume_config(config)
+
+    _psql(
+        "UPDATE storage_volumes SET is_default = 0 WHERE id = 'local-default';",
+        db=PG_DB_NAME,
+    )
+    _psql(
+        f"INSERT INTO storage_volumes "
+        f"  (id, name, provider, config_enc, tier, is_default, priority) "
+        f"VALUES "
+        f"  ('{volume_id}', 'Azurite Test', 'azure', '{config_enc}', 'hot', 1, 10) "
+        f"ON CONFLICT (id) DO UPDATE SET "
+        f"  config_enc = EXCLUDED.config_enc, is_default = 1;",
+        db=PG_DB_NAME,
+    )
+
+
 def seed_s3_volume(volume_id: str = MINIO_VOLUME_ID) -> None:
     """Insert a MinIO storage_volumes row directly into the test DB.
 

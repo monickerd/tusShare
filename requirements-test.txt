@@ -22,3 +22,9 @@ pyotp>=2.9.0
 # Required by aioboto3/botocore for S3 request signing (test_17)
 cryptography>=44.0.0
 aioboto3>=13.3.0
+
+# In-process Redis emulator for unit tests (test_storage_providers.py)
+fakeredis>=2.26.0
+
+# Azure SDK for Azurite E2E tests (test_32)
+azure-storage-blob[aio]>=12.19.0

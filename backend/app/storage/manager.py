@@ -643,6 +643,12 @@ def _build_provider(vol: VolumeConfig) -> StorageProvider:
     if vol.provider in ("s3", "b2"):
         from app.storage.providers.s3 import S3CompatProvider
         return S3CompatProvider(vol)
+    if vol.provider == "azure":
+        from app.storage.providers.azure import AzureBlobProvider
+        return AzureBlobProvider(vol)
+    if vol.provider == "gcs":
+        from app.storage.providers.gcs import GCSProvider
+        return GCSProvider(vol)
     raise ValueError(f"Unsupported storage provider type: {vol.provider!r}")
 
 

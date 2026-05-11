@@ -48,6 +48,15 @@ CSRF_EXEMPT_PREFIXES = (
     # cannot be applied.  Login-CSRF risk is low: credentials must be valid
     # and the attacker gains no access to the victim's data.
     "/api/v1/auth/ldap/login",
+    # MFA verification endpoints called during the login flow, before session
+    # cookies (and therefore the CSRF cookie) have been issued.  All of these
+    # require a short-lived pending_token issued by the preceding OPAQUE step,
+    # so the double-submit CSRF pattern cannot be applied and login-CSRF risk
+    # is negligible — an attacker would also need the victim's pending_token.
+    "/api/v1/auth/totp/verify",
+    "/api/v1/auth/mfa/verify-recovery",
+    "/api/v1/auth/webauthn/authenticate/",
+    "/api/v1/auth/mfa/pending-info",
     "/s/",
 )
 

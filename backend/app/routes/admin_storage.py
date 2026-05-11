@@ -44,9 +44,14 @@ router = APIRouter()
 
 _STEPUP = "admin.storage.configure"
 _REDACTED = "••••••••"
-_SECRET_FIELDS = {"access_key_id", "secret_access_key", "bind_password", "client_secret"}
+_SECRET_FIELDS = {
+    "access_key_id", "secret_access_key",   # S3-compatible
+    "connection_string",                     # Azure Blob
+    "service_account_json",                  # GCS
+    "bind_password", "client_secret",        # IdP (shared path)
+}
 
-_VALID_PROVIDERS = {"local", "s3", "b2"}
+_VALID_PROVIDERS = {"local", "s3", "b2", "azure", "gcs"}
 _VALID_TIERS = {"hot", "warm", "cold"}
 
 

@@ -110,16 +110,20 @@ const Upload = (() => {
         const uploadId = location.split('/').pop();
         ctrl?.onCreated?.(uploadId);
 
-        // PATCH — send each encrypted chunk
+        // PATCH — send each encrypted chunk.
+        // 1-ahead pipeline: start encrypting chunk i+1 while chunk i's PATCH is in-flight,
+        // so CPU and network work overlap rather than run sequentially.
         const integrityTracker = _makeIntegrityTracker(totalChunks);
         let encryptedOffset = 0;
+        let nextEncrypted   = _encryptChunk(file, 0, chunkSize, fileKey);
         for (let i = 0; i < totalChunks; i++) {
             await _checkCtrl(ctrl, location);
-            const start = i * chunkSize;
-            const end   = Math.min(start + chunkSize, file.size);
-            const plain = await file.slice(start, end).arrayBuffer();
 
-            const { ciphertext, ivB64: chunkIvB64 } = await Crypto.encryptChunk(plain, fileKey);
+            const { ciphertext, ivB64: chunkIvB64 } = await nextEncrypted;
+            if (i + 1 < totalChunks) {
+                nextEncrypted = _encryptChunk(file, i + 1, chunkSize, fileKey);
+            }
+
             const chunkHash = await _sha256Hex(ciphertext);
 
             const { newOffset, fileId, committed } = await _patchChunk(
@@ -156,6 +160,10 @@ const Upload = (() => {
         const chunkSize = _getChunkSize();
         const totalChunks = Math.ceil(file.size / chunkSize);
 
+        // Export raw key bytes once — returned to caller so _registerTeamFileKey
+        // can be called after a cross-session resume (mirrors uploadFile behaviour).
+        const fileKeyBytes = new Uint8Array(await crypto.subtle.exportKey('raw', fileKey));
+
         // Calculate total encrypted size
         let totalEncryptedSize = 0;
         for (let i = 0; i < totalChunks; i++) {
@@ -175,17 +183,20 @@ const Upload = (() => {
         let encryptedOffset = Number.parseInt(headResp.headers.get('Upload-Offset') || '0', 10);
 
         const startChunk = _findStartChunk(totalChunks, chunkSize, file.size, encryptedOffset);
-        if (startChunk >= totalChunks) return { fileId: null, location };
+        if (startChunk >= totalChunks) return { fileId: null, fileKeyBytes, location };
 
-        // Continue from startChunk with fresh IVs (re-encrypt from plaintext offset)
+        // Continue from startChunk with fresh IVs (re-encrypt from plaintext offset).
+        // Same 1-ahead pipeline as uploadFile.
         const integrityTracker = _makeIntegrityTracker(totalChunks);
+        let nextEncrypted      = _encryptChunk(file, startChunk, chunkSize, fileKey);
         for (let i = startChunk; i < totalChunks; i++) {
             await _checkCtrl(ctrl, location);
-            const start = i * chunkSize;
-            const end   = Math.min(start + chunkSize, file.size);
-            const plain = await file.slice(start, end).arrayBuffer();
 
-            const { ciphertext, ivB64: chunkIvB64 } = await Crypto.encryptChunk(plain, fileKey);
+            const { ciphertext, ivB64: chunkIvB64 } = await nextEncrypted;
+            if (i + 1 < totalChunks) {
+                nextEncrypted = _encryptChunk(file, i + 1, chunkSize, fileKey);
+            }
+
             const chunkHash = await _sha256Hex(ciphertext);
 
             const { newOffset, fileId, committed } = await _patchChunk(
@@ -195,16 +206,25 @@ const Upload = (() => {
             if (committed) {
                 Auth.touchKeyCache();
                 if (onProgress) onProgress(encryptedOffset, totalEncryptedSize);
-                if (i === totalChunks - 1) return { fileId, location };
+                if (i === totalChunks - 1) return { fileId, fileKeyBytes, location };
             }
         }
 
-        return { fileId: null, location };
+        return { fileId: null, fileKeyBytes, location };
     }
 
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
+
+    // Reads and encrypts one chunk from the file. Extracted so both uploadFile
+    // and resumeUpload can kick off the next chunk's encryption while the current
+    // chunk's PATCH is in-flight (1-ahead pipeline).
+    async function _encryptChunk(file, index, chunkSize, fileKey) {
+        const start = index * chunkSize;
+        const plain = await file.slice(start, Math.min(start + chunkSize, file.size)).arrayBuffer();
+        return Crypto.encryptChunk(plain, fileKey); // { ciphertext, ivB64 }
+    }
 
     function _csrf() {
         return Utils.parseCookie(Config.auth.cookieCsrfName) || '';

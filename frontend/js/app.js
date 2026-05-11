@@ -635,19 +635,55 @@ const App = (() => {
 
     function _renderTransfersTab(container) {
         const transfers = TransferManager.getAll();
-        if (transfers.length === 0) {
-            container.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
-            return;
+
+        if (transfers.length > 0) {
+            const list = Utils.el('ul', { className: 'transfer-list' });
+            for (const t of transfers) {
+                list.appendChild(Utils.el('li', { className: `transfer-item transfer-item--${t.status}` }, [
+                    Utils.el('span', { className: 'transfer-item-icon', textContent: t.type === 'upload' ? '↑' : '↓' }),
+                    Utils.el('span', { className: 'transfer-item-name', textContent: t.label }),
+                    Utils.el('span', { className: 'transfer-item-pct',  textContent: t.pct }),
+                ]));
+            }
+            container.appendChild(list);
         }
-        const list = Utils.el('ul', { className: 'transfer-list' });
-        for (const t of transfers) {
-            list.appendChild(Utils.el('li', { className: `transfer-item transfer-item--${t.status}` }, [
-                Utils.el('span', { className: 'transfer-item-icon', textContent: t.type === 'upload' ? '↑' : '↓' }),
-                Utils.el('span', { className: 'transfer-item-name', textContent: t.label }),
-                Utils.el('span', { className: 'transfer-item-pct',  textContent: t.pct }),
-            ]));
-        }
-        container.appendChild(list);
+
+        // Load server-side pending (interrupted) uploads and append below active transfers.
+        // These survive page reloads — user clicks the folder link to navigate there and resume.
+        const pendingSection = Utils.el('div', { className: 'transfer-pending-section' });
+        container.appendChild(pendingSection);
+
+        Api.get(`${Config.app.apiPrefix}/uploads/pending`).then(data => {
+            const pending = data.pending_uploads ?? [];
+            if (pending.length === 0) {
+                if (transfers.length === 0) {
+                    pendingSection.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
+                }
+                return;
+            }
+            pendingSection.appendChild(Utils.el('p', { className: 'transfer-pending-label', textContent: 'Interrupted uploads' }));
+            const pList = Utils.el('ul', { className: 'transfer-list' });
+            for (const u of pending) {
+                const pct  = u.total_size > 0 ? Math.round((u.current_offset / u.total_size) * 100) : 0;
+                const href = u.folder_id ? `#/files/${u.folder_id}` : '#/files';
+                pList.appendChild(Utils.el('li', { className: 'transfer-item transfer-item--pending' }, [
+                    Utils.el('span', { className: 'transfer-item-icon', textContent: '↺' }),
+                    Utils.el('span', { className: 'transfer-item-name', textContent: u.original_name }),
+                    Utils.el('a', {
+                        className: 'transfer-item-resume-link',
+                        href,
+                        textContent: `${pct}%`,
+                        onClick: () => _closeAccountMenu(),
+                    }),
+                ]));
+            }
+            pendingSection.appendChild(pList);
+        }).catch(() => {
+            // Non-fatal: if the fetch fails, fall back to empty-state message when no active transfers
+            if (transfers.length === 0) {
+                pendingSection.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
+            }
+        });
     }
 
     function _renderMyAccountTab(container) {

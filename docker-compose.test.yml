@@ -58,6 +58,36 @@ services:
       retries: 12
       start_period: 10s
 
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.33.0
+    container_name: tusshare_test_azurite
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --loose --skipApiVersionCheck
+    ports:
+      - "127.0.0.1:10000:10000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').createConnection(10000,'localhost').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  azurite-init:
+    image: mcr.microsoft.com/azure-cli:latest
+    container_name: tusshare_test_azurite_init
+    depends_on:
+      azurite:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        az storage container create
+        --name tusshare-test
+        --connection-string 'DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;'
+        --output none &&
+        echo 'Azurite container ready'
+    restart: "no"
+
   minio:
     image: minio/minio:RELEASE.2024-11-07T00-52-20Z
     container_name: tusshare_test_minio
@@ -124,6 +154,8 @@ services:
       postgres:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      azurite:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/v1/health')"]
