@@ -1,0 +1,13 @@
+# Normalize all text files to LF in the repo and on checkout (all platforms).
+# This ensures build_manifest.py produces the same SHA-256 hashes on Windows
+# and Linux — without this, autocrlf=true causes CRLF vs LF hash mismatches.
+* text=auto eol=lf
+
+# Treat binary files as binary (never rewrite line endings)
+*.whl binary
+*.so  binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.woff  binary
