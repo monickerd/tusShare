@@ -1789,6 +1789,25 @@ const Files = (() => {
         );
     }
 
+    async function _initStandaloneUploadCtx(fileCount) {
+        if (fileCount > Config.upload.bulkWarnThreshold) {
+            const confirmed = await _showBulkUploadWarning(fileCount);
+            if (!confirmed) return null;
+        }
+        return {
+            results: { ok: 0, failed: [], firstName: null },
+            conflictState: { decisionDifferent: null, decisionIdentical: null },
+            fileCache: new Map(),
+            lastUploadMs: null,
+        };
+    }
+
+    function _reportUploadResults(ctx) {
+        if (ctx.results.ok === 1) Utils.showToast(`"${ctx.results.firstName}" uploaded`, 'success');
+        else if (ctx.results.ok > 1) Utils.showToast(`${ctx.results.ok} files uploaded`, 'success');
+        if (ctx.results.failed.length > 0) Utils.showToast(`${ctx.results.failed.length} item(s) failed to upload`, 'error');
+    }
+
     /**
      * Upload an array of File objects sequentially, showing a progress overlay.
      * Requires Auth.getMasterKeyObj() to return a valid CryptoKey.
@@ -1796,23 +1815,15 @@ const Files = (() => {
     async function _uploadFiles(files, targetFolderId, _ctx = null) {
         const folderId = targetFolderId === undefined ? _currentFolderId : targetFolderId;
         const masterKey = Auth.getMasterKeyObj();
-        if (!masterKey) {  // NOSONAR — guard clause; inverting would require indenting the entire function body
+        if (!masterKey) {
             Utils.showToast('Master key not available — please re-enter your password.', 'error');
             return;
         }
 
         const isStandalone = _ctx === null;
         if (isStandalone) {
-            _ctx = {
-                results: { ok: 0, failed: [], firstName: null },
-                conflictState: { decisionDifferent: null, decisionIdentical: null },
-                fileCache: new Map(),
-                lastUploadMs: null,
-            };
-            if (files.length > Config.upload.bulkWarnThreshold) {
-                const confirmed = await _showBulkUploadWarning(files.length);
-                if (!confirmed) return;
-            }
+            _ctx = await _initStandaloneUploadCtx(files.length);
+            if (!_ctx) return;
         }
 
         const existingFiles = await _getExistingFiles(folderId, _ctx.fileCache);
@@ -1829,12 +1840,7 @@ const Files = (() => {
             if (outcome === 'aborted' || outcome === 'error') break;
         }
 
-        if (isStandalone) {
-            if (_ctx.results.ok === 1) Utils.showToast(`"${_ctx.results.firstName}" uploaded`, 'success');
-            else if (_ctx.results.ok > 1) Utils.showToast(`${_ctx.results.ok} files uploaded`, 'success');
-            if (_ctx.results.failed.length > 0) Utils.showToast(`${_ctx.results.failed.length} item(s) failed to upload`, 'error');
-        }
-
+        if (isStandalone) _reportUploadResults(_ctx);
         _reloadCurrentView();
     }
 
@@ -1993,6 +1999,19 @@ const Files = (() => {
         }
     }
 
+    async function _getConflictResolution(file, existingFile, isIdentical, ctx) {
+        if (!isIdentical && ctx.conflictState.decisionDifferent !== null)
+            return { action: ctx.conflictState.decisionDifferent };
+        if (isIdentical && ctx.conflictState.decisionIdentical !== null)
+            return { action: ctx.conflictState.decisionIdentical };
+        const resolution = await _showConflictModal(file, existingFile, isIdentical);
+        if (resolution.applyToAll) {
+            if (isIdentical) ctx.conflictState.decisionIdentical = resolution.action;
+            else             ctx.conflictState.decisionDifferent = resolution.action;
+        }
+        return resolution;
+    }
+
     async function _processFileConflict(file, existingByName, ctx) {
         const existingFile = existingByName.get(file.name.toLowerCase());
         if (!existingFile) return { skip: false, file, deletedForReplace: false };
@@ -2001,18 +2020,7 @@ const Files = (() => {
                          && existingFile.last_modified_ms === file.lastModified
                          && existingFile.size_bytes === file.size;
 
-        let resolution;
-        if (!isIdentical && ctx.conflictState.decisionDifferent !== null) {
-            resolution = { action: ctx.conflictState.decisionDifferent };
-        } else if (isIdentical && ctx.conflictState.decisionIdentical !== null) {
-            resolution = { action: ctx.conflictState.decisionIdentical };
-        } else {
-            resolution = await _showConflictModal(file, existingFile, isIdentical);
-            if (resolution.applyToAll) {
-                if (isIdentical) ctx.conflictState.decisionIdentical = resolution.action;
-                else             ctx.conflictState.decisionDifferent = resolution.action;
-            }
-        }
+        const resolution = await _getConflictResolution(file, existingFile, isIdentical, ctx);
 
         if (resolution.action === 'skip') return { skip: true, file, deletedForReplace: false };
 
@@ -2146,18 +2154,18 @@ const Files = (() => {
 
     function _sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-    function _readAllDirEntries(reader) {
-        return new Promise((res, rej) => {
-            const all = [];
-            function readBatch() {
-                reader.readEntries((batch) => {
-                    if (batch.length === 0) { res(all); return; }
-                    all.push(...batch);
-                    readBatch();
-                }, rej);
-            }
-            readBatch();
-        });
+    function _readEntriesBatch(reader) {
+        return new Promise((res, rej) => reader.readEntries(res, rej));
+    }
+
+    async function _readAllDirEntries(reader) {
+        const all = [];
+        let batch;
+        do {
+            batch = await _readEntriesBatch(reader);
+            all.push(...batch);
+        } while (batch.length > 0);
+        return all;
     }
 
     async function _countEntries(entries) {
@@ -2254,21 +2262,26 @@ const Files = (() => {
         }
     }
 
+    async function _initEntriesUploadCtx(entries) {
+        const totalCount = await _countEntries(entries);
+        if (totalCount > Config.upload.bulkWarnThreshold) {
+            const confirmed = await _showBulkUploadWarning(totalCount);
+            if (!confirmed) return null;
+        }
+        return {
+            results: { ok: 0, failed: [], firstName: null },
+            mergeState: { decision: null },
+            conflictState: { decisionDifferent: null, decisionIdentical: null },
+            fileCache: new Map(),
+            lastUploadMs: null,
+        };
+    }
+
     async function _uploadEntries(entries, parentFolderId, _ctx = null) {
         const isTopLevel = _ctx === null;
         if (isTopLevel) {
-            _ctx = {
-                results: { ok: 0, failed: [], firstName: null },
-                mergeState: { decision: null },
-                conflictState: { decisionDifferent: null, decisionIdentical: null },
-                fileCache: new Map(),
-                lastUploadMs: null,
-            };
-            const totalCount = await _countEntries(entries);
-            if (totalCount > Config.upload.bulkWarnThreshold) {
-                const confirmed = await _showBulkUploadWarning(totalCount);
-                if (!confirmed) return;
-            }
+            _ctx = await _initEntriesUploadCtx(entries);
+            if (!_ctx) return;
         }
 
         for (const entry of entries) {
@@ -2283,11 +2296,7 @@ const Files = (() => {
             }
         }
 
-        if (isTopLevel) {
-            if (_ctx.results.ok === 1) Utils.showToast(`"${_ctx.results.firstName}" uploaded`, 'success');
-            else if (_ctx.results.ok > 1) Utils.showToast(`${_ctx.results.ok} files uploaded`, 'success');
-            if (_ctx.results.failed.length > 0) Utils.showToast(`${_ctx.results.failed.length} item(s) failed to upload`, 'error');
-        }
+        if (isTopLevel) _reportUploadResults(_ctx);
     }
 
     /**
