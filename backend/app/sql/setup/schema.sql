@@ -1492,11 +1492,17 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
 -- BUILT-IN POLICY FIELD DEFINITIONS (internal source)
 -------------------------------------------------
 INSERT INTO policy_field_definitions (name, display_label, source, data_type, claim_path) VALUES
-    ('totp_enabled',      'TOTP MFA Enabled',              'internal', 'boolean', NULL),
-    ('auth_provider',     'Auth Provider',                 'internal', 'string',  NULL),
-    ('identity_provider', 'Identity Provider',             'internal', 'string',  NULL),
-    ('mfa_enabled',       'MFA Enabled (TOTP or WebAuthn)','internal', 'boolean', NULL),
-    ('role',              'Global Role',                   'internal', 'string',  NULL);
+    ('totp_enabled',        'TOTP MFA Enabled',               'internal', 'boolean', NULL),
+    ('webauthn_enabled',    'WebAuthn Enabled',               'internal', 'boolean', NULL),
+    ('mfa_enabled',         'MFA Enabled (TOTP or WebAuthn)', 'internal', 'boolean', NULL),
+    ('mfa_reset_required',  'MFA Reset Required',             'internal', 'boolean', NULL),
+    ('auth_provider',       'Auth Provider',                  'internal', 'string',  NULL),
+    ('auth_method',         'Auth Method',                    'internal', 'string',  NULL),
+    ('identity_provider',   'Identity Provider',              'internal', 'string',  NULL),
+    ('role',                'Global Role',                    'internal', 'string',  NULL),
+    ('is_active',           'Account Active',                 'internal', 'boolean', NULL),
+    ('has_recovery_key',    'Recovery Key Enrolled',          'internal', 'boolean', NULL),
+    ('has_asymmetric_keys', 'PQ-KEM Keys Generated',          'internal', 'boolean', NULL);
 
 -------------------------------------------------
 -- ADMIN SETTINGS SEEDS

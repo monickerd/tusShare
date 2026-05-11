@@ -212,11 +212,17 @@ async def seed_policy_fields(db: Database) -> None:
     Keeps existing installs in sync when new internal fields are added.
     """
     fields = [
-        ('totp_enabled',      'TOTP MFA Enabled',               'internal', 'boolean'),
-        ('auth_provider',     'Auth Provider',                   'internal', 'string'),
-        ('identity_provider', 'Identity Provider',               'internal', 'string'),
-        ('mfa_enabled',       'MFA Enabled (TOTP or WebAuthn)',  'internal', 'boolean'),
-        ('role',              'Global Role',                     'internal', 'string'),
+        ('totp_enabled',        'TOTP MFA Enabled',               'internal', 'boolean'),
+        ('webauthn_enabled',    'WebAuthn Enabled',               'internal', 'boolean'),
+        ('mfa_enabled',         'MFA Enabled (TOTP or WebAuthn)', 'internal', 'boolean'),
+        ('mfa_reset_required',  'MFA Reset Required',             'internal', 'boolean'),
+        ('auth_provider',       'Auth Provider',                  'internal', 'string'),
+        ('auth_method',         'Auth Method',                    'internal', 'string'),
+        ('identity_provider',   'Identity Provider',              'internal', 'string'),
+        ('role',                'Global Role',                    'internal', 'string'),
+        ('is_active',           'Account Active',                 'internal', 'boolean'),
+        ('has_recovery_key',    'Recovery Key Enrolled',          'internal', 'boolean'),
+        ('has_asymmetric_keys', 'PQ-KEM Keys Generated',         'internal', 'boolean'),
     ]
     for name, label, source, data_type in fields:
         await db.execute(

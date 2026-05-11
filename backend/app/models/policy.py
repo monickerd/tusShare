@@ -310,6 +310,47 @@ async def _resolve_role_field(db, user_id: str) -> str:
         return ""
 
 
+async def _resolve_users_bool_field(db, user_id: str, column: str) -> str:
+    try:
+        cursor = await db.execute(f"SELECT {column} FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return "1" if (row and row[column]) else "0"
+    except Exception:
+        return "0"
+
+
+async def _resolve_users_nullable_field(db, user_id: str, column: str) -> str:
+    """Return '1' if the column is non-NULL, '0' otherwise."""
+    try:
+        cursor = await db.execute(f"SELECT {column} IS NOT NULL AS present FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return "1" if (row and row["present"]) else "0"
+    except Exception:
+        return "0"
+
+
+async def _resolve_webauthn_enabled_field(db, user_id: str) -> str:
+    try:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM user_mfa_credentials "
+            "WHERE user_id = ? AND is_active = true AND method = 'webauthn'",
+            (user_id,),
+        )
+        row = await cursor.fetchone()
+        return "1" if (row and row[0] > 0) else "0"
+    except Exception:
+        return "0"
+
+
+async def _resolve_auth_method_field(db, user_id: str) -> str:
+    try:
+        cursor = await db.execute("SELECT auth_method FROM users WHERE id = ?", (user_id,))
+        row = await cursor.fetchone()
+        return row["auth_method"] if row else ""
+    except Exception:
+        return ""
+
+
 def _set_provider_result(result: dict, fields: set, provider_type: str | None, name: str | None) -> None:
     if "auth_provider" in fields:
         result["auth_provider"] = provider_type or "opaque"
@@ -346,11 +387,17 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
     Missing fields are omitted — callers should treat absence as non-matching.
 
     Supported internal fields (seeded in schema.sql):
-      totp_enabled      — '1' if user has TOTP active, '0' otherwise
-      mfa_enabled       — '1' if user has any active TOTP or WebAuthn credential
-      auth_provider     — 'opaque' | 'oidc' | 'ldap'
-      identity_provider — the identity_providers.name for non-opaque users, or ''
-      role              — most-privileged global role ID (e.g. 'role_user', 'org_admin')
+      totp_enabled         — '1' if user has TOTP active, '0' otherwise
+      webauthn_enabled     — '1' if user has any active WebAuthn credential
+      mfa_enabled          — '1' if user has any active TOTP or WebAuthn credential
+      mfa_reset_required   — '1' if MFA re-enrollment is pending
+      auth_provider        — 'opaque' | 'oidc' | 'ldap'
+      auth_method          — 'opaque' | 'ldap' | 'oidc' | 'service'
+      identity_provider    — the identity_providers.name for non-opaque users, or ''
+      role                 — most-privileged global role ID (e.g. 'role_user', 'org_admin')
+      is_active            — '1' if the account is active, '0' if locked/disabled
+      has_recovery_key     — '1' if a recovery key is enrolled
+      has_asymmetric_keys  — '1' if PQ-KEM keys have been generated
     """
     if not fields:
         return {}
@@ -360,14 +407,32 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
     if "totp_enabled" in fields:
         result["totp_enabled"] = await _resolve_totp_field(db, user_id)
 
+    if "webauthn_enabled" in fields:
+        result["webauthn_enabled"] = await _resolve_webauthn_enabled_field(db, user_id)
+
     if "mfa_enabled" in fields:
         result["mfa_enabled"] = await _resolve_mfa_enabled_field(db, user_id)
+
+    if "mfa_reset_required" in fields:
+        result["mfa_reset_required"] = await _resolve_users_bool_field(db, user_id, "mfa_reset_required")
 
     if "auth_provider" in fields or "identity_provider" in fields:
         result.update(await _resolve_provider_fields(db, user_id, fields))
 
+    if "auth_method" in fields:
+        result["auth_method"] = await _resolve_auth_method_field(db, user_id)
+
     if "role" in fields:
         result["role"] = await _resolve_role_field(db, user_id)
+
+    if "is_active" in fields:
+        result["is_active"] = await _resolve_users_bool_field(db, user_id, "is_active")
+
+    if "has_recovery_key" in fields:
+        result["has_recovery_key"] = await _resolve_users_nullable_field(db, user_id, "recovery_key_hash")
+
+    if "has_asymmetric_keys" in fields:
+        result["has_asymmetric_keys"] = await _resolve_users_nullable_field(db, user_id, "x25519_public_key")
 
     return result
 
