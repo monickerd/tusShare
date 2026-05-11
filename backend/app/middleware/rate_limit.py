@@ -278,6 +278,33 @@ _ROUTE_LIMITS = [
 ]
 
 
+async def _check_route_limits(request: Request, client_ip: str, path: str) -> JSONResponse | None:
+    """Check per-route rate limits. Returns a 429 JSONResponse if exceeded, else None."""
+    for entry in _ROUTE_LIMITS:
+        if len(entry) == 5:
+            prefix, methods, live_key, default_req, window = entry
+            max_req = live_settings.get_int(live_key, default_req)
+        else:
+            prefix, methods, max_req, window = entry
+        if path.startswith(prefix) and request.method in methods:
+            key = f"rate:{prefix}:{client_ip}"
+            if not await _counter.is_allowed(key, max_req, window):
+                logger.warning("Rate limited: %s on %s (ip=%s)", request.method, path, client_ip)
+                event_bus.emit(SecurityEvent(
+                    event_type="auth.rate_limited",
+                    severity="warning",
+                    outcome="failure",
+                    actor=EventActor(ip=client_ip),
+                    detail={"path": path, "method": request.method, "reason": "route_limit"},
+                ))
+                return JSONResponse(
+                    status_code=429,
+                    content={"error": {"code": "RATE_LIMITED", "message": _TOO_MANY_REQUESTS_MSG}},
+                    headers={"Retry-After": str(window)},
+                )
+    return None
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         client_ip = _get_client_ip(request)
@@ -302,46 +329,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 ))
                 return JSONResponse(
                     status_code=429,
-                    content={
-                        "error": {
-                            "code": "RATE_LIMITED",
-                            "message": _TOO_MANY_REQUESTS_MSG,
-                        }
-                    },
+                    content={"error": {"code": "RATE_LIMITED", "message": _TOO_MANY_REQUESTS_MSG}},
                     headers={"Retry-After": str(esc_window)},
                 )
 
-        # Route-specific limits — entries are 4-tuples (prefix, methods, max_req, window)
-        # or 5-tuples (prefix, methods, live_key, default, window).
-        for entry in _ROUTE_LIMITS:
-            if len(entry) == 5:
-                prefix, methods, live_key, default_req, window = entry
-                max_req = live_settings.get_int(live_key, default_req)
-            else:
-                prefix, methods, max_req, window = entry
-            if path.startswith(prefix) and request.method in methods:
-                key = f"rate:{prefix}:{client_ip}"
-                if not await _counter.is_allowed(key, max_req, window):
-                    logger.warning(
-                        "Rate limited: %s on %s (ip=%s)", request.method, path, client_ip
-                    )
-                    event_bus.emit(SecurityEvent(
-                        event_type="auth.rate_limited",
-                        severity="warning",
-                        outcome="failure",
-                        actor=EventActor(ip=client_ip),
-                        detail={"path": path, "method": request.method, "reason": "route_limit"},
-                    ))
-                    return JSONResponse(
-                        status_code=429,
-                        content={
-                            "error": {
-                                "code": "RATE_LIMITED",
-                                "message": _TOO_MANY_REQUESTS_MSG,
-                            }
-                        },
-                        headers={"Retry-After": str(window)},
-                    )
+        route_limit_response = await _check_route_limits(request, client_ip, path)
+        if route_limit_response is not None:
+            return route_limit_response
 
         response = await call_next(request)
 

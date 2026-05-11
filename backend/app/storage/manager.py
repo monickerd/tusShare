@@ -376,10 +376,10 @@ class StorageManager:
                 raise OSError(
                     f"Size mismatch after tier copy: src={src_size} dst={dst_size}"
                 )
-        except Exception as exc:
-            logger.error(
-                "Tier migration failed for file %s → volume %s: %s",
-                file_id, target_volume_id, exc,
+        except Exception:
+            logger.exception(
+                "Tier migration failed for file %s → volume %s",
+                file_id, target_volume_id,
             )
             async with self._db_factory() as db2:
                 await db2.execute(

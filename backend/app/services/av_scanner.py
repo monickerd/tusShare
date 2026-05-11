@@ -46,8 +46,8 @@ def _load_escrow_private_key():
         from cryptography.hazmat.primitives.serialization import load_der_private_key
         der = base64.b64decode(settings.ESCROW_PRIVATE_KEY)
         return load_der_private_key(der, password=None)
-    except Exception as exc:
-        logger.error("Failed to load ESCROW_PRIVATE_KEY: %s", exc)
+    except Exception:
+        logger.exception("Failed to load ESCROW_PRIVATE_KEY")
         return None
 
 
@@ -164,10 +164,10 @@ async def scan_file(db, file_id: str) -> None:
 
     try:
         await validate_endpoint_url(endpoint)
-    except Exception as exc:
-        logger.error(
-            "AV scan endpoint %r failed SSRF validation: %s — scan aborted for file %s",
-            endpoint, exc, file_id,
+    except Exception:
+        logger.exception(
+            "AV scan endpoint %r failed SSRF validation — scan aborted for file %s",
+            endpoint, file_id,
         )
         await _write_status(db, file_id, "error")
         return
@@ -225,8 +225,8 @@ async def scan_file(db, file_id: str) -> None:
             file_row["escrow_encrypted_key"],
             file_row["escrow_key_iv"],
         )
-    except Exception as exc:
-        logger.error("Escrow key derivation failed for file %s: %s", file_id, exc)
+    except Exception:
+        logger.exception("Escrow key derivation failed for file %s", file_id)
         await _write_status(db, file_id, "error")
         return
 
@@ -242,8 +242,8 @@ async def scan_file(db, file_id: str) -> None:
             raw_chunks.append((cr["iv"], data))
 
         plaintext = await asyncio.to_thread(_decrypt_chunks_sync, file_key_bytes, raw_chunks)
-    except Exception as exc:
-        logger.error("Chunk decryption failed for file %s: %s", file_id, exc)
+    except Exception:
+        logger.exception("Chunk decryption failed for file %s", file_id)
         await _write_status(db, file_id, "error")
         return
 
@@ -295,8 +295,8 @@ async def _write_status(db, file_id: str, status: str) -> None:
             (status, now, file_id),
         )
         await db.commit()
-    except Exception as exc:
-        logger.error("Failed to write AV status for file %s: %s", file_id, exc)
+    except Exception:
+        logger.exception("Failed to write AV status for file %s", file_id)
 
 
 async def _handle_infected(db, file_id: str, original_name: str) -> None:
@@ -309,8 +309,8 @@ async def _handle_infected(db, file_id: str, original_name: str) -> None:
             (now, file_id),
         )
         await db.commit()
-    except Exception as exc:
-        logger.error("Failed to lock infected file %s: %s", file_id, exc)
+    except Exception:
+        logger.exception("Failed to lock infected file %s", file_id)
         return
 
     try:
@@ -322,5 +322,5 @@ async def _handle_infected(db, file_id: str, original_name: str) -> None:
             source="av_scanner",
             data={"file_id": file_id, "original_name": original_name},
         ))
-    except Exception as exc:
-        logger.error("op_bus emit failed for infected file %s: %s", file_id, exc)
+    except Exception:
+        logger.exception("op_bus emit failed for infected file %s", file_id)

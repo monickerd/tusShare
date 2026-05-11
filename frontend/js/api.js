@@ -90,33 +90,38 @@ const Api = (() => {
         return _handleResponse(resp);
     }
 
+    function _parseErrorDetail(data) {
+        if (Array.isArray(data.detail) && data.detail.length > 0) {
+            return {
+                detail: data.detail.map(e => (e.msg || String(e)).replace(/^Value error,\s*/i, '')).join('; '),
+                existingFolderId: null,
+            };
+        }
+        const detailObj = (data.detail && typeof data.detail === 'object') ? data.detail : null;
+        return {
+            detail: data.error?.message || detailObj?.message || (typeof data.detail === 'string' ? data.detail : null),
+            existingFolderId: detailObj?.existing_folder_id ?? null,
+        };
+    }
+
     async function _handleResponse(resp) {
         if (resp.ok) Auth.touchKeyCache();
         if (!resp.ok) {
             let detail = `HTTP ${resp.status}`;
             let existingFolderId = null;
             try {
-                const data = await resp.json();
-                if (Array.isArray(data.detail) && data.detail.length > 0) {
-                    detail = data.detail.map(e => (e.msg || String(e)).replace(/^Value error,\s*/i, '')).join('; ');
-                } else {
-                    const detailObj = (data.detail && typeof data.detail === 'object') ? data.detail : null;
-                    detail = data.error?.message || detailObj?.message || (typeof data.detail === 'string' ? data.detail : null) || detail;
-                    existingFolderId = detailObj?.existing_folder_id ?? null;
-                }
+                const parsed = _parseErrorDetail(await resp.json());
+                detail = parsed.detail ?? detail;
+                existingFolderId = parsed.existingFolderId;
             } catch {}
             const err = new Error(detail);
             err.status = resp.status;
             err.existingFolderId = existingFolderId;
             throw err;
         }
-
         if (resp.status === 204 || resp.status === 205) return null;
-
         const ct = resp.headers.get('content-type') || '';
-        if (ct.includes('application/json')) {
-            return resp.json();
-        }
+        if (ct.includes('application/json')) return resp.json();
         return resp;
     }
 

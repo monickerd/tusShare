@@ -45,6 +45,34 @@ _SQL_DELETE_UPLOAD    = "DELETE FROM tus_uploads WHERE id = ?"
 _MAX_CHUNK_BYTES = 21 * 1024 * 1024  # 21 MB
 
 
+def _parse_size_params(meta: dict) -> tuple[int, int, "int | None"]:
+    """Parse chunk_size, original_size, and last_modified_ms from upload metadata.
+
+    Raises HTTPException(400) on invalid or out-of-range values.
+    """
+    try:
+        chunk_size = int(meta["chunk_size"])
+        original_size = int(meta["original_size"])
+    except (ValueError, OverflowError):
+        raise HTTPException(status_code=400, detail="chunk_size and original_size must be integers")
+
+    last_modified_ms_raw = meta.get("last_modified_ms")
+    try:
+        last_modified_ms: int | None = int(last_modified_ms_raw) if last_modified_ms_raw else None
+        if last_modified_ms is not None and last_modified_ms <= 0:
+            raise ValueError("non-positive")
+    except (ValueError, OverflowError):
+        raise HTTPException(status_code=400, detail="last_modified_ms must be a positive integer if provided")
+
+    if not (1 <= chunk_size <= _MAX_CHUNK_BYTES - 16):
+        raise HTTPException(status_code=400, detail="chunk_size out of range")
+
+    if original_size <= 0:
+        raise HTTPException(status_code=400, detail="original_size must be positive")
+
+    return chunk_size, original_size, last_modified_ms
+
+
 def _tus_headers(extra: dict | None = None) -> dict:
     h = {"Tus-Resumable": _TUS_VERSION, "Tus-Version": _TUS_VERSION}
     if extra:
@@ -228,22 +256,7 @@ async def create_upload(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    try:
-        chunk_size = int(meta["chunk_size"])
-        original_size = int(meta["original_size"])
-    except (ValueError, OverflowError):
-        raise HTTPException(status_code=400, detail="chunk_size and original_size must be integers")
-
-    last_modified_ms_raw = meta.get("last_modified_ms")
-    try:
-        last_modified_ms: int | None = int(last_modified_ms_raw) if last_modified_ms_raw else None
-        if last_modified_ms is not None and last_modified_ms <= 0:
-            raise ValueError("non-positive")
-    except (ValueError, OverflowError):
-        raise HTTPException(status_code=400, detail="last_modified_ms must be a positive integer if provided")
-
-    if not (1 <= chunk_size <= _MAX_CHUNK_BYTES - 16):
-        raise HTTPException(status_code=400, detail="chunk_size out of range")
+    chunk_size, original_size, last_modified_ms = _parse_size_params(meta)
 
     # Enforce admin-configured chunk size.  Clients fetch the current value from
     # /auth/public-settings on startup; a mismatch means the setting changed since
@@ -255,9 +268,6 @@ async def create_upload(
             status_code=400,
             detail="invalid chunk_size, please refresh and try again",
         )
-
-    if original_size <= 0:
-        raise HTTPException(status_code=400, detail="original_size must be positive")
 
     folder_id = await _check_folder_access(db, user.id, meta.get("folder_id") or None)
     await _enforce_upload_quotas(db, user.id, total_encrypted_size)

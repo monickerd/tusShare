@@ -32,8 +32,8 @@ def _init() -> None:
             "TUSSHARE_REDIS_URL is set but the 'redis' package is not installed. "
             "Install it with: pip install 'redis[asyncio]>=5.0'"
         )
-    except Exception as exc:
-        logger.error("Failed to create Redis connection pool: %s", exc)
+    except Exception:
+        logger.exception("Failed to create Redis connection pool")
 
 
 def get_redis():

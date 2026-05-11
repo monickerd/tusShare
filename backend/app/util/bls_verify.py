@@ -220,8 +220,8 @@ def verify_batch_dleq(proofs: list[dict]) -> bool:
                 proof["dleq_r1"],
                 proof["dleq_r2"],
             )
-        except KeyError as exc:
-            log.error("verify_batch_dleq: proof[%d] missing field %s", i, exc)
+        except KeyError:
+            log.exception("verify_batch_dleq: proof[%d] missing field", i)
             return False
         if not ok:
             log.warning("verify_batch_dleq: proof[%d] failed", i)

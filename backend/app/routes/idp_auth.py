@@ -593,8 +593,8 @@ async def oidc_callback(
         identity = await handle_oidc_callback(
             db, provider_id, prov_row["config_enc"], code, state
         )
-    except Exception as exc:
-        logger.error("OIDC callback exchange error provider=%s: %s", provider_id, exc)
+    except Exception:
+        logger.exception("OIDC callback exchange error provider=%s", provider_id)
         await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
                                  f"token exchange error provider={provider_id}")
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)

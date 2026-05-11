@@ -248,8 +248,8 @@ def _ldap_authenticate_sync(
                 server_uri, bind_dn, svc_conn.result,
             )
             return None
-    except Exception as exc:
-        logger.error("LDAP service-account connect/bind error — server=%s: %s", server_uri, exc)
+    except Exception:
+        logger.exception("LDAP service-account connect/bind error — server=%s", server_uri)
         return None
 
     try:

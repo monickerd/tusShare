@@ -71,7 +71,7 @@ class LDAPConfigModel(BaseModel):
     @classmethod
     def val_uri(cls, v: str) -> str:
         v = v.strip()
-        if not (v.startswith("ldap://") or v.startswith("ldaps://")):
+        if not v.startswith(("ldap://", "ldaps://")):
             raise ValueError("server_uri must begin with ldap:// or ldaps://")
         return v
 

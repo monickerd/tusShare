@@ -118,6 +118,6 @@ async def run_redis_listener() -> None:
         except Exception:
             pass
         raise
-    except Exception as exc:
-        logger.error("Redis SSE listener crashed: %s", exc)
+    except Exception:
+        logger.exception("Redis SSE listener crashed")
         raise
