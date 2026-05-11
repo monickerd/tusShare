@@ -3089,7 +3089,7 @@ const Admin = (() => {
             [{ user }, { roles: allRoles }, capData] = await Promise.all([
                 Api.get(`${_api()}/admin/users/${userId}`),
                 Api.get(`${_api()}/admin/roles`).catch(() => ({ roles: [] })),
-                Api.get(`${_api()}/admin/capabilities`),
+                Api.get(`${_api()}/admin/roles/capabilities`),
             ]);
         } catch (e) {
             wrap.innerHTML = '';
