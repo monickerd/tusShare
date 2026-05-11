@@ -1807,7 +1807,12 @@ const Files = (() => {
                 results: { ok: 0, failed: [], firstName: null },
                 conflictState: { decisionDifferent: null, decisionIdentical: null },
                 fileCache: new Map(),
+                lastUploadMs: null,
             };
+            if (files.length > Config.upload.bulkWarnThreshold) {
+                const confirmed = await _showBulkUploadWarning(files.length);
+                if (!confirmed) return;
+            }
         }
 
         const existingFiles = await _getExistingFiles(folderId, _ctx.fileCache);
@@ -1852,6 +1857,13 @@ const Files = (() => {
                     file = _renameWithSuffix(file, existingByName);
                 }
             }
+
+            if (_ctx.lastUploadMs !== null) {
+                const minGapMs = 60000 / Config.upload.uploadRateLimit;
+                const elapsed = Date.now() - _ctx.lastUploadMs;
+                if (elapsed < minGapMs) await _sleep(minGapMs - elapsed);
+            }
+            _ctx.lastUploadMs = Date.now();
 
             const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
             const ctrl = _makeUploadCtrl(folderId, file.name);
@@ -2111,6 +2123,59 @@ const Files = (() => {
         });
     }
 
+    function _sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+    async function _countEntries(entries) {
+        let count = 0;
+        for (const entry of entries) {
+            count++;
+            if (entry.isDirectory) {
+                const reader = entry.createReader();
+                const children = await new Promise((res, rej) => {
+                    const all = [];
+                    function readBatch() {
+                        reader.readEntries((batch) => {
+                            if (batch.length === 0) { res(all); return; }
+                            all.push(...batch);
+                            readBatch();
+                        }, rej);
+                    }
+                    readBatch();
+                });
+                count += await _countEntries(children);
+            }
+        }
+        return count;
+    }
+
+    function _showBulkUploadWarning(count) {
+        return new Promise((resolve) => {
+            let overlay = Utils.el('div', { className: 'modal-overlay' });
+            const dismiss = (confirmed) => {
+                if (overlay?.parentNode) overlay.remove();
+                overlay = null;
+                resolve(confirmed);
+            };
+            const dialog = Utils.el('div', { className: 'modal confirm-dialog' }, [
+                Utils.el('p', { textContent: `Warning: Large operation! You are about to upload ${count} items. Continue?` }),
+                Utils.el('div', { className: 'modal-actions' }, [
+                    Utils.el('button', {
+                        className: 'btn btn-secondary',
+                        textContent: 'Cancel',
+                        onClick: () => dismiss(false),
+                    }),
+                    Utils.el('button', {
+                        className: 'btn btn-primary',
+                        textContent: 'Upload',
+                        onClick: () => dismiss(true),
+                    }),
+                ]),
+            ]);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+        });
+    }
+
     function _showFolderMergeModal(folderName) {
         return new Promise((resolve) => {
             let overlay = Utils.el('div', { className: 'modal-overlay' });
@@ -2156,7 +2221,13 @@ const Files = (() => {
                 mergeState: { decision: null },
                 conflictState: { decisionDifferent: null, decisionIdentical: null },
                 fileCache: new Map(),
+                lastUploadMs: null,
             };
+            const totalCount = await _countEntries(entries);
+            if (totalCount > Config.upload.bulkWarnThreshold) {
+                const confirmed = await _showBulkUploadWarning(totalCount);
+                if (!confirmed) return;
+            }
         }
 
         for (const entry of entries) {

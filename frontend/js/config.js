@@ -63,6 +63,10 @@ const Config = Object.freeze({
         maxHashFailureRate: 0.02,   // abort if this fraction of all chunks have failures
         maxHashFailuresMin: 2,      // floor for the rate threshold (prevents a near-zero
                                     // threshold on very small files, e.g. 5 chunks × 2% = 0)
+        // Bulk upload pacing — must match TUSSHARE_RATE_LIMIT_UPLOAD on the server.
+        // The client spaces uploads to stay just under this limit, avoiding 429s.
+        uploadRateLimit: 300,       // max upload initiations per minute per user
+        bulkWarnThreshold: 100,     // show a confirmation dialog before uploading this many items
     }),
 
     /* --- Download --- */

@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_LOGIN: int = 5          # per 15 min per IP
     RATE_LIMIT_API: int = 60           # per min per user
     RATE_LIMIT_SHARE_CREATE: int = 5   # per min per user
-    RATE_LIMIT_UPLOAD: int = 10        # per min per user
+    RATE_LIMIT_UPLOAD: int = 300       # per min per user
     RATE_LIMIT_MANAGEMENT: int = 120   # per min per user (folder/share CRUD, non-file actions)
 
     # Error-rate escalation (brute-force / scanning detection)

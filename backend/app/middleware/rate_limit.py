@@ -363,6 +363,30 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return response
 
 
+async def check_upload_rate_limit(
+    user: AuthenticatedUser = Depends(require_user_role),
+) -> None:
+    """FastAPI dependency: rate-limit upload creation per authenticated user.
+
+    Applied to POST /uploads so bulk uploads from a single user cannot
+    exhaust server resources. The default limit (TUSSHARE_RATE_LIMIT_UPLOAD)
+    is intentionally high (300/min) to accommodate legitimate bulk uploads;
+    lower it for resource-constrained deployments.
+    """
+    allowed = await _counter.is_allowed(
+        f"upload:{user.id}",
+        settings.RATE_LIMIT_UPLOAD,
+        RATE_LIMIT_MANAGEMENT_WINDOW,
+    )
+    if not allowed:
+        logger.warning("Upload rate limited: user=%s", user.id)
+        raise HTTPException(
+            status_code=429,
+            detail=_TOO_MANY_REQUESTS_MSG,
+            headers={"Retry-After": str(RATE_LIMIT_MANAGEMENT_WINDOW)},
+        )
+
+
 async def check_management_rate_limit(
     user: AuthenticatedUser = Depends(require_user_role),
 ) -> None:

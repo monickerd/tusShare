@@ -24,6 +24,7 @@ from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.database import Database, get_db
 from app.middleware.bandwidth import check_bandwidth
+from app.middleware.rate_limit import check_upload_rate_limit
 from app.services import sse_broker
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
@@ -198,6 +199,7 @@ async def create_upload(
     request: Request,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_upload_rate_limit)],
 ):
     """Create a new tus upload. Returns 201 with Location header."""
 
