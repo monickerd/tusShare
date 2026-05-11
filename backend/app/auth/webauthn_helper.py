@@ -30,13 +30,16 @@ import time
 import uuid
 
 import webauthn
-from webauthn.helpers import base64url_to_bytes, bytes_to_base64url
+from webauthn.helpers import (
+    base64url_to_bytes,
+    bytes_to_base64url,
+    parse_authentication_credential_json,
+    parse_registration_credential_json,
+)
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
-    AuthenticationCredential,
     AuthenticatorSelectionCriteria,
     PublicKeyCredentialDescriptor,
-    RegistrationCredential,
     ResidentKeyRequirement,
     UserVerificationRequirement,
 )
@@ -153,7 +156,7 @@ async def finish_registration(
         raise ValueError("Challenge not found, expired, or already consumed")
 
     try:
-        credential = RegistrationCredential.parse_raw(json.dumps(attestation_dict))
+        credential = parse_registration_credential_json(attestation_dict)
         verification = await asyncio.to_thread(
             webauthn.verify_registration_response,
             credential=credential,
@@ -286,7 +289,7 @@ async def finish_authentication(
     sign_count_before = matched_payload.get("sign_count", 0)
 
     try:
-        credential = AuthenticationCredential.parse_raw(json.dumps(assertion_dict))
+        credential = parse_authentication_credential_json(assertion_dict)
         verification = await asyncio.to_thread(
             webauthn.verify_authentication_response,
             credential=credential,

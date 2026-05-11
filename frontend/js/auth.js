@@ -399,16 +399,16 @@ const Auth = (() => {
 
             await _saveSessionKeyData(_masterKeyObj, null);
 
-            // Set up asymmetric PQ keys (generate + register if first login)
-            _setupAsymmetricKeys(data.user, _masterKeyObj).catch((err) => {
-                console.error('Asymmetric key setup failed:', err);
-                Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
-            });
-
-            // Process any pending team operations (rotation, key grants) in background
-            Teams.processPendingTeamOperations().catch((err) => {
-                console.warn('Pending team operations check failed:', err.message);
-            });
+            // Set up asymmetric PQ keys (generate + register if first login),
+            // then process pending team operations once private keys are in memory.
+            _setupAsymmetricKeys(data.user, _masterKeyObj)
+                .then(() => Teams.processPendingTeamOperations().catch((err) => {
+                    console.warn('Pending team operations check failed:', err.message);
+                }))
+                .catch((err) => {
+                    console.error('Asymmetric key setup failed:', err);
+                    Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
+                });
 
             status.textContent = '';
             if (data.mfa_enrollment_required) {
@@ -515,8 +515,9 @@ const Auth = (() => {
             newStored.cachedAt = Date.now();
             sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify(newStored));
 
-            _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch(() => {});
-            Teams.processPendingTeamOperations().catch(() => {});
+            _setupAsymmetricKeys(_currentUser, _masterKeyObj)
+                .then(() => Teams.processPendingTeamOperations().catch(() => {}))
+                .catch(() => {});
             startIdentityWatch();
 
             const currentHash = globalThis.location.hash;
@@ -559,15 +560,14 @@ const Auth = (() => {
             _unlockFailures = 0;
             await _saveSessionKeyData(_masterKeyObj, null);
 
-            _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
-                console.error('Asymmetric key setup failed:', err);
-                Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
-            });
-
-            // Process any pending team operations (rotation, key grants) in background
-            Teams.processPendingTeamOperations().catch((err) => {
-                console.warn('Pending team operations check failed:', err.message);
-            });
+            _setupAsymmetricKeys(_currentUser, _masterKeyObj)
+                .then(() => Teams.processPendingTeamOperations().catch((err) => {
+                    console.warn('Pending team operations check failed:', err.message);
+                }))
+                .catch((err) => {
+                    console.error('Asymmetric key setup failed:', err);
+                    Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
+                });
 
             status.textContent = '';
             // Start identity watch so SSE-delivered deactivation/revocation events
@@ -655,15 +655,14 @@ const Auth = (() => {
             await _saveSessionKeyData(_masterKeyObj, null);
 
             // Set up asymmetric keys so share operations work this session
-            _setupAsymmetricKeys(_currentUser, _masterKeyObj).catch((err) => {
-                console.error('Asymmetric key setup failed:', err);
-                Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
-            });
-
-            // Process any pending team operations (rotation, key grants) in background
-            Teams.processPendingTeamOperations().catch((err) => {
-                console.warn('Pending team operations check failed:', err.message);
-            });
+            _setupAsymmetricKeys(_currentUser, _masterKeyObj)
+                .then(() => Teams.processPendingTeamOperations().catch((err) => {
+                    console.warn('Pending team operations check failed:', err.message);
+                }))
+                .catch((err) => {
+                    console.error('Asymmetric key setup failed:', err);
+                    Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
+                });
 
             status.textContent = '';
             // Re-dispatch hashchange so the router navigates to whatever hash is

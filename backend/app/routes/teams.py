@@ -529,11 +529,11 @@ async def create_team(
         "VALUES (?, ?, 'team_admin', 'team', ?, ?)",
         (ur_id, user.id, team_id, user.id),
     )
-    # Store owner's wrapped team key
+    # Store owner's wrapped team key — key_confirmed=1 immediately: creator just generated the key
     await db.execute(
         "INSERT INTO user_team_keys "
-        "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv, key_confirmed) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
         (utk_id, team_id, user.id, body.ephemeral_x25519_pub,
          body.kem_ciphertext, body.encrypted_sk, body.sk_iv),
     )

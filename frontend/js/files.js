@@ -1991,7 +1991,7 @@ const Files = (() => {
                         name: entry.name,
                         parent_id: parentFolderId || null,
                     });
-                    newFolderId = created.id;
+                    newFolderId = created.folder.id;
                 } catch (err) {
                     Utils.showToast(`Failed to create folder "${entry.name}": ${err.message}`, 'error');
                     return;

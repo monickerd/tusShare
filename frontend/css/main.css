@@ -270,6 +270,12 @@ a:hover {
     min-height: 0;
 }
 
+.file-list {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+}
+
 .files-toolbar {
     display: flex;
     align-items: center;
