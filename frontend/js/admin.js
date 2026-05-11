@@ -3360,7 +3360,7 @@ const Admin = (() => {
         function kv(label, value) {
             if (value === null || value === undefined || value === '') return null;
             return Utils.el('tr', {}, [
-                Utils.el('td', { style: 'font-weight:600;padding:3px 14px 3px 0;white-space:nowrap;vertical-align:top;color:#555', textContent: label }),
+                Utils.el('td', { style: 'font-weight:600;padding:3px 14px 3px 0;white-space:nowrap;vertical-align:top;color:var(--color-text-muted)', textContent: label }),
                 Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:12px', textContent: String(value) }),
             ]);
         }
@@ -3394,7 +3394,7 @@ const Admin = (() => {
         if (Object.keys(remainingDetail).length) {
             wrap.appendChild(Utils.el('h5', { textContent: 'Detail', style: 'margin:14px 0 6px' }));
             wrap.appendChild(Utils.el('pre', {
-                style: 'background:#f5f5f5;padding:10px;border-radius:4px;overflow:auto;font-size:12px;max-height:220px;margin:0',
+                style: 'background:var(--color-surface-active);color:var(--color-text);border:1px solid var(--color-border);padding:10px;border-radius:4px;overflow:auto;font-size:12px;max-height:220px;margin:0',
                 textContent: JSON.stringify(remainingDetail, null, 2),
             }));
         }
