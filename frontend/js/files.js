@@ -1859,9 +1859,12 @@ const Files = (() => {
             }
 
             if (_ctx.lastUploadMs !== null) {
-                const minGapMs = 60000 / Config.upload.uploadRateLimit;
-                const elapsed = Date.now() - _ctx.lastUploadMs;
-                if (elapsed < minGapMs) await _sleep(minGapMs - elapsed);
+                const rateLimit = Auth.getCurrentUser()?.upload_rate_limit;
+                if (rateLimit > 0) {
+                    const minGapMs = 60000 / rateLimit;
+                    const elapsed = Date.now() - _ctx.lastUploadMs;
+                    if (elapsed < minGapMs) await _sleep(minGapMs - elapsed);
+                }
             }
             _ctx.lastUploadMs = Date.now();
 

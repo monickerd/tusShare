@@ -83,4 +83,5 @@ def user_response_dict(user: AuthenticatedUser) -> dict:
         "x25519_private_wrapped": getattr(user, "x25519_private_wrapped", None),
         "mlkem768_private_wrapped": getattr(user, "mlkem768_private_wrapped", None),
         "asymmetric_key_iv": getattr(user, "asymmetric_key_iv", None),
+        "upload_rate_limit": settings.RATE_LIMIT_UPLOAD,
     }
