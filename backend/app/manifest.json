@@ -1,5 +1,5 @@
 {
-  "generated": "2026-05-11T19:29:49.652753+00:00",
+  "generated": "2026-05-11T19:42:51.410285+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
     "frontend/js/admin.js": "sha256-LYYvLdZyf0eHfEAqRwMk32hYMWnBcrz53wKMz5bNzjY=",
@@ -9,7 +9,7 @@
     "frontend/js/config.js": "sha256-21gQwV5qYuam1uIq88lcMJqBEE03LfhD1zVJ9vihvOs=",
     "frontend/js/crypto.js": "sha256-R2EdH1uBQhw0yEFYeqSfk5yoDfo8v9Up8BTqgmkA9LY=",
     "frontend/js/download.js": "sha256-QTOv6yIueDf5x4zX/AXjIMwArlC/gObP05QMbms+FT4=",
-    "frontend/js/files.js": "sha256-8GyC4bBUrFmo+Yu94JguxT9MPygCtcMFkuTTzUjqmiw=",
+    "frontend/js/files.js": "sha256-Hs6KTT7/H+BX6U2LbwCaDC4HnD1cvA9ruUMGhea1ytQ=",
     "frontend/js/permissions.js": "sha256-cPntZh1Uy1zlR3t/9sh4KQw44SODsz/vj3u5Kt3X/yo=",
     "frontend/js/shares.js": "sha256-KmUAs8ZQUcbkhUdbZlBR2OaiFvCSCEpL82dL64NZofo=",
     "frontend/js/teams.js": "sha256-yXDiEVnltaaGyfndjBbPVPXoRiqeltLIYi5nLwzCbpQ=",
