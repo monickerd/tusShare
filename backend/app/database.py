@@ -356,6 +356,9 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             "ON folders(COALESCE(parent_id, ''), owner_id, name) "
             "WHERE deleted_at IS NULL",
         ]),
+        ("migrate_last_modified_ms_v1", [
+            "ALTER TABLE files ADD COLUMN IF NOT EXISTS last_modified_ms BIGINT",
+        ]),
     ]
     for name, stmts in _INCREMENTAL_MIGRATIONS:
         if name not in applied:
