@@ -359,23 +359,18 @@ async def get_user(
         for r in team_rows
     ]
 
-    # Last login timestamp from refresh_tokens
-    lt_cursor = await db.execute(
-        "SELECT MAX(created_at) AS last_login_at FROM refresh_tokens WHERE user_id = ?",
-        (user_id,),
-    )
-    lt_row = await lt_cursor.fetchone()
-    last_login_at = str(lt_row["last_login_at"]) if lt_row and lt_row["last_login_at"] else None
-
-    # Last login IP from most recent security event with an IP for this user
-    ip_cursor = await db.execute(
-        "SELECT ip_address FROM security_events "
-        "WHERE user_id = ? AND ip_address IS NOT NULL "
+    # Last login timestamp and IP from most recent login security event
+    login_cursor = await db.execute(
+        "SELECT timestamp AS last_login_at, ip_address "
+        "FROM security_events "
+        "WHERE user_id = ? "
+        "AND event_type IN ('opaque_login_success', 'ldap_login_success', 'oidc_login_success') "
         "ORDER BY timestamp DESC LIMIT 1",
         (user_id,),
     )
-    ip_row = await ip_cursor.fetchone()
-    last_login_ip = ip_row["ip_address"] if ip_row else None
+    login_row = await login_cursor.fetchone()
+    last_login_at = str(login_row["last_login_at"]) if login_row and login_row["last_login_at"] else None
+    last_login_ip = login_row["ip_address"] if login_row else None
 
     # Last 10 audit entries for this user
     audit_cursor = await db.execute(

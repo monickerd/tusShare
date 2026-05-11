@@ -190,7 +190,7 @@ const App = (() => {
     function _guardKeyPrompt(hash, container) {
         if (!Auth.getMasterKeyObj()) {
             if (Auth.getCurrentUser()?.is_admin) {
-                if (hash !== '#/admin' && hash !== '#/setup') {
+                if (hash !== '#/admin' && hash !== '#/setup' && hash !== '#/mfa') {
                     globalThis.location.hash = '#/admin';
                     return true;
                 }

@@ -443,9 +443,9 @@ async def ldap_login(
     if row is None:
         raise HTTPException(status_code=400, detail="LDAP provider not found or inactive")
 
+    user_agent = request.headers.get("user-agent", "")[:512]
     attrs = await ldap_authenticate(row["config_enc"], body.username, body.password)
     if attrs is None:
-        user_agent = request.headers.get("user-agent", "")[:512]
         await log_security_event(db, "ldap_login_failed", None, client_ip, user_agent, body.username)
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -470,6 +470,7 @@ async def ldap_login(
     )
 
     logger.info("LDAP login: user_id=%s username=%s ip=%s", user_id, body.username, client_ip)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    await log_security_event(db, "ldap_login_success", user_id, client_ip, user_agent)
 
     _fire_policy_eval(user_id)
 

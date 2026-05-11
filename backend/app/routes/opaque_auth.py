@@ -542,6 +542,7 @@ async def _maybe_issue_mfa_response(db, user, body, active_methods, mfa_reset_re
 @router.post("/login/finish", responses={401: {"description": "Unauthorized"}})
 async def opaque_login_finish(
     body: OpaqueLoginFinishRequest,
+    request: Request,
     response: Response,
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -625,6 +626,10 @@ async def opaque_login_finish(
     access_token = create_access_token(user.id, session_id=token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
     set_auth_cookies(response, access_token, raw_refresh, csrf_token, max_age=rt_max_age)
+
+    client_ip = _get_client_ip(request)
+    user_agent = request.headers.get("user-agent", "")[:512]
+    await log_security_event(db, "opaque_login_success", user.id, client_ip, user_agent)
 
     logger.info(
         "OPAQUE login: user=%s (id=%s) public_device=%s",

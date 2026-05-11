@@ -1257,7 +1257,7 @@ const Admin = (() => {
                 toggleBtn.classList.toggle('collapsed', open);
                 if (!open && !bodyLoaded) {
                     bodyLoaded = true;
-                    _populateRoleCardBody(body, role, flags, flagsByCategory, refreshFn);
+                    _populateRoleCardBody(body, role, flags, flagsByCategory, adminTier, refreshFn);
                 }
             },
         });
@@ -1280,7 +1280,7 @@ const Admin = (() => {
         return card;
     }
 
-    function _populateRoleCardBody(container, role, flags, flagsByCategory, refreshFn) {
+    function _populateRoleCardBody(container, role, flags, flagsByCategory, adminTier, refreshFn) {
         // Rename / description form (always shown — system roles can be renamed)
         const fldName = Utils.el('input', {
             type: 'text', className: 'input-sm', value: role.name,
@@ -2338,7 +2338,6 @@ const Admin = (() => {
         try { currentMethods = JSON.parse(s['mfa_allowed_methods'] || '["totp","webauthn"]'); } catch {}
         const cbTotp = Utils.el('input', { type: 'checkbox', checked: currentMethods.includes('totp') });
         const cbWebAuthn = Utils.el('input', { type: 'checkbox', checked: currentMethods.includes('webauthn') });
-        const cbEmailOtp = Utils.el('input', { type: 'checkbox', checked: currentMethods.includes('email_otp'), disabled: true, title: 'Email OTP not yet available' });
 
         const cbOidcExempt = Utils.el('input', { type: 'checkbox', checked: s['mfa_oidc_exempt'] === '1' });
 
@@ -2374,7 +2373,6 @@ const Admin = (() => {
         const methodsWrap = Utils.el('div', { style: 'display:flex;gap:16px;align-items:center' }, [
             Utils.el('label', { style: 'display:flex;gap:4px;align-items:center' }, [cbTotp,    Utils.el('span', { textContent: 'TOTP' })]),
             Utils.el('label', { style: 'display:flex;gap:4px;align-items:center' }, [cbWebAuthn, Utils.el('span', { textContent: 'WebAuthn / Passkey' })]),
-            Utils.el('label', { style: 'display:flex;gap:4px;align-items:center;opacity:0.5' }, [cbEmailOtp, Utils.el('span', { textContent: 'Email OTP (future)' })]),
         ]);
 
         container.innerHTML = '';
