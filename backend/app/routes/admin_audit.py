@@ -190,16 +190,40 @@ def _row_to_dict(r) -> dict:
         "event_type":       r["event_type"],
         "severity":         r["severity"] or "info",
         "outcome":          r["outcome"],
+        "action_key":       r["action_key"],
         "actor_user_id":    r["user_id"],
         "actor_username":   r["actor_username"],
         "actor_ip":         r["ip_address"],
         "actor_session_id": r["actor_session_id"],
+        "user_agent":       r["user_agent"],
         "target_type":      r["target_type"],
         "target_id":        r["target_id"],
         "target_name":      r["target_name"],
         "admin_actor_id":   r["admin_actor_id"],
         "detail":           (json.loads(r["detail"]) if r["detail"] else None),
     }
+
+
+async def _fill_missing_usernames(db, events: list[dict]) -> list[dict]:
+    """Backfill actor_username for events where it is NULL but user_id is present.
+
+    security_events is append-only so old rows cannot be updated; instead we
+    look the username up live from the users table and merge it into the response.
+    """
+    missing = {e["actor_user_id"] for e in events if not e["actor_username"] and e["actor_user_id"]}
+    if not missing:
+        return events
+    placeholders = ",".join("?" * len(missing))
+    cur = await db.execute(
+        f"SELECT id, username FROM users WHERE id IN ({placeholders})",
+        list(missing),
+    )
+    urows = await cur.fetchall()
+    umap = {r["id"]: r["username"] for r in urows}
+    return [
+        {**e, "actor_username": e["actor_username"] or umap.get(e["actor_user_id"])}
+        for e in events
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +257,7 @@ async def list_audit_logs(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     query = f"""
         SELECT id, user_id, actor_username, ip_address, actor_session_id,
-               event_type, severity, outcome, action_key, detail, timestamp,
+               user_agent, event_type, severity, outcome, action_key, detail, timestamp,
                target_type, target_id, target_name, admin_actor_id
         FROM security_events
         {where}
@@ -249,7 +273,8 @@ async def list_audit_logs(
         rows = [r for r in rows if _matches_event_types(r["event_type"], et_patterns)]
 
     rows = _apply_key_filters(rows, _auth)
-    return {"events": [_row_to_dict(r) for r in rows], "count": len(rows)}
+    events = await _fill_missing_usernames(db, [_row_to_dict(r) for r in rows])
+    return {"events": events, "count": len(events)}
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +302,7 @@ async def export_audit_logs(
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     query = f"""
         SELECT id, user_id, actor_username, ip_address, actor_session_id,
-               event_type, severity, outcome, detail, timestamp,
+               user_agent, event_type, severity, outcome, action_key, detail, timestamp,
                target_type, target_id, target_name, admin_actor_id
         FROM security_events
         {where}
@@ -293,6 +318,17 @@ async def export_audit_logs(
 
     rows = _apply_key_filters(rows, _auth)
 
+    # Resolve missing usernames from the users table (old events have NULL actor_username)
+    missing_ids = {r["user_id"] for r in rows if not r["actor_username"] and r["user_id"]}
+    umap: dict[str, str] = {}
+    if missing_ids:
+        placeholders = ",".join("?" * len(missing_ids))
+        ucur = await db.execute(
+            f"SELECT id, username FROM users WHERE id IN ({placeholders})",
+            list(missing_ids),
+        )
+        umap = {row["id"]: row["username"] for row in await ucur.fetchall()}
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
@@ -305,7 +341,9 @@ async def export_audit_logs(
         writer.writerow([
             r["id"], r["timestamp"], r["event_type"],
             r["severity"] or "info", r["outcome"] or "",
-            r["user_id"] or "", r["actor_username"] or "", r["ip_address"] or "", r["actor_session_id"] or "",
+            r["user_id"] or "",
+            r["actor_username"] or umap.get(r["user_id"], "") or "",
+            r["ip_address"] or "", r["actor_session_id"] or "",
             r["target_type"] or "", r["target_id"] or "", r["target_name"] or "",
             r["admin_actor_id"] or "", r["detail"] or "",
         ])

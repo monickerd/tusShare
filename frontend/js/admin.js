@@ -3356,6 +3356,45 @@ const Admin = (() => {
         }
     }
 
+    function _showEventDetailModal(ev) {
+        function kv(label, value) {
+            if (value === null || value === undefined || value === '') return null;
+            return Utils.el('tr', {}, [
+                Utils.el('td', { style: 'font-weight:600;padding:3px 14px 3px 0;white-space:nowrap;vertical-align:top;color:#555', textContent: label }),
+                Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:12px', textContent: String(value) }),
+            ]);
+        }
+        const tbody = Utils.el('tbody');
+        const rows = [
+            kv('Event ID',      ev.event_id),
+            kv('Timestamp',     ev.timestamp),
+            kv('Type',          ev.event_type),
+            kv('Severity',      ev.severity),
+            kv('Outcome',       ev.outcome),
+            kv('Action key',    ev.action_key),
+            kv('Actor',         ev.actor_username || ev.actor_user_id),
+            kv('Actor user ID', ev.actor_user_id),
+            kv('Actor IP',      ev.actor_ip),
+            kv('Session ID',    ev.actor_session_id),
+            kv('User agent',    ev.user_agent),
+            kv('Target type',   ev.target_type),
+            kv('Target name',   ev.target_name),
+            kv('Target ID',     ev.target_id),
+            kv('Admin actor',   ev.admin_actor_id),
+        ];
+        for (const r of rows) { if (r) tbody.appendChild(r); }
+        const table = Utils.el('table', { style: 'border-collapse:collapse;width:100%' }, [tbody]);
+        const wrap = Utils.el('div', { style: 'min-width:500px;max-width:700px' }, [table]);
+        if (ev.detail && typeof ev.detail === 'object' && Object.keys(ev.detail).length) {
+            wrap.appendChild(Utils.el('h5', { textContent: 'Detail', style: 'margin:14px 0 6px' }));
+            wrap.appendChild(Utils.el('pre', {
+                style: 'background:#f5f5f5;padding:10px;border-radius:4px;overflow:auto;font-size:12px;max-height:220px;margin:0',
+                textContent: JSON.stringify(ev.detail, null, 2),
+            }));
+        }
+        Utils.showModal(`Event: ${ev.event_type}`, wrap);
+    }
+
     function _buildAuditRow(ev) {
         let sevClass;
         if (ev.severity === 'critical') sevClass = 'badge-error';
@@ -3379,9 +3418,16 @@ const Admin = (() => {
             actorCell = Utils.el('td', { textContent: displayName });
         }
 
+        const typeLink = Utils.el('a', {
+            textContent: ev.event_type,
+            href: '#',
+            style: 'cursor:pointer',
+            onClick: (e) => { e.preventDefault(); _showEventDetailModal(ev); },
+        });
+
         return Utils.el('tr', {}, [
             Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '' }),
-            Utils.el('td', { textContent: ev.event_type }),
+            Utils.el('td', {}, [typeLink]),
             Utils.el('td', {}, [Utils.el('span', { className: `badge ${sevClass}`, textContent: ev.severity || 'info' })]),
             Utils.el('td', { textContent: ev.outcome || '' }),
             actorCell,
