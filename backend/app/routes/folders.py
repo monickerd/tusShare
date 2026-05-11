@@ -181,7 +181,18 @@ async def create_folder(
             await copy_folder_permissions(db, body.parent_id, "folder", folder_id)
         await db.commit()
     except DuplicateError:
-        raise HTTPException(status_code=409, detail="Folder with this name already exists here")
+        cursor = await db.execute(
+            "SELECT id FROM folders WHERE name = ? AND parent_id IS ? AND owner_id = ? AND deleted_at IS NULL",
+            (body.name, body.parent_id, user.id),
+        )
+        existing = await cursor.fetchone()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Folder with this name already exists here",
+                "existing_folder_id": existing["id"] if existing else None,
+            },
+        )
 
     # Notify the parent folder (or root) that a new subfolder appeared
     sse_broker.publish(body.parent_id or f"root:{user.id}", {"type": "change"})
