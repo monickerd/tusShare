@@ -182,7 +182,7 @@ async def create_folder(
         await db.commit()
     except DuplicateError:
         cursor = await db.execute(
-            "SELECT id FROM folders WHERE name = ? AND parent_id IS ? AND owner_id = ? AND deleted_at IS NULL",
+            "SELECT id FROM folders WHERE name = ? AND parent_id IS NOT DISTINCT FROM ? AND owner_id = ? AND deleted_at IS NULL",
             (body.name, body.parent_id, user.id),
         )
         existing = await cursor.fetchone()
