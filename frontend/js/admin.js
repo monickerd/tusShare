@@ -658,28 +658,27 @@ const Admin = (() => {
             return;
         }
 
-        const thead = Utils.el('thead', {}, [
-            Utils.el('tr', {}, [
-                Utils.el('th', { textContent: 'Username' }),
-                Utils.el('th', { textContent: 'Roles' }),
-                Utils.el('th', { textContent: 'Disk Used' }),
-                Utils.el('th', { textContent: 'Quota (MB)' }),
-                Utils.el('th', { textContent: 'BW Limit (MB/s)' }),
-                Utils.el('th', { textContent: 'File Limit (MB)' }),
-                Utils.el('th', { textContent: 'Active' }),
-                Utils.el('th', { textContent: 'Actions' }),
-            ]),
-        ]);
-
-        const tbody = Utils.el('tbody');
         const currentUser = Auth.getCurrentUser();
-
-        for (const u of data.users) {
-            tbody.appendChild(_buildUserRow(u, currentUser, () => _renderUsers(container)));
-        }
-
         container.innerHTML = '';
-        container.appendChild(Utils.el('table', { className: 'admin-table admin-users-table' }, [thead, tbody]));
+        const widget = _makeSortablePagedTable({
+            columns: [
+                { label: 'Username',        key: 'username' },
+                { label: 'Roles',           key: null, sortable: false },
+                { label: 'Disk Used',       key: 'disk_used' },
+                { label: 'Quota (MB)',      key: null, sortable: false },
+                { label: 'BW Limit (MB/s)', key: null, sortable: false },
+                { label: 'File Limit (MB)', key: null, sortable: false },
+                { label: 'Active',          key: 'is_active' },
+                { label: 'Actions',         key: null, sortable: false },
+            ],
+            items:    data.users,
+            pageSize: 10,
+            filterFn: (u, text) =>
+                u.username.toLowerCase().includes(text) || u.id.toLowerCase().includes(text),
+            buildRow: (u) => _buildUserRow(u, currentUser, () => _renderUsers(container)),
+        });
+        widget.querySelector('table').classList.add('admin-users-table');
+        container.appendChild(widget);
     }
 
     function _buildUserRow(u, currentUser, refreshFn) {
@@ -796,23 +795,23 @@ const Admin = (() => {
             return;
         }
 
-        const thead = Utils.el('thead', {}, [
-            Utils.el('tr', {}, [
-                Utils.el('th', { textContent: 'Name' }),
-                Utils.el('th', { textContent: 'Owner' }),
-                Utils.el('th', { textContent: 'Members' }),
-                Utils.el('th', { textContent: 'Created' }),
-                Utils.el('th', { textContent: 'Actions' }),
-            ]),
-        ]);
-
-        const tbody = Utils.el('tbody');
-        for (const t of data.teams) {
-            tbody.appendChild(_buildTeamRow(t, () => _renderTeams(container)));
-        }
-
         container.innerHTML = '';
-        container.appendChild(Utils.el('table', { className: 'admin-table' }, [thead, tbody]));
+        container.appendChild(_makeSortablePagedTable({
+            columns: [
+                { label: 'Name',    key: 'name' },
+                { label: 'Owner',   key: 'owner_username' },
+                { label: 'Members', key: 'member_count' },
+                { label: 'Created', key: 'created_at' },
+                { label: 'Actions', key: null, sortable: false },
+            ],
+            items:    data.teams,
+            pageSize: 10,
+            filterFn: (t, text) =>
+                t.name.toLowerCase().includes(text) ||
+                (t.owner_username || '').toLowerCase().includes(text) ||
+                t.id.toLowerCase().includes(text),
+            buildRow: (t) => _buildTeamRow(t, () => _renderTeams(container)),
+        }));
     }
 
     function _buildTeamRow(t, refreshFn) {
@@ -884,26 +883,27 @@ const Admin = (() => {
         wrap.appendChild(Utils.el('h6', { textContent: 'Members', style: 'margin:12px 0 6px;font-size:13px;font-weight:600' }));
 
         if (members.length === 0) {
-            wrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px' , textContent: 'No members.' }));
+            wrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px', textContent: 'No members.' }));
         } else {
-            const mThead = Utils.el('thead', {}, [
-                Utils.el('tr', {}, [
-                    Utils.el('th', { textContent: 'Username' }),
-                    Utils.el('th', { textContent: 'Role' }),
-                    Utils.el('th', { textContent: 'Key' }),
-                    Utils.el('th', { textContent: 'Joined' }),
-                ]),
-            ]);
-            const mTbody = Utils.el('tbody');
-            for (const m of members) {
-                mTbody.appendChild(Utils.el('tr', {}, [
+            const memberWidget = _makeSortablePagedTable({
+                columns: [
+                    { label: 'Username', key: 'username' },
+                    { label: 'Role',     key: 'role_name' },
+                    { label: 'Key',      key: 'key_confirmed' },
+                    { label: 'Joined',   key: 'joined_at' },
+                ],
+                items:    members,
+                pageSize: 10,
+                filterFn: (m, text) => m.username.toLowerCase().includes(text),
+                buildRow: (m) => Utils.el('tr', {}, [
                     Utils.el('td', { textContent: m.username }),
                     Utils.el('td', { textContent: m.role_name || '—' }),
                     Utils.el('td', { textContent: m.key_confirmed ? 'Confirmed' : 'Pending' }),
                     Utils.el('td', { textContent: m.joined_at ? m.joined_at.slice(0, 10) : '—' }),
-                ]));
-            }
-            wrap.appendChild(Utils.el('table', { className: 'admin-table', style: 'font-size:12px' }, [mThead, mTbody]));
+                ]),
+            });
+            memberWidget.querySelector('table').style.fontSize = '12px';
+            wrap.appendChild(memberWidget);
         }
     }
 
@@ -2400,23 +2400,17 @@ const Admin = (() => {
             return;
         }
 
-        const thead = Utils.el('thead', {}, [
-            Utils.el('tr', {}, [
-                Utils.el('th', { textContent: 'Username' }),
-                Utils.el('th', { textContent: 'MFA Credentials' }),
-                Utils.el('th', { textContent: 'Actions' }),
-            ]),
-        ]);
-        const tbody = Utils.el('tbody');
+        const mfaCache = new Map();
 
-        for (const u of users) {
-            const mfaCell = Utils.el('td', { textContent: '…', className: 'text-muted' });
+        function _buildMfaRow(u) {
+            const mfaCell    = Utils.el('td', { textContent: '…', className: 'text-muted' });
             const actionsCell = Utils.el('td', { className: 'admin-actions' });
 
-            // Load per-user MFA info async
-            Api.get(`${_api()}/admin/users/${u.id}/mfa`).then(mfaData => {
+            function _populateMfa(mfaData) {
                 const creds = mfaData.credentials || [];
+                mfaCell.className   = '';
                 mfaCell.textContent = creds.length === 0 ? 'None' : creds.map(c => c.method).join(', ');
+                actionsCell.innerHTML = '';
 
                 if (creds.length > 0) {
                     const wipeBtn = Utils.el('button', {
@@ -2428,6 +2422,7 @@ const Admin = (() => {
                             try {
                                 await Api.del(`${_api()}/admin/users/${u.id}/mfa`);
                                 Utils.showToast(`MFA wiped for ${u.username}`, 'success');
+                                mfaCache.delete(u.id);
                                 _renderMfaUserTable(container);
                             } catch (err) {
                                 Utils.showToast('Wipe failed: ' + err.message, 'error');
@@ -2456,20 +2451,39 @@ const Admin = (() => {
                     },
                 });
                 actionsCell.appendChild(resetBtn);
-            }).catch(() => {
-                mfaCell.textContent = '(error)';
-            });
+            }
 
-            tbody.appendChild(Utils.el('tr', {}, [
+            if (mfaCache.has(u.id)) {
+                _populateMfa(mfaCache.get(u.id));
+            } else {
+                Api.get(`${_api()}/admin/users/${u.id}/mfa`).then(mfaData => {
+                    mfaCache.set(u.id, mfaData);
+                    _populateMfa(mfaData);
+                }).catch(() => {
+                    mfaCell.textContent = '(error)';
+                });
+            }
+
+            return Utils.el('tr', {}, [
                 Utils.el('td', { textContent: u.username }),
                 mfaCell,
                 actionsCell,
-            ]));
+            ]);
         }
 
         container.innerHTML = '';
         container.appendChild(Utils.el('h4', { textContent: 'Per-User MFA Status', style: 'margin-bottom:8px' }));
-        container.appendChild(Utils.el('table', { className: 'admin-table' }, [thead, tbody]));
+        container.appendChild(_makeSortablePagedTable({
+            columns: [
+                { label: 'Username',        key: 'username' },
+                { label: 'MFA Credentials', key: null, sortable: false },
+                { label: 'Actions',         key: null, sortable: false },
+            ],
+            items:    users,
+            pageSize: 10,
+            filterFn: (u, text) => u.username.toLowerCase().includes(text) || u.id.toLowerCase().includes(text),
+            buildRow: _buildMfaRow,
+        }));
     }
 
     // ------------------------------------------------------------------
@@ -2481,6 +2495,114 @@ const Admin = (() => {
         const p = Utils.el('p', { className: 'text-error' });
         p.textContent = msg;
         container.appendChild(p);
+    }
+
+    // ------------------------------------------------------------------
+    // Shared: sortable + paginated table widget
+    // Usage: _makeSortablePagedTable({ columns, items, pageSize, filterFn, buildRow })
+    //   columns  — [{ label, key, sortable }]  key=null disables sort for that col
+    //   items    — source array (not mutated)
+    //   filterFn — (item, lowerCaseText) -> bool
+    //   buildRow — (item) -> <tr> element
+    // ------------------------------------------------------------------
+
+    function _makeSortablePagedTable({ columns, items, pageSize = 10, filterFn, buildRow }) {
+        let currentPage = 1;
+        let sortKey     = null;
+        let sortDir     = 'asc';
+        let filterText  = '';
+
+        const filterInput = Utils.el('input', {
+            type: 'text', placeholder: 'Filter by name or ID…',
+            className: 'input-sm',
+            style: 'margin-bottom:8px;width:100%;max-width:360px;display:block',
+        });
+
+        const thead = Utils.el('thead');
+        const tbody = Utils.el('tbody');
+        const table = Utils.el('table', { className: 'admin-table' }, [thead, tbody]);
+
+        const countMsg    = Utils.el('span', { style: 'font-size:12px;color:var(--color-text-muted)' });
+        const loadMoreBtn = Utils.el('button', {
+            className: 'btn btn-sm btn-secondary',
+            textContent: 'Load More',
+            style: 'display:none',
+        });
+        const footer = Utils.el('div', { style: 'display:flex;align-items:center;gap:10px;margin-top:6px' },
+            [loadMoreBtn, countMsg]);
+
+        const headerRow = Utils.el('tr');
+        for (const col of columns) {
+            const sortable = col.sortable !== false && col.key != null;
+            const th = Utils.el('th', {
+                textContent: col.label,
+                style: sortable ? 'cursor:pointer;user-select:none' : '',
+            });
+            if (sortable) {
+                th.addEventListener('click', () => {
+                    if (sortKey === col.key) {
+                        sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        sortKey = col.key;
+                        sortDir = 'asc';
+                    }
+                    currentPage = 1;
+                    _updateHeaders();
+                    _render();
+                });
+            }
+            col._th = th;
+            headerRow.appendChild(th);
+        }
+        thead.appendChild(headerRow);
+
+        function _updateHeaders() {
+            for (const col of columns) {
+                if (!col._th || col.sortable === false || col.key == null) continue;
+                col._th.textContent = col.label + (sortKey === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+            }
+        }
+
+        function _render() {
+            let filtered = filterText && filterFn
+                ? items.filter(item => filterFn(item, filterText))
+                : items.slice();
+
+            if (sortKey) {
+                filtered.sort((a, b) => {
+                    const av = String(a[sortKey] ?? '').toLowerCase();
+                    const bv = String(b[sortKey] ?? '').toLowerCase();
+                    const cmp = av.localeCompare(bv, undefined, { numeric: true });
+                    return sortDir === 'asc' ? cmp : -cmp;
+                });
+            }
+
+            const total   = filtered.length;
+            const visible = filtered.slice(0, currentPage * pageSize);
+
+            tbody.innerHTML = '';
+            for (const item of visible) {
+                tbody.appendChild(buildRow(item));
+            }
+
+            countMsg.textContent = `Showing ${visible.length} of ${total}`;
+            loadMoreBtn.style.display = visible.length < total ? '' : 'none';
+        }
+
+        filterInput.addEventListener('input', () => {
+            filterText = filterInput.value.trim().toLowerCase();
+            currentPage = 1;
+            _render();
+        });
+        loadMoreBtn.addEventListener('click', () => { currentPage++; _render(); });
+
+        _render();
+
+        const wrap = Utils.el('div');
+        wrap.appendChild(filterInput);
+        wrap.appendChild(table);
+        wrap.appendChild(footer);
+        return wrap;
     }
 
     // ------------------------------------------------------------------
