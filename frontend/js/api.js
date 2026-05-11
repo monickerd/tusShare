@@ -96,7 +96,11 @@ const Api = (() => {
             let detail = `HTTP ${resp.status}`;
             try {
                 const data = await resp.json();
-                detail = data.error?.message || data.detail || detail;
+                if (Array.isArray(data.detail) && data.detail.length > 0) {
+                    detail = data.detail.map(e => (e.msg || String(e)).replace(/^Value error,\s*/i, '')).join('; ');
+                } else {
+                    detail = data.error?.message || data.detail || detail;
+                }
             } catch {}
             const err = new Error(detail);
             err.status = resp.status;

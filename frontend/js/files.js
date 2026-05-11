@@ -1994,7 +1994,7 @@ const Files = (() => {
                     newFolderId = created.folder.id;
                 } catch (err) {
                     Utils.showToast(`Failed to create folder "${entry.name}": ${err.message}`, 'error');
-                    return;
+                    continue;
                 }
 
                 const reader = entry.createReader();

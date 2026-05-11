@@ -59,7 +59,7 @@ def sanitize_folder_name(value: str) -> str:
     value = value.strip()
     if not FOLDER_NAME_PATTERN.match(value):
         raise ValueError(
-            "Folder name must be 1-255 characters: letters, digits, space, underscore, hyphen, dot"
+            "Folder name must be 1-255 characters: letters, digits, spaces, or _ - . ' ! ( ) &"
         )
     if value.replace(".", "") == "":
         raise ValueError("Folder name cannot be only dots")
