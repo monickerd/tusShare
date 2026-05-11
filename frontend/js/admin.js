@@ -1151,7 +1151,7 @@ const Admin = (() => {
         try {
             [data, capData] = await Promise.all([
                 Api.get(`${_api()}/admin/roles`),
-                Api.get(`${_api()}/admin/capabilities`),
+                Api.get(`${_api()}/admin/roles/capabilities`),
             ]);
         } catch (err) {
             _showError(container, 'Failed to load roles: ' + err.message);
