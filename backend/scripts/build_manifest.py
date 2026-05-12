@@ -57,7 +57,10 @@ TRACKED_FILES_MAPPED: list[tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 
 def _sha256_b64(path: Path) -> str:
-    digest = hashlib.sha256(path.read_bytes()).digest()
+    # Normalize CRLF→LF so hashes match on both Windows (where editors write
+    # CRLF despite eol=lf in .gitattributes) and Linux (always LF).
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    digest = hashlib.sha256(data).digest()
     return "sha256-" + base64.b64encode(digest).decode()
 
 
@@ -87,7 +90,7 @@ def main() -> int:
         "generated": datetime.now(timezone.utc).isoformat(),
         "files": files,
     }
-    MANIFEST_PATH.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    MANIFEST_PATH.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
 
     print(f"Wrote {len(files)} file hashes to {MANIFEST_PATH.relative_to(ROOT)}")
     if warnings:

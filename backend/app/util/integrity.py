@@ -42,7 +42,9 @@ class IntegrityResult:
 
 
 def _sha256_b64(path: Path) -> str:
-    digest = hashlib.sha256(path.read_bytes()).digest()
+    # Normalize CRLF→LF to match build_manifest.py's hashing convention.
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    digest = hashlib.sha256(data).digest()
     return "sha256-" + base64.b64encode(digest).decode()
 
 
