@@ -75,27 +75,37 @@ async def _open_app_page(session: UserSession) -> Page:
     Open a new Playwright page (browser tab) within the session's existing
     BrowserContext and wait until the main app UI is visible.
 
-    New tabs share the session's auth cookies but have empty sessionStorage,
-    so the OPAQUE key-unlock prompt (#key-password) will appear.  We fill it
-    with the stored password, then wait for the app to finish loading.
+    New tabs have empty sessionStorage, so Auth.checkSession() returns false
+    immediately and the app renders the login form.  We fill in the credentials
+    and submit, then wait for the app to finish loading.
 
-    After returning, startIdentityWatch() will have been called by app.js,
-    and the EventSource connection to /api/v1/events/identity will be
+    After returning, startIdentityWatch() will have been called by the login
+    flow, and the EventSource connection to /api/v1/events/identity will be
     establishing.  We sleep 1 s to let the connection fully open before any
     test triggers a deactivation event.
     """
     page = await session.ctx.new_page()
     await page.goto("/", wait_until="load", timeout=NAV_MS)
 
-    # The key-unlock prompt appears when the app detects a valid session cookie
-    # but finds no OPAQUE key material in sessionStorage (new tab scenario).
+    # New tabs have empty sessionStorage, so the app shows the login form.
+    username_input = page.locator("#username")
+    try:
+        await username_input.wait_for(state="visible", timeout=5_000)
+        await username_input.fill(session.username)
+        await page.fill("#password", session.password)
+        await page.click("button[type='submit']")
+    except PlaywrightTimeoutError:
+        pass  # Login form did not appear — try key-prompt fallback below
+
+    # Fallback: if the key prompt appears instead (e.g. sessionStorage was not
+    # fully cleared), unlock it with the stored password.
     key_prompt = page.locator("#key-password")
     try:
         await key_prompt.wait_for(state="visible", timeout=5_000)
         await key_prompt.fill(session.password)
         await page.click("button[type='submit']")
     except PlaywrightTimeoutError:
-        pass  # Key prompt did not appear — app loaded directly into the main UI
+        pass  # Key prompt did not appear either
 
     # Wait until neither the login form nor the key prompt is in the DOM
     await page.wait_for_function(
