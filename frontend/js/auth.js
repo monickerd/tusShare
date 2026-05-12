@@ -374,6 +374,7 @@ const Auth = (() => {
             // Admin accounts have no encryption keys — go straight to the admin panel
             if (data.user.is_admin) {
                 status.textContent = '';
+                startIdentityWatch();
                 globalThis.location.hash = '#/admin';
                 return;
             }
@@ -411,6 +412,7 @@ const Auth = (() => {
                 });
 
             status.textContent = '';
+            startIdentityWatch();
             if (data.mfa_enrollment_required) {
                 globalThis.location.hash = '#/mfa';
             } else {
