@@ -835,7 +835,7 @@ async def update_share(
 ):
     """Update share settings (active state, expiry, download limit)."""
     share_id = validate_uuid(share_id)
-    share = await _get_share_for_manage(db, share_id, user)
+    await _get_share_for_manage(db, share_id, user)
 
     updates: list[str] = []
     params: list = []
@@ -872,7 +872,7 @@ async def delete_share(
     Access log rows retain a NULL share_id reference (ON DELETE SET NULL).
     """
     share_id = validate_uuid(share_id)
-    share = await _get_share_for_manage(db, share_id, user)
+    await _get_share_for_manage(db, share_id, user)
     await db.execute("DELETE FROM shares WHERE id = ?", (share_id,))
     await db.commit()
     return {"message": "Share deleted"}
@@ -972,7 +972,7 @@ async def add_share_items(
     Idempotent: ON CONFLICT DO NOTHING, so duplicate posts are safe.
     """
     share_id = validate_uuid(share_id)
-    share = await _get_share_for_manage(db, share_id, user)
+    await _get_share_for_manage(db, share_id, user)
 
     for item in body.items:
         await db.execute(
