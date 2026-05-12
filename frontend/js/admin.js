@@ -882,29 +882,64 @@ const Admin = (() => {
 
         wrap.appendChild(Utils.el('h6', { textContent: 'Members', style: 'margin:12px 0 6px;font-size:13px;font-weight:600' }));
 
-        if (members.length === 0) {
-            wrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px', textContent: 'No members.' }));
-        } else {
-            const memberWidget = _makeSortablePagedTable({
-                columns: [
-                    { label: 'Username', key: 'username' },
-                    { label: 'Role',     key: 'role_name' },
-                    { label: 'Key',      key: 'key_confirmed' },
-                    { label: 'Joined',   key: 'joined_at' },
-                ],
-                items:    members,
-                pageSize: 10,
-                filterFn: (m, text) => m.username.toLowerCase().includes(text),
-                buildRow: (m) => Utils.el('tr', {}, [
-                    Utils.el('td', { textContent: m.username }),
-                    Utils.el('td', { textContent: m.role_name || '—' }),
-                    Utils.el('td', { textContent: m.key_confirmed ? 'Confirmed' : 'Pending' }),
-                    Utils.el('td', { textContent: m.joined_at ? m.joined_at.slice(0, 10) : '—' }),
-                ]),
-            });
-            memberWidget.querySelector('table').style.fontSize = '12px';
-            wrap.appendChild(memberWidget);
-        }
+        const membersArr = members.slice();
+
+        const _renderMemberTable = () => {
+            const memberSection = wrap.querySelector('.team-member-section');
+            if (memberSection) memberSection.remove();
+
+            const section = Utils.el('div', { className: 'team-member-section' });
+
+            if (membersArr.length === 0) {
+                section.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px', textContent: 'No members.' }));
+            } else {
+                const memberWidget = _makeSortablePagedTable({
+                    columns: [
+                        { label: 'Username', key: 'username' },
+                        { label: 'Role',     key: 'role_name' },
+                        { label: 'Key',      key: 'key_confirmed' },
+                        { label: 'Joined',   key: 'joined_at' },
+                        { label: 'Actions',  key: null, sortable: false },
+                    ],
+                    items:    membersArr,
+                    pageSize: 10,
+                    filterFn: (m, text) => m.username.toLowerCase().includes(text),
+                    buildRow: (m) => {
+                        const removeBtn = Utils.el('button', {
+                            className: 'btn btn-xs btn-danger',
+                            textContent: 'Remove',
+                        });
+                        removeBtn.addEventListener('click', async () => {
+                            if (!confirm(`Remove "${m.username}" from team "${team.name || teamName}"?\n\nThis will revoke their access and mark the team for key rotation.`)) return;
+                            removeBtn.disabled = true;
+                            try {
+                                await Api.del(`${_api()}/admin/teams/${teamId}/members/${m.id}`);
+                                Utils.showToast(`${m.username} removed from team`, 'success');
+                                const idx = membersArr.findIndex(x => x.id === m.id);
+                                if (idx !== -1) membersArr.splice(idx, 1);
+                                _renderMemberTable();
+                            } catch (err) {
+                                Utils.showToast('Remove failed: ' + err.message, 'error');
+                                removeBtn.disabled = false;
+                            }
+                        });
+                        return Utils.el('tr', {}, [
+                            Utils.el('td', { textContent: m.username }),
+                            Utils.el('td', { textContent: m.role_name || '—' }),
+                            Utils.el('td', { textContent: m.key_confirmed ? 'Confirmed' : 'Pending' }),
+                            Utils.el('td', { textContent: m.joined_at ? m.joined_at.slice(0, 10) : '—' }),
+                            Utils.el('td', {}, [removeBtn]),
+                        ]);
+                    },
+                });
+                memberWidget.querySelector('table').style.fontSize = '12px';
+                section.appendChild(memberWidget);
+            }
+
+            wrap.appendChild(section);
+        };
+
+        _renderMemberTable();
     }
 
     // ------------------------------------------------------------------
@@ -1162,6 +1197,10 @@ const Admin = (() => {
 
     // Team role IDs and their labels as shown in the Teams UI
     const _TEAM_ROLE_IDS = new Set(['team_admin', 'team_manager', 'team_member']);
+
+    // Display tier for sorting main roles highest-authority first (lower = higher authority)
+    const _ROLE_TIER_ORDER = { server_admin: 1, admin: 1, org_admin: 2, operational_admin: 3 };
+    const _ROLE_ORDER_KEY  = 'admin_role_order';
     const _TEAM_ROLE_ALIAS = {
         team_admin:   'Owner',
         team_manager: 'Supervisor',
@@ -1214,8 +1253,28 @@ const Admin = (() => {
         });
 
         const refresh = () => _renderRoles(container);
-        const teamRoles  = roles.filter(r => _TEAM_ROLE_IDS.has(r.id));
+        const teamRoles  = roles.filter(r =>  _TEAM_ROLE_IDS.has(r.id));
         const otherRoles = roles.filter(r => !_TEAM_ROLE_IDS.has(r.id));
+
+        // Sort: tiered system roles first (highest authority = lowest tier number),
+        // then remaining system roles alphabetically, then custom roles alphabetically.
+        // Apply saved custom order from localStorage on top of defaults.
+        const _tierOf = r => _ROLE_TIER_ORDER[r.id] ?? (r.is_system ? 50 : 99);
+        otherRoles.sort((a, b) => {
+            const td = _tierOf(a) - _tierOf(b);
+            if (td !== 0) return td;
+            return (a.name || '').localeCompare(b.name || '');
+        });
+
+        const savedOrderRaw = (() => { try { return JSON.parse(localStorage.getItem(_ROLE_ORDER_KEY) || 'null'); } catch { return null; } })();
+        if (Array.isArray(savedOrderRaw)) {
+            const idxMap = Object.fromEntries(savedOrderRaw.map((id, i) => [id, i]));
+            otherRoles.sort((a, b) => {
+                const ai = idxMap[a.id] ?? 9999, bi = idxMap[b.id] ?? 9999;
+                if (ai !== bi) return ai - bi;
+                return _tierOf(a) - _tierOf(b) || (a.name || '').localeCompare(b.name || '');
+            });
+        }
 
         const buildList = (list, withAlias) => {
             const el = Utils.el('div', { className: 'roles-list' });
@@ -1228,6 +1287,77 @@ const Admin = (() => {
             return el;
         };
 
+        let rolesRearranging = false;
+        let rolesDragListeners = [];
+        const rolesDragIndicator = Utils.el('div', { className: 'drop-indicator-v' });
+
+        const rearrangeRolesBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: '⠿ Rearrange',
+        });
+
+        const _teardownRolesDrag = () => {
+            rolesDragListeners.forEach(({ el: el2, event, fn }) => el2.removeEventListener(event, fn));
+            rolesDragListeners = [];
+            rolesDragIndicator.remove();
+            rolesList.querySelectorAll('.role-card').forEach(c => {
+                c.removeAttribute('draggable');
+                c.classList.remove('dragging');
+            });
+        };
+
+        const _setupRolesDrag = () => {
+            const _on2 = (el2, event, fn) => { el2.addEventListener(event, fn); rolesDragListeners.push({ el: el2, event, fn }); };
+            let draggedId = null;
+            rolesList.querySelectorAll('.role-card').forEach(card => {
+                card.setAttribute('draggable', 'true');
+                _on2(card, 'dragstart', e => {
+                    draggedId = card.id.replace('role-card-', '');
+                    e.dataTransfer.effectAllowed = 'move';
+                    requestAnimationFrame(() => card.classList.add('dragging'));
+                });
+                _on2(card, 'dragend', () => {
+                    card.classList.remove('dragging');
+                    rolesDragIndicator.remove();
+                    draggedId = null;
+                });
+            });
+            _on2(rolesList, 'dragover', e => {
+                if (!draggedId) return;
+                e.preventDefault();
+                const siblings = [...rolesList.querySelectorAll('.role-card:not(.dragging)')];
+                const before   = _insertionTarget(siblings, e.clientY, 'v');
+                if (before) before.before(rolesDragIndicator);
+                else         rolesList.appendChild(rolesDragIndicator);
+            });
+            _on2(rolesList, 'dragleave', e => {
+                if (!rolesList.contains(e.relatedTarget)) rolesDragIndicator.remove();
+            });
+            _on2(rolesList, 'drop', e => {
+                e.preventDefault();
+                const dragged = rolesList.querySelector(`#role-card-${draggedId}`);
+                if (!dragged) return;
+                rolesDragIndicator.before(dragged);
+                rolesDragIndicator.remove();
+            });
+        };
+
+        rearrangeRolesBtn.addEventListener('click', () => {
+            rolesRearranging = !rolesRearranging;
+            rearrangeRolesBtn.textContent      = rolesRearranging ? '✓ Done' : '⠿ Rearrange';
+            rearrangeRolesBtn.classList.toggle('btn-primary',   rolesRearranging);
+            rearrangeRolesBtn.classList.toggle('btn-secondary', !rolesRearranging);
+            if (rolesRearranging) {
+                _setupRolesDrag();
+            } else {
+                _teardownRolesDrag();
+                const order = [...rolesList.querySelectorAll('.role-card')].map(c => c.id.replace('role-card-', ''));
+                try { localStorage.setItem(_ROLE_ORDER_KEY, JSON.stringify(order)); } catch { /* ignore */ }
+            }
+        });
+
+        const rolesList = buildList(otherRoles, false);
+
         container.innerHTML = '';
         if (scopeBanner) {
             container.appendChild(Utils.el('p', {
@@ -1235,8 +1365,8 @@ const Admin = (() => {
                 textContent: scopeBanner,
             }));
         }
-        container.appendChild(Utils.el('div', { className: 'roles-header' }, [createBtn]));
-        container.appendChild(buildList(otherRoles, false));
+        container.appendChild(Utils.el('div', { className: 'roles-header' }, [createBtn, rearrangeRolesBtn]));
+        container.appendChild(rolesList);
         container.appendChild(Utils.el('div', { className: 'roles-section-header' }, [
             Utils.el('h3', { textContent: 'Team Roles' }),
             Utils.el('p', { className: 'text-muted roles-section-note',
@@ -3203,40 +3333,8 @@ const Admin = (() => {
         ]);
     }
 
-    function _appendTeamsAndAudit(wrap, user) {
-        if (user.teams?.length) {
-            wrap.appendChild(Utils.el('h5', { textContent: 'Team Memberships', style: 'margin:0 0 6px' }));
-            const teamList = Utils.el('ul', { style: 'font-size:13px;margin:0 0 14px;padding-left:18px' });
-            for (const t of user.teams) {
-                teamList.appendChild(Utils.el('li', { textContent: `${t.team_name}${t.team_role_name ? ' — ' + t.team_role_name : ''}` }));
-            }
-            wrap.appendChild(teamList);
-        }
-        if (user.recent_audit?.length) {
-            wrap.appendChild(Utils.el('h5', { textContent: 'Recent Audit (last 10)', style: 'margin:0 0 6px' }));
-            const auditTbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-bottom:8px' });
-            auditTbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
-                Utils.el('th', { textContent: 'Time' }),
-                Utils.el('th', { textContent: 'Event' }),
-                Utils.el('th', { textContent: 'Outcome' }),
-                Utils.el('th', { textContent: 'IP' }),
-            ])]));
-            const atbody = Utils.el('tbody');
-            for (const e of user.recent_audit) {
-                atbody.appendChild(Utils.el('tr', {}, [
-                    Utils.el('td', { textContent: e.timestamp ? e.timestamp.replace('T', ' ').slice(0, 19) : '' }),
-                    Utils.el('td', { textContent: e.event_type }),
-                    Utils.el('td', { textContent: e.outcome || '' }),
-                    Utils.el('td', { textContent: e.ip_address || '' }),
-                ]));
-            }
-            auditTbl.appendChild(atbody);
-            wrap.appendChild(auditTbl);
-        }
-    }
-
     async function _showUserDetailModal(userId, username) {
-        const wrap = Utils.el('div', { style: 'min-width:520px;max-width:680px' });
+        const wrap = Utils.el('div', { style: 'min-width:560px;max-width:720px' });
         wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
         Utils.showModal(`User: ${username || userId}`, wrap);
 
@@ -3266,182 +3364,391 @@ const Admin = (() => {
         _row('Username', user.username);
         _row('Auth method', user.auth_method);
         _row('Status', user.is_active ? 'Active' : 'Locked');
+        _row('MFA', user.mfa_enabled ? 'Enabled' : 'Not configured');
         _row('Created', user.created_at ? user.created_at.replace('T', ' ').slice(0, 19) : '—');
         _row('Last login', user.last_login_at ? user.last_login_at.replace('T', ' ').slice(0, 19) : '—');
         _row('Last login IP', user.last_login_ip);
         wrap.appendChild(grid);
 
-        // ---- Action buttons ----
-        const actRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap' });
-        const errEl = Utils.el('p', { className: 'text-error', style: 'display:none;margin:4px 0 0;font-size:12px' });
+        // ---- Tab bar ----
+        const tabBar   = Utils.el('div', { className: 'tabs', style: 'margin-bottom:0' });
+        const tabPanes = Utils.el('div', { style: 'padding-top:12px' });
+        wrap.appendChild(tabBar);
+        wrap.appendChild(tabPanes);
 
-        const _actionBtn = (label, cls, onClick) => {
-            const btn = Utils.el('button', { className: `btn btn-sm ${cls}`, textContent: label });
-            btn.addEventListener('click', async () => {
-                btn.disabled = true;
-                errEl.style.display = 'none';
-                try { await onClick(); } catch (e) {
-                    errEl.textContent = e.message;
-                    errEl.style.display = '';
-                } finally { btn.disabled = false; }
+        const _makePaneTab = (label, buildFn) => {
+            const pane = Utils.el('div', { style: 'display:none' });
+            let loaded = false;
+            const btn = Utils.el('button', { className: 'tab', textContent: label });
+            btn.addEventListener('click', () => {
+                tabBar.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                tabPanes.querySelectorAll(':scope > div').forEach(p => { p.style.display = 'none'; });
+                pane.style.display = '';
+                if (!loaded) { loaded = true; buildFn(pane); }
             });
-            return btn;
+            tabBar.appendChild(btn);
+            tabPanes.appendChild(pane);
+            return { btn, pane };
         };
 
-        if (user.is_active) {
-            actRow.appendChild(_actionBtn('Lock account', 'btn-danger', async () => {
-                await Api.post(`${_api()}/admin/users/${user.id}/lock`, {});
-                Utils.showToast('Account locked', 'warning');
-                Utils.closeModal();
-            }));
-        } else {
-            actRow.appendChild(_actionBtn('Unlock account', 'btn-secondary', async () => {
-                await Api.post(`${_api()}/admin/users/${user.id}/unlock`, {});
-                Utils.showToast('Account unlocked', 'success');
-                Utils.closeModal();
-            }));
-        }
-        actRow.appendChild(_actionBtn('Revoke all sessions', 'btn-secondary', async () => {
-            if (!confirm(`Revoke all sessions for ${user.username}? They will be logged out everywhere.`)) return;
-            const result = await Api.post(`${_api()}/admin/users/${user.id}/reset-password`, {});
-            Utils.showToast(result.message || 'Sessions revoked', 'success');
-        }));
-        wrap.appendChild(actRow);
-        wrap.appendChild(errEl);
+        // ---- Tab: Roles ----
+        const { btn: rolesTabBtn } = _makePaneTab('Roles', (pane) => {
+            if (!capData.scope.org_wide) {
+                pane.appendChild(Utils.el('p', {
+                    className: 'admin-scope-banner',
+                    style: 'margin:0 0 8px',
+                    textContent: 'Scoped admin — role assignment limited to grantable roles within your team scope.',
+                }));
+            }
+            const rolesWrap = Utils.el('div', { style: 'margin-bottom:8px' });
+            pane.appendChild(rolesWrap);
 
-        // ---- Danger Zone ----
-        const dangerZone = Utils.el('div', { style: 'border-top:1px solid var(--color-danger,#dc2626);margin-top:14px;padding-top:10px' });
-        dangerZone.appendChild(Utils.el('h6', { textContent: 'Danger Zone', style: 'color:var(--color-danger,#dc2626);margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.05em' }));
-
-        const emergencyForm = Utils.el('div', { style: 'display:none;margin-top:8px;padding:10px;background:rgba(220,38,38,.07);border-radius:4px' });
-        const reasonInput = Utils.el('input', {
-            type: 'text', className: 'prompt-dialog-input',
-            placeholder: 'Reason for revocation (required)',
-            style: 'margin-bottom:6px;width:100%;box-sizing:border-box',
+            const _renderRolesInner = (currentRoles) => {
+                rolesWrap.innerHTML = '';
+                if (!currentRoles.length) {
+                    rolesWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:12px', textContent: 'No roles assigned.' }));
+                }
+                for (const r of currentRoles) {
+                    const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
+                    row.appendChild(Utils.el('span', { textContent: r.name || r.id, style: 'font-size:13px;flex:1' }));
+                    const remBtn = Utils.el('button', { className: 'btn btn-xs btn-danger', textContent: 'Remove' });
+                    remBtn.addEventListener('click', async () => {
+                        remBtn.disabled = true;
+                        try {
+                            await Api.del(`${_api()}/admin/users/${user.id}/roles/${r.id}`);
+                            Utils.showToast(`Role ${r.name || r.id} removed`, 'success');
+                            const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
+                            _renderRolesInner(fresh.user.roles);
+                        } catch (e2) {
+                            Utils.showToast('Remove failed: ' + e2.message, 'error');
+                            remBtn.disabled = false;
+                        }
+                    });
+                    row.appendChild(remBtn);
+                    rolesWrap.appendChild(row);
+                }
+                const assignedIds = new Set(currentRoles.map(r => r.id));
+                const available = (allRoles || []).filter(r => !assignedIds.has(r.id) && grantableRoleIds.has(r.id));
+                if (available.length) {
+                    const addRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-top:6px' });
+                    const roleSel = Utils.el('select', { className: 'input-sm', style: 'flex:1' });
+                    available.forEach(r => roleSel.appendChild(Utils.el('option', { value: r.id, textContent: r.name || r.id })));
+                    const addBtn = Utils.el('button', { className: 'btn btn-xs btn-primary', textContent: '+ Add role' });
+                    addBtn.addEventListener('click', async () => {
+                        addBtn.disabled = true;
+                        try {
+                            await Api.post(`${_api()}/admin/users/${user.id}/roles/${roleSel.value}`, {});
+                            Utils.showToast('Role added', 'success');
+                            const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
+                            _renderRolesInner(fresh.user.roles);
+                        } catch (e2) {
+                            Utils.showToast('Add failed: ' + e2.message, 'error');
+                            addBtn.disabled = false;
+                        }
+                    });
+                    addRow.append(roleSel, addBtn);
+                    rolesWrap.appendChild(addRow);
+                }
+            };
+            _renderRolesInner(user.roles || []);
         });
-        const scopeSel = Utils.el('select', { className: 'input-sm', style: 'width:100%;box-sizing:border-box;margin-bottom:6px' }, [
-            Utils.el('option', { value: 'owned_only',  textContent: 'Lock owned files only' }),
-            Utils.el('option', { value: 'all_access',  textContent: 'Lock all accessible files (owned + team)' }),
-        ]);
-        const notifyCheckId = `emergency-notify-${user.id}`;
-        const notifyCheck   = Utils.el('input', { type: 'checkbox', id: notifyCheckId });
-        const notifyRow     = Utils.el('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px' }, [
-            notifyCheck, Utils.el('label', { htmlFor: notifyCheckId, textContent: 'Notify escrow agents', style: 'font-size:12px;cursor:pointer' }),
-        ]);
-        const confirmRevokeBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Confirm Emergency Revoke' });
-        const cancelRevokeBtn  = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', style: 'margin-left:6px' });
-        confirmRevokeBtn.addEventListener('click', async () => {
-            const reason = reasonInput.value.trim();
-            if (!reason) { Utils.showToast('A reason is required', 'error'); return; }
-            if (!confirm(`EMERGENCY REVOKE "${user.username}"?\n\nThis will deactivate the account, revoke all sessions and shares, and transfer-lock files. This cannot be undone.`)) return;
-            confirmRevokeBtn.disabled = true;
-            try {
-                const r = await Api.post(`${_api()}/admin/users/${user.id}/emergency-revoke`, {
-                    reason, scope: scopeSel.value, notify_escrow: notifyCheck.checked,
-                });
-                Utils.showToast(`Emergency revoke: ${r.files_locked} file(s) locked, ${r.tokens_revoked} session(s) revoked`, 'success');
-                Utils.closeModal();
-            } catch (err) {
-                Utils.showToast('Emergency revoke failed: ' + err.message, 'error');
-                confirmRevokeBtn.disabled = false;
+
+        // ---- Tab: Team Membership ----
+        _makePaneTab('Team Membership', (pane) => {
+            const teamsArr = (user.teams || []).slice();
+            if (!teamsArr.length) {
+                pane.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px', textContent: 'Not a member of any teams.' }));
+                return;
             }
+
+            const _renderTeamMembershipTable = () => {
+                const existing = pane.querySelector('.team-membership-table-wrap');
+                if (existing) existing.remove();
+                const tableWrap = Utils.el('div', { className: 'team-membership-table-wrap' });
+                const widget = _makeSortablePagedTable({
+                    columns: [
+                        { label: 'Team',      key: 'team_name' },
+                        { label: 'Role',      key: 'team_role_name' },
+                        { label: 'Key',       key: 'key_confirmed' },
+                        { label: 'Joined',    key: 'joined_at' },
+                        { label: 'Actions',   key: null, sortable: false },
+                    ],
+                    items:    teamsArr,
+                    pageSize: 10,
+                    filterFn: (t, text) => t.team_name.toLowerCase().includes(text),
+                    buildRow: (t) => {
+                        const removeBtn = Utils.el('button', {
+                            className: 'btn btn-xs btn-danger',
+                            textContent: 'Remove',
+                        });
+                        removeBtn.addEventListener('click', async () => {
+                            if (!confirm(`Remove ${user.username} from team "${t.team_name}"?\n\nThis revokes their access and marks the team for key rotation.`)) return;
+                            removeBtn.disabled = true;
+                            try {
+                                await Api.del(`${_api()}/admin/teams/${t.team_id}/members/${user.id}`);
+                                Utils.showToast(`Removed from ${t.team_name}`, 'success');
+                                const idx = teamsArr.findIndex(x => x.team_id === t.team_id);
+                                if (idx !== -1) teamsArr.splice(idx, 1);
+                                _renderTeamMembershipTable();
+                            } catch (err) {
+                                Utils.showToast('Remove failed: ' + err.message, 'error');
+                                removeBtn.disabled = false;
+                            }
+                        });
+                        return Utils.el('tr', {}, [
+                            Utils.el('td', { textContent: t.team_name }),
+                            Utils.el('td', { textContent: t.team_role_name || '—' }),
+                            Utils.el('td', { textContent: t.key_confirmed ? 'Confirmed' : 'Pending' }),
+                            Utils.el('td', { textContent: t.joined_at ? t.joined_at.slice(0, 10) : '—' }),
+                            Utils.el('td', {}, [removeBtn]),
+                        ]);
+                    },
+                });
+                widget.querySelector('table').style.fontSize = '12px';
+                tableWrap.appendChild(widget);
+                pane.appendChild(tableWrap);
+            };
+            _renderTeamMembershipTable();
         });
-        cancelRevokeBtn.addEventListener('click', () => { emergencyForm.style.display = 'none'; });
-        emergencyForm.append(
-            Utils.el('p', { textContent: 'Deactivates the account, revokes all sessions and shares, and transfer-locks files.', style: 'font-size:12px;color:var(--color-text-muted);margin:0 0 8px' }),
-            reasonInput, scopeSel, notifyRow,
-            Utils.el('div', {}, [confirmRevokeBtn, cancelRevokeBtn]),
-        );
 
-        const locksWrap = Utils.el('div', { style: 'margin-top:8px' });
+        // ---- Tab: Audit Trail ----
+        _makePaneTab('Audit Trail', (pane) => {
+            const filterInput = Utils.el('input', {
+                type: 'text', placeholder: 'Filter by event type…',
+                className: 'input-sm',
+                style: 'margin-bottom:8px;width:100%;max-width:320px;display:block',
+            });
+            pane.appendChild(filterInput);
 
-        const dangerActRow = Utils.el('div', { className: 'modal-actions', style: 'flex-wrap:wrap;gap:6px;margin-bottom:8px' });
+            const thead = Utils.el('thead', {}, [
+                Utils.el('tr', {}, [
+                    Utils.el('th', { textContent: 'Time',    style: 'width:140px;white-space:nowrap' }),
+                    Utils.el('th', { textContent: 'Type',    style: 'white-space:nowrap' }),
+                    Utils.el('th', { textContent: 'Sev',     style: 'width:70px' }),
+                    Utils.el('th', { textContent: 'Outcome', style: 'width:75px' }),
+                    Utils.el('th', { textContent: 'IP' }),
+                ]),
+            ]);
+            const tbody = Utils.el('tbody');
+            const table = Utils.el('table', { className: 'admin-table', style: 'font-size:12px' }, [thead, tbody]);
+            pane.appendChild(table);
 
-        dangerActRow.appendChild(_actionBtn('Emergency Revoke…', 'btn-danger', () => {
-            emergencyForm.style.display = emergencyForm.style.display === 'none' ? '' : 'none';
-        }));
+            const footer = Utils.el('div', { style: 'display:flex;align-items:center;gap:10px;margin-top:6px' });
+            const loadMoreBtn = Utils.el('button', {
+                className: 'btn btn-sm btn-secondary',
+                style: 'display:none',
+                textContent: 'Load More',
+            });
+            const countMsg = Utils.el('span', { style: 'font-size:12px;color:var(--color-text-muted)' });
+            footer.append(loadMoreBtn, countMsg);
+            pane.appendChild(footer);
 
-        const locksBtn = _actionBtn('View Transfer Locks', 'btn-secondary', () => _renderTransferLocks(locksWrap, user.id));
-        dangerActRow.appendChild(locksBtn);
+            let auditOffset   = 0;
+            let allEvents     = [];
+            let filterText    = '';
+            const PAGE_SIZE   = 10;
 
-        dangerActRow.appendChild(_actionBtn('Delete Asymmetric Keys…', 'btn-danger', async () => {
-            if (!confirm(`Delete asymmetric keys for "${user.username}"?\n\nThis will break team crypto for this user and is irreversible.`)) return;
-            if (!confirm('Second confirmation: permanently delete asymmetric keys?')) return;
-            try {
-                await Api.del(`${_api()}/admin/users/${user.id}/asymmetric-keys`);
-                Utils.showToast('Asymmetric keys deleted', 'warning');
-            } catch (err) {
-                Utils.showToast('Delete failed: ' + err.message, 'error');
-            }
-        }));
+            const _appendEvents = (events) => {
+                allEvents.push(...events);
+                _rerender();
+            };
 
-        dangerZone.append(dangerActRow, emergencyForm, locksWrap);
-        wrap.appendChild(dangerZone);
+            const _rerender = () => {
+                const filtered = filterText
+                    ? allEvents.filter(e => e.event_type.toLowerCase().includes(filterText))
+                    : allEvents;
+                tbody.innerHTML = '';
+                for (const ev of filtered) {
+                    const typeLink = Utils.el('a', {
+                        textContent: ev.event_type,
+                        href: '#',
+                        style: 'cursor:pointer',
+                    });
+                    typeLink.addEventListener('click', (e) => { e.preventDefault(); _showEventDetailModal(ev); });
+                    let sevClass = 'badge-neutral';
+                    if (ev.severity === 'critical') sevClass = 'badge-error';
+                    else if (ev.severity === 'warning') sevClass = 'badge-warning';
+                    tbody.appendChild(Utils.el('tr', {}, [
+                        Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '' }),
+                        Utils.el('td', {}, [typeLink]),
+                        Utils.el('td', {}, [Utils.el('span', { className: `badge ${sevClass}`, textContent: ev.severity || '' })]),
+                        Utils.el('td', { textContent: ev.outcome || '' }),
+                        Utils.el('td', { textContent: ev.actor_ip || '' }),
+                    ]));
+                }
+                if (!filtered.length) {
+                    tbody.appendChild(Utils.el('tr', {}, [
+                        Utils.el('td', { colSpan: 5, className: 'text-muted', textContent: 'No events.', style: 'text-align:center;padding:12px' }),
+                    ]));
+                }
+                countMsg.textContent = `${filtered.length} event${filtered.length === 1 ? '' : 's'} loaded`;
+            };
 
-        // ---- Roles (B2: add/remove) ----
-        wrap.appendChild(Utils.el('h5', { textContent: 'Roles', style: 'margin:0 0 6px' }));
-        if (!capData.scope.org_wide) {
-            wrap.appendChild(Utils.el('p', {
-                className: 'admin-scope-banner',
-                style: 'margin:0 0 8px',
-                textContent: `Scoped admin — role assignment limited to grantable roles within your team scope.`,
-            }));
-        }
-        const rolesWrap = Utils.el('div', { style: 'margin-bottom:14px' });
-        wrap.appendChild(rolesWrap);
+            const _loadMore = async () => {
+                loadMoreBtn.disabled = true;
+                loadMoreBtn.textContent = 'Loading…';
+                try {
+                    const result = await Api.get(
+                        `${_api()}/admin/audit/logs?user_id=${encodeURIComponent(user.id)}&limit=${PAGE_SIZE}&offset=${auditOffset}`,
+                    );
+                    const events = result.events || [];
+                    auditOffset += events.length;
+                    _appendEvents(events);
+                    loadMoreBtn.style.display = events.length === PAGE_SIZE ? '' : 'none';
+                } catch (err) {
+                    Utils.showToast('Failed to load audit events: ' + err.message, 'error');
+                } finally {
+                    loadMoreBtn.disabled = false;
+                    loadMoreBtn.textContent = 'Load More';
+                }
+            };
 
-        const _renderRoles = (currentRoles) => {
-            rolesWrap.innerHTML = '';
-            if (!currentRoles.length) {
-                rolesWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:12px', textContent: 'No roles assigned.' }));
-            }
-            for (const r of currentRoles) {
-                const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
-                row.appendChild(Utils.el('span', { textContent: r.name || r.id, style: 'font-size:13px;flex:1' }));
-                const remBtn = Utils.el('button', { className: 'btn btn-xs btn-danger', textContent: 'Remove' });
-                remBtn.addEventListener('click', async () => {
-                    remBtn.disabled = true;
-                    try {
-                        await Api.del(`${_api()}/admin/users/${user.id}/roles/${r.id}`);
-                        Utils.showToast(`Role ${r.name || r.id} removed`, 'success');
-                        const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
-                        _renderRoles(fresh.user.roles);
-                    } catch (e) {
-                        Utils.showToast('Remove failed: ' + e.message, 'error');
-                        remBtn.disabled = false;
-                    }
+            filterInput.addEventListener('input', () => {
+                filterText = filterInput.value.trim().toLowerCase();
+                _rerender();
+            });
+            loadMoreBtn.addEventListener('click', _loadMore);
+
+            _loadMore();
+        });
+
+        // ---- Tab: Management ----
+        _makePaneTab('Management', (pane) => {
+            const errEl = Utils.el('p', { className: 'text-error', style: 'display:none;margin:4px 0 8px;font-size:12px' });
+            pane.appendChild(errEl);
+
+            const _mgmtBtn = (label, cls, desc, onClick) => {
+                const btn = Utils.el('button', { className: `btn btn-sm ${cls}`, textContent: label });
+                btn.addEventListener('click', async () => {
+                    btn.disabled = true;
+                    errEl.style.display = 'none';
+                    try { await onClick(); } catch (err) {
+                        errEl.textContent = err.message;
+                        errEl.style.display = '';
+                    } finally { btn.disabled = false; }
                 });
-                row.appendChild(remBtn);
-                rolesWrap.appendChild(row);
-            }
-            // Add role row — only show roles the caller can actually grant
-            const assignedIds = new Set(currentRoles.map(r => r.id));
-            const available = (allRoles || []).filter(r => !assignedIds.has(r.id) && grantableRoleIds.has(r.id));
-            if (available.length) {
-                const addRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-top:6px' });
-                const roleSel = Utils.el('select', { className: 'input-sm', style: 'flex:1' });
-                available.forEach(r => roleSel.appendChild(Utils.el('option', { value: r.id, textContent: r.name || r.id })));
-                const addBtn = Utils.el('button', { className: 'btn btn-xs btn-primary', textContent: '+ Add role' });
-                addBtn.addEventListener('click', async () => {
-                    addBtn.disabled = true;
-                    try {
-                        await Api.post(`${_api()}/admin/users/${user.id}/roles/${roleSel.value}`, {});
-                        Utils.showToast('Role added', 'success');
-                        const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
-                        _renderRoles(fresh.user.roles);
-                    } catch (e) {
-                        Utils.showToast('Add failed: ' + e.message, 'error');
-                        addBtn.disabled = false;
-                    }
-                });
-                addRow.append(roleSel, addBtn);
-                rolesWrap.appendChild(addRow);
-            }
-        };
-        _renderRoles(user.roles || []);
+                return Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:10px' }, [
+                    Utils.el('div', { style: 'flex:1' }, [
+                        Utils.el('p', { style: 'margin:0 0 3px;font-size:13px;color:var(--color-text-muted)', textContent: desc }),
+                    ]),
+                    btn,
+                ]);
+            };
 
-        // ---- Teams & Recent audit ----
-        _appendTeamsAndAudit(wrap, user);
+            const _section = (title, isDanger, items) => {
+                const border = isDanger ? '1px solid var(--color-danger,#dc2626)' : '1px solid var(--color-border)';
+                const header = isDanger ? Utils.el('h6', { textContent: title, style: 'color:var(--color-danger,#dc2626);margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em' }) : Utils.el('h6', { textContent: title, style: 'margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-muted)' });
+                return Utils.el('div', { style: `border:${border};border-radius:6px;padding:12px;margin-bottom:12px` }, [header, ...items]);
+            };
+
+            // Account section
+            const lockItem = user.is_active
+                ? _mgmtBtn('Lock Account', 'btn-danger',
+                    'Deactivates the account and revokes all sessions and shares.',
+                    async () => {
+                        await Api.post(`${_api()}/admin/users/${user.id}/lock`, {});
+                        Utils.showToast('Account locked', 'warning');
+                        Utils.closeModal();
+                    })
+                : _mgmtBtn('Unlock Account', 'btn-secondary',
+                    'Re-activates the account so the user can log in again.',
+                    async () => {
+                        await Api.post(`${_api()}/admin/users/${user.id}/unlock`, {});
+                        Utils.showToast('Account unlocked', 'success');
+                        Utils.closeModal();
+                    });
+
+            const revokeItem = _mgmtBtn('Revoke All Sessions', 'btn-secondary',
+                'Logs the user out of all active sessions immediately.',
+                async () => {
+                    if (!confirm(`Revoke all sessions for ${user.username}? They will be logged out everywhere.`)) return;
+                    const result = await Api.post(`${_api()}/admin/users/${user.id}/reset-password`, {});
+                    Utils.showToast(result.message || 'Sessions revoked', 'success');
+                });
+
+            pane.appendChild(_section('Account', false, [lockItem, revokeItem]));
+
+            // Emergency actions section
+            const emergencyForm = Utils.el('div', { style: 'display:none;margin-top:10px;padding:10px;background:rgba(220,38,38,.07);border-radius:4px' });
+            const reasonInput = Utils.el('input', {
+                type: 'text', className: 'prompt-dialog-input',
+                placeholder: 'Reason for revocation (required)',
+                style: 'margin-bottom:6px;width:100%;box-sizing:border-box',
+            });
+            const scopeSel = Utils.el('select', { className: 'input-sm', style: 'width:100%;box-sizing:border-box;margin-bottom:6px' }, [
+                Utils.el('option', { value: 'owned_only',  textContent: 'Lock owned files only' }),
+                Utils.el('option', { value: 'all_access',  textContent: 'Lock all accessible files (owned + team)' }),
+            ]);
+            const notifyCheckId = `emergency-notify-${user.id}`;
+            const notifyCheck   = Utils.el('input', { type: 'checkbox', id: notifyCheckId });
+            const notifyRow     = Utils.el('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px' }, [
+                notifyCheck, Utils.el('label', { htmlFor: notifyCheckId, textContent: 'Notify escrow agents', style: 'font-size:12px;cursor:pointer' }),
+            ]);
+            const confirmRevokeBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Confirm Emergency Revoke' });
+            const cancelRevokeBtn  = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', style: 'margin-left:6px' });
+            confirmRevokeBtn.addEventListener('click', async () => {
+                const reason = reasonInput.value.trim();
+                if (!reason) { Utils.showToast('A reason is required', 'error'); return; }
+                if (!confirm(`EMERGENCY REVOKE "${user.username}"?\n\nThis will deactivate the account, revoke all sessions and shares, and transfer-lock files. This cannot be undone.`)) return;
+                confirmRevokeBtn.disabled = true;
+                try {
+                    const r = await Api.post(`${_api()}/admin/users/${user.id}/emergency-revoke`, {
+                        reason, scope: scopeSel.value, notify_escrow: notifyCheck.checked,
+                    });
+                    Utils.showToast(`Emergency revoke: ${r.files_locked} file(s) locked, ${r.tokens_revoked} session(s) revoked`, 'success');
+                    Utils.closeModal();
+                } catch (err) {
+                    Utils.showToast('Emergency revoke failed: ' + err.message, 'error');
+                    confirmRevokeBtn.disabled = false;
+                }
+            });
+            cancelRevokeBtn.addEventListener('click', () => { emergencyForm.style.display = 'none'; });
+            emergencyForm.append(reasonInput, scopeSel, notifyRow, Utils.el('div', {}, [confirmRevokeBtn, cancelRevokeBtn]));
+
+            const emergencyItem = Utils.el('div', { style: 'margin-bottom:10px' }, [
+                Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px' }, [
+                    Utils.el('div', { style: 'flex:1' }, [
+                        Utils.el('p', { style: 'margin:0 0 3px;font-size:13px;color:var(--color-text-muted)', textContent: 'For incident response: deactivates account, revokes all sessions and shares, and transfer-locks files.' }),
+                    ]),
+                    Utils.el('button', {
+                        className: 'btn btn-sm btn-danger',
+                        textContent: 'Emergency Revoke…',
+                        onClick: () => { emergencyForm.style.display = emergencyForm.style.display === 'none' ? '' : 'none'; },
+                    }),
+                ]),
+                emergencyForm,
+            ]);
+
+            const deleteKeysItem = _mgmtBtn('Delete Asymmetric Keys', 'btn-danger',
+                'Permanently deletes this user\'s asymmetric keypair. Irreversible — breaks all team cryptography for this user.',
+                async () => {
+                    if (!confirm(`Delete asymmetric keys for "${user.username}"?\n\nThis will break team crypto for this user and is irreversible.`)) return;
+                    if (!confirm('Second confirmation: permanently delete asymmetric keys?')) return;
+                    await Api.del(`${_api()}/admin/users/${user.id}/asymmetric-keys`);
+                    Utils.showToast('Asymmetric keys deleted', 'warning');
+                });
+
+            pane.appendChild(_section('Emergency Actions', true, [emergencyItem, deleteKeysItem]));
+
+            // Tools section
+            const locksWrap = Utils.el('div', { style: 'margin-top:8px' });
+            const locksItem = Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:10px' }, [
+                Utils.el('div', { style: 'flex:1' }, [
+                    Utils.el('p', { style: 'margin:0 0 3px;font-size:13px;color:var(--color-text-muted)', textContent: 'Shows all files with transfer restrictions applied to this user.' }),
+                    locksWrap,
+                ]),
+                Utils.el('button', {
+                    className: 'btn btn-sm btn-secondary',
+                    textContent: 'View Transfer Locks',
+                    onClick: () => _renderTransferLocks(locksWrap, user.id),
+                }),
+            ]);
+            pane.appendChild(_section('Tools', false, [locksItem]));
+        });
+
+        // Activate Roles tab by default
+        rolesTabBtn.click();
     }
 
     function _buildAuditTable(events) {

@@ -1,8 +1,8 @@
 {
-  "generated": "2026-05-11T23:47:35.444350+00:00",
+  "generated": "2026-05-12T00:02:37.421870+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
-    "frontend/js/admin.js": "sha256-3CgH+a5gyt8U9CIQjMchqT2mfWo69omQ3/9l79Z2uww=",
+    "frontend/js/admin.js": "sha256-KC8rorFoXeNgvsf6kEHHa6U0khQCNbmmle+EZoo6Lhg=",
     "frontend/js/api.js": "sha256-IF1VPp9N2CTLt2+FWaOQaav15KfoKJRfcTUHq/kMg1g=",
     "frontend/js/app.js": "sha256-IeiSfqFPcbb0b6UlFbdRhnTOPrxzSDSUDUnAxuXGHxY=",
     "frontend/js/auth.js": "sha256-nhBx/z+kJCSsm3b5qXIcWZorGLDL03PN3QRnugeTeU0=",
@@ -20,7 +20,7 @@
     "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
     "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",
-    "frontend/css/components.css": "sha256-5yx+p34f4sPaE4AD19j8WVgD39nc5vzgHQgtccusw7s=",
+    "frontend/css/components.css": "sha256-s6L5+aYPZL4DLLNKW5V/6Du0FXZsKS0TIV/ZFKc0ZB4=",
     "frontend/css/main.css": "sha256-1X1LdH5eSQf2A4Gp/mcjYTFRwjKuwoIgGO/bLMXmssc=",
     "frontend/themes/default/colors.css": "sha256-piHEqylKlAZZDH795benzbeNIlm8uJR5ebLtECwqyOo=",
     "frontend/themes/default/layout.css": "sha256-0wFe9nBp73p10q+zbxwk87p4ZOy17ATNAVV0qEMh+vw=",

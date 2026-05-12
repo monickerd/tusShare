@@ -338,14 +338,23 @@ async def get_user(
     perm_rows = await perm_cursor.fetchall()
     permissions = {r["flag"]: bool(r["granted"]) for r in perm_rows}
 
-    # Team memberships
+    # Team memberships — use user_team_keys as the authoritative membership source,
+    # join user_roles (scope_type='team') for the built-in role name.
     team_cursor = await db.execute(
-        "SELECT t.id AS team_id, t.name AS team_name, tr.id AS team_role_id, tr.name AS team_role_name "
-        "FROM team_role_assignments tra "
-        "JOIN teams t ON t.id = tra.team_id "
-        "LEFT JOIN team_roles tr ON tr.id = tra.team_role_id "
-        "WHERE tra.user_id = ? "
-        "ORDER BY t.name",
+        """
+        SELECT t.id AS team_id, t.name AS team_name,
+               r.id AS role_id, r.name AS role_name,
+               utk.key_confirmed,
+               to_char(to_timestamp(utk.created_at), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS joined_at
+        FROM user_team_keys utk
+        JOIN teams t ON t.id = utk.team_id
+        LEFT JOIN user_roles ur ON ur.user_id = utk.user_id
+                                AND ur.scope_type = 'team'
+                                AND ur.scope_id = utk.team_id
+        LEFT JOIN roles r ON r.id = ur.role_id
+        WHERE utk.user_id = ?
+        ORDER BY t.name
+        """,
         (user_id,),
     )
     team_rows = await team_cursor.fetchall()
@@ -353,11 +362,21 @@ async def get_user(
         {
             "team_id":        r["team_id"],
             "team_name":      r["team_name"],
-            "team_role_id":   r["team_role_id"],
-            "team_role_name": r["team_role_name"],
+            "team_role_id":   r["role_id"],
+            "team_role_name": r["role_name"],
+            "key_confirmed":  bool(r["key_confirmed"]),
+            "joined_at":      r["joined_at"],
         }
         for r in team_rows
     ]
+
+    # MFA status
+    mfa_cursor = await db.execute(
+        "SELECT COUNT(*) AS cnt FROM user_mfa_credentials WHERE user_id = ? AND is_active = 1",
+        (user_id,),
+    )
+    mfa_row = await mfa_cursor.fetchone()
+    mfa_enabled = bool(mfa_row["cnt"]) if mfa_row else False
 
     # Last login timestamp and IP from most recent login security event
     login_cursor = await db.execute(
@@ -407,6 +426,7 @@ async def get_user(
             "roles":           roles,
             "permissions":     permissions,
             "teams":           teams,
+            "mfa_enabled":     mfa_enabled,
             "recent_audit":    recent_audit,
         }
     }

@@ -177,6 +177,55 @@ async def admin_delete_team(
     return {"deleted": True, "name": row["name"]}
 
 
+@router.delete("/teams/{team_id}/members/{user_id}", status_code=204, responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
+async def admin_remove_team_member(
+    team_id: str,
+    user_id: str,
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Admin: forcibly remove a user from a team.
+
+    Deletes the member's key entry and role assignment, sets rotation_pending=1.
+    The team owner must subsequently rotate keys to fully revoke the member's access.
+    Cannot remove the team owner.
+    """
+    _require_team_admin(admin)
+    if not validate_uuid(team_id):
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
+    if not validate_uuid(user_id):
+        raise HTTPException(status_code=400, detail="Invalid user ID")
+    require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
+
+    cursor = await db.execute("SELECT id, owner_id FROM teams WHERE id = ?", (team_id,))
+    team_row = await cursor.fetchone()
+    if team_row is None:
+        raise HTTPException(status_code=404, detail=_ERR_TEAM_NOT_FOUND)
+    if team_row["owner_id"] == user_id:
+        raise HTTPException(status_code=422, detail="Cannot remove the team owner")
+
+    cursor = await db.execute(
+        "SELECT user_id FROM user_team_keys WHERE team_id = ? AND user_id = ?",
+        (team_id, user_id),
+    )
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail="User is not a member of this team")
+
+    await db.execute(
+        "DELETE FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+        (user_id, team_id),
+    )
+    await db.execute(
+        "DELETE FROM user_team_keys WHERE team_id = ? AND user_id = ?",
+        (team_id, user_id),
+    )
+    await db.execute(
+        "UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+        (team_id,),
+    )
+    await db.commit()
+
+
 @router.get("/teams/{team_id}/folder-role-levels", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def get_team_folder_role_levels(
     team_id: str,
