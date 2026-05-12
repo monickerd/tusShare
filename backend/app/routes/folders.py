@@ -8,7 +8,7 @@ from pydantic import BaseModel, field_validator
 from app.auth.dependencies import get_current_user, require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, DuplicateError, get_db
-from app.middleware.rate_limit import check_management_rate_limit
+from app.middleware.rate_limit import check_management_write_rate_limit
 from app.models.file import File, Folder
 from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
@@ -66,7 +66,7 @@ async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: l
     for fd in folder_dicts:
         fd["user_can_manage"] = fd["id"] in can_manage
 
-router = APIRouter(dependencies=[Depends(check_management_rate_limit)])
+router = APIRouter(dependencies=[Depends(check_management_write_rate_limit)])
 
 
 class CreateFolderRequest(BaseModel):

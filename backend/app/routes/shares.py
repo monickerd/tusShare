@@ -302,6 +302,7 @@ async def _get_items_with_files(
                AND si.resource_id = f.id
             WHERE f.folder_id = ?
               AND f.upload_complete = 1
+              AND f.deleted_at IS NULL
             """,
             (share_id, folder_id),
         )

@@ -90,7 +90,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/api/v1/teams",
     tags=["teams"],
-    dependencies=[Depends(check_management_rate_limit)],
 )
 
 # ---------------------------------------------------------------------------
@@ -472,7 +471,7 @@ async def list_escrow_agents(
     }
 
 
-@router.post("", status_code=201, responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
+@router.post("", status_code=201, responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def create_team(
     body: CreateTeamRequest,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -614,7 +613,7 @@ async def get_team_detail(
     }
 
 
-@router.put("/{team_id}", responses={409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
+@router.put("/{team_id}", responses={409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def update_team(
     team_id: str,
     body: UpdateTeamRequest,
@@ -652,7 +651,7 @@ async def update_team(
     return {"ok": True}
 
 
-@router.delete("/{team_id}", status_code=204)
+@router.delete("/{team_id}", status_code=204, dependencies=[Depends(check_management_rate_limit)])
 async def delete_team(
     team_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -701,7 +700,7 @@ async def list_members(
     return {"members": [m.to_dict() for m in members]}
 
 
-@router.post("/{team_id}/members", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
+@router.post("/{team_id}/members", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def invite_member(
     team_id: str,
     body: InviteMemberRequest,
@@ -770,7 +769,7 @@ async def invite_member(
     return {"user_id": invitee_id}
 
 
-@router.put("/{team_id}/members/{target_user_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
+@router.put("/{team_id}/members/{target_user_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def update_member_role(
     team_id: str,
     target_user_id: str,
@@ -831,7 +830,7 @@ async def update_member_role(
     return {"ok": True}
 
 
-@router.delete("/{team_id}/members/{target_user_id}", status_code=204, responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
+@router.delete("/{team_id}/members/{target_user_id}", status_code=204, responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def remove_member(
     team_id: str,
     target_user_id: str,
@@ -928,7 +927,7 @@ async def list_team_folders(
     return {"folders": [f.to_dict() for f in folders]}
 
 
-@router.post("/{team_id}/folders", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
+@router.post("/{team_id}/folders", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}}, dependencies=[Depends(check_management_rate_limit)])
 async def add_team_folder(
     team_id: str,
     body: AddTeamFolderRequest,
@@ -965,7 +964,7 @@ async def add_team_folder(
     return {"ok": True}
 
 
-@router.delete("/{team_id}/folders/{folder_id}", status_code=204, responses={404: {"description": "Not Found"}})
+@router.delete("/{team_id}/folders/{folder_id}", status_code=204, responses={404: {"description": "Not Found"}}, dependencies=[Depends(check_management_rate_limit)])
 async def remove_team_folder(
     team_id: str,
     folder_id: str,
@@ -1141,7 +1140,7 @@ async def _validate_rotation_inputs(db, team_id: str, user, body) -> None:
         )
 
 
-@router.post("/{team_id}/rotate", responses={422: {"description": "Unprocessable Entity"}})
+@router.post("/{team_id}/rotate", responses={422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def rotate_team_keys(
     team_id: str,
     body: RotateKeysRequest,
@@ -1260,7 +1259,7 @@ class KeyConfirmationRequest(BaseModel):
         return validate_base64(v, max_length=60)
 
 
-@router.post("/{team_id}/key-confirmation", responses={422: {"description": "Unprocessable Entity"}})
+@router.post("/{team_id}/key-confirmation", responses={422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def confirm_team_key(
     team_id: str,
     body: KeyConfirmationRequest,
@@ -1389,7 +1388,7 @@ async def get_pending_key_grants(
     return {"pending_grants": pending}
 
 
-@router.post("/{team_id}/pending-key-grants/complete", status_code=201, responses={422: {"description": "Unprocessable Entity"}})
+@router.post("/{team_id}/pending-key-grants/complete", status_code=201, responses={422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def complete_pending_key_grants(
     team_id: str,
     body: CompleteKeyGrantsRequest,
@@ -1531,7 +1530,7 @@ class EphemeralJoinRequest(BaseModel):
         return v
 
 
-@router.post("/{team_id}/ephemeral-slots", status_code=201, responses={403: {"description": "Forbidden"}})
+@router.post("/{team_id}/ephemeral-slots", status_code=201, responses={403: {"description": "Forbidden"}}, dependencies=[Depends(check_management_rate_limit)])
 async def create_ephemeral_slot(
     team_id: str,
     body: CreateEphemeralSlotRequest,
@@ -1653,7 +1652,7 @@ async def _validate_join_file_keys(db, team_id: str, body) -> None:
         raise HTTPException(status_code=422, detail="Rotation must include all file keys")
 
 
-@router.post("/{team_id}/ephemeral-join", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 422: {"description": "Unprocessable Entity"}})
+@router.post("/{team_id}/ephemeral-join", status_code=201, responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def ephemeral_join(
     team_id: str,
     body: EphemeralJoinRequest,

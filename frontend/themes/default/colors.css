@@ -41,6 +41,7 @@
     --color-warning-muted:  rgba(252, 196, 25, 0.15);
 
     --color-info:           #6c8cff;
+    --color-info-bg:        rgba(108, 140, 255, 0.12);
     --color-info-muted:     rgba(108, 140, 255, 0.15);
 
     /* --- Overlays --- */

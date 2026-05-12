@@ -412,3 +412,29 @@ async def check_management_rate_limit(
             detail=_TOO_MANY_REQUESTS_MSG,
             headers={"Retry-After": str(RATE_LIMIT_MANAGEMENT_WINDOW)},
         )
+
+
+async def check_management_write_rate_limit(
+    request: Request,
+    user: AuthenticatedUser = Depends(require_user_role),
+) -> None:
+    """Router-level management rate limit that only charges write (state-changing) requests.
+
+    GET/HEAD/OPTIONS are passed through without consuming quota — use this at router
+    level on routers that serve both read and write endpoints, so that read calls
+    during bulk upload flows do not exhaust the management write budget.
+    """
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return
+    allowed = await _counter.is_allowed(
+        f"mgmt:{user.id}",
+        live_settings.get_int("rate_limit_management", settings.RATE_LIMIT_MANAGEMENT),
+        RATE_LIMIT_MANAGEMENT_WINDOW,
+    )
+    if not allowed:
+        logger.warning("Management rate limited: user=%s", user.id)
+        raise HTTPException(
+            status_code=429,
+            detail=_TOO_MANY_REQUESTS_MSG,
+            headers={"Retry-After": str(RATE_LIMIT_MANAGEMENT_WINDOW)},
+        )
