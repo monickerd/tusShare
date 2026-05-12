@@ -3348,6 +3348,15 @@ const Admin = (() => {
         ]);
     }
 
+    async function _runMgmtAction(btn, errEl, action) {
+        btn.disabled = true;
+        errEl.style.display = 'none';
+        try { await action(); } catch (err) {
+            errEl.textContent = err.message;
+            errEl.style.display = '';
+        } finally { btn.disabled = false; }
+    }
+
     async function _showUserDetailModal(userId, username) {
         const wrap = Utils.el('div', { style: 'min-width:560px;max-width:720px' });
         wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
@@ -3643,15 +3652,6 @@ const Admin = (() => {
         });
 
         // ---- Tab: Management ----
-        async function _runMgmtAction(btn, errEl, action) {
-            btn.disabled = true;
-            errEl.style.display = 'none';
-            try { await action(); } catch (err) {
-                errEl.textContent = err.message;
-                errEl.style.display = '';
-            } finally { btn.disabled = false; }
-        }
-
         _makePaneTab('Management', (pane) => {
             const errEl = Utils.el('p', { className: 'text-error', style: 'display:none;margin:4px 0 8px;font-size:12px' });
             pane.appendChild(errEl);
