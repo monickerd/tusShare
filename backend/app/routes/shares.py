@@ -1203,9 +1203,6 @@ async def upload_to_share(
     file_id = str(uuid.uuid4())
     storage_key = secrets.token_urlsafe(32)
 
-    # Write blob first so we can roll back on DB failure
-    await storage.get_manager().write_blob(db, file_id, storage_key, content)
-
     chunk_id = str(uuid.uuid4())
     await db.execute("BEGIN")
     try:
@@ -1224,6 +1221,8 @@ async def upload_to_share(
                 encrypted_file_key, key_iv,
             ),
         )
+        # Write blob after the files row exists so the file_storage_locations FK is satisfied
+        await storage.get_manager().write_blob(db, file_id, storage_key, content)
         await db.execute(
             "INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, \"offset\") "
             "VALUES (?, ?, 0, ?, ?, 0)",
