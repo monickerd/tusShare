@@ -1229,6 +1229,11 @@ async def upload_to_share(
             (chunk_id, file_id, chunk_iv, encrypted_size),
         )
         await db.execute(
+            "INSERT INTO share_items (id, share_id, resource_type, resource_id, encrypted_file_key, key_iv) "
+            "VALUES (?, ?, 'file', ?, ?, ?)",
+            (str(uuid.uuid4()), share_id, file_id, encrypted_file_key, key_iv),
+        )
+        await db.execute(
             "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
             (encrypted_size, share["created_by"]),
         )
