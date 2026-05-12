@@ -9,8 +9,9 @@ const Files = (() => {
     let _currentFolder = null;
     let _isSharedView = false;
     let _isTeamView = false;
-    let _currentTeamId = null;    // non-null when browsing a team folder tree
-    let _currentTeamPK = null;    // base64 team public key, cached alongside _currentTeamId
+    let _currentTeamId = null;      // non-null when browsing a team folder tree
+    let _currentTeamPK = null;      // base64 team public key, cached alongside _currentTeamId
+    let _currentTeamSKBytes = null; // Uint8Array team sk_team bytes for HKDF share key derivation
     const _pageSize = Config.ui.paginationDefaultLimit;
 
     // Live update state — one EventSource per viewed folder/root
@@ -55,9 +56,11 @@ const Files = (() => {
         _isTeamView    = !!opts.teamView;
         _currentTeamId = null;
         _currentTeamPK = null;
+        _currentTeamSKBytes = null;
         _clearContainer(container);
 
         const main = Utils.el('main', { className: 'files-main' }, [
+            Utils.el('div', { id: 'folder-share-banner' }),
             Utils.el('div', { className: 'files-toolbar', id: 'files-toolbar' }, [
                 Utils.el('div', { id: 'breadcrumbs', className: 'breadcrumbs' }),
                 Utils.el('div', { className: 'toolbar-actions' }, [
@@ -108,6 +111,11 @@ const Files = (() => {
         // Wire up drag-and-drop on the file list area
         const dropZone = main.querySelector('.drop-zone');
         if (dropZone) _initDropZone(dropZone);
+
+        // Refresh the share banner when a share is deleted or updated from the modal
+        document.addEventListener('folder-shares-changed', () => {
+            if (_currentFolderId) _loadFolderShareBanner(_currentFolderId);
+        });
     }
 
     async function _loadRootFolders() {
@@ -194,19 +202,24 @@ const Files = (() => {
             // Cache team context so uploads and moves can use it without an extra round-trip
             if (data.team_id && data.team_id !== _currentTeamId) {
                 _currentTeamId = data.team_id;
-                _currentTeamPK = null; // will be fetched on demand
+                _currentTeamPK = null;
+                _currentTeamSKBytes = null;
                 try {
                     const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${data.team_id}`);
                     _currentTeamPK = teamData.team?.pre_public_key || null;
                 } catch { /* best-effort; uploads will fall back to no team key */ }
+                // Fetch and unwrap team SK for HKDF share key derivation (best-effort)
+                _fetchTeamSKBytes(data.team_id).then(sk => { _currentTeamSKBytes = sk; }).catch(() => {});
             } else if (!data.team_id) {
                 _currentTeamId = null;
                 _currentTeamPK = null;
+                _currentTeamSKBytes = null;
             }
 
             _renderBreadcrumbs(data.breadcrumbs || [], data.folder);
             _renderFolderContents(listEl, data.child_folders, data.files, data.pending_uploads || []);
             _startLive(folderId);
+            _loadFolderShareBanner(folderId);
         } catch (err) {
             listEl.textContent = 'Failed to load folder: ' + err.message;
         }
@@ -739,6 +752,10 @@ const Files = (() => {
                 transfer.complete();
                 await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(
                     teamKeyErr => console.warn('Failed to register team file key for', result.fileId, teamKeyErr),
+                );
+                const _mk2 = Auth.getMasterKeyObj();
+                await _autoKeyFileForShares(result.fileId, result.fileKeyBytes, _currentFolderId, _mk2).catch(
+                    err => console.warn('Auto-key for shares failed for', result.fileId, err),
                 );
                 Utils.showToast(`"${upload.original_name}" uploaded`, 'success');
             } catch (err) {
@@ -1789,6 +1806,90 @@ const Files = (() => {
         );
     }
 
+    /** Fetch and unwrap the team SK bytes for HKDF share key derivation. */
+    async function _fetchTeamSKBytes(teamId) {
+        const asymKeys = Auth.getAsymmetricKeys();
+        if (!asymKeys) return null;
+        const entry = await Api.get(`${Config.app.apiPrefix}/teams/${teamId}/my-key`);
+        if (!entry) return null;
+        const { sk_bytes } = await Teams.unwrapTeamKey(
+            entry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+        );
+        return sk_bytes instanceof Uint8Array ? sk_bytes : new Uint8Array(sk_bytes);
+    }
+
+    /**
+     * After a successful upload, wrap the new file's key for every active HKDF-keyed
+     * folder share so recipients see it immediately on next page load.
+     */
+    async function _autoKeyFileForShares(fileId, fileKeyBytes, folderId, masterKey) {
+        if (!folderId || !fileId || !fileKeyBytes || !masterKey) return;
+        let shares;
+        try {
+            shares = await Api.get(`${Config.app.apiPrefix}/folders/${folderId}/shares`);
+        } catch {
+            return;
+        }
+        const hkdfShares = (shares || []).filter(s => s.key_type === 'hkdf-v1' && s.can_manage);
+        if (!hkdfShares.length) return;
+
+        const fileKey = await crypto.subtle.importKey(
+            'raw', fileKeyBytes,
+            { name: 'AES-GCM', length: 256 },
+            true,
+            ['encrypt', 'decrypt'],
+        );
+
+        for (const s of hkdfShares) {
+            try {
+                // Use team SK for team folders if available, else owner's master key
+                const keyMaterial = (_currentTeamSKBytes) ? _currentTeamSKBytes : masterKey;
+                const shareKey = await Crypto.deriveShareKey(keyMaterial, s.token);
+                const { wrappedKeyB64, ivB64 } = await Crypto.wrapFileKeyForShare(fileKey, shareKey);
+                await Api.post(`${Config.app.apiPrefix}/shares/${s.share_id}/items`, {
+                    items: [{
+                        resource_type: 'file',
+                        resource_id: fileId,
+                        encrypted_file_key: wrappedKeyB64,
+                        key_iv: ivB64,
+                    }],
+                });
+            } catch (err) {
+                console.warn('Auto-key share failed for', s.share_id, err);
+            }
+        }
+    }
+
+    /** Load and display the folder share banner, if the folder has active shares. */
+    async function _loadFolderShareBanner(folderId) {
+        const bannerSlot = document.getElementById('folder-share-banner');
+        if (!bannerSlot) return;
+        bannerSlot.textContent = '';
+
+        let shares;
+        try {
+            shares = await Api.get(`${Config.app.apiPrefix}/folders/${folderId}/shares`);
+        } catch {
+            return;
+        }
+        if (!shares || shares.length === 0) return;
+
+        const masterKey = Auth.getMasterKeyObj();
+
+        const banner = Utils.el('div', { className: 'folder-share-banner' });
+        banner.appendChild(Utils.el('span', { textContent: 'This folder is being shared.' }));
+
+        const detailsLink = Utils.el('button', {
+            className: 'btn-link',
+            textContent: 'More details…',
+        });
+        detailsLink.addEventListener('click', () =>
+            Shares.openFolderShareDetailModal(shares, masterKey)
+        );
+        banner.appendChild(detailsLink);
+        bannerSlot.appendChild(banner);
+    }
+
     async function _initStandaloneUploadCtx(fileCount) {
         if (fileCount > Config.upload.bulkWarnThreshold) {
             const confirmed = await _showBulkUploadWarning(fileCount);
@@ -2065,6 +2166,10 @@ const Files = (() => {
             transfer.complete();
             await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(
                 teamKeyErr => console.warn('Failed to register team file key for', result.fileId, teamKeyErr),
+            );
+            const _mk = Auth.getMasterKeyObj();
+            await _autoKeyFileForShares(result.fileId, result.fileKeyBytes, folderId, _mk).catch(
+                err => console.warn('Auto-key for shares failed for', result.fileId, err),
             );
             ctx.results.ok++;
             if (!ctx.results.firstName) ctx.results.firstName = file.name;

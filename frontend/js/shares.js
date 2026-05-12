@@ -463,8 +463,11 @@ const Shares = (() => {
             throw new Error('Max downloads must be a positive number');
         }
 
-        // Generate a random AES-256 shareKey (never leaves the browser raw)
-        const shareKey = await Crypto.generateShareKey();
+        // Generate a token client-side, then derive the share key from it.
+        // This makes the key permanently re-derivable by the owner (masterKey + token)
+        // so new files added to the folder can be auto-keyed without storing anything extra.
+        const token = Crypto.generateShareToken();
+        const shareKey = await Crypto.deriveShareKey(masterKey, token);
         const shareKeyB64url = await Crypto.exportKeyToBase64url(shareKey);
 
         // Re-wrap each file key with shareKey
@@ -482,13 +485,15 @@ const Shares = (() => {
             });
         }
 
-        // POST to API
+        // POST to API — client_token tells the server to use our pre-generated token
+        // so key_type = 'hkdf-v1' is recorded and the URL is permanently reproducible.
         const resp = await Api.post(`${_prefix()}/shares`, {
             items,
             expires_at: expiresAt,
             max_downloads: maxDownloads || null,
             allow_upload: allowUpload || false,
             target_folder_id: folderId || null,
+            client_token: token,
         });
 
         // Persist shareKey for the session so the owner can copy the URL later
@@ -1536,6 +1541,257 @@ const Shares = (() => {
     }
 
     // -----------------------------------------------------------------------
+    // Folder share banner modal
+    // -----------------------------------------------------------------------
+
+    /**
+     * Build and show the "This folder is being shared" detail modal.
+     *
+     * @param {Array}  shares    - Array from GET /api/v1/folders/{id}/shares
+     * @param {object} masterKey - Owner's CryptoKey, used to re-derive share URLs
+     */
+    async function openFolderShareDetailModal(shares, masterKey) {
+        const overlay = Utils.el('div', { className: 'modal-overlay' });
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+        const dialog = Utils.el('div', { className: 'modal share-detail-modal' });
+        dialog.appendChild(Utils.el('h3', { textContent: 'Folder shares' }));
+
+        const listEl = Utils.el('div', { className: 'folder-share-list' });
+
+        for (let i = 0; i < shares.length; i++) {
+            const s = shares[i];
+            if (i > 0) listEl.appendChild(Utils.el('hr', { className: 'share-entry-divider' }));
+
+            const entry = Utils.el('div', { className: 'share-entry' });
+
+            // --- URL row ---
+            const urlRow = Utils.el('div', { className: 'share-entry-url-row' });
+            if (s.key_type === 'hkdf-v1' && masterKey) {
+                try {
+                    const shareKey = await Crypto.deriveShareKey(masterKey, s.token);
+                    const shareKeyB64url = await Crypto.exportKeyToBase64url(shareKey);
+                    const url = _buildShareUrl(s.token, shareKeyB64url);
+                    const urlInput = Utils.el('input', {
+                        type: 'text', readOnly: true, value: url,
+                        className: 'share-url-input',
+                    });
+                    const copyBtn = Utils.el('button', {
+                        className: 'btn btn-secondary btn-sm',
+                        textContent: 'Copy',
+                    });
+                    copyBtn.addEventListener('click', () => {
+                        navigator.clipboard.writeText(url).then(() =>
+                            Utils.showToast('Link copied', 'success')
+                        );
+                    });
+                    urlRow.appendChild(urlInput);
+                    urlRow.appendChild(copyBtn);
+                } catch {
+                    urlRow.appendChild(Utils.el('span', {
+                        className: 'text-muted',
+                        textContent: 'Could not derive share URL.',
+                    }));
+                }
+            } else {
+                // Legacy random-key share — try sessionStorage
+                const storedKey = _loadShareKey(s.share_id);
+                if (storedKey) {
+                    const url = _buildShareUrl(s.token, storedKey);
+                    const urlInput = Utils.el('input', {
+                        type: 'text', readOnly: true, value: url,
+                        className: 'share-url-input',
+                    });
+                    const copyBtn = Utils.el('button', {
+                        className: 'btn btn-secondary btn-sm',
+                        textContent: 'Copy',
+                    });
+                    copyBtn.addEventListener('click', () => {
+                        navigator.clipboard.writeText(url).then(() =>
+                            Utils.showToast('Link copied', 'success')
+                        );
+                    });
+                    urlRow.appendChild(urlInput);
+                    urlRow.appendChild(copyBtn);
+                } else {
+                    urlRow.appendChild(Utils.el('span', {
+                        className: 'text-muted',
+                        textContent: 'Share URL only available in the original session. Re-create to get a persistent link.',
+                    }));
+                }
+            }
+            entry.appendChild(urlRow);
+
+            // --- Short link row ---
+            if (s.short_link_slug) {
+                const slUrl = _buildShortLinkUrl(s.short_link_slug);
+                const slRow = Utils.el('div', { className: 'share-entry-shortlink-row' });
+                const slInput = Utils.el('input', {
+                    type: 'text', readOnly: true, value: slUrl,
+                    className: 'share-url-input',
+                });
+                const slCopy = Utils.el('button', {
+                    className: 'btn btn-secondary btn-sm',
+                    textContent: 'Copy',
+                });
+                slCopy.addEventListener('click', () => {
+                    navigator.clipboard.writeText(slUrl).then(() =>
+                        Utils.showToast('Short link copied', 'success')
+                    );
+                });
+                slRow.appendChild(slInput);
+                slRow.appendChild(slCopy);
+                entry.appendChild(slRow);
+            }
+
+            // --- Meta line: created by, when, expiry ---
+            const expText = s.expires_at
+                ? `Expires ${Utils.formatDate(s.expires_at)}`
+                : 'No expiry';
+            entry.appendChild(Utils.el('p', {
+                className: 'share-entry-meta text-muted',
+                textContent: `Created by ${s.creator_username} · ${Utils.formatDate(s.created_at)} · ${expText}`,
+            }));
+
+            // --- Action buttons (only if can_manage) ---
+            if (s.can_manage) {
+                const actionsRow = Utils.el('div', { className: 'share-entry-actions' });
+
+                // Update expiry button
+                const updateBtn = Utils.el('button', {
+                    className: 'btn btn-secondary btn-sm',
+                    textContent: 'Update expiry…',
+                });
+                updateBtn.addEventListener('click', () =>
+                    _openUpdateExpiryDialog(s, entry, overlay)
+                );
+
+                // Delete button
+                const deleteBtn = Utils.el('button', {
+                    className: 'btn btn-danger btn-sm',
+                    textContent: 'Delete',
+                });
+                deleteBtn.addEventListener('click', async () => {
+                    if (!confirm('Delete this share link? Recipients will lose access immediately.')) return;
+                    try {
+                        await Api.del(`${_prefix()}/shares/${s.share_id}`);
+                        Utils.showToast('Share deleted', 'success');
+                        overlay.remove();
+                        // Re-render banner (files.js listens for this event)
+                        document.dispatchEvent(new CustomEvent('folder-shares-changed'));
+                    } catch (err) {
+                        Utils.showToast(err.message, 'error');
+                    }
+                });
+
+                actionsRow.appendChild(updateBtn);
+                actionsRow.appendChild(deleteBtn);
+                entry.appendChild(actionsRow);
+            }
+
+            listEl.appendChild(entry);
+        }
+
+        const closeBtn = Utils.el('button', {
+            className: 'btn btn-secondary',
+            textContent: 'Close',
+        });
+        closeBtn.addEventListener('click', () => overlay.remove());
+
+        dialog.appendChild(listEl);
+        dialog.appendChild(Utils.el('div', { className: 'modal-actions' }, [closeBtn]));
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+    }
+
+    function _openUpdateExpiryDialog(share, entryEl, parentOverlay) {
+        const overlay = Utils.el('div', { className: 'modal-overlay' });
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+        const dialog = Utils.el('div', { className: 'modal' });
+        dialog.appendChild(Utils.el('h3', { textContent: 'Update expiry' }));
+
+        const { el: pickerEl, getExpiresAt } = _buildExpiryPicker(share.expires_at);
+        dialog.appendChild(pickerEl);
+
+        const statusEl = Utils.el('p', { className: 'text-muted' });
+        dialog.appendChild(statusEl);
+
+        const saveBtn = Utils.el('button', { className: 'btn btn-primary', textContent: 'Save' });
+        const cancelBtn = Utils.el('button', { className: 'btn btn-secondary', textContent: 'Cancel' });
+        cancelBtn.addEventListener('click', () => overlay.remove());
+
+        saveBtn.addEventListener('click', async () => {
+            const expiresAt = getExpiresAt();
+            const now = new Date();
+            const isPast = expiresAt && new Date(expiresAt) <= now;
+
+            if (isPast) {
+                statusEl.textContent = '';
+                const warnP = Utils.el('p', {
+                    className: 'share-error',
+                    textContent: 'That date is already in the past — the share would be immediately expired.',
+                });
+                const deleteInsteadBtn = Utils.el('button', {
+                    className: 'btn btn-danger btn-sm',
+                    textContent: 'Delete share instead',
+                });
+                deleteInsteadBtn.addEventListener('click', async () => {
+                    try {
+                        await Api.del(`${_prefix()}/shares/${share.share_id}`);
+                        Utils.showToast('Share deleted', 'success');
+                        overlay.remove();
+                        parentOverlay.remove();
+                        document.dispatchEvent(new CustomEvent('folder-shares-changed'));
+                    } catch (err) {
+                        Utils.showToast(err.message, 'error');
+                    }
+                });
+                statusEl.appendChild(warnP);
+                statusEl.appendChild(deleteInsteadBtn);
+                return;
+            }
+
+            saveBtn.disabled = true;
+            try {
+                await Api.put(`${_prefix()}/shares/${share.share_id}`, { expires_at: expiresAt });
+                Utils.showToast('Expiry updated', 'success');
+                overlay.remove();
+                parentOverlay.remove();
+                document.dispatchEvent(new CustomEvent('folder-shares-changed'));
+            } catch (err) {
+                Utils.showToast(err.message, 'error');
+                saveBtn.disabled = false;
+            }
+        });
+
+        dialog.appendChild(Utils.el('div', { className: 'modal-actions' }, [cancelBtn, saveBtn]));
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+    }
+
+    function _buildExpiryPicker(currentExpiresAt) {
+        const wrapper = Utils.el('div', { className: 'expiry-picker' });
+
+        const label = Utils.el('label', { textContent: 'New expiry date/time (leave blank for no expiry):' });
+        const dateInput = Utils.el('input', { type: 'datetime-local', className: 'form-input' });
+
+        if (currentExpiresAt) {
+            const d = new Date(currentExpiresAt);
+            const pad = n => String(n).padStart(2, '0');
+            dateInput.value = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(dateInput);
+
+        return {
+            el: wrapper,
+            getExpiresAt: () => dateInput.value ? new Date(dateInput.value).toISOString() : null,
+        };
+    }
+
+    // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
 
@@ -1549,5 +1805,6 @@ const Shares = (() => {
         renderReceivedSharesPage,
         renderPublicSharePage,
         renderShortLinkPage,
+        openFolderShareDetailModal,
     };
 })();

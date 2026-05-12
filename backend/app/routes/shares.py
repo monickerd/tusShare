@@ -34,7 +34,8 @@ from app.validation.sanitizers import (
     validate_uuid,
 )
 from app.config import settings
-from app.routes._access import is_in_shared_tree, is_team_folder_member
+from app.routes._access import is_in_shared_tree, is_team_folder_member, _team_level_for_user
+from app.conf.teams import TEAM_ROLE_SUPERVISOR, TEAM_ROLE_OWNER
 from app.util.http import content_disposition, parse_range_header
 from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
 from app.wordlist import insert_short_link_with_unique_slug
@@ -107,6 +108,17 @@ class CreateShareRequest(BaseModel):
     max_downloads: int | None = None
     allow_upload: bool = False
     target_folder_id: str | None = None
+    client_token: str | None = None
+
+    @field_validator("client_token")
+    @classmethod
+    def validate_client_token(cls, v: str | None) -> str | None:
+        if v is not None:
+            try:
+                return validate_share_token(v)
+            except ValueError as exc:
+                raise ValueError(str(exc))
+        return v
 
     @field_validator("share_type")
     @classmethod
@@ -213,6 +225,34 @@ async def _get_share_for_owner(db, share_id: str, user: AuthenticatedUser):
     if row["created_by"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail="Access denied")
     return row
+
+
+async def _get_folder_team_id(db, folder_id: str) -> str | None:
+    """Return the team_id if folder_id is a team folder root, else None."""
+    if not folder_id:
+        return None
+    cursor = await db.execute("SELECT team_id FROM team_folders WHERE folder_id = ?", (folder_id,))
+    row = await cursor.fetchone()
+    return row["team_id"] if row else None
+
+
+async def _can_manage_share(db, share: dict, user: AuthenticatedUser) -> bool:
+    """True if user may update or delete this share.
+
+    Allowed when the user is:
+    - the share creator, OR
+    - a global admin, OR
+    - a supervisor or owner of the team that owns the share's target folder.
+    """
+    if share["created_by"] == user.id or user.is_admin:
+        return True
+    if share["target_folder_id"]:
+        team_id = await _get_folder_team_id(db, share["target_folder_id"])
+        if team_id:
+            level = await _team_level_for_user(db, team_id, user.id)
+            if level == "admin":
+                return True
+    return False
 
 
 async def _get_active_share_by_token(db, token: str):
@@ -634,6 +674,7 @@ async def _insert_share_transaction(
     db: Database, request: Request, share_id: str, token: str,
     body: "CreateShareRequest", user: AuthenticatedUser,
     recipient_user_id: str | None, target_folder_id: str | None, allow_upload: bool,
+    key_type: str | None = None,
 ) -> None:
     await db.execute("BEGIN")
     try:
@@ -641,11 +682,12 @@ async def _insert_share_transaction(
             """
             INSERT INTO shares
                 (id, token, created_by, share_type, target_user_id, expires_at,
-                 max_downloads, allow_upload, target_folder_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_downloads, allow_upload, target_folder_id, key_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (share_id, token, user.id, body.share_type, recipient_user_id,
-             body.expires_at, body.max_downloads, 1 if allow_upload else 0, target_folder_id),
+             body.expires_at, body.max_downloads, 1 if allow_upload else 0,
+             target_folder_id, key_type),
         )
         for item in body.items:
             await db.execute(
@@ -712,10 +754,11 @@ async def create_share(
     await _verify_share_items_access(db, user, body.items)
 
     share_id = str(uuid.uuid4())
-    token = secrets.token_urlsafe(32)
+    token = body.client_token if body.client_token else secrets.token_urlsafe(32)
+    key_type = "hkdf-v1" if body.client_token else None
     target_folder_id, allow_upload = await _resolve_upload_folder(db, body, user)
 
-    await _insert_share_transaction(db, request, share_id, token, body, user, recipient_user_id, target_folder_id, allow_upload)
+    await _insert_share_transaction(db, request, share_id, token, body, user, recipient_user_id, target_folder_id, allow_upload, key_type)
 
     cursor = await db.execute("SELECT created_at FROM shares WHERE id = ?", (share_id,))
     row = await cursor.fetchone()
@@ -777,7 +820,12 @@ async def update_share(
 ):
     """Update share settings (active state, expiry, download limit)."""
     share_id = validate_uuid(share_id)
-    await _get_share_for_owner(db, share_id, user)
+    share = await db.execute("SELECT * FROM shares WHERE id = ?", (share_id,))
+    share = await share.fetchone()
+    if share is None:
+        raise HTTPException(status_code=404, detail="Share not found")
+    if not await _can_manage_share(db, share, user):
+        raise HTTPException(status_code=403, detail="Access denied")
 
     updates: list[str] = []
     params: list = []
@@ -814,10 +862,131 @@ async def delete_share(
     Access log rows retain a NULL share_id reference (ON DELETE SET NULL).
     """
     share_id = validate_uuid(share_id)
-    await _get_share_for_owner(db, share_id, user)
+    share = await db.execute("SELECT * FROM shares WHERE id = ?", (share_id,))
+    share = await share.fetchone()
+    if share is None:
+        raise HTTPException(status_code=404, detail="Share not found")
+    if not await _can_manage_share(db, share, user):
+        raise HTTPException(status_code=403, detail="Access denied")
     await db.execute("DELETE FROM shares WHERE id = ?", (share_id,))
     await db.commit()
     return {"message": "Share deleted"}
+
+
+@router.get("/api/v1/folders/{folder_id}/shares", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def get_folder_shares(
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return all active link shares targeting this folder, with enough detail for the share banner.
+
+    Accessible by the folder owner or any team member of the containing team.
+    Each entry includes a can_manage flag indicating whether the requesting user
+    may update or delete that share (own share, global admin, or team supervisor+).
+    """
+    folder_id = validate_uuid(folder_id)
+
+    folder_cursor = await db.execute("SELECT id, owner_id FROM folders WHERE id = ?", (folder_id,))
+    folder = await folder_cursor.fetchone()
+    if folder is None:
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    team_id = await _get_folder_team_id(db, folder_id)
+    is_member = team_id and await _team_level_for_user(db, team_id, user.id) is not None
+
+    if folder["owner_id"] != user.id and not is_member and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    now = datetime.now(timezone.utc).isoformat()
+    cursor = await db.execute(
+        """
+        SELECT s.id, s.token, s.key_type, s.created_by, s.created_at, s.expires_at,
+               s.is_active, s.allow_upload,
+               u.username AS creator_username,
+               sl.slug    AS short_link_slug
+        FROM shares s
+        JOIN users u ON u.id = s.created_by
+        LEFT JOIN short_links sl ON sl.share_id = s.id
+        WHERE s.target_folder_id = ?
+          AND s.share_type = 'link'
+          AND s.is_active = 1
+          AND (s.expires_at IS NULL OR s.expires_at > ?)
+        ORDER BY s.created_at DESC
+        """,
+        (folder_id, now),
+    )
+    rows = await cursor.fetchall()
+
+    result = []
+    for r in rows:
+        can_manage = r["created_by"] == user.id or user.is_admin
+        if not can_manage and team_id:
+            level = await _team_level_for_user(db, team_id, user.id)
+            can_manage = level == "admin"
+        result.append({
+            "share_id":        r["id"],
+            "token":           r["token"],
+            "key_type":        r["key_type"],
+            "creator_username": r["creator_username"],
+            "created_at":      r["created_at"],
+            "expires_at":      r["expires_at"],
+            "allow_upload":    bool(r["allow_upload"]),
+            "short_link_slug": r["short_link_slug"],
+            "can_manage":      can_manage,
+        })
+    return result
+
+
+class _ShareItemsRequest(BaseModel):
+    items: list[_ShareItemIn]
+
+    @field_validator("items")
+    @classmethod
+    def validate_items(cls, v: list) -> list:
+        if not v:
+            raise ValueError("items must not be empty")
+        if len(v) > _SHARE_MAX_ITEMS:
+            raise ValueError(f"Cannot add more than {_SHARE_MAX_ITEMS} items at once")
+        return v
+
+
+@router.post("/api/v1/shares/{share_id}/items", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def add_share_items(
+    share_id: str,
+    body: _ShareItemsRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Add new items (file key entries) to an existing link share.
+
+    Used by the auto-keying flow when the owner uploads new files to a shared
+    folder: the client derives the share key, wraps the new file key, and posts
+    the share_items row here so recipients can decrypt the file.
+
+    Idempotent: ON CONFLICT DO NOTHING, so duplicate posts are safe.
+    """
+    share_id = validate_uuid(share_id)
+    share = await db.execute("SELECT * FROM shares WHERE id = ?", (share_id,))
+    share = await share.fetchone()
+    if share is None:
+        raise HTTPException(status_code=404, detail="Share not found")
+    if not await _can_manage_share(db, share, user):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    for item in body.items:
+        await db.execute(
+            """
+            INSERT INTO share_items
+                (id, share_id, resource_type, resource_id, encrypted_file_key, key_iv)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (share_id, resource_type, resource_id) DO NOTHING
+            """,
+            (str(uuid.uuid4()), share_id, item.resource_type, item.resource_id,
+             item.encrypted_file_key, item.key_iv),
+        )
+    await db.commit()
+    return {"added": len(body.items)}
 
 
 @router.post("/api/v1/shares/{share_id}/short-link", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 503: {"description": "503"}})

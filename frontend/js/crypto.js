@@ -728,6 +728,45 @@ const Crypto = (() => {
         );
     }
 
+    // ===================================================================
+    // HKDF-derived share keys (folder link shares)
+    //
+    // Share key is derived from the owner's master key (or team SK bytes)
+    // and the share token, so the owner can always re-derive it — even in
+    // a new session — without storing the key anywhere.
+    //
+    // For team folders: pass the team's sk_team bytes as keyMaterial so all
+    // team members derive the same key.
+    // ===================================================================
+
+    function generateShareToken() {
+        const bytes = crypto.getRandomValues(new Uint8Array(32));
+        return _arrayBufToBase64url(bytes.buffer);
+    }
+
+    async function deriveShareKey(keyMaterial, token) {
+        // keyMaterial: CryptoKey (AES-256-GCM masterKey) or Uint8Array (team sk bytes)
+        let raw;
+        if (keyMaterial instanceof Uint8Array) {
+            raw = keyMaterial;
+        } else {
+            raw = new Uint8Array(await crypto.subtle.exportKey('raw', keyMaterial));
+        }
+        const hkdfKey = await crypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveKey']);
+        return crypto.subtle.deriveKey(
+            {
+                name: 'HKDF',
+                hash: 'SHA-256',
+                salt: new TextEncoder().encode('tusshare-folderlink-v1'),
+                info: new TextEncoder().encode('tusshare-folderlink-v1:' + token),
+            },
+            hkdfKey,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            true,
+            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey'],
+        );
+    }
+
     return {
         // Master key generation and wrapping
         generateMasterKey,
@@ -760,6 +799,9 @@ const Crypto = (() => {
         // OPAQUE KEK derivation
         deriveOpaqueKEK,
         hashPayload,
+        // HKDF-derived folder share keys
+        generateShareToken,
+        deriveShareKey,
     };
 })();
 

@@ -451,6 +451,7 @@ CREATE TABLE shares (
     download_count   INTEGER NOT NULL DEFAULT 0,
     allow_upload     INTEGER NOT NULL DEFAULT 0,
     target_folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
+    key_type         TEXT,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
