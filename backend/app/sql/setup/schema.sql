@@ -626,8 +626,8 @@ CREATE TABLE policy_field_definitions (
     display_label TEXT    NOT NULL,
     source        TEXT    NOT NULL DEFAULT 'ldap'
                           CHECK(source IN ('internal', 'ldap', 'oidc')), -- NOSONAR
-    data_type     TEXT    NOT NULL DEFAULT 'string' -- NOSONAR
-                          CHECK(data_type IN ('string', 'boolean')),
+    data_type     TEXT    NOT NULL DEFAULT 'string'
+                          CHECK(data_type IN ('string', 'boolean')), -- NOSONAR
     claim_path    TEXT,
     created_by    TEXT    REFERENCES users(id) ON DELETE SET NULL,
     created_at    TEXT    NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'))
