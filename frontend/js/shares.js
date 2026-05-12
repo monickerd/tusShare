@@ -767,41 +767,40 @@ const Shares = (() => {
 
         if (!shareData.files || shareData.files.length === 0) {
             page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No files in this share.' }));
-            return;
-        }
-
-        // File list with per-file download buttons
-        const table = Utils.el('table', { className: 'file-table' }, [
-            Utils.el('thead', {}, [
-                Utils.el('tr', {}, [
-                    Utils.el('th', { textContent: 'File' }),
-                    Utils.el('th', { textContent: 'Size' }),
-                    Utils.el('th', { textContent: '' }),
+        } else {
+            // File list with per-file download buttons
+            const table = Utils.el('table', { className: 'file-table' }, [
+                Utils.el('thead', {}, [
+                    Utils.el('tr', {}, [
+                        Utils.el('th', { textContent: 'File' }),
+                        Utils.el('th', { textContent: 'Size' }),
+                        Utils.el('th', { textContent: '' }),
+                    ]),
                 ]),
-            ]),
-        ]);
-        const tbody = Utils.el('tbody');
+            ]);
+            const tbody = Utils.el('tbody');
 
-        for (const fileInfo of shareData.files) {
-            const row = Utils.el('tr');
-            row.appendChild(Utils.el('td', { textContent: fileInfo.file_name || fileInfo.resource_id }));
-            row.appendChild(Utils.el('td', { textContent: Utils.formatBytes(fileInfo.size_bytes) }));
+            for (const fileInfo of shareData.files) {
+                const row = Utils.el('tr');
+                row.appendChild(Utils.el('td', { textContent: fileInfo.file_name || fileInfo.resource_id }));
+                row.appendChild(Utils.el('td', { textContent: Utils.formatBytes(fileInfo.size_bytes) }));
 
-            const dlBtn = Utils.el('button', {
-                className: 'btn btn-primary btn-sm',
-                textContent: 'Download',
-            });
-            dlBtn.addEventListener('click', () =>
-                _handlePublicDownload(dlBtn, token, fileInfo, shareKey, shareSessionToken)
-            );
-            row.appendChild(Utils.el('td', {}, [dlBtn]));
-            tbody.appendChild(row);
+                const dlBtn = Utils.el('button', {
+                    className: 'btn btn-primary btn-sm',
+                    textContent: 'Download',
+                });
+                dlBtn.addEventListener('click', () =>
+                    _handlePublicDownload(dlBtn, token, fileInfo, shareKey, shareSessionToken)
+                );
+                row.appendChild(Utils.el('td', {}, [dlBtn]));
+                tbody.appendChild(row);
+            }
+
+            table.appendChild(tbody);
+            page.appendChild(table);
         }
 
-        table.appendChild(tbody);
-        page.appendChild(table);
-
-        // Upload section — shown when the share owner enabled Download + Upload
+        // Upload section — shown when the share owner enabled upload
         if (shareData.allow_upload && shareData.share_id) {
             page.appendChild(_buildPublicUploadSection(
                 shareData.share_id, shareKey, shareSessionToken
