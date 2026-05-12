@@ -45,6 +45,23 @@ const App = (() => {
         }
     }
 
+    function _buildNotifIcon() {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('width', '18');
+        svg.setAttribute('height', '18');
+        svg.setAttribute('fill', 'none');
+        svg.setAttribute('stroke', 'currentColor');
+        svg.setAttribute('stroke-width', '1.5');
+        svg.setAttribute('stroke-linecap', 'round');
+        svg.setAttribute('stroke-linejoin', 'round');
+        svg.setAttribute('aria-hidden', 'true');
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        path.setAttribute('d', 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z');
+        svg.appendChild(path);
+        return svg;
+    }
+
     function _buildBrandEl() {
         const name    = _themeConfig?.brand_name || Config.app.name;
         const logoUrl = _themeConfig?.logo_url;
@@ -59,6 +76,7 @@ const App = (() => {
     const _routes = [
         { pattern: /^#\/login$/,                                                              handler: _routeLogin },
         { pattern: /^#\/pinned$/,                                                             handler: _routePinned },
+        { pattern: /^#\/account(\?.*)?$/,                                                     handler: _routeAccount },
         { pattern: /^#\/files\/([a-f0-9-]+)$/,                                               handler: _routeFolder },
         { pattern: /^#\/files$/,                                                              handler: _routeFiles },
         { pattern: /^#\/shared$/,                                                             handler: _routeShared },
@@ -207,6 +225,7 @@ const App = (() => {
         const container = _appEl();
 
         Files.stopLive();
+        _closeNotifBubble();
 
         // Public / semi-public routes — no auth check at router level.
         if (hash.startsWith('#/s/') || hash.startsWith('#/l/') || hash.startsWith('#/join/')) {
@@ -540,184 +559,345 @@ const App = (() => {
     }
 
     // -----------------------------------------------------------------------
-    // Account menu dropdown
+    // Activity event labels + detail modal (shared by bubble and account page)
     // -----------------------------------------------------------------------
 
-    let _accountMenuOpen = false;
-    let _accountMenuEl = null;
+    const _ACTIVITY_LABELS = {
+        upload:                  'Uploaded file',
+        download:                'Downloaded file',
+        view:                    'Viewed file',
+        delete:                  'Deleted file',
+        share:                   'Shared file',
+        login_success:           'Logged in',
+        login_failed:            'Login failed',
+        mfa_totp_verified:       'MFA verified (TOTP)',
+        mfa_webauthn_verified:   'MFA verified (security key)',
+        mfa_recovery_code_used:  'Used recovery code',
+        mfa_credential_removed:  'Removed MFA credential',
+        step_up_granted:         'Step-up verified',
+        step_up_failed:          'Step-up failed',
+        step_up_lockout:         'Step-up locked out',
+        session_unlock_webauthn: 'Session unlocked',
+        password_changed:        'Password changed',
+        team_created:            'Created team',
+    };
 
-    function _toggleAccountMenu() {
-        if (_accountMenuOpen) {
-            _closeAccountMenu();
-        } else {
-            _openAccountMenu();
+    function _showAccountEventDetailModal(ev) {
+        function kv(label, value) {
+            if (value === null || value === undefined || value === '') return null;
+            return Utils.el('tr', {}, [
+                Utils.el('td', { style: 'font-weight:600;padding:3px 14px 3px 0;white-space:nowrap;vertical-align:top;color:var(--color-text-muted)', textContent: label }),
+                Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:12px', textContent: String(value) }),
+            ]);
         }
+        const wrap = Utils.el('div');
+        const table = Utils.el('table', { style: 'border-collapse:collapse;width:100%' });
+        for (const row of [
+            kv('Time',        ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : ''),
+            kv('Source',      ev.source),
+            kv('Outcome',     ev.outcome),
+            kv('Severity',    ev.severity),
+            kv('IP',          ev.ip_address),
+            kv('Session',     ev.session_id),
+            kv('File',        ev.target_name),
+            kv('File ID',     ev.target_id),
+            kv('Target type', ev.target_type),
+        ].filter(Boolean)) table.appendChild(row);
+        wrap.appendChild(table);
+        if (ev.detail && typeof ev.detail === 'object') {
+            const rest = Object.fromEntries(Object.entries(ev.detail).filter(([k]) => k !== 'path'));
+            if (Object.keys(rest).length) {
+                wrap.appendChild(Utils.el('pre', {
+                    style: 'margin-top:12px;padding:8px;background:var(--color-bg);border-radius:var(--radius);font-size:11px;overflow-x:auto',
+                    textContent: JSON.stringify(rest, null, 2),
+                }));
+            }
+        }
+        Utils.showModal(_ACTIVITY_LABELS[ev.event_type] || ev.event_type, wrap);
     }
 
-    function _closeAccountMenu() {
-        if (_accountMenuEl?.parentNode) {
-            _accountMenuEl.remove();
-        }
-        _accountMenuEl = null;
-        _accountMenuOpen = false;
+    // -----------------------------------------------------------------------
+    // Notification bubble (header icon → small popup)
+    // -----------------------------------------------------------------------
+
+    let _notifBubbleOpen = false;
+    let _notifBubbleEl = null;
+
+    function _closeNotifBubble() {
+        if (_notifBubbleEl?.parentNode) _notifBubbleEl.remove();
+        _notifBubbleEl = null;
+        _notifBubbleOpen = false;
     }
 
-    function _openAccountMenu() {
-        _closeAccountMenu();
-        _accountMenuOpen = true;
+    function _toggleNotifBubble() {
+        if (_notifBubbleOpen) { _closeNotifBubble(); } else { _openNotifBubble(); }
+    }
+
+    function _openNotifBubble() {
+        _closeNotifBubble();
+        _notifBubbleOpen = true;
         Utils.markAllRead();
 
-        const panel = Utils.el('div', { className: 'account-menu' });
+        const panel = Utils.el('div', { className: 'notif-popup' });
 
-        // Close when clicking outside
         const _outsideClick = (e) => {
-            const btn = document.querySelector('.header-account-btn');
+            const btn = document.querySelector('.header-notif-btn');
             if (!panel.contains(e.target) && e.target !== btn && !btn?.contains(e.target)) {
-                _closeAccountMenu();
+                _closeNotifBubble();
                 document.removeEventListener('mousedown', _outsideClick, true);
             }
         };
         document.addEventListener('mousedown', _outsideClick, true);
 
-        // Tab bar
-        const tabs = ['Notifications', 'Transfers', 'My Account'];
-        let _activeTab = 'Notifications';
-        const contentEl = Utils.el('div', { className: 'account-menu-content' });
-
-        const tabBar = Utils.el('div', { className: 'account-menu-tabs' },
-            tabs.map(label => {
-                const btn = Utils.el('button', {
-                    className: 'account-menu-tab' + (label === _activeTab ? ' active' : ''),
-                    textContent: label,
-                    onClick: () => {
-                        _activeTab = label;
-                        panel.querySelectorAll('.account-menu-tab').forEach(b => { // NOSONAR — deep in onClick inside tabs.map; nesting unavoidable
-                            b.classList.toggle('active', b.textContent === label);
-                        });
-                        _renderTabContent(contentEl, label);
-                    },
-                });
-                return btn;
-            })
-        );
-
-        panel.appendChild(tabBar);
-        panel.appendChild(contentEl);
-        _renderTabContent(contentEl, _activeTab);
+        panel.appendChild(Utils.el('div', { className: 'notif-popup-header', textContent: 'Notifications' }));
+        const listEl = Utils.el('div', { className: 'notif-popup-body' });
+        listEl.textContent = 'Loading…';
+        panel.appendChild(listEl);
+        panel.appendChild(Utils.el('div', { className: 'notif-popup-footer' }, [
+            Utils.el('a', {
+                href: '#/account?tab=activity&filter=notifications',
+                className: 'notif-see-more',
+                textContent: 'See more',
+                onClick: () => _closeNotifBubble(),
+            }),
+        ]));
 
         document.querySelector('.header-actions')?.appendChild(panel);
-        _accountMenuEl = panel;
-    }
+        _notifBubbleEl = panel;
 
-    function _renderTabContent(container, tab) {
-        while (container.firstChild) container.firstChild.remove();
-        if (tab === 'Notifications')  _renderNotificationsTab(container);
-        else if (tab === 'Transfers') _renderTransfersTab(container);
-        else                          _renderMyAccountTab(container);
-    }
-
-    function _renderNotificationsTab(container) {
-        const history = Utils.getToastHistory();
-        if (history.length === 0) {
-            container.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No notifications this session.' }));
-            return;
-        }
-        const list = Utils.el('ul', { className: 'notification-list' });
-        for (let i = history.length - 1; i >= 0; i--) {
-            const n = history[i];
-            list.appendChild(Utils.el('li', { className: `notification-item notification-item--${n.type}` }, [
-                Utils.el('span', { className: 'notification-msg', textContent: n.message }),
-                Utils.el('span', { className: 'notification-time', textContent: Utils.timeAgo(n.timestamp.toISOString()) }),
-            ]));
-        }
-        container.appendChild(list);
-    }
-
-    function _renderTransfersTab(container) {
-        const transfers = TransferManager.getAll();
-
-        if (transfers.length > 0) {
-            const list = Utils.el('ul', { className: 'transfer-list' });
-            for (const t of transfers) {
-                list.appendChild(Utils.el('li', { className: `transfer-item transfer-item--${t.status}` }, [
-                    Utils.el('span', { className: 'transfer-item-icon', textContent: t.type === 'upload' ? '↑' : '↓' }),
-                    Utils.el('span', { className: 'transfer-item-name', textContent: t.label }),
-                    Utils.el('span', { className: 'transfer-item-pct',  textContent: t.pct }),
-                ]));
-            }
-            container.appendChild(list);
-        }
-
-        // Load server-side pending (interrupted) uploads and append below active transfers.
-        // These survive page reloads — user clicks the folder link to navigate there and resume.
-        const pendingSection = Utils.el('div', { className: 'transfer-pending-section' });
-        container.appendChild(pendingSection);
-
-        Api.get(`${Config.app.apiPrefix}/uploads/pending`).then(data => {
-            const pending = data.pending_uploads ?? [];
-            if (pending.length === 0) {
-                if (transfers.length === 0) {
-                    pendingSection.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
-                }
+        const _renderFallbackToasts = () => {
+            const history = Utils.getToastHistory();
+            if (!history.length) {
+                listEl.appendChild(Utils.el('p', { className: 'notif-popup-empty', textContent: 'No notifications.' }));
                 return;
             }
-            pendingSection.appendChild(Utils.el('p', { className: 'transfer-pending-label', textContent: 'Interrupted uploads' }));
-            const pList = Utils.el('ul', { className: 'transfer-list' });
-            for (const u of pending) {
-                const pct  = u.total_size > 0 ? Math.round((u.current_offset / u.total_size) * 100) : 0;
-                const href = u.folder_id ? `#/files/${u.folder_id}` : '#/files';
-                pList.appendChild(Utils.el('li', { className: 'transfer-item transfer-item--pending' }, [
-                    Utils.el('span', { className: 'transfer-item-icon', textContent: '↺' }),
-                    Utils.el('span', { className: 'transfer-item-name', textContent: u.original_name }),
-                    Utils.el('a', {
-                        className: 'transfer-item-resume-link',
-                        href,
-                        textContent: `${pct}%`,
-                        onClick: () => _closeAccountMenu(),
-                    }),
+            const ul = Utils.el('ul', { className: 'notification-list' });
+            for (let i = Math.min(history.length, 5) - 1; i >= 0; i--) {
+                const n = history[i];
+                ul.appendChild(Utils.el('li', { className: `notification-item notification-item--${n.type}` }, [
+                    Utils.el('span', { className: 'notification-msg', textContent: n.message }),
+                    Utils.el('span', { className: 'notification-time', textContent: Utils.timeAgo(n.timestamp.toISOString()) }),
                 ]));
             }
-            pendingSection.appendChild(pList);
-        }).catch(() => {
-            // Non-fatal: if the fetch fails, fall back to empty-state message when no active transfers
-            if (transfers.length === 0) {
-                pendingSection.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
+            listEl.appendChild(ul);
+        };
+
+        Api.get(`${Config.app.apiPrefix}/auth/me/activity?activity_filter=notifications&page=1`).then(data => {
+            listEl.textContent = '';
+            const events = (data.events || []).slice(0, 5);
+            if (!events.length) { _renderFallbackToasts(); return; }
+            const ul = Utils.el('ul', { className: 'notification-list' });
+            for (const ev of events) {
+                const label  = _ACTIVITY_LABELS[ev.event_type] || ev.event_type.replaceAll('_', ' ');
+                const detail = ev.target_name ? `: ${ev.target_name}` : '';
+                const li = Utils.el('li', { className: 'notification-item notification-item--info notif-item-clickable' }, [
+                    Utils.el('span', { className: 'notification-msg', textContent: label + detail }),
+                    Utils.el('span', { className: 'notification-time', textContent: Utils.timeAgo(ev.timestamp) }),
+                ]);
+                li.addEventListener('click', () => _showAccountEventDetailModal(ev));
+                ul.appendChild(li);
             }
+            listEl.appendChild(ul);
+        }).catch(() => {
+            listEl.textContent = '';
+            _renderFallbackToasts();
         });
     }
 
-    function _renderMyAccountTab(container) {
+    // -----------------------------------------------------------------------
+    // My Account — full page route (#/account)
+    // -----------------------------------------------------------------------
+
+    function _routeAccount(container) {
+        _renderShell(container);
+        const main = document.getElementById('main-content');
+        const params = new URLSearchParams(globalThis.location.hash.split('?')[1] || '');
+        _renderAccountPage(main, params.get('tab') || 'info', params.get('filter') || null);
+    }
+
+    function _renderAccountPage(main, initialTab, initialFilter) {
+        while (main.firstChild) main.firstChild.remove();
         const user = Auth.getCurrentUser();
         if (!user) return;
 
-        // --- Roles ---
-        const rolesSection = Utils.el('section', { className: 'account-section' }, [
-            Utils.el('h4', { className: 'account-section-title', textContent: 'Roles' }),
-            Utils.el('p', { className: 'account-section-body', textContent: [...user.roles].join(', ') || 'none' }),
-        ]);
+        const TABS = [
+            { id: 'info',      label: 'Account Info' },
+            { id: 'teams',     label: 'Team Membership' },
+            { id: 'activity',  label: 'Recent Activity' },
+            { id: 'security',  label: 'Security' },
+            { id: 'transfers', label: 'Active Transfers' },
+        ];
+        const validIds = new Set(TABS.map(t => t.id));
+        let activeTab = validIds.has(initialTab) ? initialTab : 'info';
 
-        // --- Key & auth status ---
-        const keyStatus = user.wrapped_master_key ? 'Encryption key present' : 'No encryption key';
-        const idpStatus = user.auth_method === 'opaque' ? 'Password (OPAQUE)' : user.auth_method;
-        const keySection = Utils.el('section', { className: 'account-section' }, [
-            Utils.el('h4', { className: 'account-section-title', textContent: 'Account' }),
-            Utils.el('p', { className: 'account-section-body' }, [
-                Utils.el('span', { textContent: `Auth: ${idpStatus}` }), Utils.el('br'),
-                Utils.el('span', { textContent: keyStatus }),
+        const page = Utils.el('div', { className: 'page-content acct-page' });
+        page.appendChild(Utils.el('h2', { textContent: user.username, style: 'margin-bottom:2px' }));
+        page.appendChild(Utils.el('p', { className: 'text-muted', style: 'margin-bottom:20px;font-size:var(--font-size-sm)', textContent: 'My Account' }));
+
+        const tabBar   = Utils.el('div', { className: 'acct-tab-bar' });
+        const contentEl = Utils.el('div', { className: 'acct-tab-content' });
+
+        const _activateTab = (tabId) => {
+            activeTab = tabId;
+            tabBar.querySelectorAll('.acct-tab').forEach(b => b.classList.toggle('active', b.dataset.tabId === tabId));
+            while (contentEl.firstChild) contentEl.firstChild.remove();
+            if      (tabId === 'info')      _renderAcctInfoTab(contentEl, user);
+            else if (tabId === 'teams')     _renderAcctTeamsTab(contentEl);
+            else if (tabId === 'activity')  _renderAcctActivityTab(contentEl, tabId === initialTab ? initialFilter : null);
+            else if (tabId === 'security')  _renderAcctSecurityTab(contentEl, user);
+            else if (tabId === 'transfers') _renderAcctTransfersTab(contentEl);
+        };
+
+        for (const tab of TABS) {
+            const btn = Utils.el('button', {
+                className: 'acct-tab' + (tab.id === activeTab ? ' active' : ''),
+                textContent: tab.label,
+                onClick: () => _activateTab(tab.id),
+            });
+            btn.dataset.tabId = tab.id;
+            tabBar.appendChild(btn);
+        }
+
+        page.appendChild(tabBar);
+        page.appendChild(contentEl);
+        main.appendChild(page);
+        _activateTab(activeTab);
+    }
+
+    function _renderAcctInfoTab(container, user) {
+        const keyStatus  = user.wrapped_master_key ? 'Encryption key present' : 'No encryption key';
+        const authMethod = user.auth_method === 'opaque' ? 'Password (OPAQUE)' : (user.auth_method || 'unknown');
+        const table = Utils.el('table', { className: 'acct-info-table' });
+        for (const [label, value] of [
+            ['Username',       user.username],
+            ['Authentication', authMethod],
+            ['Encryption key', keyStatus],
+            ['Roles',          [...(user.roles || [])].join(', ') || 'none'],
+        ]) {
+            table.appendChild(Utils.el('tr', {}, [
+                Utils.el('th', { textContent: label }),
+                Utils.el('td', { textContent: value }),
+            ]));
+        }
+        container.appendChild(Utils.el('section', { className: 'account-section' }, [
+            Utils.el('h4', { className: 'account-section-title', textContent: 'Account Information' }),
+            table,
+        ]));
+    }
+
+    function _renderAcctTeamsTab(container) {
+        container.textContent = 'Loading…';
+        Api.get(`${Config.app.apiPrefix}/teams`).then(data => {
+            container.textContent = '';
+            const teams = data.teams || [];
+            if (!teams.length) {
+                container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'You are not a member of any teams.' }));
+                return;
+            }
+            const table = Utils.el('table', { className: 'admin-table' });
+            table.innerHTML = '<thead><tr><th>Team</th><th>Your Role</th><th>Description</th></tr></thead>';
+            const tbody = Utils.el('tbody');
+            for (const t of teams) {
+                tbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', {}, [Utils.el('a', { href: `#/teams/${t.id}`, textContent: t.name, className: 'folder-link' })]),
+                    Utils.el('td', { textContent: t.my_role || '' }),
+                    Utils.el('td', { textContent: t.description || '' }),
+                ]));
+            }
+            table.appendChild(tbody);
+            container.appendChild(table);
+        }).catch(() => { container.textContent = 'Could not load team membership.'; });
+    }
+
+    function _renderAcctActivityTab(container, initialFilter) {
+        const filterRow = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:14px' });
+        filterRow.appendChild(Utils.el('label', { textContent: 'Show:', style: 'font-size:var(--font-size-sm);color:var(--color-text-muted)' }));
+        const filterSel = Utils.el('select', { className: 'input-sm' }, [
+            Utils.el('option', { value: '',              textContent: 'All activity' }),
+            Utils.el('option', { value: 'notifications', textContent: 'File transfers only' }),
+        ]);
+        if (initialFilter === 'notifications') filterSel.value = 'notifications';
+        filterRow.appendChild(filterSel);
+
+        const tableWrap  = Utils.el('div');
+        const loadMoreBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Load more',
+            style: 'margin-top:12px;display:none',
+        });
+
+        container.appendChild(filterRow);
+        container.appendChild(tableWrap);
+        container.appendChild(loadMoreBtn);
+
+        let page = 1;
+        let allEvents = [];
+
+        const _buildEventsTable = (events) => {
+            const table = Utils.el('table', { className: 'admin-table' });
+            table.appendChild(Utils.el('thead', {}, [
+                Utils.el('tr', {}, [
+                    Utils.el('th', { textContent: 'Time',         style: 'width:140px;white-space:nowrap' }),
+                    Utils.el('th', { textContent: 'Event',        style: 'white-space:nowrap' }),
+                    Utils.el('th', { textContent: 'File / Detail' }),
+                    Utils.el('th', { textContent: 'IP',           style: 'width:130px' }),
+                ]),
+            ]));
+            const tbody = Utils.el('tbody');
+            if (!events.length) {
+                tbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { colSpan: 4, className: 'text-muted', textContent: 'No activity recorded.', style: 'text-align:center;padding:12px' }),
+                ]));
+            }
+            for (const ev of events) {
+                const label = _ACTIVITY_LABELS[ev.event_type] || ev.event_type.replaceAll('_', ' ');
+                const typeLink = Utils.el('a', {
+                    href: '#', textContent: label, style: 'cursor:pointer',
+                    onClick: (e) => { e.preventDefault(); _showAccountEventDetailModal(ev); },
+                });
+                const detail = ev.target_name || (ev.detail?.path ?? '');
+                tbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 16) : '', style: 'white-space:nowrap;font-family:monospace;font-size:var(--font-size-sm)' }),
+                    Utils.el('td', {}, [typeLink]),
+                    Utils.el('td', { textContent: detail }),
+                    Utils.el('td', { textContent: ev.ip_address || '', style: 'font-family:monospace;font-size:var(--font-size-sm)' }),
+                ]));
+            }
+            table.appendChild(tbody);
+            return table;
+        };
+
+        const _load = async (reset) => {
+            if (reset) { page = 1; allEvents = []; tableWrap.textContent = 'Loading…'; }
+            const qs = new URLSearchParams({ page });
+            if (filterSel.value) qs.set('activity_filter', filterSel.value);
+            try {
+                const data = await Api.get(`${Config.app.apiPrefix}/auth/me/activity?${qs}`);
+                allEvents.push(...(data.events || []));
+                page++;
+                tableWrap.innerHTML = '';
+                tableWrap.appendChild(_buildEventsTable(allEvents));
+                loadMoreBtn.style.display = data.has_more ? '' : 'none';
+            } catch {
+                if (reset) tableWrap.textContent = 'Could not load activity.';
+            }
+        };
+
+        filterSel.addEventListener('change', () => _load(true));
+        loadMoreBtn.addEventListener('click', () => _load(false));
+        _load(true);
+    }
+
+    function _renderAcctSecurityTab(container, user) {
+        container.appendChild(Utils.el('section', { className: 'account-section' }, [
+            Utils.el('h4', { className: 'account-section-title', textContent: 'Multi-Factor Authentication' }),
+            Utils.el('div', { className: 'account-section-body' }, [
+                Utils.el('a', { href: '#/mfa', className: 'btn btn-secondary btn-sm', textContent: 'MFA Settings' }),
             ]),
-        ]);
+        ]));
 
-        // --- MFA & Security ---
-        const mfaSection = Utils.el('section', { className: 'account-section' }, [
-            Utils.el('h4', { className: 'account-section-title', textContent: 'Security' }),
-            Utils.el('a', { href: '#/mfa', className: 'btn btn-secondary btn-sm', textContent: 'MFA Settings',
-                onClick: () => _closeAccountMenu() }),
-        ]);
-
-        // --- Change password (OPAQUE users only) ---
-        let changePwSection = null;
         if (user.auth_method === 'opaque') {
-            changePwSection = Utils.el('section', { className: 'account-section' });
+            const changePwSection = Utils.el('section', { className: 'account-section' });
             changePwSection.appendChild(Utils.el('h4', { className: 'account-section-title', textContent: 'Password' }));
             const changePwBody = Utils.el('div', { className: 'account-section-body' });
 
@@ -732,14 +912,10 @@ const App = (() => {
 
             function _showChangePwForm() {
                 while (changePwBody.firstChild) changePwBody.firstChild.remove();
-                const newPwInput = Utils.el('input', {
-                    type: 'password', autocomplete: 'new-password',
-                });
-                const confirmPwInput = Utils.el('input', {
-                    type: 'password', autocomplete: 'new-password',
-                });
-                const statusEl = Utils.el('p', { className: 'text-muted-sm' });
-                const submitBtn = Utils.el('button', {
+                const newPwInput     = Utils.el('input', { type: 'password', autocomplete: 'new-password' });
+                const confirmPwInput = Utils.el('input', { type: 'password', autocomplete: 'new-password' });
+                const statusEl       = Utils.el('p', { className: 'text-muted-sm' });
+                const submitBtn      = Utils.el('button', {
                     className: 'btn btn-primary btn-sm', textContent: 'Change Password',
                     onClick: () => _doChangePw(newPwInput.value, confirmPwInput.value, statusEl, submitBtn),
                 });
@@ -749,12 +925,10 @@ const App = (() => {
                 });
                 changePwBody.appendChild(Utils.el('div', { className: 'change-pw-form' }, [
                     Utils.el('div', { className: 'form-group' }, [
-                        Utils.el('label', { textContent: 'New password' }),
-                        newPwInput,
+                        Utils.el('label', { textContent: 'New password' }), newPwInput,
                     ]),
                     Utils.el('div', { className: 'form-group' }, [
-                        Utils.el('label', { textContent: 'Confirm new password' }),
-                        confirmPwInput,
+                        Utils.el('label', { textContent: 'Confirm new password' }), confirmPwInput,
                     ]),
                     statusEl,
                     Utils.el('div', { className: 'btn-row-sm' }, [submitBtn, cancelBtn]),
@@ -764,41 +938,28 @@ const App = (() => {
 
             async function _doChangePw(newPw, confirmPw, statusEl, submitBtn) {
                 statusEl.textContent = '';
-                if (!newPw || newPw.length < 8) {
-                    statusEl.textContent = 'Password must be at least 8 characters.';
-                    return;
-                }
-                if (newPw !== confirmPw) {
-                    statusEl.textContent = 'Passwords do not match.';
-                    return;
-                }
+                if (!newPw || newPw.length < 8) { statusEl.textContent = 'Password must be at least 8 characters.'; return; }
+                if (newPw !== confirmPw) { statusEl.textContent = 'Passwords do not match.'; return; }
                 const masterKey = Auth.getMasterKeyObj();
-                if (!masterKey) {
-                    statusEl.textContent = 'Encryption key not loaded. Re-enter your password to unlock first.';
-                    return;
-                }
+                if (!masterKey) { statusEl.textContent = 'Encryption key not loaded. Re-enter your password to unlock first.'; return; }
                 submitBtn.disabled = true;
                 statusEl.textContent = 'Generating new credentials…';
                 try {
                     const opaque = await Auth.loadOpaque();
                     const { clientRegistrationState, registrationRequest } =
                         opaque.client.startRegistration({ password: newPw });
-
                     const round1 = await Api.post(
                         `${Config.app.apiPrefix}/auth/opaque/password-change/start`,
                         { client_registration_request: registrationRequest },
                     );
-
                     const { registrationRecord, exportKey } = opaque.client.finishRegistration({
                         clientRegistrationState,
                         registrationResponse: round1.registration_response,
                         password: newPw,
                         identifiers: { client: user.username, server: 'tusshare' },
                     });
-
                     const newKek = await Crypto.deriveOpaqueKEK(exportKey);
                     const { wrappedKeyB64, ivB64 } = await Crypto.wrapMasterKey(masterKey, newKek);
-
                     // Api auto-handles step-up: server returns 403 step_up_required,
                     // Api prompts for current password, then retries with X-Step-Up-Token.
                     statusEl.textContent = 'Confirm current password when prompted…';
@@ -806,11 +967,10 @@ const App = (() => {
                         `${Config.app.apiPrefix}/auth/opaque/password-change/finish`,
                         {
                             client_registration_record: registrationRecord,
-                            wrapped_master_key:    wrappedKeyB64,
-                            wrapped_master_key_iv: ivB64,
+                            wrapped_master_key:         wrappedKeyB64,
+                            wrapped_master_key_iv:      ivB64,
                         },
                     );
-
                     Utils.showToast('Password changed successfully.', 'success');
                     _showChangePwBtn();
                 } catch (err) {
@@ -823,14 +983,16 @@ const App = (() => {
 
             _showChangePwBtn();
             changePwSection.appendChild(changePwBody);
+            container.appendChild(changePwSection);
         }
 
-        // --- Sessions (async) ---
         const sessionsSection = Utils.el('section', { className: 'account-section' });
         sessionsSection.appendChild(Utils.el('h4', { className: 'account-section-title', textContent: 'Active Sessions' }));
         const sessionsList = Utils.el('div', { className: 'account-section-body' });
         sessionsList.textContent = 'Loading…';
         sessionsSection.appendChild(sessionsList);
+        container.appendChild(sessionsSection);
+
         Api.get(`${Config.app.apiPrefix}/auth/me/sessions`).then(data => {
             sessionsList.textContent = '';
             if (!data.sessions.length) { sessionsList.textContent = 'No other sessions.'; return; }
@@ -862,7 +1024,7 @@ const App = (() => {
             }
             sessionsList.appendChild(ul);
             if (data.sessions.length > 1) {
-                const revokeAllBtn = Utils.el('button', {
+                sessionsList.appendChild(Utils.el('button', {
                     className: 'btn btn-danger btn-sm',
                     style: 'margin-top:8px',
                     textContent: 'Revoke all other sessions',
@@ -875,93 +1037,45 @@ const App = (() => {
                             Utils.showToast(`Failed: ${e.message}`, 'error');
                         }
                     },
-                });
-                sessionsList.appendChild(revokeAllBtn);
+                }));
             }
         }).catch(() => { sessionsList.textContent = 'Could not load sessions.'; });
 
-        // --- Activity log (async) ---
-        const activitySection = Utils.el('section', { className: 'account-section' });
-        activitySection.appendChild(Utils.el('h4', { className: 'account-section-title', textContent: 'Recent Activity' }));
-        const activityList = Utils.el('div', { className: 'account-section-body' });
-        activityList.textContent = 'Loading…';
-        activitySection.appendChild(activityList);
-        const _ACTIVITY_LABELS = {
-            upload:                    'Uploaded file',
-            download:                  'Downloaded file',
-            view:                      'Viewed file',
-            delete:                    'Deleted file',
-            share:                     'Shared file',
-            login_success:             'Logged in',
-            login_failed:              'Login failed',
-            mfa_totp_verified:         'MFA verified (TOTP)',
-            mfa_webauthn_verified:     'MFA verified (security key)',
-            mfa_recovery_code_used:    'Used recovery code',
-            mfa_credential_removed:    'Removed MFA credential',
-            step_up_granted:           'Step-up verified',
-            step_up_failed:            'Step-up failed',
-            step_up_lockout:           'Step-up locked out',
-            session_unlock_webauthn:   'Session unlocked',
-            password_changed:          'Password changed',
-            team_created:              'Created team',
-        };
-        Api.get(`${Config.app.apiPrefix}/auth/me/activity`).then(data => {
-            activityList.textContent = '';
-            if (!data.events.length) { activityList.textContent = 'No activity recorded.'; return; }
-            const ul = Utils.el('ul', { className: 'activity-list' });
-            for (const ev of data.events.slice(0, 10)) {
-                const label = _ACTIVITY_LABELS[ev.event_type] || ev.event_type.replaceAll('_', ' ');
-                let detail = '';
-                if (ev.target_name) detail = `: ${ev.target_name}`;
-                else if (ev.detail_text) detail = `: ${ev.detail_text}`;
-                ul.appendChild(Utils.el('li', { className: 'activity-item' }, [
-                    Utils.el('span', { className: 'activity-type', textContent: label + detail }),
-                    Utils.el('span', { className: 'activity-time', textContent: Utils.timeAgo(ev.timestamp) }),
-                ]));
-            }
-            activityList.appendChild(ul);
-        }).catch(() => { activityList.textContent = 'Could not load activity.'; });
-
-        // --- Delete account (async: check admin setting) ---
         const deleteSection = Utils.el('section', { className: 'account-section' });
-        Api.get(`${Config.app.apiPrefix}/admin/settings`).then(data => {
-            if (data.settings?.allow_user_delete_own_account !== 'true') return;
-            const canDeleteOwned = data.settings?.can_delete_owned_shared === 'true';
+        container.appendChild(deleteSection);
+        Api.get(`${Config.app.apiPrefix}/auth/public-settings`).then(data => {
+            if (data.allow_user_delete_own_account !== 'true') return;
+            const canDeleteOwned = data.can_delete_owned_shared === 'true';
             deleteSection.appendChild(Utils.el('h4', { className: 'account-section-title account-section-title--danger', textContent: 'Danger Zone' }));
             deleteSection.appendChild(Utils.el('button', {
                 className: 'btn btn-danger btn-sm',
                 textContent: 'Delete My Account',
                 onClick: async () => { // NOSONAR — closures inside this handler are unavoidably nested (async API checks inside a .then callback)
-                    // Check for owned teams before confirming
                     let ownedTeams = [];
                     try {
                         const owned = await Api.get(`${Config.app.apiPrefix}/auth/me/owned-shared`);
                         ownedTeams = owned.owned_teams || [];
                     } catch { /* proceed without warning if check fails */ }
-
                     if (ownedTeams.length > 0) {
                         const teamList = ownedTeams.map(t => `"${t.name}"`).join(', '); // NOSONAR — deep in onClick inside .then; nesting unavoidable
                         if (!canDeleteOwned) {
                             Utils.showToast(
                                 `You own ${ownedTeams.length > 1 ? 'teams' : 'a team'} (${teamList}). ` +
                                 'Promote another member to Owner first, then delete your account.',
-                                'warning'
+                                'warning',
                             );
                             return;
                         }
-                        const confirmed = await Utils.showConfirm(
+                        if (!await Utils.showConfirm(
                             `You own the following team${ownedTeams.length > 1 ? 's' : ''}: ${teamList}.\n\n` +
                             'Deleting your account will permanently delete these teams and all their content. ' +
                             'This cannot be undone. Continue?'
-                        );
-                        if (!confirmed) return;
+                        )) return;
                     } else {
-                        const confirmed = await Utils.showConfirm(
+                        if (!await Utils.showConfirm(
                             'This will permanently delete your account and all your files. This cannot be undone. Continue?'
-                        );
-                        if (!confirmed) return;
+                        )) return;
                     }
-
                     try {
                         await Api.del(`${Config.app.apiPrefix}/auth/me`);
                         Auth.logout();
@@ -971,9 +1085,48 @@ const App = (() => {
                 },
             }));
         }).catch(() => {});
+    }
 
-        const sections = [rolesSection, keySection, mfaSection, ...(changePwSection ? [changePwSection] : []), sessionsSection, activitySection, deleteSection];
-        for (const s of sections) container.appendChild(s);
+    function _renderAcctTransfersTab(container) {
+        const transfers = TransferManager.getAll();
+        if (transfers.length > 0) {
+            const list = Utils.el('ul', { className: 'transfer-list' });
+            for (const t of transfers) {
+                list.appendChild(Utils.el('li', { className: `transfer-item transfer-item--${t.status}` }, [
+                    Utils.el('span', { className: 'transfer-item-icon', textContent: t.type === 'upload' ? '↑' : '↓' }),
+                    Utils.el('span', { className: 'transfer-item-name', textContent: t.label }),
+                    Utils.el('span', { className: 'transfer-item-pct',  textContent: t.pct }),
+                ]));
+            }
+            container.appendChild(list);
+        }
+        const pendingSection = Utils.el('div', { className: 'transfer-pending-section' });
+        container.appendChild(pendingSection);
+        Api.get(`${Config.app.apiPrefix}/uploads/pending`).then(data => {
+            const pending = data.pending_uploads ?? [];
+            if (pending.length === 0) {
+                if (transfers.length === 0) {
+                    pendingSection.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
+                }
+                return;
+            }
+            pendingSection.appendChild(Utils.el('p', { className: 'transfer-pending-label', textContent: 'Interrupted uploads' }));
+            const pList = Utils.el('ul', { className: 'transfer-list' });
+            for (const u of pending) {
+                const pct  = u.total_size > 0 ? Math.round((u.current_offset / u.total_size) * 100) : 0;
+                const href = u.folder_id ? `#/files/${u.folder_id}` : '#/files';
+                pList.appendChild(Utils.el('li', { className: 'transfer-item transfer-item--pending' }, [
+                    Utils.el('span', { className: 'transfer-item-icon', textContent: '↺' }),
+                    Utils.el('span', { className: 'transfer-item-name', textContent: u.original_name }),
+                    Utils.el('a', { className: 'transfer-item-resume-link', href, textContent: `${pct}%` }),
+                ]));
+            }
+            pendingSection.appendChild(pList);
+        }).catch(() => {
+            if (transfers.length === 0) {
+                pendingSection.appendChild(Utils.el('p', { className: 'account-menu-empty', textContent: 'No active transfers.' }));
+            }
+        });
     }
 
     function _renderShell(container) {
@@ -1014,15 +1167,18 @@ const App = (() => {
         }
 
         const unreadDot = Utils.el('span', { className: 'header-unread-dot' });
-        const accountBtn = Utils.el('button', {
-            className: 'btn btn-sm header-account-btn',
-            onClick: _toggleAccountMenu,
-        }, [
-            Utils.el('span', { textContent: user ? user.username : '' }),
-            unreadDot,
-        ]);
+        const notifBtn = Utils.el('button', {
+            className: 'btn-icon header-notif-btn',
+            title: 'Notifications',
+            onClick: _toggleNotifBubble,
+        }, [_buildNotifIcon(), unreadDot]);
         Utils.onUnreadChange(count => {
             unreadDot.classList.toggle('header-unread-dot--active', count > 0);
+        });
+        const accountLink = Utils.el('a', {
+            href: '#/account',
+            className: 'btn btn-sm header-account-btn',
+            textContent: user ? user.username : '',
         });
 
         // Global file search bar
@@ -1047,7 +1203,8 @@ const App = (() => {
                 ]),
                 searchInput,
                 Utils.el('div', { className: 'header-actions' }, [
-                    accountBtn,
+                    notifBtn,
+                    accountLink,
                     Utils.el('button', {
                         className: 'btn btn-secondary btn-sm',
                         textContent: 'Logout',

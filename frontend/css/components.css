@@ -2460,3 +2460,170 @@
     text-underline-offset: 2px;
 }
 
+/* =========================================================================
+   Notification bubble (header icon → small popup)
+   ========================================================================= */
+
+.btn-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    padding: 5px;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    position: relative;
+    transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.btn-icon:hover {
+    color: var(--color-text);
+    background: var(--color-surface);
+    border-color: var(--color-border);
+}
+
+.header-notif-btn {
+    position: relative;
+}
+
+.notif-popup {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    width: 320px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-toast);
+    z-index: var(--z-modal);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.notif-popup-header {
+    padding: var(--space-2) var(--space-3);
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
+.notif-popup-body {
+    padding: var(--space-2) 0;
+    overflow-y: auto;
+    max-height: 280px;
+}
+
+.notif-popup-body .notification-list {
+    padding: 0 var(--space-2);
+}
+
+.notif-popup-empty {
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    text-align: center;
+    padding: var(--space-4) var(--space-3);
+    margin: 0;
+}
+
+.notif-item-clickable {
+    cursor: pointer;
+}
+
+.notif-item-clickable:hover {
+    background: var(--color-bg);
+    border-radius: 4px;
+}
+
+.notif-popup-footer {
+    padding: var(--space-2) var(--space-3);
+    border-top: 1px solid var(--color-border);
+    flex-shrink: 0;
+    text-align: center;
+}
+
+.notif-see-more {
+    font-size: var(--font-size-sm);
+    color: var(--color-primary);
+    text-decoration: none;
+}
+
+.notif-see-more:hover {
+    text-decoration: underline;
+}
+
+/* =========================================================================
+   My Account page (#/account)
+   ========================================================================= */
+
+.acct-page {
+    max-width: 780px;
+}
+
+.acct-tab-bar {
+    display: flex;
+    border-bottom: 1px solid var(--color-border);
+    margin-bottom: var(--space-4);
+    gap: 0;
+    flex-wrap: wrap;
+}
+
+.acct-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--font-size-sm);
+    font-family: var(--font-family);
+    cursor: pointer;
+    color: var(--color-text-muted);
+    margin-bottom: -1px;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+    white-space: nowrap;
+}
+
+.acct-tab:hover,
+.acct-tab.active {
+    color: var(--color-text);
+}
+
+.acct-tab.active {
+    border-bottom-color: var(--color-primary);
+}
+
+.acct-tab-content {
+    min-height: 200px;
+}
+
+.acct-info-table {
+    border-collapse: collapse;
+    width: 100%;
+    max-width: 480px;
+}
+
+.acct-info-table th,
+.acct-info-table td {
+    padding: var(--space-2) var(--space-3) var(--space-2) 0;
+    font-size: var(--font-size-sm);
+    vertical-align: top;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.acct-info-table tr:last-child th,
+.acct-info-table tr:last-child td {
+    border-bottom: none;
+}
+
+.acct-info-table th {
+    font-weight: 600;
+    color: var(--color-text-muted);
+    width: 160px;
+    white-space: nowrap;
+}
+

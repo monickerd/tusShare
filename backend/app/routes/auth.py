@@ -403,7 +403,13 @@ async def get_public_settings(db: Annotated[Database, Depends(get_db)]):
     """
     cs_val = await get_admin_setting(db, "default_chunk_size")
     chunk_size = int(cs_val) if cs_val is not None else settings.DEFAULT_CHUNK_SIZE
-    return {"chunk_size": chunk_size}
+    allow_delete = await get_admin_setting(db, "allow_user_delete_own_account") or "false"
+    can_delete_owned = await get_admin_setting(db, "can_delete_owned_shared") or "false"
+    return {
+        "chunk_size": chunk_size,
+        "allow_user_delete_own_account": allow_delete,
+        "can_delete_owned_shared": can_delete_owned,
+    }
 
 
 @router.get("/users/{username}/public-keys", responses={404: {"description": "Not Found"}})
@@ -717,55 +723,87 @@ async def revoke_other_sessions(
 async def my_activity(
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
+    page: int = 1,
+    activity_filter: str | None = None,
 ):
-    """Return the last 50 activity events for the calling user.
+    """Return paginated activity events for the calling user.
 
     Merges security_events (login, MFA, step-up) with access_logs (file
-    upload/download/delete/share).  Filtered strictly by session token —
-    user_id is never taken from a query param.
+    upload/download/delete/share). Filtered strictly by user_id —
+    never taken from a query param.
+
+    Query params:
+      page            — 1-based page number (20 events per page)
+      activity_filter — "notifications" returns only file-access events
     """
-    cursor = await db.execute(
-        """
-        SELECT source, event_type, severity, outcome, ip_address, actor_session_id,
-               timestamp, target_type, target_id, target_name, detail
-        FROM (
-            SELECT 'security'::text AS source, event_type, severity, outcome, ip_address,
-                   actor_session_id, timestamp, target_type, target_id, target_name, detail
-            FROM security_events
-            WHERE user_id = ?
-            UNION ALL
+    page = max(1, page)
+    page_size = 20
+    offset = (page - 1) * page_size
+
+    if activity_filter == "notifications":
+        cursor = await db.execute(
+            """
             SELECT 'access'::text AS source, al.action AS event_type,
                    NULL::text AS severity, NULL::text AS outcome, al.ip_address,
                    NULL::text AS actor_session_id, al.timestamp,
                    'file'::text AS target_type, al.file_id AS target_id,
-                   f.name AS target_name, NULL::text AS detail
+                   f.original_name AS target_name, NULL::text AS detail
             FROM access_logs al
             LEFT JOIN files f ON f.id = al.file_id
             WHERE al.user_id = ?
-        ) combined
-        ORDER BY timestamp DESC
-        LIMIT 50
-        """,
-        (user.id, user.id),
-    )
+            ORDER BY al.timestamp DESC
+            LIMIT ? OFFSET ?
+            """,
+            (user.id, page_size + 1, offset),
+        )
+    else:
+        cursor = await db.execute(
+            """
+            SELECT source, event_type, severity, outcome, ip_address, actor_session_id,
+                   timestamp, target_type, target_id, target_name, detail
+            FROM (
+                SELECT 'security'::text AS source, event_type, severity, outcome, ip_address,
+                       actor_session_id, timestamp, target_type, target_id, target_name, detail
+                FROM security_events
+                WHERE user_id = ?
+                UNION ALL
+                SELECT 'access'::text AS source, al.action AS event_type,
+                       NULL::text AS severity, NULL::text AS outcome, al.ip_address,
+                       NULL::text AS actor_session_id, al.timestamp,
+                       'file'::text AS target_type, al.file_id AS target_id,
+                       f.original_name AS target_name, NULL::text AS detail
+                FROM access_logs al
+                LEFT JOIN files f ON f.id = al.file_id
+                WHERE al.user_id = ?
+            ) combined
+            ORDER BY timestamp DESC
+            LIMIT ? OFFSET ?
+            """,
+            (user.id, user.id, page_size + 1, offset),
+        )
+
     rows = await cursor.fetchall()
+    has_more = len(rows) > page_size
+    rows = rows[:page_size]
     return {
         "events": [
             {
-                "source":           row["source"],
-                "event_type":       row["event_type"],
-                "severity":         row["severity"] or "info",
-                "outcome":          row["outcome"],
-                "ip_address":       row["ip_address"],
-                "session_id":       row["actor_session_id"],
-                "timestamp":        str(row["timestamp"]),
-                "target_type":      row["target_type"],
-                "target_id":        row["target_id"],
-                "target_name":      row["target_name"],
-                "detail":           (json.loads(row["detail"]) if row["detail"] else None),
+                "source":       row["source"],
+                "event_type":   row["event_type"],
+                "severity":     row["severity"] or "info",
+                "outcome":      row["outcome"],
+                "ip_address":   row["ip_address"],
+                "session_id":   row["actor_session_id"],
+                "timestamp":    str(row["timestamp"]),
+                "target_type":  row["target_type"],
+                "target_id":    row["target_id"],
+                "target_name":  row["target_name"],
+                "detail":       (json.loads(row["detail"]) if row["detail"] else None),
             }
             for row in rows
-        ]
+        ],
+        "has_more": has_more,
+        "page": page,
     }
 
 

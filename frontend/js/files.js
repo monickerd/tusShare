@@ -1906,7 +1906,7 @@ const Files = (() => {
     function _reportUploadResults(ctx) {
         if (ctx.results.ok === 1) Utils.showToast(`"${ctx.results.firstName}" uploaded`, 'success');
         else if (ctx.results.ok > 1) Utils.showToast(`${ctx.results.ok} files uploaded`, 'success');
-        if (ctx.results.failed.length > 0) Utils.showToast(`${ctx.results.failed.length} item(s) failed to upload`, 'error');
+        for (const name of ctx.results.failed) Utils.showToast(`"${name}" failed to upload`, 'error');
     }
 
     /**
