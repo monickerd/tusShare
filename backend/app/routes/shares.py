@@ -229,34 +229,65 @@ async def _get_active_share_by_token(db, token: str):
     return row
 
 
-async def _get_items_with_files(db, share_id: str) -> list[dict]:
+async def _get_items_with_files(
+    db, share_id: str, folder_id: str | None = None
+) -> list[dict]:
     """Return share items joined with file metadata for file-type items.
 
     Returns the share-item encrypted_file_key (re-encrypted with shareKey),
     never the file's original key (encrypted with the owner's masterKey).
+
+    When folder_id is given (folder shares) the query is driven from the
+    files table so that deletions are reflected immediately and only files
+    that currently exist are returned.
     """
-    cursor = await db.execute(
-        """
-        SELECT si.id          AS item_id,
-               si.resource_type,
-               si.resource_id,
-               si.encrypted_file_key,
-               si.key_iv,
-               si.ephemeral_x25519_pub,
-               si.kem_ciphertext,
-               f.original_name,
-               f.size_bytes,
-               f.mime_type,
-               f.total_chunks
-        FROM share_items si
-        LEFT JOIN files f
-            ON si.resource_type = 'file'
-           AND si.resource_id = f.id
-           AND f.upload_complete = 1
-        WHERE si.share_id = ?
-        """,
-        (share_id,),
-    )
+    if folder_id:
+        cursor = await db.execute(
+            """
+            SELECT si.id          AS item_id,
+                   'file'         AS resource_type,
+                   f.id           AS resource_id,
+                   si.encrypted_file_key,
+                   si.key_iv,
+                   si.ephemeral_x25519_pub,
+                   si.kem_ciphertext,
+                   f.original_name,
+                   f.size_bytes,
+                   f.mime_type,
+                   f.total_chunks
+            FROM files f
+            JOIN share_items si
+                ON si.share_id = ?
+               AND si.resource_type = 'file'
+               AND si.resource_id = f.id
+            WHERE f.folder_id = ?
+              AND f.upload_complete = 1
+            """,
+            (share_id, folder_id),
+        )
+    else:
+        cursor = await db.execute(
+            """
+            SELECT si.id          AS item_id,
+                   si.resource_type,
+                   si.resource_id,
+                   si.encrypted_file_key,
+                   si.key_iv,
+                   si.ephemeral_x25519_pub,
+                   si.kem_ciphertext,
+                   f.original_name,
+                   f.size_bytes,
+                   f.mime_type,
+                   f.total_chunks
+            FROM share_items si
+            JOIN files f
+                ON si.resource_type = 'file'
+               AND si.resource_id = f.id
+               AND f.upload_complete = 1
+            WHERE si.share_id = ?
+            """,
+            (share_id,),
+        )
     rows = await cursor.fetchall()
     return [
         {
@@ -858,7 +889,7 @@ async def resolve_share(
                 raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND)
 
         await _verify_creator_still_has_access(db, share["id"], share["created_by"])
-        items = await _get_items_with_files(db, share["id"])
+        items = await _get_items_with_files(db, share["id"], share["target_folder_id"])
 
         client_ip = _get_share_client_ip(request)
         user_agent = (request.headers.get("User-Agent") or "")[:512]
@@ -1103,7 +1134,7 @@ async def resolve_short_link(
     if share is None:
         raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND)
 
-    items = await _get_items_with_files(db, share["id"])
+    items = await _get_items_with_files(db, share["id"], share["target_folder_id"])
 
     client_ip = _get_share_client_ip(request)
     user_agent = (request.headers.get("User-Agent") or "")[:512]
