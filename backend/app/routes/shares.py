@@ -44,6 +44,9 @@ from typing import Annotated
 
 _UTC_OFFSET = "+00:00"
 _ERR_SHARE_NOT_FOUND = "Share not found or expired"
+_ERR_SHARE_NOT_FOUND_SIMPLE = "Share not found"
+_ERR_ACCESS_DENIED = "Access denied"
+_SQL_GET_SHARE_BY_ID = "SELECT * FROM shares WHERE id = ?"
 
 _bg_tasks: set = set()
 
@@ -218,12 +221,23 @@ class CreateShortLinkRequest(BaseModel):
 
 async def _get_share_for_owner(db, share_id: str, user: AuthenticatedUser):
     """Fetch a share by ID, verifying the requester is the owner or an admin."""
-    cursor = await db.execute("SELECT * FROM shares WHERE id = ?", (share_id,))
+    cursor = await db.execute(_SQL_GET_SHARE_BY_ID, (share_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Share not found")
+        raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND_SIMPLE)
     if row["created_by"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+    return row
+
+
+async def _get_share_for_manage(db, share_id: str, user: AuthenticatedUser):
+    """Fetch a share by ID, verifying the requester may manage it (owner, admin, or team supervisor+)."""
+    cursor = await db.execute(_SQL_GET_SHARE_BY_ID, (share_id,))
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND_SIMPLE)
+    if not await _can_manage_share(db, row, user):
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
     return row
 
 
@@ -821,12 +835,7 @@ async def update_share(
 ):
     """Update share settings (active state, expiry, download limit)."""
     share_id = validate_uuid(share_id)
-    share = await db.execute("SELECT * FROM shares WHERE id = ?", (share_id,))
-    share = await share.fetchone()
-    if share is None:
-        raise HTTPException(status_code=404, detail="Share not found")
-    if not await _can_manage_share(db, share, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    share = await _get_share_for_manage(db, share_id, user)
 
     updates: list[str] = []
     params: list = []
@@ -863,12 +872,7 @@ async def delete_share(
     Access log rows retain a NULL share_id reference (ON DELETE SET NULL).
     """
     share_id = validate_uuid(share_id)
-    share = await db.execute("SELECT * FROM shares WHERE id = ?", (share_id,))
-    share = await share.fetchone()
-    if share is None:
-        raise HTTPException(status_code=404, detail="Share not found")
-    if not await _can_manage_share(db, share, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    share = await _get_share_for_manage(db, share_id, user)
     await db.execute("DELETE FROM shares WHERE id = ?", (share_id,))
     await db.commit()
     return {"message": "Share deleted"}
@@ -897,7 +901,7 @@ async def get_folder_shares(
     is_member = team_id and await _team_level_for_user(db, team_id, user.id) is not None
 
     if folder["owner_id"] != user.id and not is_member and not user.is_admin:
-        raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     now = datetime.now(timezone.utc).isoformat()
     cursor = await db.execute(
@@ -968,12 +972,7 @@ async def add_share_items(
     Idempotent: ON CONFLICT DO NOTHING, so duplicate posts are safe.
     """
     share_id = validate_uuid(share_id)
-    share = await db.execute("SELECT * FROM shares WHERE id = ?", (share_id,))
-    share = await share.fetchone()
-    if share is None:
-        raise HTTPException(status_code=404, detail="Share not found")
-    if not await _can_manage_share(db, share, user):
-        raise HTTPException(status_code=403, detail="Access denied")
+    share = await _get_share_for_manage(db, share_id, user)
 
     for item in body.items:
         await db.execute(

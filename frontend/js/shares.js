@@ -1544,6 +1544,42 @@ const Shares = (() => {
     // Folder share banner modal
     // -----------------------------------------------------------------------
 
+    /** Append a read-only URL input and a Copy button to container. */
+    function _appendUrlCopyPair(container, url, toastMsg) {
+        const input = Utils.el('input', { type: 'text', readOnly: true, value: url, className: 'share-url-input' });
+        const btn = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Copy' });
+        btn.addEventListener('click', () =>
+            navigator.clipboard.writeText(url).then(() => Utils.showToast(toastMsg, 'success'))
+        );
+        container.appendChild(input);
+        container.appendChild(btn);
+    }
+
+    /** Build the URL row element for one share entry. */
+    async function _buildShareUrlRow(s, masterKey) {
+        const row = Utils.el('div', { className: 'share-entry-url-row' });
+        if (s.key_type === 'hkdf-v1' && masterKey) {
+            try {
+                const shareKey = await Crypto.deriveShareKey(masterKey, s.token);
+                const shareKeyB64url = await Crypto.exportKeyToBase64url(shareKey);
+                _appendUrlCopyPair(row, _buildShareUrl(s.token, shareKeyB64url), 'Link copied');
+            } catch {
+                row.appendChild(Utils.el('span', { className: 'text-muted', textContent: 'Could not derive share URL.' }));
+            }
+        } else {
+            const storedKey = _loadShareKey(s.share_id);
+            if (storedKey) {
+                _appendUrlCopyPair(row, _buildShareUrl(s.token, storedKey), 'Link copied');
+            } else {
+                row.appendChild(Utils.el('span', {
+                    className: 'text-muted',
+                    textContent: 'Share URL only available in the original session. Re-create to get a persistent link.',
+                }));
+            }
+        }
+        return row;
+    }
+
     /**
      * Build and show the "This folder is being shared" detail modal.
      *
@@ -1565,82 +1601,12 @@ const Shares = (() => {
 
             const entry = Utils.el('div', { className: 'share-entry' });
 
-            // --- URL row ---
-            const urlRow = Utils.el('div', { className: 'share-entry-url-row' });
-            if (s.key_type === 'hkdf-v1' && masterKey) {
-                try {
-                    const shareKey = await Crypto.deriveShareKey(masterKey, s.token);
-                    const shareKeyB64url = await Crypto.exportKeyToBase64url(shareKey);
-                    const url = _buildShareUrl(s.token, shareKeyB64url);
-                    const urlInput = Utils.el('input', {
-                        type: 'text', readOnly: true, value: url,
-                        className: 'share-url-input',
-                    });
-                    const copyBtn = Utils.el('button', {
-                        className: 'btn btn-secondary btn-sm',
-                        textContent: 'Copy',
-                    });
-                    copyBtn.addEventListener('click', () => {
-                        navigator.clipboard.writeText(url).then(() =>
-                            Utils.showToast('Link copied', 'success')
-                        );
-                    });
-                    urlRow.appendChild(urlInput);
-                    urlRow.appendChild(copyBtn);
-                } catch {
-                    urlRow.appendChild(Utils.el('span', {
-                        className: 'text-muted',
-                        textContent: 'Could not derive share URL.',
-                    }));
-                }
-            } else {
-                // Legacy random-key share — try sessionStorage
-                const storedKey = _loadShareKey(s.share_id);
-                if (storedKey) {
-                    const url = _buildShareUrl(s.token, storedKey);
-                    const urlInput = Utils.el('input', {
-                        type: 'text', readOnly: true, value: url,
-                        className: 'share-url-input',
-                    });
-                    const copyBtn = Utils.el('button', {
-                        className: 'btn btn-secondary btn-sm',
-                        textContent: 'Copy',
-                    });
-                    copyBtn.addEventListener('click', () => {
-                        navigator.clipboard.writeText(url).then(() =>
-                            Utils.showToast('Link copied', 'success')
-                        );
-                    });
-                    urlRow.appendChild(urlInput);
-                    urlRow.appendChild(copyBtn);
-                } else {
-                    urlRow.appendChild(Utils.el('span', {
-                        className: 'text-muted',
-                        textContent: 'Share URL only available in the original session. Re-create to get a persistent link.',
-                    }));
-                }
-            }
-            entry.appendChild(urlRow);
+            entry.appendChild(await _buildShareUrlRow(s, masterKey));
 
             // --- Short link row ---
             if (s.short_link_slug) {
-                const slUrl = _buildShortLinkUrl(s.short_link_slug);
                 const slRow = Utils.el('div', { className: 'share-entry-shortlink-row' });
-                const slInput = Utils.el('input', {
-                    type: 'text', readOnly: true, value: slUrl,
-                    className: 'share-url-input',
-                });
-                const slCopy = Utils.el('button', {
-                    className: 'btn btn-secondary btn-sm',
-                    textContent: 'Copy',
-                });
-                slCopy.addEventListener('click', () => {
-                    navigator.clipboard.writeText(slUrl).then(() =>
-                        Utils.showToast('Short link copied', 'success')
-                    );
-                });
-                slRow.appendChild(slInput);
-                slRow.appendChild(slCopy);
+                _appendUrlCopyPair(slRow, _buildShortLinkUrl(s.short_link_slug), 'Short link copied');
                 entry.appendChild(slRow);
             }
 

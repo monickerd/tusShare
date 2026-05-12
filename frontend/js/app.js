@@ -1071,10 +1071,10 @@ const App = (() => {
                             'Deleting your account will permanently delete these teams and all their content. ' +
                             'This cannot be undone. Continue?'
                         )) return;
-                    } else {
-                        if (!await Utils.showConfirm(
+                    } else if (!await Utils.showConfirm(
                             'This will permanently delete your account and all your files. This cannot be undone. Continue?'
-                        )) return;
+                        )) {
+                        return;
                     }
                     try {
                         await Api.del(`${Config.app.apiPrefix}/auth/me`);

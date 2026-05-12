@@ -498,8 +498,8 @@
     min-width: 0;
     font-size: var(--font-size-sm);
     font-family: var(--font-mono, monospace);
-    background: var(--color-surface-secondary);
-    color: var(--color-text-primary);
+    background: var(--color-surface);
+    color: var(--color-text);
     border: 1px solid var(--color-border);
     border-radius: var(--radius);
     padding: var(--space-1) var(--space-2);
@@ -2416,16 +2416,6 @@
     gap: var(--space-2);
 }
 
-.share-url-input {
-    flex: 1;
-    font-family: var(--font-mono, monospace);
-    font-size: var(--font-size-sm);
-    padding: var(--space-1) var(--space-2);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-sm, 4px);
-    background: var(--color-surface);
-    color: var(--color-text);
-}
 
 .share-entry-meta {
     margin: 0;

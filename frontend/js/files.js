@@ -1812,7 +1812,7 @@ const Files = (() => {
         if (!asymKeys) return null;
         const entry = await Api.get(`${Config.app.apiPrefix}/teams/${teamId}/my-key`);
         if (!entry) return null;
-        const { sk_bytes } = await Teams.unwrapTeamKey(
+        const { sk_bytes } = await Teams.unwrapTeamKey( // NOSONAR — async function accessed via Teams module export
             entry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
         );
         return sk_bytes instanceof Uint8Array ? sk_bytes : new Uint8Array(sk_bytes);
@@ -1843,7 +1843,7 @@ const Files = (() => {
         for (const s of hkdfShares) {
             try {
                 // Use team SK for team folders if available, else owner's master key
-                const keyMaterial = (_currentTeamSKBytes) ? _currentTeamSKBytes : masterKey;
+                const keyMaterial = _currentTeamSKBytes || masterKey;
                 const shareKey = await Crypto.deriveShareKey(keyMaterial, s.token);
                 const { wrappedKeyB64, ivB64 } = await Crypto.wrapFileKeyForShare(fileKey, shareKey);
                 await Api.post(`${Config.app.apiPrefix}/shares/${s.share_id}/items`, {
