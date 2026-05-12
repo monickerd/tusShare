@@ -91,7 +91,7 @@ async def _open_app_page(session: UserSession) -> Page:
     # but finds no OPAQUE key material in sessionStorage (new tab scenario).
     key_prompt = page.locator("#key-password")
     try:
-        await expect(key_prompt).to_be_visible(timeout=5_000)
+        await key_prompt.wait_for(state="visible", timeout=5_000)
         await key_prompt.fill(session.password)
         await page.click("button[type='submit']")
     except PlaywrightTimeoutError:
