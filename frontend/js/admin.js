@@ -109,6 +109,15 @@ const Admin = (() => {
         } catch { /* non-critical — layout just reverts on next load */ }
     }
 
+    async function _saveRoleOrderPref(order) {
+        try {
+            await Api.patch(`${_api()}/auth/me/prefs`, { role_order: order });
+        } catch { /* non-critical */ }
+    }
+
+    // Module-level role order loaded from server prefs; null = use default sort
+    let _adminRoleOrder = null;
+
     function _applyLayoutPrefs(prefs) {
         const layout = prefs?.admin_layout;
         if (!layout) return _ADMIN_TABS.map(t => ({ ...t, sections: [...t.sections] }));
@@ -140,6 +149,7 @@ const Admin = (() => {
     function renderAdminPage(container) {
         container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         _loadAdminPrefs().then(prefs => {
+            _adminRoleOrder = Array.isArray(prefs.role_order) ? prefs.role_order : null;
             const liveTabs = _applyLayoutPrefs(prefs);
             _renderAdmin(container, liveTabs);
         });
@@ -1200,7 +1210,6 @@ const Admin = (() => {
 
     // Display tier for sorting main roles highest-authority first (lower = higher authority)
     const _ROLE_TIER_ORDER = { server_admin: 1, admin: 1, org_admin: 2, operational_admin: 3 };
-    const _ROLE_ORDER_KEY  = 'admin_role_order';
     const _TEAM_ROLE_ALIAS = {
         team_admin:   'Owner',
         team_manager: 'Supervisor',
@@ -1266,9 +1275,8 @@ const Admin = (() => {
             return (a.name || '').localeCompare(b.name || '');
         });
 
-        const savedOrderRaw = (() => { try { return JSON.parse(localStorage.getItem(_ROLE_ORDER_KEY) || 'null'); } catch { return null; } })();
-        if (Array.isArray(savedOrderRaw)) {
-            const idxMap = Object.fromEntries(savedOrderRaw.map((id, i) => [id, i]));
+        if (Array.isArray(_adminRoleOrder)) {
+            const idxMap = Object.fromEntries(_adminRoleOrder.map((id, i) => [id, i]));
             otherRoles.sort((a, b) => {
                 const ai = idxMap[a.id] ?? 9999, bi = idxMap[b.id] ?? 9999;
                 if (ai !== bi) return ai - bi;
@@ -1352,7 +1360,8 @@ const Admin = (() => {
             } else {
                 _teardownRolesDrag();
                 const order = [...rolesList.querySelectorAll('.role-card')].map(c => c.id.replace('role-card-', ''));
-                try { localStorage.setItem(_ROLE_ORDER_KEY, JSON.stringify(order)); } catch { /* ignore */ }
+                _adminRoleOrder = order;
+                _saveRoleOrderPref(order);
             }
         });
 
