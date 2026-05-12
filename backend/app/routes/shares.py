@@ -1242,7 +1242,7 @@ async def upload_to_share(
         await db.execute(
             "INSERT INTO access_logs "
             "    (id, file_id, user_id, share_id, ip_address, user_agent, action) "
-            "VALUES (?, ?, NULL, ?, ?, ?, 'share_upload')",
+            "VALUES (?, ?, NULL, ?, ?, ?, 'upload')",
             (log_id, file_id, share_id, ip, ua),
         )
         await db.commit()
