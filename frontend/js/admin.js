@@ -894,6 +894,37 @@ const Admin = (() => {
 
         const membersArr = members.slice();
 
+        const _buildMemberRow = (m) => {
+            const removeBtn = Utils.el('button', {
+                className: 'btn btn-xs btn-danger',
+                textContent: 'Remove',
+            });
+            removeBtn.addEventListener('click', async () => {
+                if (!confirm(`Remove "${m.username}" from team "${team.name || teamName}"?\n\nThis will revoke their access and mark the team for key rotation.`)) return;
+                removeBtn.disabled = true;
+                try {
+                    await Api.del(`${_api()}/admin/teams/${teamId}/members/${m.id}`);
+                    Utils.showToast(`${m.username} removed from team`, 'success');
+                    let idx = -1;
+                    for (let i = 0; i < membersArr.length; i++) {
+                        if (membersArr[i].id === m.id) { idx = i; break; }
+                    }
+                    if (idx !== -1) membersArr.splice(idx, 1);
+                    _renderMemberTable();
+                } catch (err) {
+                    Utils.showToast('Remove failed: ' + err.message, 'error');
+                    removeBtn.disabled = false;
+                }
+            });
+            return Utils.el('tr', {}, [
+                Utils.el('td', { textContent: m.username }),
+                Utils.el('td', { textContent: m.role_name || '—' }),
+                Utils.el('td', { textContent: m.key_confirmed ? 'Confirmed' : 'Pending' }),
+                Utils.el('td', { textContent: m.joined_at ? m.joined_at.slice(0, 10) : '—' }),
+                Utils.el('td', {}, [removeBtn]),
+            ]);
+        };
+
         const _renderMemberTable = () => {
             const memberSection = wrap.querySelector('.team-member-section');
             if (memberSection) memberSection.remove();
@@ -914,33 +945,7 @@ const Admin = (() => {
                     items:    membersArr,
                     pageSize: 10,
                     filterFn: (m, text) => m.username.toLowerCase().includes(text),
-                    buildRow: (m) => {
-                        const removeBtn = Utils.el('button', {
-                            className: 'btn btn-xs btn-danger',
-                            textContent: 'Remove',
-                        });
-                        removeBtn.addEventListener('click', async () => {
-                            if (!confirm(`Remove "${m.username}" from team "${team.name || teamName}"?\n\nThis will revoke their access and mark the team for key rotation.`)) return;
-                            removeBtn.disabled = true;
-                            try {
-                                await Api.del(`${_api()}/admin/teams/${teamId}/members/${m.id}`);
-                                Utils.showToast(`${m.username} removed from team`, 'success');
-                                const idx = membersArr.findIndex(x => x.id === m.id);
-                                if (idx !== -1) membersArr.splice(idx, 1);
-                                _renderMemberTable();
-                            } catch (err) {
-                                Utils.showToast('Remove failed: ' + err.message, 'error');
-                                removeBtn.disabled = false;
-                            }
-                        });
-                        return Utils.el('tr', {}, [
-                            Utils.el('td', { textContent: m.username }),
-                            Utils.el('td', { textContent: m.role_name || '—' }),
-                            Utils.el('td', { textContent: m.key_confirmed ? 'Confirmed' : 'Pending' }),
-                            Utils.el('td', { textContent: m.joined_at ? m.joined_at.slice(0, 10) : '—' }),
-                            Utils.el('td', {}, [removeBtn]),
-                        ]);
-                    },
+                    buildRow: _buildMemberRow,
                 });
                 memberWidget.querySelector('table').style.fontSize = '12px';
                 section.appendChild(memberWidget);
@@ -1317,19 +1322,19 @@ const Admin = (() => {
         const _setupRolesDrag = () => {
             const _on2 = (el2, event, fn) => { el2.addEventListener(event, fn); rolesDragListeners.push({ el: el2, event, fn }); };
             let draggedId = null;
-            rolesList.querySelectorAll('.role-card').forEach(card => {
+            for (const card of rolesList.querySelectorAll('.role-card')) {
                 card.setAttribute('draggable', 'true');
                 _on2(card, 'dragstart', e => {
                     draggedId = card.id.replace('role-card-', '');
                     e.dataTransfer.effectAllowed = 'move';
-                    requestAnimationFrame(() => card.classList.add('dragging'));
+                    requestAnimationFrame(card.classList.add.bind(card.classList, 'dragging'));
                 });
                 _on2(card, 'dragend', () => {
                     card.classList.remove('dragging');
                     rolesDragIndicator.remove();
                     draggedId = null;
                 });
-            });
+            }
             _on2(rolesList, 'dragover', e => {
                 if (!draggedId) return;
                 e.preventDefault();
@@ -2541,63 +2546,63 @@ const Admin = (() => {
 
         const mfaCache = new Map();
 
+        function _populateMfa(mfaCell, actionsCell, u, mfaData) {
+            const creds = mfaData.credentials || [];
+            mfaCell.className   = '';
+            mfaCell.textContent = creds.length === 0 ? 'None' : creds.map(c => c.method).join(', ');
+            actionsCell.innerHTML = '';
+
+            if (creds.length > 0) {
+                const wipeBtn = Utils.el('button', {
+                    className: 'btn btn-danger btn-xs',
+                    textContent: 'Wipe All MFA',
+                    onClick: async () => {
+                        if (!confirm(`Remove all MFA credentials for "${u.username}"? They will need to re-enroll.`)) return;
+                        wipeBtn.disabled = true;
+                        try {
+                            await Api.del(`${_api()}/admin/users/${u.id}/mfa`);
+                            Utils.showToast(`MFA wiped for ${u.username}`, 'success');
+                            mfaCache.delete(u.id);
+                            _renderMfaUserTable(container);
+                        } catch (err) {
+                            Utils.showToast('Wipe failed: ' + err.message, 'error');
+                            wipeBtn.disabled = false;
+                        }
+                    },
+                });
+                actionsCell.appendChild(wipeBtn);
+            }
+
+            const resetBtn = Utils.el('button', {
+                className: 'btn btn-secondary btn-xs',
+                textContent: mfaData.reset_required ? 'Reset Pending' : 'Force Re-enroll',
+                disabled: mfaData.reset_required,
+                onClick: async () => {
+                    if (!confirm(`Force "${u.username}" to re-enroll MFA on next login?`)) return;
+                    resetBtn.disabled = true;
+                    try {
+                        await Api.post(`${_api()}/admin/users/${u.id}/mfa/reset`, {});
+                        Utils.showToast(`MFA reset flag set for ${u.username}`, 'success');
+                        resetBtn.textContent = 'Reset Pending';
+                    } catch (err) {
+                        Utils.showToast('Reset failed: ' + err.message, 'error');
+                        resetBtn.disabled = false;
+                    }
+                },
+            });
+            actionsCell.appendChild(resetBtn);
+        }
+
         function _buildMfaRow(u) {
             const mfaCell    = Utils.el('td', { textContent: '…', className: 'text-muted' });
             const actionsCell = Utils.el('td', { className: 'admin-actions' });
 
-            function _populateMfa(mfaData) {
-                const creds = mfaData.credentials || [];
-                mfaCell.className   = '';
-                mfaCell.textContent = creds.length === 0 ? 'None' : creds.map(c => c.method).join(', ');
-                actionsCell.innerHTML = '';
-
-                if (creds.length > 0) {
-                    const wipeBtn = Utils.el('button', {
-                        className: 'btn btn-danger btn-xs',
-                        textContent: 'Wipe All MFA',
-                        onClick: async () => {
-                            if (!confirm(`Remove all MFA credentials for "${u.username}"? They will need to re-enroll.`)) return;
-                            wipeBtn.disabled = true;
-                            try {
-                                await Api.del(`${_api()}/admin/users/${u.id}/mfa`);
-                                Utils.showToast(`MFA wiped for ${u.username}`, 'success');
-                                mfaCache.delete(u.id);
-                                _renderMfaUserTable(container);
-                            } catch (err) {
-                                Utils.showToast('Wipe failed: ' + err.message, 'error');
-                                wipeBtn.disabled = false;
-                            }
-                        },
-                    });
-                    actionsCell.appendChild(wipeBtn);
-                }
-
-                const resetBtn = Utils.el('button', {
-                    className: 'btn btn-secondary btn-xs',
-                    textContent: mfaData.reset_required ? 'Reset Pending' : 'Force Re-enroll',
-                    disabled: mfaData.reset_required,
-                    onClick: async () => {
-                        if (!confirm(`Force "${u.username}" to re-enroll MFA on next login?`)) return;
-                        resetBtn.disabled = true;
-                        try {
-                            await Api.post(`${_api()}/admin/users/${u.id}/mfa/reset`, {});
-                            Utils.showToast(`MFA reset flag set for ${u.username}`, 'success');
-                            resetBtn.textContent = 'Reset Pending';
-                        } catch (err) {
-                            Utils.showToast('Reset failed: ' + err.message, 'error');
-                            resetBtn.disabled = false;
-                        }
-                    },
-                });
-                actionsCell.appendChild(resetBtn);
-            }
-
             if (mfaCache.has(u.id)) {
-                _populateMfa(mfaCache.get(u.id));
+                _populateMfa(mfaCell, actionsCell, u, mfaCache.get(u.id));
             } else {
                 Api.get(`${_api()}/admin/users/${u.id}/mfa`).then(mfaData => {
                     mfaCache.set(u.id, mfaData);
-                    _populateMfa(mfaData);
+                    _populateMfa(mfaCell, actionsCell, u, mfaData);
                 }).catch(() => {
                     mfaCell.textContent = '(error)';
                 });
@@ -2698,7 +2703,8 @@ const Admin = (() => {
         function _updateHeaders() {
             for (const col of columns) {
                 if (!col._th || col.sortable === false || col.key == null) continue;
-                col._th.textContent = col.label + (sortKey === col.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '');
+                const arrow = sortDir === 'asc' ? ' ▲' : ' ▼';
+                col._th.textContent = col.label + (sortKey === col.key ? arrow : '');
             }
         }
 
@@ -3390,9 +3396,9 @@ const Admin = (() => {
             let loaded = false;
             const btn = Utils.el('button', { className: 'tab', textContent: label });
             btn.addEventListener('click', () => {
-                tabBar.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+                for (const b of tabBar.querySelectorAll('.tab')) b.classList.remove('active');
                 btn.classList.add('active');
-                tabPanes.querySelectorAll(':scope > div').forEach(p => { p.style.display = 'none'; });
+                for (const p of tabPanes.querySelectorAll(':scope > div')) p.style.display = 'none';
                 pane.style.display = '';
                 if (!loaded) { loaded = true; buildFn(pane); }
             });
@@ -3402,6 +3408,54 @@ const Admin = (() => {
         };
 
         // ---- Tab: Roles ----
+        function _renderRolesInner(rolesWrap, currentRoles) {
+            rolesWrap.innerHTML = '';
+            if (!currentRoles.length) {
+                rolesWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:12px', textContent: 'No roles assigned.' }));
+            }
+            for (const r of currentRoles) {
+                const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
+                row.appendChild(Utils.el('span', { textContent: r.name || r.id, style: 'font-size:13px;flex:1' }));
+                const remBtn = Utils.el('button', { className: 'btn btn-xs btn-danger', textContent: 'Remove' });
+                remBtn.addEventListener('click', async () => {
+                    remBtn.disabled = true;
+                    try {
+                        await Api.del(`${_api()}/admin/users/${user.id}/roles/${r.id}`);
+                        Utils.showToast(`Role ${r.name || r.id} removed`, 'success');
+                        const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
+                        _renderRolesInner(rolesWrap, fresh.user.roles);
+                    } catch (error_) {
+                        Utils.showToast('Remove failed: ' + error_.message, 'error');
+                        remBtn.disabled = false;
+                    }
+                });
+                row.appendChild(remBtn);
+                rolesWrap.appendChild(row);
+            }
+            const assignedIds = new Set(currentRoles.map(r => r.id));
+            const available = (allRoles || []).filter(r => !assignedIds.has(r.id) && grantableRoleIds.has(r.id));
+            if (available.length) {
+                const addRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-top:6px' });
+                const roleSel = Utils.el('select', { className: 'input-sm', style: 'flex:1' });
+                for (const r of available) roleSel.appendChild(Utils.el('option', { value: r.id, textContent: r.name || r.id }));
+                const addBtn = Utils.el('button', { className: 'btn btn-xs btn-primary', textContent: '+ Add role' });
+                addBtn.addEventListener('click', async () => {
+                    addBtn.disabled = true;
+                    try {
+                        await Api.post(`${_api()}/admin/users/${user.id}/roles/${roleSel.value}`, {});
+                        Utils.showToast('Role added', 'success');
+                        const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
+                        _renderRolesInner(rolesWrap, fresh.user.roles);
+                    } catch (error_) {
+                        Utils.showToast('Add failed: ' + error_.message, 'error');
+                        addBtn.disabled = false;
+                    }
+                });
+                addRow.append(roleSel, addBtn);
+                rolesWrap.appendChild(addRow);
+            }
+        }
+
         const { btn: rolesTabBtn } = _makePaneTab('Roles', (pane) => {
             if (!capData.scope.org_wide) {
                 pane.appendChild(Utils.el('p', {
@@ -3412,58 +3466,43 @@ const Admin = (() => {
             }
             const rolesWrap = Utils.el('div', { style: 'margin-bottom:8px' });
             pane.appendChild(rolesWrap);
-
-            const _renderRolesInner = (currentRoles) => {
-                rolesWrap.innerHTML = '';
-                if (!currentRoles.length) {
-                    rolesWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:12px', textContent: 'No roles assigned.' }));
-                }
-                for (const r of currentRoles) {
-                    const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
-                    row.appendChild(Utils.el('span', { textContent: r.name || r.id, style: 'font-size:13px;flex:1' }));
-                    const remBtn = Utils.el('button', { className: 'btn btn-xs btn-danger', textContent: 'Remove' });
-                    remBtn.addEventListener('click', async () => {
-                        remBtn.disabled = true;
-                        try {
-                            await Api.del(`${_api()}/admin/users/${user.id}/roles/${r.id}`);
-                            Utils.showToast(`Role ${r.name || r.id} removed`, 'success');
-                            const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
-                            _renderRolesInner(fresh.user.roles);
-                        } catch (e2) {
-                            Utils.showToast('Remove failed: ' + e2.message, 'error');
-                            remBtn.disabled = false;
-                        }
-                    });
-                    row.appendChild(remBtn);
-                    rolesWrap.appendChild(row);
-                }
-                const assignedIds = new Set(currentRoles.map(r => r.id));
-                const available = (allRoles || []).filter(r => !assignedIds.has(r.id) && grantableRoleIds.has(r.id));
-                if (available.length) {
-                    const addRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-top:6px' });
-                    const roleSel = Utils.el('select', { className: 'input-sm', style: 'flex:1' });
-                    available.forEach(r => roleSel.appendChild(Utils.el('option', { value: r.id, textContent: r.name || r.id })));
-                    const addBtn = Utils.el('button', { className: 'btn btn-xs btn-primary', textContent: '+ Add role' });
-                    addBtn.addEventListener('click', async () => {
-                        addBtn.disabled = true;
-                        try {
-                            await Api.post(`${_api()}/admin/users/${user.id}/roles/${roleSel.value}`, {});
-                            Utils.showToast('Role added', 'success');
-                            const fresh = await Api.get(`${_api()}/admin/users/${user.id}`);
-                            _renderRolesInner(fresh.user.roles);
-                        } catch (e2) {
-                            Utils.showToast('Add failed: ' + e2.message, 'error');
-                            addBtn.disabled = false;
-                        }
-                    });
-                    addRow.append(roleSel, addBtn);
-                    rolesWrap.appendChild(addRow);
-                }
-            };
-            _renderRolesInner(user.roles || []);
+            _renderRolesInner(rolesWrap, user.roles || []);
         });
 
         // ---- Tab: Team Membership ----
+        const _filterTeamMember = (t, text) => t.team_name.toLowerCase().includes(text);
+
+        const _buildTeamMemberRow = (teamsArr, renderFn, t) => {
+            const removeBtn = Utils.el('button', {
+                className: 'btn btn-xs btn-danger',
+                textContent: 'Remove',
+            });
+            removeBtn.addEventListener('click', async () => {
+                if (!confirm(`Remove ${user.username} from team "${t.team_name}"?\n\nThis revokes their access and marks the team for key rotation.`)) return;
+                removeBtn.disabled = true;
+                try {
+                    await Api.del(`${_api()}/admin/teams/${t.team_id}/members/${user.id}`);
+                    Utils.showToast(`Removed from ${t.team_name}`, 'success');
+                    let idx = -1;
+                    for (let i = 0; i < teamsArr.length; i++) {
+                        if (teamsArr[i].team_id === t.team_id) { idx = i; break; }
+                    }
+                    if (idx !== -1) teamsArr.splice(idx, 1);
+                    renderFn();
+                } catch (err) {
+                    Utils.showToast('Remove failed: ' + err.message, 'error');
+                    removeBtn.disabled = false;
+                }
+            });
+            return Utils.el('tr', {}, [
+                Utils.el('td', { textContent: t.team_name }),
+                Utils.el('td', { textContent: t.team_role_name || '—' }),
+                Utils.el('td', { textContent: t.key_confirmed ? 'Confirmed' : 'Pending' }),
+                Utils.el('td', { textContent: t.joined_at ? t.joined_at.slice(0, 10) : '—' }),
+                Utils.el('td', {}, [removeBtn]),
+            ]);
+        };
+
         _makePaneTab('Team Membership', (pane) => {
             const teamsArr = (user.teams || []).slice();
             if (!teamsArr.length) {
@@ -3485,34 +3524,8 @@ const Admin = (() => {
                     ],
                     items:    teamsArr,
                     pageSize: 10,
-                    filterFn: (t, text) => t.team_name.toLowerCase().includes(text),
-                    buildRow: (t) => {
-                        const removeBtn = Utils.el('button', {
-                            className: 'btn btn-xs btn-danger',
-                            textContent: 'Remove',
-                        });
-                        removeBtn.addEventListener('click', async () => {
-                            if (!confirm(`Remove ${user.username} from team "${t.team_name}"?\n\nThis revokes their access and marks the team for key rotation.`)) return;
-                            removeBtn.disabled = true;
-                            try {
-                                await Api.del(`${_api()}/admin/teams/${t.team_id}/members/${user.id}`);
-                                Utils.showToast(`Removed from ${t.team_name}`, 'success');
-                                const idx = teamsArr.findIndex(x => x.team_id === t.team_id);
-                                if (idx !== -1) teamsArr.splice(idx, 1);
-                                _renderTeamMembershipTable();
-                            } catch (err) {
-                                Utils.showToast('Remove failed: ' + err.message, 'error');
-                                removeBtn.disabled = false;
-                            }
-                        });
-                        return Utils.el('tr', {}, [
-                            Utils.el('td', { textContent: t.team_name }),
-                            Utils.el('td', { textContent: t.team_role_name || '—' }),
-                            Utils.el('td', { textContent: t.key_confirmed ? 'Confirmed' : 'Pending' }),
-                            Utils.el('td', { textContent: t.joined_at ? t.joined_at.slice(0, 10) : '—' }),
-                            Utils.el('td', {}, [removeBtn]),
-                        ]);
-                    },
+                    filterFn: _filterTeamMember,
+                    buildRow: _buildTeamMemberRow.bind(null, teamsArr, _renderTeamMembershipTable),
                 });
                 widget.querySelector('table').style.fontSize = '12px';
                 tableWrap.appendChild(widget);
@@ -3558,15 +3571,21 @@ const Admin = (() => {
             let filterText    = '';
             const PAGE_SIZE   = 10;
 
+            const _onAuditTypeLinkClick = (e) => {
+                e.preventDefault();
+                _showEventDetailModal(e.currentTarget._auditEv);
+            };
+
             const _appendEvents = (events) => {
                 allEvents.push(...events);
                 _rerender();
             };
 
             const _rerender = () => {
-                const filtered = filterText
-                    ? allEvents.filter(e => e.event_type.toLowerCase().includes(filterText))
-                    : allEvents;
+                const filtered = [];
+                for (const ev of allEvents) {
+                    if (!filterText || ev.event_type.toLowerCase().includes(filterText)) filtered.push(ev);
+                }
                 tbody.innerHTML = '';
                 for (const ev of filtered) {
                     const typeLink = Utils.el('a', {
@@ -3574,7 +3593,8 @@ const Admin = (() => {
                         href: '#',
                         style: 'cursor:pointer',
                     });
-                    typeLink.addEventListener('click', (e) => { e.preventDefault(); _showEventDetailModal(ev); });
+                    typeLink._auditEv = ev;
+                    typeLink.addEventListener('click', _onAuditTypeLinkClick);
                     let sevClass = 'badge-neutral';
                     if (ev.severity === 'critical') sevClass = 'badge-error';
                     else if (ev.severity === 'warning') sevClass = 'badge-warning';
@@ -3623,20 +3643,22 @@ const Admin = (() => {
         });
 
         // ---- Tab: Management ----
+        async function _runMgmtAction(btn, errEl, action) {
+            btn.disabled = true;
+            errEl.style.display = 'none';
+            try { await action(); } catch (err) {
+                errEl.textContent = err.message;
+                errEl.style.display = '';
+            } finally { btn.disabled = false; }
+        }
+
         _makePaneTab('Management', (pane) => {
             const errEl = Utils.el('p', { className: 'text-error', style: 'display:none;margin:4px 0 8px;font-size:12px' });
             pane.appendChild(errEl);
 
             const _mgmtBtn = (label, cls, desc, onClick) => {
                 const btn = Utils.el('button', { className: `btn btn-sm ${cls}`, textContent: label });
-                btn.addEventListener('click', async () => {
-                    btn.disabled = true;
-                    errEl.style.display = 'none';
-                    try { await onClick(); } catch (err) {
-                        errEl.textContent = err.message;
-                        errEl.style.display = '';
-                    } finally { btn.disabled = false; }
-                });
+                btn.addEventListener('click', _runMgmtAction.bind(null, btn, errEl, onClick));
                 return Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:10px' }, [
                     Utils.el('div', { style: 'flex:1' }, [
                         Utils.el('p', { style: 'margin:0 0 3px;font-size:13px;color:var(--color-text-muted)', textContent: desc }),
@@ -3868,7 +3890,7 @@ const Admin = (() => {
             onClick: (e) => { e.preventDefault(); _showEventDetailModal(ev); },
         });
 
-        const pathText = (ev.detail && ev.detail.path) ? ev.detail.path : '';
+        const pathText = ev.detail?.path ?? '';
 
         return Utils.el('tr', {}, [
             Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '', style: 'white-space:nowrap' }),

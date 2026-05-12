@@ -277,6 +277,18 @@ async def list_audit_logs(
     return {"events": events, "count": len(events)}
 
 
+def _build_csv_row(r, umap: dict) -> list:
+    return [
+        r["id"], r["timestamp"], r["event_type"],
+        r["severity"] or "info", r["outcome"] or "",
+        r["user_id"] or "",
+        r["actor_username"] or umap.get(r["user_id"], "") or "",
+        r["ip_address"] or "", r["actor_session_id"] or "",
+        r["target_type"] or "", r["target_id"] or "", r["target_name"] or "",
+        r["admin_actor_id"] or "", r["detail"] or "",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # GET /admin/audit/logs/export — CSV download
 # ---------------------------------------------------------------------------
@@ -338,15 +350,7 @@ async def export_audit_logs(
         "admin_actor_id", "detail",
     ])
     for r in rows:
-        writer.writerow([
-            r["id"], r["timestamp"], r["event_type"],
-            r["severity"] or "info", r["outcome"] or "",
-            r["user_id"] or "",
-            r["actor_username"] or umap.get(r["user_id"], "") or "",
-            r["ip_address"] or "", r["actor_session_id"] or "",
-            r["target_type"] or "", r["target_id"] or "", r["target_name"] or "",
-            r["admin_actor_id"] or "", r["detail"] or "",
-        ])
+        writer.writerow(_build_csv_row(r, umap))
 
     output.seek(0)
     return StreamingResponse(
