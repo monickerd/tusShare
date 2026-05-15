@@ -70,7 +70,8 @@ def _g2_from_b64(b64: str):
     raw = _b64_decode(b64)
     if len(raw) != 96:
         raise ValueError(f"G2 point must be 96 bytes, got {len(raw)}")
-    return decompress_G2(int.from_bytes(raw, "big"))
+    # py_ecc G2Compressed is (z1, z2): z1 = first 48 bytes (imag part + flags), z2 = next 48 bytes (real part)
+    return decompress_G2((int.from_bytes(raw[:48], "big"), int.from_bytes(raw[48:], "big")))
 
 
 def _scalar_from_b64(b64: str) -> int:

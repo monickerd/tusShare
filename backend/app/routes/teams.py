@@ -1091,6 +1091,33 @@ async def add_file_keys(
 # PRE key rotation
 # ---------------------------------------------------------------------------
 
+async def _require_all_members_confirmed(db, team_id: str) -> None:
+    """Raise 422 if any interactive team member has not yet confirmed their current key.
+
+    Escrow agents are system accounts that never submit Schnorr PoKs and are excluded
+    from this check (identified by the global escrow_agent role with scope_type IS NULL).
+    Rotating before all members have confirmed risks compounding a broken key slot.
+    """
+    cursor = await db.execute(
+        "SELECT COUNT(*) FROM user_team_keys utk "
+        "WHERE utk.team_id = ? "
+        "  AND utk.key_confirmed = 0 "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM user_roles ur "
+        "    WHERE ur.user_id = utk.user_id "
+        "      AND ur.role_id = 'escrow_agent' "
+        "      AND ur.scope_type IS NULL"
+        "  )",
+        (team_id,),
+    )
+    unconfirmed = (await cursor.fetchone())[0]
+    if unconfirmed > 0:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{unconfirmed} member(s) have not yet confirmed their current team key; rotation blocked",
+        )
+
+
 async def _validate_rotation_inputs(db, team_id: str, user, body) -> None:
     """Validate file_keys and member list for a PRE key rotation."""
     if body.file_keys:
@@ -1138,6 +1165,8 @@ async def _validate_rotation_inputs(db, team_id: str, user, body) -> None:
             status_code=422,
             detail=f"Submitted members include non-members: {list(non_members)[:5]}"
         )
+
+    await _require_all_members_confirmed(db, team_id)
 
 
 @router.post("/{team_id}/rotate", responses={422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
@@ -1696,6 +1725,7 @@ async def ephemeral_join(
 
     await _load_valid_slot(db, team_id, slot_id)
     await _validate_join_file_keys(db, team_id, body)
+    await _require_all_members_confirmed(db, team_id)
 
     # Joining user must be in the members list (they wrap sk_new for themselves)
     submitted_user_ids = {m.user_id for m in body.members}

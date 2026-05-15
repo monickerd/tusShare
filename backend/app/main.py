@@ -22,6 +22,7 @@ from app.services import event_bus, live_settings, op_bus, notification_emitter,
 import app.storage.manager as storage
 from app.database import Database, db_session, get_db, init_db, close_db
 import app.sensitive_config as sensitive_config
+from app.conf.auth import ALLOWED_JWT_ALGORITHMS
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.https_redirect import HttpsRedirectMiddleware
 from app.middleware.rate_limit import run_rate_limit_cleanup
@@ -151,6 +152,12 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(
             "TUSSHARE_JWT_SECRET must be set to a strong random value. "
             "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+        )
+    if settings.JWT_ALGORITHM not in ALLOWED_JWT_ALGORITHMS:
+        raise RuntimeError(
+            f"JWT_ALGORITHM '{settings.JWT_ALGORITHM}' is not in the allowed set "
+            f"({', '.join(sorted(ALLOWED_JWT_ALGORITHMS))}). "
+            "Set TUSSHARE_JWT_ALGORITHM to HS512 (recommended) or HS256."
         )
 
     # Ensure data directories exist (used by the default local storage volume)

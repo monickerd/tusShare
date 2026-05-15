@@ -92,7 +92,7 @@ def _step_up(user_id: str) -> str:
             "exp":    now + timedelta(minutes=5),
         },
         _TEST_JWT_SECRET,
-        algorithm="HS256",
+        algorithm="HS512",
     )
 
 

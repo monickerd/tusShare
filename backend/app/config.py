@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # Auth
     AUTH_PROVIDER: str = "local"  # "local" | future: "oidc"
     JWT_SECRET: str = ""
-    JWT_ALGORITHM: str = "HS256"
+    JWT_ALGORITHM: str = "HS512"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 5
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     # Sessions inactive for longer than this are revoked by the cleanup task.

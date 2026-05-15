@@ -21,6 +21,15 @@ COOKIE_CSRF    = "__Host-csrf_token"
 COOKIE_REFRESH = "__Host-refresh_token"
 REFRESH_TOKEN_COOKIE_PATH = "/"
 
+# --- JWT algorithm policy ---
+# Only HMAC algorithms are permitted for the app's own JWTs.  These tokens are
+# signed and verified exclusively by the server; clients treat them as opaque
+# strings, so there are no client-side compatibility constraints.
+# HS384 is excluded: on 64-bit hardware SHA-384 costs the same as SHA-512
+# (it is SHA-512 truncated after fewer rounds) but produces a smaller output
+# with no security benefit.
+ALLOWED_JWT_ALGORITHMS: frozenset[str] = frozenset({"HS256", "HS512"})
+
 # --- Step-up authentication ---
 # Maximum clock skew (seconds) tolerated between client and server timestamps
 # during step-up HMAC verification.
