@@ -372,6 +372,7 @@ const App = (() => {
     async function _routeSearch(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
+        while (main.firstChild) main.firstChild.remove();
         const params = new URLSearchParams(globalThis.location.hash.split('?')[1] || '');
         const q = params.get('q') || '';
 
