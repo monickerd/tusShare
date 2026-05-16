@@ -92,6 +92,7 @@ def create_step_up_token(user_id: str, action_key: str, payload_hash: str, sessi
         "type": "step_up",
         "action": action_key,
         "scope": scope,
+        "payload_hash": payload_hash,
         "iat": now,
         "exp": exp,
     }
@@ -109,8 +110,13 @@ def verify_step_up_token(
 ) -> bool:
     """Verify a step-up token for a given user and action.
 
-    For windowed tokens (scope="*"): checks user + action match and token not expired.
-    For single-use tokens (scope=payload_hash): additionally checks scope == payload_hash.
+    When payload_hash is provided, the token's stored payload_hash claim must match —
+    for both windowed ("*") and single-use tokens.  A windowed token is therefore
+    bound to the same request payload it was issued for; replaying it against a
+    different payload is rejected.
+
+    When payload_hash is omitted (e.g., middleware without body access), windowed
+    tokens still pass and single-use tokens still fail (unchanged legacy behaviour).
 
     session_id: when the token carries a sid claim, the caller's session_id must match.
     Tokens without a sid claim pass this check unconditionally (backward compat).
@@ -133,10 +139,16 @@ def verify_step_up_token(
     if token_sid is not None and (session_id is None or token_sid != session_id):
         return False
 
-    scope = payload.get("scope", "")
-    if scope != "*":
-        # Single-use: scope must match the payload_hash of the incoming request
-        if payload_hash is None or scope != payload_hash:
+    stored_hash = payload.get("payload_hash")
+    if payload_hash is not None:
+        # Caller supplied a hash — enforce it against the JWT claim for both
+        # windowed ("*") and single-use tokens.
+        if stored_hash is None or stored_hash != payload_hash:
+            return False
+    elif payload.get("scope", "") != "*":
+        # Caller did not supply a hash but token is single-use (legacy path where
+        # scope field carries the hash directly rather than a dedicated claim).
+        if payload_hash is None or payload.get("scope") != payload_hash:
             return False
 
     return True
