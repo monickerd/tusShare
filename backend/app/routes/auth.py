@@ -32,7 +32,8 @@ from app.auth.stepup import (
 from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import Database, db_session, get_db
-from app.services import live_settings
+from app.services import live_settings, event_bus
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.middleware.rate_limit import _get_client_ip
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 import app.sensitive_config as sensitive_config
@@ -83,6 +84,12 @@ async def logout(
         await db.commit()
 
     clear_auth_cookies(response)
+    event_bus.emit(SecurityEvent(
+        event_type="auth.logout",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
+    ))
     return {"message": "Logged out"}
 
 
@@ -142,10 +149,13 @@ async def refresh(
             )
             await db.commit()
             clear_auth_cookies(response)
-            logger.warning(
-                "Refresh token reuse detected for user %s — all sessions revoked (possible theft)",
-                user_id,
-            )
+            event_bus.emit(SecurityEvent(
+                event_type="auth.session.force_terminated",
+                severity="critical",
+                outcome="success",
+                actor=EventActor(user_id=str(user_id), ip=_get_client_ip(request)),
+                detail={"reason": "refresh_token_reuse_detected"},
+            ))
             raise HTTPException(status_code=401, detail="Session invalidated. Please log in again.")
 
         # Look up user (still inside transaction)
@@ -888,8 +898,6 @@ async def delete_my_account(
     await db.execute("DELETE FROM users WHERE id = ?", (user.id,))
     await db.commit()
 
-    from app.services import event_bus
-    from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
     event_bus.emit(SecurityEvent(
         event_type="user.self_deleted",
         severity="warning",

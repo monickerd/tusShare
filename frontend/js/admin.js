@@ -4616,7 +4616,7 @@ const Admin = (() => {
           <td>${Utils.escHtml(ch.name)}</td>
           <td class="td-url">${Utils.escHtml(ch.endpoint_url)}</td>
           <td class="text-sm">${Utils.escHtml(filterStr)}</td>
-          <td class="text-sm">${batchStr}</td>
+          <td class="text-sm">${Utils.escHtml(String(batchStr))}</td>
           <td><span class="${ch.enabled ? 'badge-success' : 'badge-muted'}">${ch.enabled ? 'enabled' : 'disabled'}</span></td>
           <td></td>
         `;
@@ -4755,7 +4755,7 @@ const Admin = (() => {
                 tr.innerHTML = `
                   <td class="text-nowrap">${ev.created_at ? ev.created_at.slice(0, 19).replace('T', ' ') : ''}</td>
                   <td>${Utils.escHtml(ev.event_type)}</td>
-                  <td><span class="badge-${sevBadge}">${ev.severity}</span></td>
+                  <td><span class="badge-${sevBadge}">${Utils.escHtml(ev.severity)}</span></td>
                   <td>${Utils.escHtml(ev.source)}</td>
                   <td class="td-trunc">${Utils.escHtml(dataStr.slice(0, 120))}</td>
                 `;

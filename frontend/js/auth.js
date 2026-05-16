@@ -245,7 +245,7 @@ const Auth = (() => {
             const data = await Api.get(
                 `${Config.app.apiPrefix}/auth/oidc/${providerId}/begin`,
             );
-            if (data.redirect_url) {
+            if (data.redirect_url && /^https:\/\//i.test(data.redirect_url)) {
                 globalThis.location.href = data.redirect_url;
             }
         } catch (err) {

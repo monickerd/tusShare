@@ -18,7 +18,8 @@ from app.config import settings
 from app.models.role import FLAG_MANAGE_INVITES, FLAG_MANAGE_ORG_SETTINGS, ROLE_TIER, admin_best_tier
 from app.database import Database, get_db
 import app.storage.manager as storage
-from app.services import live_settings, sse_broker
+from app.services import live_settings, sse_broker, event_bus
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.util.db import check_admin_setting_lock, get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.wordlist import insert_invite_short_link_with_unique_slug
@@ -183,6 +184,14 @@ async def update_settings(
         raise
 
     live_settings.update_many(body.settings)
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.policy.changed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"keys_changed": list(body.settings.keys())},
+    ))
 
     if any(k in _CLIENT_RELEVANT_SETTINGS for k in body.settings):
         sse_broker.publish("broadcast", {

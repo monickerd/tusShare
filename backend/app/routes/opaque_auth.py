@@ -127,9 +127,9 @@ class OpaqueRegisterFinishRequest(BaseModel):
     client_registration_record: str     # base64 RegistrationUpload bytes from client
     wrapped_master_key: str
     wrapped_master_key_iv: str
-    recovery_key_wrapped: str | None = None
-    recovery_key_iv: str | None = None
-    recovery_key_hash: str | None = None
+    recovery_key_wrapped: str           # required — client always generates recovery key
+    recovery_key_iv: str                # required
+    recovery_key_hash: str              # required — hex SHA-256 of the recovery key
     x25519_public_key: str | None = None
     mlkem768_public_key: str | None = None
     x25519_private_wrapped: str | None = None

@@ -73,6 +73,21 @@ def _key_prefix_display(raw: str) -> str:
 # Pydantic models
 # ---------------------------------------------------------------------------
 
+def _validate_expires_at(v: Optional[str]) -> Optional[str]:
+    """Accept None/empty (no expiry), or a future ISO-8601 timestamp."""
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(v)
+    except ValueError:
+        raise ValueError("expires_at must be a valid ISO-8601 timestamp")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if dt <= datetime.now(timezone.utc):
+        raise ValueError("expires_at must be a future date")
+    return v
+
+
 class CreateServiceAccountRequest(BaseModel):
     username: str
     description: Optional[str] = None
@@ -85,6 +100,11 @@ class CreateServiceAccountRequest(BaseModel):
         if not v or len(v) > 64:
             raise ValueError("username must be 1–64 characters")
         return v
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expires_at(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_expires_at(v)
 
 
 class UpdateServiceAccountRequest(BaseModel):
@@ -102,6 +122,11 @@ class UpdateServiceAccountRequest(BaseModel):
         if not v or len(v) > 64:
             raise ValueError("username must be 1–64 characters")
         return v
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expires_at(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_expires_at(v)
 
 
 # ---------------------------------------------------------------------------

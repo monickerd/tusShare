@@ -1221,8 +1221,8 @@ async def rotate_team_keys(
                 "c1_old":   old_c1_map[fk.file_id],
                 "c1_new":   fk.pre_c1,
                 "dleq_s":   fk.dleq_s,
-                "dleq_R1":  fk.dleq_R1,
-                "dleq_R2":  fk.dleq_R2,
+                "dleq_r1":  fk.dleq_R1,
+                "dleq_r2":  fk.dleq_R2,
             }
             for fk in body.file_keys
         ]
@@ -1757,8 +1757,8 @@ async def ephemeral_join(
                 "c1_old":   old_c1_map[fk.file_id],
                 "c1_new":   fk.pre_c1,
                 "dleq_s":   fk.dleq_s,
-                "dleq_R1":  fk.dleq_R1,
-                "dleq_R2":  fk.dleq_R2,
+                "dleq_r1":  fk.dleq_R1,
+                "dleq_r2":  fk.dleq_R2,
             }
             for fk in body.file_keys
         ]
