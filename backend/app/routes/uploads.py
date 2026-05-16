@@ -25,7 +25,8 @@ from app.config import settings
 from app.database import Database, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import check_upload_rate_limit
-from app.services import live_settings, sse_broker
+from app.services import live_settings, sse_broker, event_bus
+from app.schemas.security_event import SecurityEvent
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
@@ -494,6 +495,14 @@ async def _finalize_completed_upload(
     except Exception:
         await db.rollback()
         raise
+
+    event_bus.emit(SecurityEvent(
+        event_type="file.upload.completed",
+        severity="info",
+        outcome="success",
+        user_id=user_id,
+        detail={"file_id": file_id, "size": new_offset},
+    ))
 
     _topic = file_row["folder_id"] or f"root:{file_row['owner_id']}"
     sse_broker.publish(_topic, {"type": "change"})

@@ -34,6 +34,8 @@ from app.models.role import (
     admin_best_tier,
 )
 from app.routes._access import require_flag
+from app.services import event_bus
+from app.schemas.security_event import EventActor, SecurityEvent
 from typing import Annotated
 
 
@@ -310,6 +312,13 @@ async def create_role(
         )
 
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.role.created",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"role_id": body.id, "flags_set": list(body.permissions.keys())},
+    ))
     return {"message": "Role created", "role_id": body.id}
 
 
@@ -365,6 +374,13 @@ async def update_role(
     params.append(role_id)
     await db.execute(f"UPDATE roles SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.role.updated",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"role_id": role_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+    ))
     return {"message": "Role updated"}
 
 
@@ -391,6 +407,13 @@ async def delete_role(
     # CASCADE on role_permissions and user_roles removes child rows automatically
     await db.execute("DELETE FROM roles WHERE id = ?", (role_id,))
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.role.deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"role_id": role_id},
+    ))
     return {"message": "Role deleted"}
 
 
@@ -485,4 +508,11 @@ async def update_role_permissions(
         )
 
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.role.permissions_changed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"role_id": role_id, "flags_updated": list(body.permissions.keys())},
+    ))
     return {"message": "Permissions updated"}

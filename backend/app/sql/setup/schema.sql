@@ -936,15 +936,16 @@ CREATE INDEX idx_invsl_invite  ON invite_short_links(invite_id);
 -- BEFORE UPDATE/DELETE triggers enforce immutability at the DB layer.
 -------------------------------------------------
 CREATE TABLE access_logs (
-    id             TEXT PRIMARY KEY,
-    file_id        TEXT,
-    user_id        TEXT,
-    actor_username TEXT,      -- denormalised: actual username or 'external' for anonymous share access
-    share_id       TEXT,
-    ip_address     TEXT NOT NULL,
-    user_agent     TEXT,
-    action         TEXT NOT NULL CHECK(action IN ('view', 'download', 'upload', 'delete', 'share')),
-    timestamp      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                TEXT PRIMARY KEY,
+    file_id           TEXT,
+    user_id           TEXT,
+    actor_username    TEXT,      -- denormalised: actual username or 'external' for anonymous share access
+    actor_auth_method TEXT,      -- denormalised: 'opaque' | 'ldap' | 'oidc' | 'service' | NULL for anonymous
+    share_id          TEXT,
+    ip_address        TEXT NOT NULL,
+    user_agent        TEXT,
+    action            TEXT NOT NULL CHECK(action IN ('view', 'download', 'upload', 'delete', 'share')),
+    timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_alog_file      ON access_logs(file_id);
@@ -988,22 +989,23 @@ CREATE INDEX idx_bwlog_timestamp ON bandwidth_log(timestamp);
 --   target_type, target_id, target_name, admin_actor_id.
 -------------------------------------------------
 CREATE TABLE security_events (
-    id               TEXT        PRIMARY KEY,
-    user_id          TEXT,
-    actor_username   TEXT,      -- denormalised: preserved even if user is later deleted
-    ip_address       TEXT        NOT NULL,
-    user_agent       TEXT,
-    event_type       TEXT        NOT NULL,
-    action_key       TEXT,
-    detail           TEXT,
-    severity         TEXT        NOT NULL DEFAULT 'info',
-    outcome          TEXT,
-    actor_session_id TEXT,
-    target_type      TEXT,
-    target_id        TEXT,
-    target_name      TEXT,
-    admin_actor_id   TEXT REFERENCES users(id),
-    timestamp        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                TEXT        PRIMARY KEY,
+    user_id           TEXT,
+    actor_username    TEXT,      -- denormalised: preserved even if user is later deleted
+    actor_auth_method TEXT,      -- denormalised: 'opaque' | 'ldap' | 'oidc' | 'service' | NULL for unauthenticated
+    ip_address        TEXT        NOT NULL,
+    user_agent        TEXT,
+    event_type        TEXT        NOT NULL,
+    action_key        TEXT,
+    detail            TEXT,
+    severity          TEXT        NOT NULL DEFAULT 'info',
+    outcome           TEXT,
+    actor_session_id  TEXT,
+    target_type       TEXT,
+    target_id         TEXT,
+    target_name       TEXT,
+    admin_actor_id    TEXT REFERENCES users(id),
+    timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_sevt_user      ON security_events(user_id);

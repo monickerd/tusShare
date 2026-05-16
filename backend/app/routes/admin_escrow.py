@@ -37,6 +37,8 @@ from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import FLAG_MANAGE_ESCROW, ROLE_TIER, admin_best_tier
 from app.routes._access import require_flag
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus
 from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import check_admin_setting_lock
 from app.validation.sanitizers import validate_uuid
@@ -213,6 +215,16 @@ async def update_escrow_settings(
         await _apply_lock_only_setting_updates(db, new_is_locked, new_locked_tier)
 
     await db.commit()
+    changed_keys = [k for k, _ in updates]
+    if body.is_locked is not None or body.locked_min_tier is not None:
+        changed_keys.append("lock_state")
+    event_bus.emit(SecurityEvent(
+        event_type="admin.escrow.settings_changed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"keys_changed": changed_keys},
+    ))
     return {"message": "Escrow settings updated"}
 
 
@@ -440,6 +452,18 @@ async def upsert_folder_policy(
     policy_id = existing["id"] if existing else str(uuid.uuid4())
     await _upsert_policy_record(db, existing, policy_id, folder_id, body, admin, my_tier)
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.escrow.folder_policy_changed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={
+            "action": "updated" if existing else "created",
+            "folder_id": folder_id,
+            "policy_id": policy_id,
+            "override_mode": body.override_mode,
+        },
+    ))
     return {"message": "Policy saved", "policy_id": policy_id}
 
 
@@ -467,6 +491,13 @@ async def delete_folder_policy(
         "DELETE FROM folder_escrow_policies WHERE id = ?", (policy["id"],)
     )
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.escrow.folder_policy_changed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"action": "deleted", "folder_id": folder_id, "policy_id": policy["id"]},
+    ))
     return {"message": "Policy deleted"}
 
 

@@ -41,6 +41,8 @@ from app.models.policy import (
 )
 from app.models.role import FLAG_MANAGE_POLICIES
 from app.routes._access import require_flag
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
 from typing import Annotated
 
@@ -248,6 +250,13 @@ async def create_policy(
          1 if body.escrow_enabled else 0, user.id),
     )
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.policy.created",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"policy_id": policy_id, "name": body.name, "scope_type": body.scope_type},
+    ))
     return {"message": "Policy created", "id": policy_id}
 
 
@@ -304,6 +313,13 @@ async def update_policy(
     params.append(policy_id)
     await db.execute(f"UPDATE policies SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.policy.updated",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"policy_id": policy_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+    ))
 
     # If escrow_enabled changed, re-sweep so escrow grants are written / cleared
     if body.escrow_enabled is not None:
@@ -327,10 +343,16 @@ async def delete_policy(
     """Delete a policy and all its conditions and grants (CASCADE)."""
     require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
-    await _load_policy(db, policy_id)  # 404 guard
-
+    policy = await _load_policy(db, policy_id)
     await db.execute("DELETE FROM policies WHERE id = ?", (policy_id,))
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.policy.deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"policy_id": policy_id, "name": policy.name},
+    ))
     return {"message": "Policy deleted"}
 
 

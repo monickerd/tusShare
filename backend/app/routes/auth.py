@@ -694,6 +694,7 @@ async def list_my_sessions(
 @router.delete("/me/sessions/{token_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def revoke_session(
     token_id: str,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -708,11 +709,19 @@ async def revoke_session(
     await db.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Session not found")
+    event_bus.emit(SecurityEvent(
+        event_type="auth.session.revoked",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
+        detail={"scope": "single", "session_id": token_id},
+    ))
     return {"message": "Session revoked"}
 
 
 @router.delete("/me/sessions")
 async def revoke_other_sessions(
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -722,6 +731,13 @@ async def revoke_other_sessions(
         (user.id, user.session_id or ""),
     )
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="auth.session.revoked",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
+        detail={"scope": "all_others", "count": result.rowcount},
+    ))
     return {"revoked": result.rowcount}
 
 

@@ -150,6 +150,7 @@ class TotpEnrollFinishRequest(BaseModel):
 @router.post("/totp/enroll/finish", responses={400: {"description": "Bad Request"}})
 async def totp_enroll_finish(
     body: TotpEnrollFinishRequest,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -160,6 +161,13 @@ async def totp_enroll_finish(
             status_code=400,
             detail="Invalid TOTP code or enrollment session expired. Please start enrollment again.",
         )
+    client_ip = _get_client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    await log_security_event(
+        db, "mfa_credential_enrolled", user.id, client_ip, ua,
+        username=user.username,
+        detail={"method": "totp"},
+    )
     return {"recovery_codes": recovery_codes}
 
 
@@ -247,6 +255,7 @@ class WebAuthnRegisterFinishRequest(BaseModel):
 @router.post("/webauthn/register/finish", responses={400: {"description": "Bad Request"}})
 async def webauthn_register_finish(
     body: WebAuthnRegisterFinishRequest,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -257,6 +266,13 @@ async def webauthn_register_finish(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    client_ip = _get_client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    await log_security_event(
+        db, "mfa_credential_enrolled", user.id, client_ip, ua,
+        username=user.username,
+        detail={"method": "webauthn", "credential_id": cred_id},
+    )
     return {"credential_id": cred_id}
 
 

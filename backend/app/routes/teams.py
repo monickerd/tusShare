@@ -74,6 +74,8 @@ from app.models.team import (
     get_user_teams,
 )
 from app.routes._access import get_folder_team_id
+from app.services import event_bus
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import (
     sanitize_team_name,
@@ -577,6 +579,14 @@ async def create_team(
         "Team %s (%s) created by user %s (escrow_members=%d)",
         body.name, team_id, user.id, len(body.escrow_members),
     )
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team.created",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        target=EventTarget(type="team", id=team_id, name=body.name),
+        detail={"escrow_member_count": len(body.escrow_members)},
+    ))
     return {"team_id": team_id, "folder_id": folder_id}
 
 
@@ -682,6 +692,13 @@ async def delete_team(
 
     await db.commit()
     logger.info("Team %s (%s) deleted by user %s", team.name, team_id, user.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team.deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        target=EventTarget(type="team", id=team_id, name=team.name),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +784,14 @@ async def invite_member(
     )
     await db.commit()
     logger.info("User %s invited %s to team %s with role %s", user.id, invitee_id, team_id, body.role)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team.member_added",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        target=EventTarget(type="team", id=team_id),
+        detail={"target_user_id": invitee_id, "role": body.role},
+    ))
     return {"user_id": invitee_id}
 
 
@@ -877,6 +902,14 @@ async def remove_member(
     )
     await db.commit()
     logger.info("User %s removed member %s from team %s", user.id, target_user_id, team_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team.member_removed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        target=EventTarget(type="team", id=team_id),
+        detail={"target_user_id": target_user_id, "removed_role": current_role},
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -1261,6 +1294,15 @@ async def rotate_team_keys(
         if not verify_batch_dleq(dleq_inputs):
             raise HTTPException(status_code=422, detail="DLEQ proof verification failed")
 
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team_key.rotation_started",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        target=EventTarget(type="team", id=team_id),
+        detail={"file_count": len(body.file_keys), "member_count": len(body.members)},
+    ))
+
     # --- Atomically apply the rotation ---
     # 1. Update each C1
     for fk in body.file_keys:
@@ -1293,6 +1335,14 @@ async def rotate_team_keys(
         "PRE rotation committed for team %s by user %s (%d files, %d members)",
         team_id, user.id, len(body.file_keys), len(body.members),
     )
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team_key.rotation_completed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        target=EventTarget(type="team", id=team_id),
+        detail={"file_count": len(body.file_keys), "member_count": len(body.members)},
+    ))
     return {"ok": True, "rotated_files": len(body.file_keys)}
 
 

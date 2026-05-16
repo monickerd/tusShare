@@ -60,7 +60,8 @@ from app.auth.mfa import (
 from app.auth.stepup import log_security_event
 from app.config import settings
 from app.database import Database, DuplicateError, get_db
-from app.services import live_settings
+from app.services import live_settings, event_bus
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.models.role import ROLE_USER, grant_role
 from app.middleware.rate_limit import _counter, _get_client_ip
 from app.validation.sanitizers import validate_uuid
@@ -334,6 +335,13 @@ async def _ensure_idp_user(
         await db.commit()
 
     logger.info("New IdP user created: user_id=%s provider=%s external_id=%s", user_id, provider_id, external_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    event_bus.emit(SecurityEvent(
+        event_type="user.registered",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=user_id),
+        detail={"auth_method": provider_type, "provider_id": provider_id},
+    ))
     return user_id
 
 

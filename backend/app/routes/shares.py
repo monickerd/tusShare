@@ -39,6 +39,8 @@ from app.conf.teams import TEAM_ROLE_SUPERVISOR, TEAM_ROLE_OWNER
 from app.util.http import content_disposition, parse_range_header
 from app.util.db import get_admin_setting
 from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
+from app.services import event_bus
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.wordlist import insert_short_link_with_unique_slug
 from typing import Annotated
 
@@ -426,8 +428,10 @@ async def _log_share_access(
     share_id: str,
     file_id: str | None,
     username: str | None = None,
+    auth_method: str | None = None,
+    action: str = "download",
 ) -> None:
-    """Log a share download event. Best-effort — never raises."""
+    """Log a share access event. Best-effort — never raises."""
     try:
         ip = _get_share_client_ip(request)[:64]
         ua = (request.headers.get("User-Agent") or "")[:512]
@@ -436,10 +440,11 @@ async def _log_share_access(
         await db.execute(
             """
             INSERT INTO access_logs
-                (id, file_id, user_id, actor_username, share_id, ip_address, user_agent, action)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'download')
+                (id, file_id, user_id, actor_username, actor_auth_method,
+                 share_id, ip_address, user_agent, action)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (log_id, file_id, user_id, actor_username, share_id, ip, ua),
+            (log_id, file_id, user_id, actor_username, auth_method, share_id, ip, ua, action),
         )
         await db.commit()
     except Exception:
@@ -742,9 +747,11 @@ async def _insert_share_transaction(
             or (request.client.host if request.client else "unknown")
         )[:64]
         await db.execute(
-            "INSERT INTO access_logs (id, file_id, user_id, share_id, ip_address, user_agent, action) "
-            "VALUES (?, NULL, ?, ?, ?, ?, 'share')",
-            (str(uuid.uuid4()), user.id, share_id, ip, (request.headers.get("User-Agent") or "")[:512]),
+            "INSERT INTO access_logs "
+            "    (id, file_id, user_id, actor_auth_method, share_id, ip_address, user_agent, action) "
+            "VALUES (?, NULL, ?, ?, ?, ?, ?, 'share')",
+            (str(uuid.uuid4()), user.id, user.auth_method, share_id, ip,
+             (request.headers.get("User-Agent") or "")[:512]),
         )
         await db.commit()
     except Exception:
@@ -850,6 +857,7 @@ async def get_share(
 async def update_share(
     share_id: str,
     body: UpdateShareRequest,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
     _rl: Annotated[None, Depends(check_management_rate_limit)],
@@ -878,12 +886,20 @@ async def update_share(
         f"UPDATE shares SET {', '.join(updates)} WHERE id = ?", params
     )
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="file.share.updated",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=user.id, username=user.username, ip=_get_share_client_ip(request)),
+        detail={"share_id": share_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+    ))
     return {"message": "Share updated"}
 
 
 @router.delete("/api/v1/shares/{share_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def delete_share(
     share_id: str,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
     _rl: Annotated[None, Depends(check_management_rate_limit)],
@@ -896,6 +912,13 @@ async def delete_share(
     await _get_share_for_manage(db, share_id, user)
     await db.execute("DELETE FROM shares WHERE id = ?", (share_id,))
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="file.share.deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=user.id, username=user.username, ip=_get_share_client_ip(request)),
+        detail={"share_id": share_id},
+    ))
     return {"message": "Share deleted"}
 
 
@@ -1100,6 +1123,13 @@ async def resolve_share(
         session_token = None if (share["share_type"] == "user" and user is not None) else \
             create_share_session_token(share["id"], client_ip, user_agent)
 
+        await _log_share_access(
+            db, request,
+            user.id if user else None, share["id"], None,
+            username=user.username if user else None,
+            auth_method=user.auth_method if user else None,
+            action="view",
+        )
         return {
             "share_id": share["id"],
             "share_type": share["share_type"],
@@ -1266,7 +1296,9 @@ async def download_shared_file(
 
     # --- Access log on first chunk ---
     if not range_header or start == 0:
-        await _log_share_access(db, request, user.id if user else None, share["id"], file_id, username=user.username if user else None)
+        await _log_share_access(db, request, user.id if user else None, share["id"], file_id,
+                                username=user.username if user else None,
+                                auth_method=user.auth_method if user else None)
 
     # --- Content-Disposition ---
     disposition = content_disposition(row["sanitized_name"] or "download")
@@ -1342,6 +1374,7 @@ async def resolve_short_link(
     user_agent = (request.headers.get("User-Agent") or "")[:512]
     session_token = create_share_session_token(share["id"], client_ip, user_agent)
 
+    await _log_share_access(db, request, None, share["id"], None, action="view")
     return {
         "share_id": share["id"],
         "token": share["token"],
@@ -1512,8 +1545,8 @@ async def upload_to_share(
         ua = (request.headers.get("User-Agent") or "")[:512]
         await db.execute(
             "INSERT INTO access_logs "
-            "    (id, file_id, user_id, share_id, ip_address, user_agent, action) "
-            "VALUES (?, ?, NULL, ?, ?, ?, 'upload')",
+            "    (id, file_id, user_id, actor_auth_method, share_id, ip_address, user_agent, action) "
+            "VALUES (?, ?, NULL, NULL, ?, ?, ?, 'upload')",
             (log_id, file_id, share_id, ip, ua),
         )
         await db.commit()

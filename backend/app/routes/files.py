@@ -340,6 +340,7 @@ async def search_files(
 @router.post("/batch-move", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def batch_move_files(
     body: BatchMoveRequest,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -354,6 +355,7 @@ async def batch_move_files(
 
     Returns a summary of succeeded and failed file IDs.
     """
+    from app.schemas.security_event import EventActor, SecurityEvent
     dest_id = body.destination_folder_id
     dest_team_id = await _validate_move_destination(db, dest_id, user)
 
@@ -375,6 +377,20 @@ async def batch_move_files(
             succeeded.append(ok_id)
         else:
             failed.append({"id": item.id, "reason": fail_reason})
+
+    if succeeded:
+        event_bus.emit(SecurityEvent(
+            event_type="file.move",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=_get_client_ip(request)),
+            detail={
+                "destination_folder_id": dest_id,
+                "destination_team_id": dest_team_id,
+                "file_ids": succeeded,
+                "move_count": len(succeeded),
+            },
+        ))
 
     return {"succeeded": succeeded, "failed": failed}
 
@@ -832,10 +848,12 @@ async def _apply_move_side_effects(db, body: UpdateFileRequest, file_id: str, ro
 async def update_file(
     file_id: str,
     body: UpdateFileRequest,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
 ):
     """Update file metadata (rename, move)."""
+    from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
     file_id = validate_uuid(file_id)
 
     cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
@@ -858,6 +876,27 @@ async def update_file(
     if body.folder_id and body.folder_id != row["folder_id"]:
         sse_broker.publish(body.folder_id, {"type": "change"})
 
+    ip = _get_client_ip(request)
+    is_move = body.folder_id is not None or body.move_to_root
+    if is_move:
+        event_bus.emit(SecurityEvent(
+            event_type="file.move",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+            target=EventTarget(type="file", id=file_id, name=row["original_name"]),
+            detail={"from_folder_id": row["folder_id"], "to_folder_id": body.folder_id},
+        ))
+    elif body.original_name:
+        event_bus.emit(SecurityEvent(
+            event_type="file.rename",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+            target=EventTarget(type="file", id=file_id, name=body.original_name),
+            detail={"old_name": row["original_name"]},
+        ))
+
     result = {"message": "File updated"}
     if removed_chars:
         result["removed_chars"] = removed_chars
@@ -867,6 +906,7 @@ async def update_file(
 @router.delete("/{file_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def delete_file(
     file_id: str,
+    request: Request,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -876,10 +916,11 @@ async def delete_file(
     the row and blob are permanently removed immediately.
     DB mutations are atomic; blob removal is non-blocking and best-effort.
     """
+    from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
     file_id = validate_uuid(file_id)
 
     cursor = await db.execute(
-        "SELECT id, storage_key, owner_id, folder_id, encrypted_size FROM files "
+        "SELECT id, storage_key, owner_id, folder_id, encrypted_size, original_name FROM files "
         "WHERE id = ? AND deleted_at IS NULL",
         (file_id,),
     )
@@ -890,6 +931,7 @@ async def delete_file(
     if row["owner_id"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
+    ip = _get_client_ip(request)
     # Check whether trash is enabled.
     trash_enabled = (await get_admin_setting(db, "trash_enabled", default="true")) == "true"
 
@@ -900,6 +942,14 @@ async def delete_file(
         )
         await db.commit()
         sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
+        event_bus.emit(SecurityEvent(
+            event_type="file.delete",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+            target=EventTarget(type="file", id=file_id, name=row["original_name"]),
+            detail={"trash": True},
+        ))
         return {"message": "File moved to trash"}
 
     # Trash disabled — hard delete immediately.
@@ -942,6 +992,14 @@ async def delete_file(
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
 
+    event_bus.emit(SecurityEvent(
+        event_type="file.delete",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+        target=EventTarget(type="file", id=file_id, name=row["original_name"]),
+        detail={"trash": False},
+    ))
     return {"message": "File deleted"}
 
 
@@ -976,10 +1034,11 @@ async def _log_download(
         await db.execute(
             """
             INSERT INTO access_logs
-                (id, file_id, user_id, actor_username, share_id, ip_address, user_agent, action)
-            VALUES (?, ?, ?, ?, NULL, ?, ?, 'download')
+                (id, file_id, user_id, actor_username, actor_auth_method, share_id,
+                 ip_address, user_agent, action)
+            VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 'download')
             """,
-            (log_id, file_id, user.id, user.username, ip, ua),
+            (log_id, file_id, user.id, user.username, user.auth_method, ip, ua),
         )
         await db.commit()
     except Exception:

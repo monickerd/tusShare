@@ -30,6 +30,8 @@ _MANIFEST_PATH = _APP_DIR / "manifest.json"            # …/app/app/manifest.js
 _APP_ROOT = _APP_DIR.parent                            # …/app/  (container root)
 
 _result: "IntegrityResult | None" = None
+_manifest_hashes: dict[str, str] = {}
+_runtime_cache: dict[str, tuple[int, str]] = {}  # rel_path → (mtime_ns, computed_hash)
 
 
 @dataclass
@@ -54,7 +56,7 @@ def check_integrity() -> IntegrityResult:
     Results are cached — the check runs exactly once per process regardless of
     how many times this function is called.  Call only when DEBUG is False.
     """
-    global _result
+    global _result, _manifest_hashes
     if _result is not None:
         return _result
 
@@ -69,6 +71,7 @@ def check_integrity() -> IntegrityResult:
 
     manifest = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
     files: dict[str, str] = manifest.get("files", {})
+    _manifest_hashes = dict(files)
     missing: list[str] = []
     tampered: list[str] = []
 
@@ -100,3 +103,29 @@ def check_integrity() -> IntegrityResult:
 def get_result() -> "IntegrityResult | None":
     """Return the cached result, or None if the check has not yet run."""
     return _result
+
+
+def verify_file_integrity(manifest_rel: str) -> bool | None:
+    """Verify a single manifest-tracked file at request time.
+
+    Uses mtime-based caching so repeated requests for an unchanged file do not
+    re-read its bytes.  Returns True if the file matches its manifest hash,
+    False if it is missing or tampered, None if no manifest hash is available
+    (e.g. DEBUG mode where check_integrity() is not called).
+    """
+    expected = _manifest_hashes.get(manifest_rel)
+    if expected is None:
+        return None
+    path = _APP_ROOT / manifest_rel
+    if not path.exists():
+        return False
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return False
+    cached = _runtime_cache.get(manifest_rel)
+    if cached is not None and cached[0] == mtime:
+        return cached[1] == expected
+    actual = _sha256_b64(path)
+    _runtime_cache[manifest_rel] = (mtime, actual)
+    return actual == expected

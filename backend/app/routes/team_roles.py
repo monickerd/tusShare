@@ -35,6 +35,8 @@ from app.models.team_role import (
 )
 from app.conf.teams import TEAM_ROLE_OWNER
 from app.validation.sanitizers import validate_uuid
+from app.services import event_bus
+from app.schemas.security_event import EventActor, SecurityEvent
 from typing import Annotated
 
 router = APIRouter()
@@ -263,6 +265,13 @@ async def create_team_role(
         )
 
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team_role.created",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"team_id": team_id, "role_id": role_id, "flags_set": list(body.permissions.keys())},
+    ))
     return {"message": "Team role created", "role_id": role_id}
 
 
@@ -335,6 +344,13 @@ async def update_team_role(
     params.append(role_id)
     await db.execute(f"UPDATE team_roles SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team_role.updated",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"team_id": team_id, "role_id": role_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+    ))
     return {"message": "Team role updated"}
 
 
@@ -360,6 +376,13 @@ async def delete_team_role(
 
     await db.execute("DELETE FROM team_roles WHERE id = ?", (role_id,))
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.team_role.deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"team_id": team_id, "role_id": role_id},
+    ))
     return {"message": "Team role deleted"}
 
 

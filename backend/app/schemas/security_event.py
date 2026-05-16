@@ -18,6 +18,7 @@ class EventActor(BaseModel):
     username: str | None = None
     ip: str | None = None
     session_id: str | None = None
+    auth_method: str | None = None
 
 
 class EventTarget(BaseModel):

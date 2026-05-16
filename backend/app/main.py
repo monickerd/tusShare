@@ -29,7 +29,7 @@ from app.middleware.rate_limit import run_rate_limit_cleanup
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.sanitize import InputSanitizationMiddleware
 from app.schemas.security_event import EventActor, SecurityEvent
-from app.util.integrity import check_integrity, get_result as get_integrity_result
+from app.util.integrity import check_integrity, get_result as get_integrity_result, verify_file_integrity
 from app.util.sri import inject_sri
 from app.util.theme import inject_theme
 
@@ -191,6 +191,26 @@ async def lifespan(app: FastAPI):
     # Initialize storage manager (loads volume configs from DB)
     async with db_session() as db:
         storage_manager = await storage.init(db, db_session)
+
+    # Warn if non-local volumes exist but STORAGE_ENCRYPTION_KEY is absent — those
+    # volumes were encrypted with the JWT_SECRET fallback key.  A DB-only breach
+    # would expose storage credentials alongside everything else.
+    if not settings.STORAGE_ENCRYPTION_KEY:
+        async with db_session() as db:
+            _vol_cur = await db.execute(
+                "SELECT COUNT(*) FROM storage_volumes "
+                "WHERE provider != 'local' AND config_enc IS NOT NULL"
+            )
+            _vol_row = await _vol_cur.fetchone()
+            if _vol_row and _vol_row[0] > 0:
+                logger.warning(
+                    "Found %d non-local storage volume(s) with encrypted credentials, "
+                    "but TUSSHARE_STORAGE_ENCRYPTION_KEY is not set. "
+                    "These volumes are protected only by a key derived from JWT_SECRET. "
+                    "Set TUSSHARE_STORAGE_ENCRYPTION_KEY to a dedicated 32-byte base64url key "
+                    "and re-save each volume to improve credential isolation.",
+                    _vol_row[0],
+                )
 
     # Bootstrap admin user on first run
     async with db_session() as db:
@@ -579,6 +599,31 @@ def create_app() -> FastAPI:
         app.add_api_route("/s/{token}", _spa_share, methods=["GET"])
         app.add_api_route("/l/{slug}", _spa_shortlink, methods=["GET"])
         app.add_api_route("/{slug}", _shortlink_redirect, methods=["GET"])
+
+        # Integrity-guarded routes for JS libraries loaded via dynamic import().
+        # Browser SRI enforcement does not cover dynamic imports, so the server
+        # must verify the file hash before serving them.  A mismatch (e.g. a
+        # compromised static store) returns 500 rather than serving tampered code.
+        _GUARDED_LIBS = (
+            ("frontend/js/lib/opaque.js",                "/js/lib/opaque.js"),
+            ("frontend/js/lib/noble-post-quantum.js",    "/js/lib/noble-post-quantum.js"),
+            ("frontend/js/lib/noble-curves-bls12381.js", "/js/lib/noble-curves-bls12381.js"),
+        )
+        def _make_lib_handler(manifest_rel: str, lib_path: Path):
+            def _handler():
+                ok = verify_file_integrity(manifest_rel)
+                if ok is False:
+                    logger.error("Runtime integrity check failed for %s — refusing to serve", manifest_rel)
+                    return JSONResponse(
+                        {"detail": "Static asset integrity check failed"},
+                        status_code=500,
+                    )
+                return FileResponse(str(lib_path))
+            return _handler
+        for _manifest_rel, _url_path in _GUARDED_LIBS:
+            _lib_path = frontend_dir / _manifest_rel.removeprefix("frontend/")
+            if _lib_path.exists():
+                app.add_api_route(_url_path, _make_lib_handler(_manifest_rel, _lib_path), methods=["GET"])
 
         app.mount("/", StaticFiles(directory=str(frontend_dir), html=True), name="static")
 

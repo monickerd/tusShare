@@ -41,7 +41,8 @@ from app.auth.jwt import create_access_token, create_refresh_token, generate_csr
 from app.auth.opaque_provider import OPAQUEAuthProvider
 from app.config import settings
 from app.database import Database, DuplicateError, get_db
-from app.services import live_settings
+from app.services import live_settings, event_bus
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.models.role import ROLE_SERVER_ADMIN, ROLE_USER, grant_role
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 from typing import Annotated
@@ -443,6 +444,13 @@ async def opaque_register_finish(
     set_auth_cookies(response, access_token, raw_refresh, csrf_token)
 
     logger.info("New OPAQUE user registered: %s (id=%s)", user.username, user.id)
+    event_bus.emit(SecurityEvent(
+        event_type="user.registered",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=user_id, username=body.username),
+        detail={"auth_method": "opaque"},
+    ))
 
     # Tell the client if they need to enroll MFA before accessing resources.
     # New users never have credentials, so only the enforcement mode matters.
@@ -553,16 +561,32 @@ async def opaque_login_finish(
     """
     provider = OPAQUEAuthProvider(db)
 
+    _client_ip = _get_client_ip(request)
+
     session = await provider.consume_login_session(body.session_id)
     if session is None:
         # Session expired, not found, or already consumed — uniform error to
         # prevent distinguishing between "wrong password" and "no session"
+        event_bus.emit(SecurityEvent(
+            event_type="auth.login.failure",
+            severity="warning",
+            outcome="failure",
+            actor=EventActor(ip=_client_ip),
+            detail={"method": "opaque", "username": body.username, "reason": "session_not_found"},
+        ))
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     stored_username, server_state_bytes = session
 
     # Username in the finish request must match what was used at start
     if stored_username.lower() != body.username.lower():
+        event_bus.emit(SecurityEvent(
+            event_type="auth.login.failure",
+            severity="warning",
+            outcome="failure",
+            actor=EventActor(ip=_client_ip),
+            detail={"method": "opaque", "username": stored_username, "reason": "username_mismatch"},
+        ))
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     login_finish_bytes = _decode_b64_field(body.client_login_finish, "client_login_finish")
@@ -577,9 +601,23 @@ async def opaque_login_finish(
         )
     except ValueError as exc:
         logger.warning("OPAQUE login/finish error: %s", exc)
+        event_bus.emit(SecurityEvent(
+            event_type="auth.login.failure",
+            severity="warning",
+            outcome="failure",
+            actor=EventActor(ip=_client_ip),
+            detail={"method": "opaque", "username": stored_username, "reason": "invalid_credentials"},
+        ))
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     if session_key is None:
+        event_bus.emit(SecurityEvent(
+            event_type="auth.login.failure",
+            severity="warning",
+            outcome="failure",
+            actor=EventActor(ip=_client_ip),
+            detail={"method": "opaque", "username": stored_username, "reason": "invalid_credentials"},
+        ))
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     # Auth succeeded — load the full user record and issue tokens
@@ -865,6 +903,13 @@ async def opaque_migrate_finish(
         logger.info("OPAQUE migrate/finish: user %s already migrated (no-op)", user.id)
     else:
         logger.info("OPAQUE migration complete: user=%s (id=%s)", user.username, user.id)
+        event_bus.emit(SecurityEvent(
+            event_type="auth.credential.migrated",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"auth_method": "opaque"},
+        ))
 
     # Return updated user record
     provider = OPAQUEAuthProvider(db)
@@ -1546,4 +1591,11 @@ async def opaque_bootstrap_finish(
     set_auth_cookies(response, access_token, raw_refresh, csrf_token)
 
     logger.info("Bootstrap admin registered: %s (id=%s)", user.username, user.id)
+    event_bus.emit(SecurityEvent(
+        event_type="admin.bootstrap.completed",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=user_id, username=body.username),
+        detail={"auth_method": "opaque"},
+    ))
     return {"user": user_response_dict(user)}

@@ -45,6 +45,8 @@ from app.models.role import (
     admin_best_tier,
 )
 from app.routes._access import require_flag
+from app.services import event_bus
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.services.sharing_rules import simulate_sharing_rules
 from app.validation.sanitizers import validate_uuid
 from typing import Annotated
@@ -427,6 +429,13 @@ async def update_sharing_flags(
         )
 
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.sharing_rule.flags_updated",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"role_id": body.role_id, "flags": body.flags},
+    ))
     return {"message": "Sharing flags updated", "role_id": body.role_id}
 
 
@@ -570,6 +579,13 @@ async def create_sharing_rule(
         )
 
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.sharing_rule.created",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"rule_id": rule_id, "name": body.name, "effect": body.effect},
+    ))
 
     cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
@@ -692,6 +708,13 @@ async def update_sharing_rule(
             )
 
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.sharing_rule.updated",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"rule_id": rule_id},
+    ))
 
     cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
@@ -719,5 +742,12 @@ async def delete_sharing_rule(
 
     await db.execute("DELETE FROM sharing_rules WHERE id = ?", (rule_id,))
     await db.commit()
+    event_bus.emit(SecurityEvent(
+        event_type="admin.sharing_rule.deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(admin.id), username=admin.username),
+        detail={"rule_id": rule_id, "name": rule["name"]},
+    ))
 
     return {"message": "Rule deleted", "rule_id": rule_id}

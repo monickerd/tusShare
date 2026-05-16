@@ -9,7 +9,8 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, db_session, get_db
 from app.models.file import File, Folder
 from app.models.role import FLAG_ACCESS_ALL_FILES
-from app.services import sse_broker
+from app.services import event_bus, sse_broker
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.services.trash import get_trash_settings, purge_file
 import app.storage.manager as storage
 from app.validation.sanitizers import validate_uuid
@@ -87,6 +88,13 @@ async def restore_file(
     )
     await db.commit()
 
+    event_bus.emit(SecurityEvent(
+        event_type="file.restored",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"file_id": file_id},
+    ))
     sse_broker.publish(new_folder_id or f"root:{row['owner_id']}", {"type": "change"})
     return {"message": "File restored"}
 
@@ -163,6 +171,13 @@ async def restore_folder(
         await db.rollback()
         raise
 
+    event_bus.emit(SecurityEvent(
+        event_type="file.restored",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"folder_id": folder_id},
+    ))
     sse_broker.publish(new_parent_id or f"root:{row['owner_id']}", {"type": "change"})
     return {"message": "Folder restored"}
 

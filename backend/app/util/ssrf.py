@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import socket
 import urllib.parse
+from typing import Optional
 
 from fastapi import HTTPException
 
@@ -100,3 +101,65 @@ async def validate_endpoint_url(
                     "Direct access to internal networks is not permitted."
                 ),
             )
+
+
+async def resolve_validated_endpoint(
+    url: str,
+    *,
+    allowed_schemes: tuple[str, ...] = ("http", "https"),
+    allow_http: Optional[bool] = None,
+) -> tuple[str, str]:
+    """Validate url for SSRF and return (hostname, pinned_ip_str).
+
+    The returned IP is the validated resolved address; callers should use it as
+    a pinned DNS target so that the validation and connection use the same address
+    (prevents DNS rebinding TOCTOU attacks).
+    Raises HTTPException(422) on any violation.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise HTTPException(status_code=422, detail="endpoint_url is not a valid URL")
+
+    if parsed.scheme not in allowed_schemes:
+        schemes = " or ".join(allowed_schemes)
+        raise HTTPException(status_code=422, detail=f"endpoint_url must use {schemes} scheme")
+
+    http_ok = settings.DEBUG if allow_http is None else allow_http
+    if parsed.scheme == "http" and not http_ok:
+        raise HTTPException(
+            status_code=422,
+            detail="endpoint_url must use https in production (set DEBUG=true to allow plain http)",
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=422, detail="endpoint_url must include a hostname")
+
+    try:
+        addr_infos = await asyncio.to_thread(socket.getaddrinfo, hostname, None)
+    except socket.gaierror:
+        raise HTTPException(status_code=422, detail="Cannot resolve the hostname in endpoint_url")
+
+    pinned_ip: Optional[str] = None
+    for _, _, _, _, sockaddr in addr_infos:
+        ip_str = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if _is_blocked(ip):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "endpoint_url resolves to a private or reserved address. "
+                    "Direct access to internal networks is not permitted."
+                ),
+            )
+        if pinned_ip is None:
+            pinned_ip = ip_str
+
+    if pinned_ip is None:
+        raise HTTPException(status_code=422, detail="Cannot resolve a usable address for endpoint_url")
+
+    return hostname, pinned_ip

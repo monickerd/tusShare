@@ -19,15 +19,45 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import io
 import json
 import logging
 from datetime import datetime, timezone
 
+import httpcore
 import httpx
 
 from app.config import settings
-from app.util.ssrf import validate_endpoint_url
+from app.util.ssrf import resolve_validated_endpoint
 import app.storage.manager as storage
+
+
+class _PinnedDNSBackend(httpcore.AsyncNetworkBackend):
+    """DNS-pinned network backend: routes `hostname` to a pre-validated `pinned_ip`.
+
+    Prevents DNS rebinding TOCTOU attacks by bypassing OS DNS for the target
+    hostname and connecting directly to the IP validated at scan start.
+    The original hostname is still used for TLS SNI and certificate verification.
+    """
+
+    def __init__(self, hostname: str, pinned_ip: str) -> None:
+        self._hostname = hostname
+        self._pinned_ip = pinned_ip
+        from httpcore._backends.auto import AutoBackend
+        self._inner = AutoBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        actual_host = self._pinned_ip if host == self._hostname else host
+        return await self._inner.connect_tcp(
+            actual_host, port,
+            timeout=timeout, local_address=local_address, socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        return await self._inner.connect_unix_socket(path, timeout=timeout, socket_options=socket_options)
+
+    async def sleep(self, seconds):
+        return await self._inner.sleep(seconds)
 
 logger = logging.getLogger(__name__)
 
@@ -96,43 +126,88 @@ def _derive_file_key(
     return AESGCM(derived).decrypt(iv_bytes, enc_key_bytes, None)
 
 
-def _decrypt_chunks_sync(file_key_bytes: bytes, chunks: list[tuple[str, bytes]]) -> bytes:
-    """Decrypt a list of (iv_b64, ciphertext) tuples; run in a thread pool."""
+def _decrypt_chunks_sync(file_key_bytes: bytes, chunks: list[tuple[str, bytes]]) -> list[bytes]:
+    """Decrypt a list of (iv_b64, ciphertext) tuples; run in a thread pool.
+
+    Returns individual plaintext chunks rather than a single joined buffer so
+    callers can stream to the webhook without materialising the full plaintext.
+    """
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     aesgcm = AESGCM(file_key_bytes)
-    parts = []
-    for iv_b64, ciphertext in chunks:
-        parts.append(aesgcm.decrypt(base64.b64decode(iv_b64), ciphertext, None))
-    return b"".join(parts)
+    return [aesgcm.decrypt(base64.b64decode(iv_b64), ct, None) for iv_b64, ct in chunks]
 
 
 # ---------------------------------------------------------------------------
 # Webhook
 # ---------------------------------------------------------------------------
 
+class _ChunkedFile(io.RawIOBase):
+    """File-like wrapper over a list of plaintext chunks for httpx multipart streaming.
+
+    httpx's FileField calls read(CHUNK_SIZE) in a loop.  This implementation
+    serves bytes chunk-by-chunk so the full plaintext is never joined into a
+    single large bytes object.
+    """
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._it = iter(chunks)
+        self._buf = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: bytearray) -> int:
+        while not self._buf:
+            try:
+                self._buf = next(self._it)
+            except StopIteration:
+                return 0
+        n = min(len(b), len(self._buf))
+        b[:n] = self._buf[:n]
+        self._buf = self._buf[n:]
+        return n
+
+
 async def _call_webhook(
     endpoint: str,
     secret: str,
-    plaintext: bytes,
+    decrypted_chunks: list[bytes],
     file_id: str,
     original_name: str,
     mime_type: str,
+    *,
+    pinned_hostname: str,
+    pinned_ip: str,
 ) -> dict:
-    """POST plaintext to the AV webhook; return parsed response dict."""
+    """POST plaintext to the AV webhook; return parsed response dict.
+
+    Accepts pre-decrypted chunks and streams them via _ChunkedFile so the full
+    plaintext is never materialised as a single bytes object.  HMAC is computed
+    via rolling update over the metadata prefix followed by each chunk in order.
+
+    Uses a DNS-pinned transport so that the connection always goes to the IP
+    that was validated at scan start, preventing DNS rebinding TOCTOU attacks.
+    """
+    total_size = sum(len(c) for c in decrypted_chunks)
     metadata = json.dumps({
         "file_id":       file_id,
         "original_name": original_name,
         "mime_type":     mime_type,
-        "size_bytes":    len(plaintext),
+        "size_bytes":    total_size,
     })
 
-    sig_payload = metadata.encode() + plaintext
-    sig = hmac.new(secret.encode(), sig_payload, hashlib.sha256).hexdigest()
+    h = hmac.new(secret.encode(), metadata.encode(), hashlib.sha256)
+    for chunk in decrypted_chunks:
+        h.update(chunk)
+    sig = h.hexdigest()
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    transport = httpx.AsyncHTTPTransport(
+        network_backend=_PinnedDNSBackend(pinned_hostname, pinned_ip),
+    )
+    async with httpx.AsyncClient(transport=transport, timeout=120.0) as client:
         resp = await client.post(
             endpoint,
-            files={"file": (original_name, plaintext, mime_type or "application/octet-stream")},
+            files={"file": (original_name, _ChunkedFile(decrypted_chunks), mime_type or "application/octet-stream")},
             data={"metadata": metadata},
             headers={"X-Signature": f"sha256={sig}"},
         )
@@ -163,7 +238,7 @@ async def scan_file(db, file_id: str) -> None:
         return
 
     try:
-        await validate_endpoint_url(endpoint)
+        pinned_hostname, pinned_ip = await resolve_validated_endpoint(endpoint)
     except Exception:
         logger.exception(
             "AV scan endpoint %r failed SSRF validation — scan aborted for file %s",
@@ -241,7 +316,8 @@ async def scan_file(db, file_id: str) -> None:
             data = b"".join([chunk async for chunk in stream])
             raw_chunks.append((cr["iv"], data))
 
-        plaintext = await asyncio.to_thread(_decrypt_chunks_sync, file_key_bytes, raw_chunks)
+        decrypted_chunks = await asyncio.to_thread(_decrypt_chunks_sync, file_key_bytes, raw_chunks)
+        del raw_chunks  # release ciphertext before webhook; only decrypted chunks remain in memory
     except Exception:
         logger.exception("Chunk decryption failed for file %s", file_id)
         await _write_status(db, file_id, "error")
@@ -249,10 +325,12 @@ async def scan_file(db, file_id: str) -> None:
 
     # --- Webhook with retry ---
     verdict = await _scan_with_retry(
-        endpoint, secret, plaintext, file_id,
+        endpoint, secret, decrypted_chunks, file_id,
         file_row.get("original_name", "file"),
         file_row.get("mime_type", "application/octet-stream"),
         max_attempts,
+        pinned_hostname=pinned_hostname,
+        pinned_ip=pinned_ip,
     )
 
     await _write_status(db, file_id, verdict)
@@ -264,15 +342,22 @@ async def scan_file(db, file_id: str) -> None:
 
 
 async def _scan_with_retry(
-    endpoint: str, secret: str, plaintext: bytes,
+    endpoint: str, secret: str, decrypted_chunks: list[bytes],
     file_id: str, original_name: str, mime_type: str,
     max_attempts: int,
+    *,
+    pinned_hostname: str,
+    pinned_ip: str,
 ) -> str:
     verdict = "error"
     delay = 2.0
     for attempt in range(1, max_attempts + 1):
         try:
-            result = await _call_webhook(endpoint, secret, plaintext, file_id, original_name, mime_type)
+            result = await _call_webhook(
+                endpoint, secret, decrypted_chunks, file_id, original_name, mime_type,
+                pinned_hostname=pinned_hostname,
+                pinned_ip=pinned_ip,
+            )
             raw_verdict = result.get("verdict", "error")
             verdict = raw_verdict if raw_verdict in ("clean", "infected", "error") else "error"
             break

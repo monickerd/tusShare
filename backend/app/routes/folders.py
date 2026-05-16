@@ -11,7 +11,8 @@ from app.database import Database, DuplicateError, get_db
 from app.middleware.rate_limit import check_management_write_rate_limit
 from app.models.file import File, Folder
 from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
-from app.services import sse_broker
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus, sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
@@ -193,6 +194,14 @@ async def create_folder(
                 "existing_folder_id": existing["id"] if existing else None,
             },
         )
+
+    event_bus.emit(SecurityEvent(
+        event_type="file.folder.created",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"folder_id": folder_id, "name": body.name, "parent_id": body.parent_id},
+    ))
 
     # Notify the parent folder (or root) that a new subfolder appeared
     sse_broker.publish(body.parent_id or f"root:{user.id}", {"type": "change"})
@@ -463,6 +472,26 @@ async def update_folder(
 
     await db.commit()
 
+    old_parent = folder_row["parent_id"]
+    is_move = body.move_to_root or (body.parent_id is not None and body.parent_id != old_parent)
+    if is_move:
+        new_parent = None if body.move_to_root else body.parent_id
+        event_bus.emit(SecurityEvent(
+            event_type="file.folder.moved",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"folder_id": folder_id, "old_parent_id": old_parent, "new_parent_id": new_parent},
+        ))
+    elif body.name is not None:
+        event_bus.emit(SecurityEvent(
+            event_type="file.folder.renamed",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"folder_id": folder_id, "old_name": folder_row["name"], "new_name": body.name},
+        ))
+
     # Notify old parent (rename) and new parent (move) if different
     old_parent = folder_row["parent_id"]
     sse_broker.publish(old_parent or f"root:{folder_row['owner_id']}", {"type": "change"})
@@ -502,6 +531,25 @@ async def delete_folder(
         raise HTTPException(status_code=400, detail="Cannot delete the shared folder")
 
     trash_enabled = (await get_admin_setting(db, "trash_enabled", default="true")) == "true"
+
+    # Count subtree size for audit detail (folders + files in the subtree)
+    subtree_count_cursor = await db.execute(
+        """
+        WITH RECURSIVE subtree AS (
+            SELECT id FROM folders WHERE id = ?
+            UNION ALL
+            SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id
+        )
+        SELECT
+            (SELECT COUNT(*) FROM subtree) AS folder_count,
+            (SELECT COUNT(*) FROM files WHERE folder_id IN (SELECT id FROM subtree)
+             AND deleted_at IS NULL AND upload_complete = 1) AS file_count
+        """,
+        (folder_id,),
+    )
+    subtree_row = await subtree_count_cursor.fetchone()
+    subtree_folder_count = subtree_row["folder_count"] if subtree_row else 1
+    subtree_file_count = subtree_row["file_count"] if subtree_row else 0
 
     if trash_enabled:
         await db.execute("BEGIN")
@@ -551,6 +599,19 @@ async def delete_folder(
             await db.rollback()
             raise
 
+        event_bus.emit(SecurityEvent(
+            event_type="file.folder.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={
+                "folder_id": folder_id,
+                "name": folder_row["name"],
+                "soft_delete": True,
+                "subtree_folders": subtree_folder_count,
+                "subtree_files": subtree_file_count,
+            },
+        ))
         sse_broker.publish(
             folder_row["parent_id"] or f"root:{folder_row['owner_id']}",
             {"type": "change"},
@@ -561,6 +622,19 @@ async def delete_folder(
     await db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
     await db.commit()
 
+    event_bus.emit(SecurityEvent(
+        event_type="file.folder.deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={
+            "folder_id": folder_id,
+            "name": folder_row["name"],
+            "soft_delete": False,
+            "subtree_folders": subtree_folder_count,
+            "subtree_files": subtree_file_count,
+        },
+    ))
     sse_broker.publish(
         folder_row["parent_id"] or f"root:{folder_row['owner_id']}",
         {"type": "change"},

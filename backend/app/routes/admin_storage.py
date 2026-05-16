@@ -27,6 +27,7 @@ from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
+from app.config import settings
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.storage.crypto import decrypt_volume_config, encrypt_volume_config
@@ -145,6 +146,15 @@ async def create_volume(
     if body.provider in ("s3", "b2") and body.config.get("endpoint_url"):
         await validate_endpoint_url(body.config["endpoint_url"])
 
+    if body.provider != "local" and not settings.STORAGE_ENCRYPTION_KEY:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "TUSSHARE_STORAGE_ENCRYPTION_KEY must be set in the environment "
+                "before configuring cloud storage providers."
+            ),
+        )
+
     vol_id = str(uuid.uuid4())
     config_enc = encrypt_volume_config(body.config) if body.config else None
 
@@ -222,6 +232,15 @@ async def update_volume(
 
     if body.provider in ("s3", "b2") and merged.get("endpoint_url"):
         await validate_endpoint_url(merged["endpoint_url"])
+
+    if body.provider != "local" and not settings.STORAGE_ENCRYPTION_KEY:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "TUSSHARE_STORAGE_ENCRYPTION_KEY must be set in the environment "
+                "before configuring cloud storage providers."
+            ),
+        )
 
     config_enc = encrypt_volume_config(merged) if merged else None
 

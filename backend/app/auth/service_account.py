@@ -19,6 +19,8 @@ from fastapi import HTTPException
 from app.auth.interface import AuthenticatedUser
 from app.database import db_session
 from app.models.role import get_user_global_flags, get_user_global_role_ids
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus
 from app.util.crypto import sha256_hex
 
 _bg_tasks: set = set()
@@ -74,15 +76,37 @@ async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
         raise HTTPException(status_code=401, detail="Invalid service account token")
 
     if not row["is_active"]:
+        event_bus.emit(SecurityEvent(
+            event_type="auth.service_account.rejected",
+            severity="warning",
+            outcome="failure",
+            actor=EventActor(user_id=str(row["user_id"]), username=row["username"], auth_method="service"),
+            detail={"reason": "inactive"},
+        ))
         raise HTTPException(status_code=401, detail="Service account is inactive")
 
     if row["expires_at"] and row["expires_at"] < now_iso:
+        event_bus.emit(SecurityEvent(
+            event_type="auth.service_account.rejected",
+            severity="warning",
+            outcome="failure",
+            actor=EventActor(user_id=str(row["user_id"]), username=row["username"], auth_method="service"),
+            detail={"reason": "key_expired"},
+        ))
         raise HTTPException(status_code=401, detail="Service account key has expired")
 
     # Load RBAC state
     async with db_session() as db:
         roles = await get_user_global_role_ids(db, row["user_id"])
         flags = await get_user_global_flags(db, row["user_id"])
+
+    event_bus.emit(SecurityEvent(
+        event_type="auth.service_account.authenticated",
+        severity="info",
+        outcome="success",
+        actor=EventActor(user_id=str(row["user_id"]), username=row["username"], auth_method="service"),
+        detail={"key_prefix": raw_token[:12]},
+    ))
 
     _t = asyncio.create_task(_update_last_used(row["key_id"]))
     _bg_tasks.add(_t)

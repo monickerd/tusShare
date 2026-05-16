@@ -324,3 +324,18 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
         logger.info('Schema initialised: %s', setup_sentinel)
         applied.add(setup_sentinel)
 
+    # G22: add actor_auth_method to audit tables for service-account / human distinction.
+    if 'add_actor_auth_method' not in applied and setup_sentinel in applied:
+        async with conn.transaction():
+            await conn.execute(
+                "ALTER TABLE access_logs ADD COLUMN IF NOT EXISTS actor_auth_method TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE security_events ADD COLUMN IF NOT EXISTS actor_auth_method TEXT"
+            )
+            await conn.execute(
+                "INSERT INTO _migrations (name) VALUES ($1)", 'add_actor_auth_method'
+            )
+        logger.info('Migration applied: add_actor_auth_method')
+        applied.add('add_actor_auth_method')
+
