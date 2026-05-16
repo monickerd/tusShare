@@ -22,12 +22,12 @@ router = APIRouter()
 _NOT_FOUND = "Logo file not found on disk"
 _FAVICON_NOT_FOUND = "Favicon file not found on disk"
 
-# Only serve recognised image MIME types for the logo.
+# Only serve recognised image MIME types for the logo.  SVG excluded: it can
+# contain scripts that execute when served from the app's same origin.
 _ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset({
     "image/png",
     "image/jpeg",
     "image/gif",
-    "image/svg+xml",
     "image/webp",
 })
 
@@ -91,7 +91,6 @@ _ALLOWED_FAVICON_TYPES: frozenset[str] = frozenset({
     "image/png",
     "image/x-icon",
     "image/vnd.microsoft.icon",
-    "image/svg+xml",
 })
 
 

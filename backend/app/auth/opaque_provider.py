@@ -14,7 +14,7 @@ import uuid
 from app.auth.interface import AuthCredentials, AuthenticatedUser, AuthProvider
 from app.database import DuplicateError
 from app.models.role import (
-    ROLE_ADMIN, ROLE_USER,
+    ADMIN_ROLE_IDS, ROLE_USER,
     get_user_global_flags, get_user_global_role_ids, get_user_scoped_roles, grant_role,
 )
 from app.validation.sanitizers import sanitize_username
@@ -99,7 +99,7 @@ class OPAQUEAuthProvider(AuthProvider):
             raise ValueError("opaque_registration_record is required for OPAQUE users")
 
         user_id = str(uuid.uuid4())
-        is_admin_flag = 1 if role == ROLE_ADMIN else 0
+        is_admin_flag = 1 if role in ADMIN_ROLE_IDS else 0
 
         wrapped_master_key = kwargs.get("wrapped_master_key")
         wrapped_master_key_iv = kwargs.get("wrapped_master_key_iv")

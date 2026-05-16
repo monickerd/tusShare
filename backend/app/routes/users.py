@@ -20,7 +20,7 @@ from app.auth.interface import AuthenticatedUser
 from app.models.role import FLAG_MANAGE_USERS, FLAG_MANAGE_ROLES, FLAG_MANAGE_TEAMS
 from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.database import Database, db_session, get_db
-from app.models.role import ADMIN_ROLE_IDS, ROLE_ADMIN, ROLE_USER, ROLE_TIER, admin_best_tier, grant_role, revoke_role
+from app.models.role import ADMIN_ROLE_IDS, ROLE_USER, ROLE_TIER, admin_best_tier, grant_role, revoke_role
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
 import app.storage.manager as storage
@@ -288,7 +288,7 @@ async def create_admin(
     Direct password-based admin creation is not compatible with OPAQUE
     authentication.  Generate an invite via POST /api/v1/admin/invites,
     have the user register, then grant the admin role via
-    POST /api/v1/admin/users/{id}/roles/role_admin.
+    POST /api/v1/admin/users/{id}/roles/server_admin.
     """
     raise HTTPException(
         status_code=410,
@@ -296,7 +296,7 @@ async def create_admin(
             "Direct admin creation is not supported with OPAQUE authentication. "
             "Use POST /api/v1/admin/invites to generate an invite link, "
             "have the user register via OPAQUE, then grant the admin role via "
-            "POST /api/v1/admin/users/{user_id}/roles/role_admin."
+            "POST /api/v1/admin/users/{user_id}/roles/server_admin."
         ),
     )
 

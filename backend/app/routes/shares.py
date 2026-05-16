@@ -34,9 +34,10 @@ from app.validation.sanitizers import (
     validate_uuid,
 )
 from app.config import settings
-from app.routes._access import is_in_shared_tree, is_team_folder_member, _team_level_for_user
+from app.routes._access import check_data_permission, is_in_shared_tree, is_team_folder_member, _team_level_for_user
 from app.conf.teams import TEAM_ROLE_SUPERVISOR, TEAM_ROLE_OWNER
 from app.util.http import content_disposition, parse_range_header
+from app.util.db import get_admin_setting
 from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
 from app.wordlist import insert_short_link_with_unique_slug
 from typing import Annotated
@@ -103,6 +104,9 @@ class _ShareItemIn(BaseModel):
         return v
 
 
+_SHARE_UPLOAD_DEFAULT_BUDGET = 100 * 1024 * 1024   # 100 MB
+
+
 class CreateShareRequest(BaseModel):
     items: list[_ShareItemIn]
     share_type: str = "link"
@@ -110,6 +114,7 @@ class CreateShareRequest(BaseModel):
     expires_at: str | None = None
     max_downloads: int | None = None
     allow_upload: bool = False
+    upload_max_bytes: int | None = None   # None → server chooses (min of default and available quota)
     target_folder_id: str | None = None
     client_token: str | None = None
 
@@ -404,13 +409,8 @@ async def _verify_creator_still_has_access(
             raise HTTPException(status_code=404, detail="Shared file no longer exists")
         if row["owner_id"] == creator_id:
             continue  # Owner always has access to their own file
-        # Non-owner creator: check whether they still have team/shared access
-        has_access = False
-        if row["folder_id"]:
-            has_access = (
-                await is_in_shared_tree(db, row["folder_id"])
-                or await is_team_folder_member(db, row["folder_id"], creator_id)
-            )
+        # Non-owner creator: use the full Phase 1 ACL chain (respects explicit denies)
+        has_access = await check_data_permission(db, "file", file_id, creator_id, "read")
         if not has_access:
             raise HTTPException(
                 status_code=404,
@@ -670,10 +670,12 @@ async def _verify_share_items_access(db: Database, user: AuthenticatedUser, item
                 raise HTTPException(status_code=404, detail=f"File not found or access denied: {item.resource_id}")
 
 
-async def _resolve_upload_folder(db: Database, body: "CreateShareRequest", user: AuthenticatedUser) -> tuple[str | None, bool]:
-    """Validate and resolve the upload-only folder option. Returns (folder_id, allow_upload)."""
+async def _resolve_upload_folder(
+    db: Database, body: "CreateShareRequest", user: AuthenticatedUser
+) -> tuple[str | None, bool, int]:
+    """Validate upload folder and compute per-share budget. Returns (folder_id, allow_upload, upload_max_bytes)."""
     if not (body.share_type == "link" and body.allow_upload):
-        return None, False
+        return None, False, 0
     if not body.target_folder_id:
         raise HTTPException(status_code=400, detail="target_folder_id is required when allow_upload is true")
     cursor = await db.execute(
@@ -682,14 +684,32 @@ async def _resolve_upload_folder(db: Database, body: "CreateShareRequest", user:
     )
     if await cursor.fetchone() is None:
         raise HTTPException(status_code=404, detail="Target folder not found")
-    return body.target_folder_id, True
+
+    # Compute available quota for this creator
+    cursor = await db.execute(
+        "SELECT disk_quota, disk_used FROM users WHERE id = ?", (user.id,)
+    )
+    u = await cursor.fetchone()
+    if u and u["disk_quota"] is not None:
+        available = max(0, u["disk_quota"] - u["disk_used"])
+    else:
+        available = _SHARE_UPLOAD_DEFAULT_BUDGET
+
+    # Client may request a smaller budget; hard cap at available quota
+    requested = body.upload_max_bytes if body.upload_max_bytes is not None else _SHARE_UPLOAD_DEFAULT_BUDGET
+    if requested <= 0:
+        raise HTTPException(status_code=400, detail="upload_max_bytes must be positive")
+    budget = min(requested, available, _SHARE_UPLOAD_DEFAULT_BUDGET)
+    if budget == 0:
+        raise HTTPException(status_code=400, detail="No upload quota available for this share")
+    return body.target_folder_id, True, budget
 
 
 async def _insert_share_transaction(
     db: Database, request: Request, share_id: str, token: str,
     body: "CreateShareRequest", user: AuthenticatedUser,
     recipient_user_id: str | None, target_folder_id: str | None, allow_upload: bool,
-    key_type: str | None = None,
+    key_type: str | None = None, upload_max_bytes: int = _SHARE_UPLOAD_DEFAULT_BUDGET,
 ) -> None:
     await db.execute("BEGIN")
     try:
@@ -697,12 +717,12 @@ async def _insert_share_transaction(
             """
             INSERT INTO shares
                 (id, token, created_by, share_type, target_user_id, expires_at,
-                 max_downloads, allow_upload, target_folder_id, key_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_downloads, allow_upload, target_folder_id, key_type, upload_max_bytes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (share_id, token, user.id, body.share_type, recipient_user_id,
              body.expires_at, body.max_downloads, 1 if allow_upload else 0,
-             target_folder_id, key_type),
+             target_folder_id, key_type, upload_max_bytes),
         )
         for item in body.items:
             await db.execute(
@@ -771,9 +791,9 @@ async def create_share(
     share_id = str(uuid.uuid4())
     token = body.client_token if body.client_token else secrets.token_urlsafe(32)
     key_type = "hkdf-v1" if body.client_token else None
-    target_folder_id, allow_upload = await _resolve_upload_folder(db, body, user)
+    target_folder_id, allow_upload, upload_max_bytes = await _resolve_upload_folder(db, body, user)
 
-    await _insert_share_transaction(db, request, share_id, token, body, user, recipient_user_id, target_folder_id, allow_upload, key_type)
+    await _insert_share_transaction(db, request, share_id, token, body, user, recipient_user_id, target_folder_id, allow_upload, key_type, upload_max_bytes)
 
     cursor = await db.execute("SELECT created_at FROM shares WHERE id = ?", (share_id,))
     row = await cursor.fetchone()
@@ -971,8 +991,20 @@ async def add_share_items(
 
     Idempotent: ON CONFLICT DO NOTHING, so duplicate posts are safe.
     """
+    from app.routes.files import check_file_access
     share_id = validate_uuid(share_id)
     await _get_share_for_manage(db, share_id, user)
+
+    # Verify requester has read access to every file before any insert
+    for item in body.items:
+        cursor = await db.execute(
+            "SELECT id, owner_id, folder_id FROM files WHERE id = ? AND deleted_at IS NULL",
+            (item.resource_id,),
+        )
+        file_row = await cursor.fetchone()
+        if file_row is None:
+            raise HTTPException(status_code=403, detail=f"No access to file {item.resource_id}")
+        await check_file_access(db, file_row, user)
 
     for item in body.items:
         await db.execute(
@@ -1326,8 +1358,6 @@ async def resolve_short_link(
 # Upload to share (anonymous — requires share_session_token + allow_upload)
 # ---------------------------------------------------------------------------
 
-# Maximum encrypted size accepted for share uploads (100 MB)
-_SHARE_UPLOAD_MAX_BYTES = 100 * 1024 * 1024
 # Minimum bytes for a ranged download to count against max_downloads
 _DOWNLOAD_COUNT_MIN_BYTES = 1024
 
@@ -1360,7 +1390,9 @@ async def upload_to_share(
     share_id = validate_uuid(share_id)
     _require_share_access(request, share_id, user)
 
-    if not await _counter.is_allowed(f"share_upload:{share_id}", 20, 60):
+    _rl_raw = await get_admin_setting(db, "anon_share_upload_rate_limit")
+    _rl = int(_rl_raw) if (_rl_raw and _rl_raw.isdigit()) else 20
+    if not await _counter.is_allowed(f"share_upload:{share_id}", _rl, 60):
         raise HTTPException(status_code=429, detail="Too many uploads to this share. Please try again later.")
 
     now = datetime.now(timezone.utc).isoformat()
@@ -1391,12 +1423,23 @@ async def upload_to_share(
     if size_bytes < 0:
         raise HTTPException(status_code=422, detail="Invalid size_bytes")
 
-    # Read upload — enforce size limit before touching disk
-    content = await file.read(_SHARE_UPLOAD_MAX_BYTES + 1)
-    if len(content) > _SHARE_UPLOAD_MAX_BYTES:
+    upload_max = share["upload_max_bytes"]
+    already_used = share["total_uploaded_bytes"]
+
+    # Early rejection: client-declared size already exceeds remaining budget
+    if already_used + size_bytes > upload_max:
         raise HTTPException(
             status_code=413,
-            detail=f"Upload exceeds the {_SHARE_UPLOAD_MAX_BYTES // (1024 * 1024)} MB limit",
+            detail=f"Upload would exceed this share's upload budget of {upload_max // (1024 * 1024)} MB",
+        )
+
+    # Read upload — enforce remaining budget; read at most (budget_left + 1) bytes
+    budget_left = upload_max - already_used
+    content = await file.read(budget_left + 1)
+    if len(content) > budget_left:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload would exceed this share's upload budget of {upload_max // (1024 * 1024)} MB",
         )
     encrypted_size = len(content)
 
@@ -1433,10 +1476,32 @@ async def upload_to_share(
             "VALUES (?, ?, 'file', ?, ?, ?)",
             (str(uuid.uuid4()), share_id, file_id, encrypted_file_key, key_iv),
         )
+        # Secondary guard: check creator's absolute disk quota
+        cursor = await db.execute(
+            "SELECT disk_quota, disk_used FROM users WHERE id = ?",
+            (share["created_by"],),
+        )
+        creator = await cursor.fetchone()
+        if creator and creator["disk_quota"] is not None:
+            if creator["disk_used"] + encrypted_size > creator["disk_quota"]:
+                raise HTTPException(status_code=413, detail="Share creator's disk quota exceeded")
+
         await db.execute(
             "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
             (encrypted_size, share["created_by"]),
         )
+        # Atomically claim budget; fail if a concurrent upload already consumed it
+        cursor = await db.execute(
+            "UPDATE shares SET total_uploaded_bytes = total_uploaded_bytes + ? "
+            "WHERE id = ? AND total_uploaded_bytes + ? <= upload_max_bytes "
+            "RETURNING total_uploaded_bytes",
+            (encrypted_size, share_id, encrypted_size),
+        )
+        if await cursor.fetchone() is None:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Upload would exceed this share's upload budget of {upload_max // (1024 * 1024)} MB",
+            )
         log_id = str(uuid.uuid4())
         ip = (
             request.headers.get("CF-Connecting-IP")

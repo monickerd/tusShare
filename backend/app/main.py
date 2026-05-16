@@ -167,6 +167,19 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await init_db()
 
+    # Warn if any legacy bcrypt accounts remain; the migration path will be removed in a future release.
+    async with db_session() as db:
+        _cur = await db.execute("SELECT COUNT(*) FROM users WHERE auth_method = 'legacy'")
+        _row = await _cur.fetchone()
+        if _row and _row[0] > 0:
+            logger.warning(
+                "Found %d user(s) with auth_method='legacy' (bcrypt). "
+                "These accounts must be migrated to OPAQUE via "
+                "/api/v1/auth/opaque/migrate/start+finish before they can log in. "
+                "The bcrypt migration code path will be removed in a future release.",
+                _row[0],
+            )
+
     # Load live settings cache (must run after init_db so admin_settings rows exist)
     async with db_session() as db:
         await live_settings.load(db)

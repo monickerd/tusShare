@@ -10,7 +10,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, DuplicateError, get_db
 from app.middleware.rate_limit import check_management_write_rate_limit
 from app.models.file import File, Folder
-from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
+from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
 from app.services import sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import get_admin_setting
@@ -597,8 +597,7 @@ async def get_effective_escrow_agents(
     has_access = (
         folder_row["owner_id"] == user.id
         or user.is_admin
-        or await has_folder_permission(db, folder_id, user.id)
-        or await is_team_folder_member(db, folder_id, user.id)
+        or await check_data_permission(db, "folder", folder_id, user.id, "read")
     )
     if not has_access:
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)

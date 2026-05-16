@@ -18,7 +18,7 @@ from app.database import Database, db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import _get_client_ip
 from app.models.file import File, FileChunk
-from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, has_folder_permission, is_in_shared_tree, is_team_folder_member
+from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
 from app.services import event_bus, sse_broker
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
@@ -227,7 +227,7 @@ async def _validate_move_destination(db, dest_id: str | None, user) -> str | Non
     if dest_folder is None:
         raise HTTPException(status_code=404, detail="Destination folder not found")
     if dest_folder["owner_id"] != user.id and not user.is_admin:
-        if not await is_team_folder_member(db, dest_id, user.id):
+        if not await check_data_permission(db, "folder", dest_id, user.id, "write"):
             raise HTTPException(status_code=403, detail="Access denied to destination folder")
     return await get_folder_team_id(db, dest_id)
 
@@ -569,7 +569,7 @@ async def _validate_copy_destination(db, dest_id: str, user) -> str | None:
     if dest_folder is None:
         raise HTTPException(status_code=404, detail="Destination folder not found")
     if dest_folder["owner_id"] != user.id and not user.is_admin:
-        if not await is_team_folder_member(db, dest_id, user.id):
+        if not await check_data_permission(db, "folder", dest_id, user.id, "write"):
             raise HTTPException(status_code=403, detail="Access denied to destination folder")
     return await get_folder_team_id(db, dest_id)
 

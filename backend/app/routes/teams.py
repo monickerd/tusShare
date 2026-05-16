@@ -34,6 +34,7 @@ Endpoints:
     POST   /api/v1/teams/{team_id}/ephemeral-join               consume slot + rotate keys
 """
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -1166,6 +1167,37 @@ async def _validate_rotation_inputs(db, team_id: str, user, body) -> None:
             detail=f"Submitted members include non-members: {list(non_members)[:5]}"
         )
 
+    missing = current_member_ids - submitted_user_ids
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Rotation must cover all current members: {list(missing)[:5]}"
+        )
+
+    cov_val = await get_admin_setting(db, "escrow_require_coverage")
+    if cov_val == "1":
+        raw_user_ids = await get_admin_setting(db, "escrow_default_user_ids")
+        raw_role_ids = await get_admin_setting(db, "escrow_default_role_ids")
+        escrow_user_ids: set[str] = set(json.loads(raw_user_ids or "[]"))
+        role_ids: list[str] = json.loads(raw_role_ids or "[]")
+        if role_ids:
+            ph = ",".join("?" for _ in role_ids)
+            cursor = await db.execute(
+                f"SELECT DISTINCT user_id FROM user_roles "
+                f"WHERE role_id IN ({ph}) AND scope_type IS NULL",
+                role_ids,
+            )
+            for row in await cursor.fetchall():
+                escrow_user_ids.add(row["user_id"])
+        if escrow_user_ids and not (submitted_user_ids & escrow_user_ids):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "escrow_require_coverage is enabled. Rotation must include at least "
+                    f"one configured escrow agent: {list(escrow_user_ids)[:5]}"
+                ),
+            )
+
     await _require_all_members_confirmed(db, team_id)
 
 
@@ -1443,18 +1475,28 @@ async def complete_pending_key_grants(
     grant_ids = [g.grant_id for g in body.grants]
     placeholders = ",".join("?" for _ in grant_ids)
     cursor = await db.execute(
-        f"SELECT ptg.id FROM policy_team_grants ptg "
+        f"SELECT ptg.id, ptg.user_id FROM policy_team_grants ptg "
         f"JOIN policy_effects pe ON pe.id = ptg.effect_id "
         f"WHERE ptg.id IN ({placeholders}) AND pe.target_id = ? AND ptg.key_wrapped = 0",
         (*grant_ids, team_id),
     )
-    valid_ids = {row["id"] for row in await cursor.fetchall()}
-    invalid = [gid for gid in grant_ids if gid not in valid_ids]
+    grant_user_map: dict[str, str] = {}
+    for row in await cursor.fetchall():
+        grant_user_map[row["id"]] = row["user_id"]
+    invalid = [gid for gid in grant_ids if gid not in grant_user_map]
     if invalid:
         raise HTTPException(
             status_code=422,
             detail=f"Invalid or already-fulfilled grant IDs: {invalid[:5]}"
         )
+
+    # Cross-validate that each submitted user_id matches the grant's recorded recipient
+    for g in body.grants:
+        if grant_user_map[g.grant_id] != g.user_id:
+            raise HTTPException(
+                status_code=422,
+                detail=f"grant_id {g.grant_id} does not belong to user {g.user_id}",
+            )
 
     fulfilled = 0
     for g in body.grants:

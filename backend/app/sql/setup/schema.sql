@@ -452,6 +452,8 @@ CREATE TABLE shares (
     allow_upload     INTEGER NOT NULL DEFAULT 0,
     target_folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
     key_type         TEXT,
+    upload_max_bytes BIGINT NOT NULL DEFAULT 104857600,
+    total_uploaded_bytes BIGINT NOT NULL DEFAULT 0,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -1538,6 +1540,7 @@ INSERT INTO admin_settings (key, value) VALUES ('first_run_completed',          
 INSERT INTO admin_settings (key, value) VALUES ('trash_enabled',                 'true')   ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('trash_retention_days',          '30')     ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('copy_boundary',                  'any')    ON CONFLICT (key) DO NOTHING;
+INSERT INTO admin_settings (key, value) VALUES ('anon_share_upload_rate_limit',   '20')     ON CONFLICT (key) DO NOTHING; -- requests per 60 s per share_id
 
 -------------------------------------------------
 -- DEFAULT LOCAL STORAGE VOLUME

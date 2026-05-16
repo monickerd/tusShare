@@ -17,16 +17,13 @@ ROLE_TEAM_MEMBER       = "team_member"
 # Basic user role — grants file storage access; separate from admin tiers
 ROLE_USER = "role_user"
 
-# Legacy: superseded by ROLE_SERVER_ADMIN.  Kept for backward compat; retire once all call sites are updated.
-ROLE_ADMIN = "role_admin"
-
 # All role IDs that carry administrative authority at global scope.
 # Used for is_admin checks and users.is_admin sync until that column retires.
 ADMIN_ROLE_IDS: frozenset[str] = frozenset({
     ROLE_SERVER_ADMIN,
     ROLE_ORG_ADMIN,
     ROLE_OPERATIONAL_ADMIN,
-    ROLE_ADMIN,  # legacy
+    "role_admin",  # legacy — existing DB grants only; no new grants should use this
 })
 
 # ---------------------------------------------------------------------------
@@ -72,7 +69,7 @@ SENSITIVE_FLAGS: frozenset[str] = frozenset({FLAG_ACCESS_ALL_FILES})
 # ---------------------------------------------------------------------------
 ROLE_TIER: dict[str, int] = {
     ROLE_SERVER_ADMIN:      1,
-    ROLE_ADMIN:             1,  # legacy — same full authority as server_admin
+    "role_admin":           1,  # legacy — existing DB grants only
     ROLE_ORG_ADMIN:         2,
     ROLE_OPERATIONAL_ADMIN: 3,
     ROLE_TEAM_ADMIN:        4,

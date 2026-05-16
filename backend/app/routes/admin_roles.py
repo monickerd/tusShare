@@ -42,7 +42,7 @@ _ERR_PERM_MANAGE_ROLES = "can_manage_roles required"
 router = APIRouter()
 
 # Roles that are allowed to activate sensitive flags
-_SENSITIVE_FLAG_ROLE_IDS = frozenset({ROLE_SERVER_ADMIN, ROLE_ORG_ADMIN, "role_admin"})
+_SENSITIVE_FLAG_ROLE_IDS = frozenset({ROLE_SERVER_ADMIN, ROLE_ORG_ADMIN})
 
 # Hard limit on role_id / name length
 _MAX_ROLE_ID_LEN   = 64
@@ -112,7 +112,7 @@ def _role_to_dict(row, permissions: dict[str, str]) -> dict:
 
 
 def _check_sensitive_flag_authority(user: AuthenticatedUser):
-    """Raise 403 if the user is not server_admin, org_admin, or role_admin (legacy)."""
+    """Raise 403 if the user is not server_admin or org_admin."""
     if not (user.roles & _SENSITIVE_FLAG_ROLE_IDS):
         raise HTTPException(
             status_code=403,

@@ -42,7 +42,7 @@ from app.auth.opaque_provider import OPAQUEAuthProvider
 from app.config import settings
 from app.database import Database, DuplicateError, get_db
 from app.services import live_settings
-from app.models.role import ROLE_USER, grant_role
+from app.models.role import ROLE_SERVER_ADMIN, ROLE_USER, grant_role
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
 from typing import Annotated
 
@@ -1462,8 +1462,6 @@ async def opaque_bootstrap_finish(
     initial admin user, and atomically consumes the bootstrap token — all in a
     single transaction.  Sets auth cookies so the admin is immediately logged in.
     """
-    from app.models.role import ROLE_ADMIN
-
     # Refuse if any user already exists
     cursor = await db.execute(_SQL_COUNT_USERS)
     row = await cursor.fetchone()
@@ -1513,7 +1511,7 @@ async def opaque_bootstrap_finish(
                 body.x25519_private_wrapped, body.mlkem768_private_wrapped, body.asymmetric_key_iv,
             ),
         )
-        await grant_role(db, user_id, ROLE_ADMIN)
+        await grant_role(db, user_id, ROLE_SERVER_ADMIN)
         await grant_role(db, user_id, ROLE_USER)
         await db.commit()
     except DuplicateError:
@@ -1529,7 +1527,7 @@ async def opaque_bootstrap_finish(
         id=user_id,
         username=body.username,
         auth_method="opaque",
-        roles={ROLE_ADMIN, ROLE_USER},
+        roles={ROLE_SERVER_ADMIN, ROLE_USER},
         wrapped_master_key=body.wrapped_master_key,
         wrapped_master_key_iv=body.wrapped_master_key_iv,
         recovery_key_wrapped=body.recovery_key_wrapped,

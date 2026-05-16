@@ -7,7 +7,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import json as _json
-import mimetypes
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -85,6 +84,7 @@ _SETTINGS_VALIDATORS = {
     "trash_enabled":          lambda v: v in ("true", "false"),
     "trash_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
     # Rate limits (Phase 1)
+    "anon_share_upload_rate_limit":  lambda v: v.isdigit() and 1 <= int(v) <= 1000,
     "rate_limit_login":              lambda v: v.isdigit() and 1 <= int(v) <= 1000,
     "rate_limit_api":                lambda v: v.isdigit() and 1 <= int(v) <= 10000,
     "rate_limit_share_create":       lambda v: v.isdigit() and 1 <= int(v) <= 1000,
@@ -516,13 +516,15 @@ async def update_theme(
 
 
 _LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+# SVG excluded: it is XML text without a binary magic signature and can contain
+# embedded scripts that execute when served from the app's origin.
 _LOGO_ALLOWED_MIME: frozenset[str] = frozenset({
-    "image/png", "image/jpeg", "image/gif", "image/svg+xml", "image/webp",
+    "image/png", "image/jpeg", "image/gif", "image/webp",
 })
 
 _FAVICON_MAX_BYTES = 256 * 1024  # 256 KB
 _FAVICON_ALLOWED_MIME: frozenset[str] = frozenset({
-    "image/png", "image/x-icon", "image/vnd.microsoft.icon", "image/svg+xml",
+    "image/png", "image/x-icon", "image/vnd.microsoft.icon",
 })
 
 
@@ -543,15 +545,9 @@ async def upload_theme_logo(
         _UI_FLAG_DEFAULTS,
     )
 
+    import filetype as _filetype
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-
-    content_type, _ = mimetypes.guess_type(file.filename)
-    if content_type not in _LOGO_ALLOWED_MIME:
-        raise HTTPException(
-            status_code=400,
-            detail="Logo must be PNG, JPEG, GIF, SVG, or WebP",
-        )
 
     # Sanitise filename to prevent path traversal
     safe_name = _re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
@@ -561,6 +557,14 @@ async def upload_theme_logo(
     data = await file.read(_LOGO_MAX_BYTES + 1)
     if len(data) > _LOGO_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Logo must be ≤ 2 MB")
+
+    # Verify actual content type via magic bytes (extension alone is not trusted)
+    detected = _filetype.guess(data[:512])
+    if detected is None or detected.mime not in _LOGO_ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail="Logo must be PNG, JPEG, GIF, or WebP (SVG is not accepted)",
+        )
 
     dest = settings.DATA_DIR / safe_name
     try:
@@ -605,15 +609,9 @@ async def upload_theme_favicon(
     from pathlib import Path as _Path
     from app.util.theme import inject_theme, load_theme, _LOGO_FILENAME_RE
 
+    import filetype as _filetype
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-
-    content_type, _ = mimetypes.guess_type(file.filename)
-    if content_type not in _FAVICON_ALLOWED_MIME:
-        raise HTTPException(
-            status_code=400,
-            detail="Favicon must be PNG, ICO, or SVG",
-        )
 
     safe_name = _re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
     if not _LOGO_FILENAME_RE.match(safe_name):
@@ -622,6 +620,13 @@ async def upload_theme_favicon(
     data = await file.read(_FAVICON_MAX_BYTES + 1)
     if len(data) > _FAVICON_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Favicon must be ≤ 256 KB")
+
+    detected = _filetype.guess(data[:512])
+    if detected is None or detected.mime not in _FAVICON_ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail="Favicon must be PNG or ICO (SVG is not accepted)",
+        )
 
     dest = settings.DATA_DIR / safe_name
     try:
