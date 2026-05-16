@@ -261,7 +261,8 @@ async def _can_manage_share(db, share: dict, user: AuthenticatedUser) -> bool:
     Allowed when the user is:
     - the share creator, OR
     - a global admin, OR
-    - a supervisor or owner of the team that owns the share's target folder.
+    - a member with write or admin level in the team that owns the share's target folder
+      (i.e. supervisors and owners, not read-only members).
     """
     if share["created_by"] == user.id or user.is_admin:
         return True
@@ -269,7 +270,7 @@ async def _can_manage_share(db, share: dict, user: AuthenticatedUser) -> bool:
         team_id = await _get_folder_team_id(db, share["target_folder_id"])
         if team_id:
             level = await _team_level_for_user(db, team_id, user.id)
-            if level == "admin":
+            if level in ("admin", "write"):
                 return True
     return False
 
