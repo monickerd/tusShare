@@ -1,6 +1,6 @@
 -- schema.sql — Complete database schema
 --
--- Run once on a fresh install; tracked as 'schema_v1' in _migrations.
+-- Run once on a fresh install (fresh database only — idempotent via IF NOT EXISTS).
 --
 -- Table inventory:
 --   Identity:   identity_providers, identity_provider_users, oidc_states

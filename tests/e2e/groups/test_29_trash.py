@@ -65,10 +65,13 @@ _user:  dict = {}   # primary user
 _other: dict = {}   # secondary user for access-control tests
 
 # ---------------------------------------------------------------------------
-# SIEM manifest — trash routes do not emit SIEM events
+# SIEM manifest
 # ---------------------------------------------------------------------------
 
-_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    # G21: restore emits file.restored (29-05 file, 29-06 folder)
+    ExpectedSiemEvent("file.restored", outcome="success", severity="info", tier=1),
+]
 
 
 # ---------------------------------------------------------------------------

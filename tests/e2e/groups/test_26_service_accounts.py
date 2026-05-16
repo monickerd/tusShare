@@ -62,11 +62,14 @@ _SA_ACTION       = "admin.service_accounts.*"
 # SIEM manifest
 # ---------------------------------------------------------------------------
 _SIEM_MANIFEST: list[ExpectedSiemEvent] = [
-    ExpectedSiemEvent("admin.service_account.created",     outcome="success", severity="info",    tier=2),
-    ExpectedSiemEvent("admin.service_account.key_rotated", outcome="success", severity="warning", tier=2),
-    ExpectedSiemEvent("admin.service_account.deactivated", outcome="success", severity="warning", tier=2),
-    ExpectedSiemEvent("admin.service_account.updated",     outcome="success", severity="info",    tier=2),
-    ExpectedSiemEvent("admin.service_account.deleted",     outcome="success", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.service_account.created",      outcome="success", severity="info",    tier=2),
+    ExpectedSiemEvent("admin.service_account.key_rotated",  outcome="success", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.service_account.deactivated",  outcome="success", severity="warning", tier=2),
+    ExpectedSiemEvent("admin.service_account.updated",      outcome="success", severity="info",    tier=2),
+    ExpectedSiemEvent("admin.service_account.deleted",      outcome="success", severity="warning", tier=2),
+    # G23: SA authentication events (26-05 inactive rejection, 26-06+08 success)
+    ExpectedSiemEvent("auth.service_account.authenticated", outcome="success", severity="info",    tier=2),
+    ExpectedSiemEvent("auth.service_account.rejected",      outcome="failure", severity="warning", tier=2),
 ]
 
 # ---------------------------------------------------------------------------

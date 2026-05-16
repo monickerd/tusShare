@@ -295,47 +295,27 @@ def _split_statements(sql: str) -> list[str]:
 async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
     """Initialise the schema on a fresh install.
 
-    Runs setup/schema.sql once and records 'schema_v1' in _migrations.
-    Subsequent startups see the sentinel and skip the setup step.
+    Checks whether the database is empty (no 'users' table) and runs
+    setup/schema.sql if so.  Assumes a clean-slate install — no incremental
+    migrations are supported.
     """
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS _migrations (
-            name       TEXT PRIMARY KEY,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-    """)
+    table_exists = await conn.fetchval(
+        "SELECT EXISTS ("
+        "  SELECT 1 FROM information_schema.tables"
+        "  WHERE table_schema = 'public' AND table_name = 'users'"
+        ")"
+    )
+    if table_exists:
+        return  # Already initialised
 
-    rows = await conn.fetch('SELECT name FROM _migrations ORDER BY name')
-    applied = {r['name'] for r in rows}
-
-    # Fresh install: no migrations have run yet — initialise from setup schema.
-    setup_sentinel = 'schema_v1'
-    if setup_sentinel not in applied and not applied:
-        setup_file = SETUP_DIR / 'schema.sql'
-        if not setup_file.exists():
-            raise RuntimeError(f'Setup schema not found: {setup_file}')
-        logger.info('Fresh database — initialising from %s', setup_file.name)
-        sql = setup_file.read_text(encoding='utf-8')
-        statements = _split_statements(sql)
-        async with conn.transaction():
-            if statements:
-                await conn.execute('\n'.join(statements))
-            await conn.execute("INSERT INTO _migrations (name) VALUES ($1)", setup_sentinel)
-        logger.info('Schema initialised: %s', setup_sentinel)
-        applied.add(setup_sentinel)
-
-    # G22: add actor_auth_method to audit tables for service-account / human distinction.
-    if 'add_actor_auth_method' not in applied and setup_sentinel in applied:
-        async with conn.transaction():
-            await conn.execute(
-                "ALTER TABLE access_logs ADD COLUMN IF NOT EXISTS actor_auth_method TEXT"
-            )
-            await conn.execute(
-                "ALTER TABLE security_events ADD COLUMN IF NOT EXISTS actor_auth_method TEXT"
-            )
-            await conn.execute(
-                "INSERT INTO _migrations (name) VALUES ($1)", 'add_actor_auth_method'
-            )
-        logger.info('Migration applied: add_actor_auth_method')
-        applied.add('add_actor_auth_method')
+    setup_file = SETUP_DIR / 'schema.sql'
+    if not setup_file.exists():
+        raise RuntimeError(f'Setup schema not found: {setup_file}')
+    logger.info('Fresh database — initialising from %s', setup_file.name)
+    sql = setup_file.read_text(encoding='utf-8')
+    statements = _split_statements(sql)
+    async with conn.transaction():
+        if statements:
+            await conn.execute('\n'.join(statements))
+    logger.info('Schema initialised.')
 
