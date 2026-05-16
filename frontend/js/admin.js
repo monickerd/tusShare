@@ -90,6 +90,33 @@ const Admin = (() => {
         },
     ];
 
+    // Maps section IDs to the flags (any one of which) that grant access.
+    // Sections whose ID is absent are shown to all admins.
+    const _SECTION_FLAGS = {
+        'settings':         ['can_manage_system_settings', 'can_manage_org_settings'],
+        'storage':          ['can_manage_system_settings'],
+        'disk':             ['can_view_disk_usage'],
+        'theme':            ['can_manage_system_settings', 'can_manage_org_settings'],
+        'notifications':    ['can_manage_integrations'],
+        'users':            ['can_manage_users'],
+        'invites':          ['can_manage_invites'],
+        'service-accounts': ['can_manage_service_accounts'],
+        'idp':              ['can_manage_system_settings'],
+        'teams':            ['can_manage_teams'],
+        'roles':            ['can_manage_roles', 'can_create_roles'],
+        'mfa':              ['can_manage_user_mfa'],
+        'policy':           ['can_manage_policies'],
+        'escrow':           ['can_manage_escrow'],
+        'profiles':         ['can_manage_org_settings', 'can_manage_sharing'],
+        'api-keys':         ['can_manage_integrations', 'can_manage_system_settings'],
+        'antivirus':        ['can_manage_system_settings'],
+        'sharing':          ['can_manage_sharing'],
+        'rate-limits':      ['can_manage_system_settings'],
+        'session-policy':   ['can_manage_system_settings'],
+        'audit':            ['can_view_audit_log'],
+        'export':           ['can_manage_system_settings'],
+    };
+
     // ------------------------------------------------------------------
     // Layout prefs — load / save / apply
     // ------------------------------------------------------------------
@@ -150,7 +177,17 @@ const Admin = (() => {
         container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         _loadAdminPrefs().then(prefs => {
             _adminRoleOrder = Array.isArray(prefs.role_order) ? prefs.role_order : null;
-            const liveTabs = _applyLayoutPrefs(prefs);
+            const flags = Auth.getCurrentUser()?.flags || {};
+            const hasFlag = (f) => flags[f] === '1';
+            const liveTabs = _applyLayoutPrefs(prefs)
+                .map(tab => ({
+                    ...tab,
+                    sections: tab.sections.filter(([id]) => {
+                        const req = _SECTION_FLAGS[id];
+                        return !req || req.some(hasFlag);
+                    }),
+                }))
+                .filter(tab => tab.sections.length > 0);
             _renderAdmin(container, liveTabs);
         });
     }
@@ -3017,6 +3054,7 @@ const Admin = (() => {
                     return sel;
                 })(),
                 Utils.el('small', { className: 'text-muted', textContent: 'Live refetch requires offline_access scope and uses the refresh token.' }),
+                Utils.el('small', { style: 'display:block;margin-top:4px;color:var(--color-warning,#d97706)', textContent: 'With “At login” mode, OIDC attribute changes — including account revocation at the IdP — take effect only at the user’s next login.' }),
             ]),
         ]);
     }
@@ -4363,11 +4401,11 @@ const Admin = (() => {
 
         const actions = Utils.el('div', { className: 'row-actions' }, [
             Utils.el('button', {
-                className: 'btn btn-sm', textContent: 'Edit',
+                className: 'btn btn-secondary btn-sm', textContent: 'Edit',
                 onClick: () => _showStorageVolumeModal(vol, container),
             }),
             Utils.el('button', {
-                className: 'btn btn-sm', textContent: 'Test',
+                className: 'btn btn-secondary btn-sm', textContent: 'Test',
                 onClick: async (ev) => {
                     ev.target.disabled = true;
                     ev.target.textContent = 'Testing…';
@@ -4463,7 +4501,8 @@ const Admin = (() => {
 
     function _showStorageVolumeModal(vol, container) {
         const isEdit = !!vol;
-        const { body, close } = Utils.createModal(isEdit ? 'Edit Storage Volume' : 'Add Storage Volume');
+        const body = Utils.el('div');
+        const close = () => Utils.closeModal();
 
         const nameIn = Utils.el('input', { type: 'text', className: 'settings-input', value: vol?.name || '', placeholder: 'Display name' });
         const provSel = Utils.el('select', { className: 'settings-input' });
@@ -4489,12 +4528,43 @@ const Admin = (() => {
             Utils.el('input', { type: 'text', className: 'settings-input', id: 'sv-uploads-dir', value: vol?.config?.uploads_dir || '', placeholder: '/data/uploads' }),
         ]);
 
+        const _showS3SecurityModal = () => {
+            const content = Utils.el('div', { style: 'font-size:0.9em;line-height:1.6;max-width:520px' });
+            for (const [heading, text] of [
+                ['IAM permissions (minimum required)',
+                 'Allow only: s3:GetObject, s3:PutObject, s3:HeadObject, s3:ListBucket. ' +
+                 'Explicitly deny s3:DeleteObject and s3:DeleteBucket — this limits the blast radius of compromised credentials: ' +
+                 'an attacker can read and write blobs but cannot mass-delete them.'],
+                ['Object Lock / Versioning',
+                 'Enable S3 Object Lock (Governance mode) or bucket versioning so that even a PUT overwrite ' +
+                 'cannot permanently destroy data during the lock period. This protects against ransomware even with valid credentials.'],
+                ['Blob garbage collection trade-off',
+                 'With s3:DeleteObject denied, the background task that purges blobs for deleted files will fail silently ' +
+                 '(errors are caught). A separate privileged cleanup process (e.g. a scheduled Lambda with broader permissions) ' +
+                 'is needed to garbage-collect unused blobs.'],
+                ['General',
+                 'Use a dedicated IAM user scoped to this bucket only. Avoid root or full-access credentials. ' +
+                 'Ensure public access is blocked at the provider level.'],
+            ]) {
+                content.appendChild(Utils.el('p', { style: 'margin:0 0 4px;font-weight:600', textContent: heading }));
+                content.appendChild(Utils.el('p', { style: 'margin:0 0 12px;color:var(--color-text-muted)', textContent: text }));
+            }
+            Utils.showModal('S3 Security Recommendations', content);
+        };
+
         const s3Fields = Utils.el('div', {}, [
-            Utils.el('p', {
-                className: 'text-muted',
-                style: 'font-size:0.85em; padding:6px 0; border-left:3px solid var(--color-warning,#f0ad4e); padding-left:8px; margin-bottom:8px',
-                textContent: 'Security: use a dedicated IAM user scoped to this bucket only (s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket). Avoid root or full-access credentials. Ensure the bucket has public access blocked at the provider level.',
-            }),
+            Utils.el('div', {
+                style: 'display:flex;align-items:center;gap:8px;font-size:0.85em;padding:6px 0;border-left:3px solid var(--color-warning,#f0ad4e);padding-left:8px;margin-bottom:8px',
+            }, [
+                Utils.el('span', { className: 'text-muted', textContent: 'Use a dedicated IAM user scoped to this bucket. Avoid root or full-access credentials.' }),
+                Utils.el('button', {
+                    type: 'button',
+                    className: 'btn btn-secondary btn-sm',
+                    style: 'padding:1px 8px;font-size:0.8em;flex-shrink:0;white-space:nowrap',
+                    textContent: '? Recommendations',
+                    onClick: _showS3SecurityModal,
+                }),
+            ]),
             Utils.el('label', { className: 'settings-label', textContent: 'endpoint_url (blank for AWS S3; must be https)' }),
             Utils.el('input', { type: 'text', className: 'settings-input', id: 'sv-endpoint', value: vol?.config?.endpoint_url || '' }),
             Utils.el('label', { className: 'settings-label', textContent: 'bucket' }),
@@ -4577,6 +4647,7 @@ const Admin = (() => {
             saveBtn,
             Utils.el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: close }),
         ]));
+        Utils.showModal(isEdit ? 'Edit Storage Volume' : 'Add Storage Volume', body);
     }
 
     function _fmtBytes(bytes) {
@@ -4621,12 +4692,12 @@ const Admin = (() => {
           <td></td>
         `;
         const actionsTd = tr.cells[5];
-        const editBtn = Utils.el('button', { textContent: 'Edit', className: 'btn btn-sm', style: 'margin-right:4px' });
+        const editBtn = Utils.el('button', { textContent: 'Edit', className: 'btn btn-secondary btn-sm', style: 'margin-right:4px' });
         editBtn.addEventListener('click', async () => {
             const full = await Api.get(`${_api()}/admin/notifications/channels/${ch.id}`);
             _showChannelModal(full, container);
         });
-        const testBtn = Utils.el('button', { textContent: 'Test', className: 'btn btn-sm', style: 'margin-right:4px' });
+        const testBtn = Utils.el('button', { textContent: 'Test', className: 'btn btn-secondary btn-sm', style: 'margin-right:4px' });
         testBtn.addEventListener('click', async () => {
             try {
                 const res = await Api.post(`${_api()}/admin/notifications/channels/${ch.id}/test`, {});
@@ -4819,7 +4890,7 @@ const Admin = (() => {
         box.appendChild(errEl);
 
         const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end' });
-        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-sm' });
+        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-secondary btn-sm' });
         cancelBtn.addEventListener('click', () => modal.remove());
         const saveBtn = Utils.el('button', { textContent: isEdit ? 'Save Changes' : 'Add Channel', className: 'btn btn-primary btn-sm' });
         saveBtn.addEventListener('click', async () => {
@@ -4992,7 +5063,7 @@ const Admin = (() => {
         box.appendChild(errEl);
 
         const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end' });
-        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-sm' });
+        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-secondary btn-sm' });
         cancelBtn.addEventListener('click', () => modal.remove());
         const createBtn = Utils.el('button', { textContent: 'Create Key', className: 'btn btn-primary btn-sm' });
         createBtn.addEventListener('click', async () => {
@@ -6225,7 +6296,7 @@ const Admin = (() => {
         box.appendChild(errEl);
 
         const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end' });
-        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-sm' });
+        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-secondary btn-sm' });
         cancelBtn.addEventListener('click', () => modal.remove());
 
         const createBtn = Utils.el('button', { textContent: 'Create', className: 'btn btn-primary btn-sm' });

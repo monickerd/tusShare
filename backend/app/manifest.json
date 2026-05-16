@@ -1,11 +1,11 @@
 {
-  "generated": "2026-05-12T07:21:52.663566+00:00",
+  "generated": "2026-05-16T20:41:10.774787+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
-    "frontend/js/admin.js": "sha256-FIhCHahnwxTIkZnAMDrCXbjm+013dRijGxeg24DGkTU=",
+    "frontend/js/admin.js": "sha256-oF/HXvCoVoClgNDCf/Mu+u3TwuJxhpz/9vxlCxJJBzw=",
     "frontend/js/api.js": "sha256-En38p7gRLyytuxBVkTeE31dC36cALUmOf2IIYMkJ628=",
-    "frontend/js/app.js": "sha256-TZx3pTeBxgpQyfzmf/IYkAnawK3SMyW4Tl5UfVN5Xds=",
-    "frontend/js/auth.js": "sha256-WeV1JyJWV5MgyYOKFK/DvJgoBjq9iQgZEIb7gW1Z/Ng=",
+    "frontend/js/app.js": "sha256-6vhRDcHk81q9hl52OVCA5CAkUoI3dc13eLO3eo84NTQ=",
+    "frontend/js/auth.js": "sha256-LkXkH3Mh2EbyAp6h3OK6tSQVwwdsYbEcGAfLIjXt4Fg=",
     "frontend/js/config.js": "sha256-aZCUtPOiJTRpZ7DDw+5bosPUgQOx98vyxt+R7hEMDq8=",
     "frontend/js/crypto.js": "sha256-ucwB1HV7whLZPKv2rJP3MZdxRx3pUdt9SwfcxgkTEoE=",
     "frontend/js/download.js": "sha256-3yTCVxRKg30ge9fFlwXPhGH6O2GFGHWkv76OrDXD9r4=",
@@ -27,6 +27,6 @@
     "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",
     "frontend/themes/light/colors.css": "sha256-7l0XMTlAPy54JYC76MFgX7UiUG4U5uvXeTbFKztTHXM=",
     "frontend/themes/light/toast.css": "sha256-0co+8266j+EO89oMrY13M4KYueyJfOrhz+KTckCqIwM=",
-    "requirements.txt": "sha256-4cDSVskX8uEZ14UDeN6umUVdYqqKwDwLJ+MjptZuo08="
+    "requirements.txt": "sha256-empo7LvU+vel0snkc3wc260J9K1zAJFU9NqpSdLN5u8="
   }
 }
