@@ -293,11 +293,15 @@ def _split_statements(sql: str) -> list[str]:
 
 
 async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
-    """Initialise the schema on a fresh install.
+    """Initialise the schema on a fresh install and apply idempotent additions.
 
     Checks whether the database is empty (no 'users' table) and runs
     setup/schema.sql if so.  Assumes a clean-slate install — no incremental
     migrations are supported.
+
+    After the fresh-install block, idempotent DDL runs on every startup so
+    new tables added to the codebase appear on existing databases without a
+    full reinstall.
     """
     table_exists = await conn.fetchval(
         "SELECT EXISTS ("
@@ -305,17 +309,33 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
         "  WHERE table_schema = 'public' AND table_name = 'users'"
         ")"
     )
-    if table_exists:
-        return  # Already initialised
+    if not table_exists:
+        setup_file = SETUP_DIR / 'schema.sql'
+        if not setup_file.exists():
+            raise RuntimeError(f'Setup schema not found: {setup_file}')
+        logger.info('Fresh database — initialising from %s', setup_file.name)
+        sql = setup_file.read_text(encoding='utf-8')
+        statements = _split_statements(sql)
+        async with conn.transaction():
+            if statements:
+                await conn.execute('\n'.join(statements))
+        logger.info('Schema initialised.')
 
-    setup_file = SETUP_DIR / 'schema.sql'
-    if not setup_file.exists():
-        raise RuntimeError(f'Setup schema not found: {setup_file}')
-    logger.info('Fresh database — initialising from %s', setup_file.name)
-    sql = setup_file.read_text(encoding='utf-8')
-    statements = _split_statements(sql)
+    # Idempotent additions — run on every startup to handle existing databases.
+    # Each block must use CREATE TABLE/INDEX IF NOT EXISTS.
     async with conn.transaction():
-        if statements:
-            await conn.execute('\n'.join(statements))
-    logger.info('Schema initialised.')
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS pending_share_keying (
+                id          TEXT        PRIMARY KEY,
+                share_id    TEXT        NOT NULL REFERENCES shares(id)  ON DELETE CASCADE,
+                file_id     TEXT        NOT NULL REFERENCES files(id)   ON DELETE CASCADE,
+                folder_id   TEXT        NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(share_id, file_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pending_share_keying_folder
+                ON pending_share_keying(folder_id);
+            CREATE INDEX IF NOT EXISTS idx_pending_share_keying_share
+                ON pending_share_keying(share_id);
+        """)
 

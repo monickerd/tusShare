@@ -482,6 +482,26 @@ CREATE TABLE share_items (
 CREATE INDEX idx_sitems_share ON share_items(share_id);
 
 -------------------------------------------------
+-- PENDING SHARE KEYING
+-- Server-side queue: when a file is committed to a folder that has active HKDF
+-- link shares, or when an HKDF share is created for a folder that already has
+-- files, a row is inserted here.  Any team member with write+ access fulfills
+-- the pending records by wrapping the file key for the share and calling
+-- POST /shares/{id}/items, which deletes the row.
+-------------------------------------------------
+CREATE TABLE IF NOT EXISTS pending_share_keying (
+    id          TEXT        PRIMARY KEY,
+    share_id    TEXT        NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+    file_id     TEXT        NOT NULL REFERENCES files(id)  ON DELETE CASCADE,
+    folder_id   TEXT        NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(share_id, file_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pending_share_keying_folder ON pending_share_keying(folder_id);
+CREATE INDEX IF NOT EXISTS idx_pending_share_keying_share  ON pending_share_keying(share_id);
+
+-------------------------------------------------
 -- SHORT LINKS (memorable 3-word slugs for link-type shares)
 -------------------------------------------------
 CREATE TABLE short_links (

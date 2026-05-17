@@ -61,12 +61,15 @@ const Config = Object.freeze({
         maxHashFailuresMin: 2,      // floor for the rate threshold (prevents a near-zero
                                     // threshold on very small files, e.g. 5 chunks × 2% = 0)
         bulkWarnThreshold: 100,     // show a confirmation dialog before uploading this many items
+        maxConcurrent: 5,           // max simultaneous active uploads per user; extras queue
+        finishIntervalMs: 2 * 60 * 1000, // flush team-key + share registration on this cadence
     }),
 
     /* --- Download --- */
     download: Object.freeze({
         maxRetries:     3,
         retryBaseDelay: 1000,   // ms, doubles each attempt
+        maxConcurrent:  3,      // max simultaneous active downloads in a batch
     }),
 
     /* --- File validation --- */

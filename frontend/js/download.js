@@ -642,7 +642,7 @@ const Download = (() => {
     // Batch download coordinator
     // ------------------------------------------------------------------
 
-    const BATCH_DOWNLOAD_CONCURRENCY = 3;
+    const BATCH_DOWNLOAD_CONCURRENCY = Config.download.maxConcurrent;
 
     /**
      * Download multiple files/folders, assembling a ZIP and saving via _saveBlob.

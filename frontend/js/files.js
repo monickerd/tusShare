@@ -23,6 +23,67 @@ const Files = (() => {
     // stays visible while a TransferManager row shows real-time progress.
     const _activeUploads = new Map();
 
+    // Concurrency gate for all upload paths.  When release() is called with a
+    // waiter in the queue the slot is passed directly (no decrement+increment)
+    // to avoid a window where a racing acquire() could exceed the cap.
+    function _makeTransferSemaphore(max) {
+        let active = 0;
+        const queue = [];
+        return {
+            async acquire() {
+                if (active < max) { active++; return; }
+                await new Promise(resolve => queue.push(resolve));
+                // active is NOT incremented here — release() passes the slot directly
+            },
+            release() {
+                if (queue.length) {
+                    queue.shift()(); // hand slot to next waiter; active stays the same
+                } else {
+                    active--;
+                }
+            },
+        };
+    }
+
+    const _uploadSemaphore = _makeTransferSemaphore(Config.upload.maxConcurrent);
+
+    // Serialised time-based batcher for post-upload finishing work (team keys + share items).
+    // When the first item lands after a quiet period, a timer fires after intervalMs and
+    // flushes everything that has accumulated — uniform regardless of file size.  Flushes
+    // are chained so concurrent API bursts cannot occur.
+    function _makeFinishBatcher(intervalMs, folderId) {
+        const pending = [];
+        let chain     = Promise.resolve();
+        let timer     = null;
+
+        function _runBatch(batch) {
+            chain = chain.then(() => Promise.allSettled([
+                _batchRegisterTeamFileKeys(batch)
+                    .catch(err => console.warn('Batch team key registration failed', err)),
+                _fulfillPendingShareKeys(batch, folderId)
+                    .catch(err => console.warn('Batch share key fulfillment failed', err)),
+            ]));
+        }
+
+        return {
+            push(item) {
+                pending.push(item);
+                // Schedule one flush per quiet window; next push after a flush arms a new timer.
+                if (timer === null) {
+                    timer = setTimeout(() => {
+                        timer = null;
+                        if (pending.length) _runBatch(pending.splice(0));
+                    }, intervalMs);
+                }
+            },
+            flush() {
+                if (timer !== null) { clearTimeout(timer); timer = null; }
+                if (pending.length) _runBatch(pending.splice(0));
+                return chain; // resolves when all chained flushes are settled
+            },
+        };
+    }
+
     function _startLive(folderId) {
         _stopLive();
         const url = folderId
@@ -753,10 +814,10 @@ const Files = (() => {
                 await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(
                     teamKeyErr => console.warn('Failed to register team file key for', result.fileId, teamKeyErr),
                 );
-                const _mk2 = Auth.getMasterKeyObj();
-                await _autoKeyFileForShares(result.fileId, result.fileKeyBytes, _currentFolderId, _mk2).catch(
-                    err => console.warn('Auto-key for shares failed for', result.fileId, err),
-                );
+                await _fulfillPendingShareKeys(
+                    [{ fileId: result.fileId, fileKeyBytes: result.fileKeyBytes }],
+                    _currentFolderId,
+                ).catch(err => console.warn('Share key fulfillment failed for', result.fileId, err));
                 Utils.showToast(`"${upload.original_name}" uploaded`, 'success');
             } catch (err) {
                 overlay.remove();
@@ -1806,6 +1867,21 @@ const Files = (() => {
         );
     }
 
+    // Batch variant: wraps all file keys concurrently then issues a single POST.
+    async function _batchRegisterTeamFileKeys(pairs) {
+        if (!_currentTeamId || !_currentTeamPK || !pairs.length) return;
+        const file_keys = await Promise.all(
+            pairs.map(async ({ fileId, fileKeyBytes }) => ({
+                file_id: fileId,
+                ...(await Teams.encryptFileKeyForTeam(fileKeyBytes, _currentTeamPK)), // NOSONAR
+            })),
+        );
+        await Api.post(
+            `${Config.app.apiPrefix}/teams/${_currentTeamId}/file-keys`,
+            { file_keys },
+        );
+    }
+
     /** Fetch and unwrap the team SK bytes for HKDF share key derivation. */
     async function _fetchTeamSKBytes(teamId) {
         const asymKeys = Auth.getAsymmetricKeys();
@@ -1822,40 +1898,57 @@ const Files = (() => {
      * After a successful upload, wrap the new file's key for every active HKDF-keyed
      * folder share so recipients see it immediately on next page load.
      */
-    async function _autoKeyFileForShares(fileId, fileKeyBytes, folderId, masterKey) {
-        if (!folderId || !fileId || !fileKeyBytes || !masterKey) return;
-        let shares;
+    // Fulfill outstanding share-keying obligations for a set of just-uploaded files.
+    // Fetches server-side pending records (files flagged as needing key wrapping for
+    // active HKDF shares), matches them against the in-memory file keys from this
+    // upload session, and posts wrapped keys per share.  Files the caller has no key
+    // for (uploaded by someone else) are silently skipped — the server keeps the
+    // pending record for the next eligible team member.
+    async function _fulfillPendingShareKeys(pairs, folderId) {
+        if (!folderId || !pairs.length) return;
+        let pending;
         try {
-            shares = await Api.get(`${Config.app.apiPrefix}/folders/${folderId}/shares`);
-        } catch {
-            return;
+            pending = await Api.get(`${Config.app.apiPrefix}/folders/${folderId}/pending-share-keys`);
+        } catch { return; }
+        if (!pending?.length) return;
+
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey) return;
+        const keyMaterial = _currentTeamSKBytes || masterKey;
+
+        // Build file_id → fileKeyBytes lookup from this upload batch.
+        const keyMap = new Map(pairs.map(p => [p.fileId, p.fileKeyBytes]));
+
+        // Group pending items by share so we issue one POST per share.
+        const byShare = new Map();
+        for (const item of pending) {
+            if (!keyMap.has(item.file_id)) continue;
+            if (!byShare.has(item.share_id)) byShare.set(item.share_id, { token: item.token, files: [] });
+            byShare.get(item.share_id).files.push({ fileId: item.file_id, fileKeyBytes: keyMap.get(item.file_id) });
         }
-        const hkdfShares = (shares || []).filter(s => s.key_type === 'hkdf-v1' && s.can_manage);
-        if (!hkdfShares.length) return;
 
-        const fileKey = await crypto.subtle.importKey(
-            'raw', fileKeyBytes,
-            { name: 'AES-GCM', length: 256 },
-            true,
-            ['encrypt', 'decrypt'],
-        );
-
-        for (const s of hkdfShares) {
+        for (const [shareId, { token, files }] of byShare) {
             try {
-                // Use team SK for team folders if available, else owner's master key
-                const keyMaterial = _currentTeamSKBytes || masterKey;
-                const shareKey = await Crypto.deriveShareKey(keyMaterial, s.token);
-                const { wrappedKeyB64, ivB64 } = await Crypto.wrapFileKeyForShare(fileKey, shareKey);
-                await Api.post(`${Config.app.apiPrefix}/shares/${s.share_id}/items`, {
-                    items: [{
-                        resource_type: 'file',
-                        resource_id: fileId,
-                        encrypted_file_key: wrappedKeyB64,
-                        key_iv: ivB64,
-                    }],
-                });
+                const shareKey = await Crypto.deriveShareKey(keyMaterial, token);
+                const items = await Promise.all(
+                    files.map(async ({ fileId, fileKeyBytes }) => {
+                        const fileKey = await crypto.subtle.importKey(
+                            'raw', fileKeyBytes,
+                            { name: 'AES-GCM', length: 256 },
+                            true, ['encrypt', 'decrypt'],
+                        );
+                        const { wrappedKeyB64, ivB64 } = await Crypto.wrapFileKeyForShare(fileKey, shareKey);
+                        return {
+                            resource_type:      'file',
+                            resource_id:        fileId,
+                            encrypted_file_key: wrappedKeyB64,
+                            key_iv:             ivB64,
+                        };
+                    }),
+                );
+                await Api.post(`${Config.app.apiPrefix}/shares/${shareId}/items`, { items });
             } catch (err) {
-                console.warn('Auto-key share failed for', s.share_id, err);
+                console.warn('Share key fulfillment failed for', shareId, err);
             }
         }
     }
@@ -1935,14 +2028,38 @@ const Files = (() => {
             }
         }
 
-        // Phase 2: start uploads concurrently; stagger starts only when rate limiting applies
-        const uploads = [];
-        for (const { file, index, deletedForReplace } of resolved) {
+        // Phase 2: bounded crypto pre-warm + gated network uploads.
+        // A pre-warm semaphore (2× upload cap) limits how many files load chunk
+        // data into memory at once — prevents OOM on large or numerous files.
+        // Crypto starts as soon as a pre-warm slot is free; the upload slot is
+        // claimed next, then the pre-warm slot is released so the next file can
+        // start its crypto.
+        const prewarmSem = _makeTransferSemaphore(Config.upload.maxConcurrent * 2);
+        const batcher    = _makeFinishBatcher(Config.upload.finishIntervalMs, folderId);
+
+        const uploads = resolved.map(async ({ file, index, deletedForReplace }) => {
+            await prewarmSem.acquire();
+            const preparedPromise = Upload.prepareUpload(file, folderId, masterKey);
+
+            await _uploadSemaphore.acquire();
+            prewarmSem.release(); // crypto done + upload slot secured; next file can pre-warm
             await _paceUploadIfNeeded(_ctx);
             _ctx.lastUploadMs = Date.now();
-            uploads.push(_executeFileUpload(file, folderId, masterKey, _ctx, files, index, deletedForReplace));
-        }
+            try {
+                const outcome = await _executeFileUploadPrepared(
+                    await preparedPromise, file, folderId, _ctx, files, index, deletedForReplace,
+                );
+                // Push to time-based batcher; flushes every finishIntervalMs so teammates
+                // see files incrementally rather than only after the entire batch finishes.
+                if (outcome?.fileId) batcher.push({ fileId: outcome.fileId, fileKeyBytes: outcome.fileKeyBytes });
+            } finally {
+                _uploadSemaphore.release();
+            }
+        });
         await Promise.allSettled(uploads);
+
+        // Phase 3: flush any remaining finish pairs and wait for all chained batches.
+        await batcher.flush();
 
         if (isStandalone) _reportUploadResults(_ctx);
         _reloadCurrentView();
@@ -2146,7 +2263,11 @@ const Files = (() => {
         return { skip: false, file, deletedForReplace: false };
     }
 
-    async function _executeFileUpload(file, folderId, masterKey, ctx, files, i, deletedForReplace) {
+    // Executes the network phase of a queued upload using pre-warmed prepared data.
+    // Team key registration and share auto-keying are deliberately excluded here and
+    // batched by the caller (_uploadFiles Phase 3) after all transfers complete.
+    // Returns {fileId, fileKeyBytes} on success, or null on abort/error.
+    async function _executeFileUploadPrepared(prepared, file, folderId, ctx, files, i, deletedForReplace) {
         const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
         const ctrl = _makeUploadCtrl(folderId, file.name);
         const overlay = _showUploadOverlay(label);
@@ -2158,7 +2279,7 @@ const Files = (() => {
         });
 
         try {
-            const result = await Upload.uploadFile(file, folderId, masterKey, (done, total) => {
+            const result = await Upload.uploadFromPrepared(prepared, file, (done, total) => {
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 overlay.update(pct, label);
                 transfer.update(pct);
@@ -2167,17 +2288,10 @@ const Files = (() => {
             }, ctrl);
             overlay.remove();
             transfer.complete();
-            await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(
-                teamKeyErr => console.warn('Failed to register team file key for', result.fileId, teamKeyErr),
-            );
-            const _mk = Auth.getMasterKeyObj();
-            await _autoKeyFileForShares(result.fileId, result.fileKeyBytes, folderId, _mk).catch(
-                err => console.warn('Auto-key for shares failed for', result.fileId, err),
-            );
             ctx.results.ok++;
             if (!ctx.results.firstName) ctx.results.firstName = file.name;
             ctrl.cleanup();
-            return 'ok';
+            return { fileId: result.fileId, fileKeyBytes: result.fileKeyBytes };
         } catch (err) {
             overlay.remove();
             ctrl.cleanup();
@@ -2187,7 +2301,7 @@ const Files = (() => {
                     Api.del(err.location).catch(() => {});
                     Utils.showToast(`"${file.name}" upload cancelled`, 'info');
                 }
-                return 'aborted';
+                return null;
             }
             transfer.fail();
             if (deletedForReplace) {
@@ -2195,7 +2309,7 @@ const Files = (() => {
             } else {
                 ctx.results.failed.push(file.name);
             }
-            return 'error';
+            return null;
         }
     }
 

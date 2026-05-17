@@ -488,6 +488,22 @@ async def _finalize_completed_upload(
             "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
             (new_offset, user_id),
         )
+        # Flag this file as needing share-key wrapping for any active HKDF link
+        # shares on the folder.  Any team member with write+ access can fulfill.
+        if file_row["folder_id"]:
+            await db.execute(
+                """
+                INSERT INTO pending_share_keying (id, share_id, file_id, folder_id)
+                SELECT gen_random_uuid()::text, s.id, ?, ?
+                FROM shares s
+                WHERE s.target_folder_id = ?
+                  AND s.key_type = 'hkdf-v1'
+                  AND s.is_active = 1
+                  AND (s.expires_at IS NULL OR s.expires_at > NOW())
+                ON CONFLICT (share_id, file_id) DO NOTHING
+                """,
+                (file_id, file_row["folder_id"], file_row["folder_id"]),
+            )
         await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
         await db.commit()
     except HTTPException:

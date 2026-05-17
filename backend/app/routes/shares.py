@@ -741,6 +741,26 @@ async def _insert_share_transaction(
                 (str(uuid.uuid4()), share_id, item.resource_type, item.resource_id,
                  item.encrypted_file_key, item.key_iv, item.ephemeral_x25519_pub, item.kem_ciphertext),
             )
+        # For HKDF link shares targeting a folder, flag any files the client
+        # did NOT supply keys for so that another team member can fulfill them.
+        if target_folder_id and key_type == "hkdf-v1":
+            await db.execute(
+                """
+                INSERT INTO pending_share_keying (id, share_id, file_id, folder_id)
+                SELECT gen_random_uuid()::text, ?, f.id, ?
+                FROM files f
+                WHERE f.folder_id = ?
+                  AND f.upload_complete = 1
+                  AND f.deleted_at IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM share_items si
+                      WHERE si.share_id = ? AND si.resource_type = 'file'
+                        AND si.resource_id = f.id
+                  )
+                ON CONFLICT (share_id, file_id) DO NOTHING
+                """,
+                (share_id, target_folder_id, target_folder_id, share_id),
+            )
         ip = (
             request.headers.get("CF-Connecting-IP")
             or request.headers.get("X-Real-IP")
@@ -972,7 +992,7 @@ async def get_folder_shares(
         can_manage = r["created_by"] == user.id or user.is_admin
         if not can_manage and team_id:
             level = await _team_level_for_user(db, team_id, user.id)
-            can_manage = level == "admin"
+            can_manage = level in ("admin", "write")
         result.append({
             "share_id":        r["id"],
             "token":           r["token"],
@@ -984,6 +1004,57 @@ async def get_folder_shares(
             "short_link_slug": r["short_link_slug"],
             "can_manage":      can_manage,
         })
+    return result
+
+
+@router.get("/api/v1/folders/{folder_id}/pending-share-keys", responses={404: {"description": "Not Found"}})
+async def get_pending_share_keys(
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return pending share-keying records for a folder.
+
+    Returns [{share_id, token, file_id}] for HKDF link shares where the
+    requesting user can manage the share (creator, global admin, or team
+    write/admin member).  The client uses this to fulfill outstanding
+    key-wrap obligations after an upload batch, or when resuming a session.
+
+    Files the caller does not hold a key for (e.g. uploaded by someone else
+    in a previous session) are returned but cannot be fulfilled — the client
+    silently skips them.
+    """
+    folder_id = validate_uuid(folder_id)
+
+    # Determine team-level access once for the folder; used for all shares below.
+    team_id = await _get_folder_team_id(db, folder_id)
+    team_level = None
+    if team_id:
+        team_level = await _team_level_for_user(db, team_id, user.id)
+
+    broad_access = user.is_admin or team_level in ("admin", "write")
+
+    cursor = await db.execute(
+        """
+        SELECT psk.share_id, s.token, psk.file_id, s.created_by
+        FROM pending_share_keying psk
+        JOIN shares s ON s.id = psk.share_id
+        WHERE psk.folder_id = ?
+          AND s.is_active = 1
+          AND (s.expires_at IS NULL OR s.expires_at > NOW())
+        """,
+        (folder_id,),
+    )
+    rows = await cursor.fetchall()
+
+    result = []
+    for r in rows:
+        if broad_access or r["created_by"] == user.id:
+            result.append({
+                "share_id": r["share_id"],
+                "token":    r["token"],
+                "file_id":  r["file_id"],
+            })
     return result
 
 
@@ -1040,6 +1111,14 @@ async def add_share_items(
             """,
             (str(uuid.uuid4()), share_id, item.resource_type, item.resource_id,
              item.encrypted_file_key, item.key_iv),
+        )
+    # Clear pending records for the files we just fulfilled.
+    file_ids = [item.resource_id for item in body.items if item.resource_type == "file"]
+    if file_ids:
+        placeholders = ",".join("?" * len(file_ids))
+        await db.execute(
+            f"DELETE FROM pending_share_keying WHERE share_id = ? AND file_id IN ({placeholders})",
+            (share_id, *file_ids),
         )
     await db.commit()
     return {"added": len(body.items)}

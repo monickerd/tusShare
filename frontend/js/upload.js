@@ -59,39 +59,37 @@ const Upload = (() => {
     // ------------------------------------------------------------------
 
     /**
-     * Upload a file with E2E encryption.
+     * Pure-crypto preparation step — no network calls.
      *
-     * @param {File}       file       - Browser File object.
-     * @param {string|null} folderId  - Target folder UUID, or null for root.
-     * @param {CryptoKey}  masterKey  - Decrypted master key.
-     * @param {function}   onProgress - Called with (bytesEncrypted, totalEncryptedBytes).
-     * @param {object}    [ctrl]      - Optional control object for pause/stop.
-     *   ctrl.onCreated(uploadId)     - Called immediately after the upload is created on the server.
-     *   ctrl.waitIfPaused(): Promise - Resolves when the upload is no longer paused.
-     *   ctrl.isStopped(): boolean    - Returns true when the upload should abort.
-     * @returns {Promise<{fileId: string, location: string}>}
-     * @throws {UploadAbortedError}  When ctrl signals a stop.
+     * Generates the per-file key, wraps it with the master key and (if configured)
+     * the escrow public key, builds the tus metadata string, and pre-encrypts chunk 0
+     * so it is ready to PATCH immediately when a transfer slot opens.  For files
+     * smaller than one chunk this covers the entire file content.
+     *
+     * Intended to be started while a file waits in the concurrency queue so that
+     * all crypto latency is hidden behind the wait rather than added to the
+     * critical path.
+     *
+     * @param {File}       file      - Browser File object.
+     * @param {string|null} folderId - Target folder UUID, or null for root.
+     * @param {CryptoKey}  masterKey - Decrypted master key.
+     * @returns {Promise<object>} Opaque prepared object consumed by uploadFromPrepared.
      */
-    async function uploadFile(file, folderId, masterKey, onProgress, ctrl = null) {
+    async function prepareUpload(file, folderId, masterKey) {
         const chunkSize = _getChunkSize();
         const totalChunks = Math.ceil(file.size / chunkSize);
 
-        // Total encrypted size = sum of (plainChunkSize + 16) for each chunk
         let totalEncryptedSize = 0;
         for (let i = 0; i < totalChunks; i++) {
             const plain = Math.min(chunkSize, file.size - i * chunkSize);
             totalEncryptedSize += plain + 16;
         }
 
-        // Generate a per-file key and wrap it with the master key
         const fileKey = await Crypto.generateFileKey();
         const fileKeyBytes = new Uint8Array(await crypto.subtle.exportKey('raw', fileKey));
         const { encryptedKeyB64, ivB64: keyIvB64 } = await Crypto.encryptFileKey(fileKey, masterKey);
-
-        // Optionally wrap the file key with the server's escrow public key (for server-side AV)
         const escrowMeta = await _tryEscrowWrap(fileKeyBytes);
 
-        // Build tus Upload-Metadata header
         const meta = _buildMetadata({
             filename:           file.name,
             filetype:           file.type || 'application/octet-stream',
@@ -104,19 +102,40 @@ const Upload = (() => {
             ...escrowMeta,
         });
 
-        const location = await _createUpload(meta, totalEncryptedSize);
+        // Pre-encrypt chunk 0 (the whole file for single-chunk uploads) now,
+        // so the first PATCH can fire immediately after the POST returns.
+        const firstEncrypted = totalChunks > 0 ? _encryptChunk(file, 0, chunkSize, fileKey) : null;
 
-        // Notify caller of the server-assigned upload ID so it can be tracked
-        // (e.g., to suppress the static pending-upload row while active)
+        return { fileKey, fileKeyBytes, meta, totalEncryptedSize, firstEncrypted, chunkSize, totalChunks };
+    }
+
+    /**
+     * Network-only phase of an upload using data from prepareUpload.
+     *
+     * Creates the tus resource (POST), then streams each encrypted chunk (PATCH).
+     * Chunk 0 was pre-encrypted by prepareUpload; remaining chunks follow the
+     * existing 1-ahead pipeline.
+     *
+     * @param {object}   prepared   - Return value of prepareUpload.
+     * @param {File}     file       - Original File object (needed for chunk i+1 encryption).
+     * @param {function} onProgress - Called with (bytesEncrypted, totalEncryptedBytes).
+     * @param {object}  [ctrl]      - Optional control object for pause/stop (same shape as uploadFile).
+     * @returns {Promise<{fileId: string|null, fileKeyBytes: Uint8Array, location: string}>}
+     * @throws {UploadAbortedError}  When ctrl signals a stop.
+     */
+    async function uploadFromPrepared(prepared, file, onProgress, ctrl = null) {
+        const { fileKey, fileKeyBytes, meta, totalEncryptedSize, firstEncrypted, chunkSize, totalChunks } = prepared;
+
+        const location = await _createUpload(meta, totalEncryptedSize);
         const uploadId = location.split('/').pop();
         ctrl?.onCreated?.(uploadId);
 
-        // PATCH — send each encrypted chunk.
-        // 1-ahead pipeline: start encrypting chunk i+1 while chunk i's PATCH is in-flight,
-        // so CPU and network work overlap rather than run sequentially.
+        if (totalChunks === 0) return { fileId: null, fileKeyBytes, location };
+
         const integrityTracker = _makeIntegrityTracker(totalChunks);
         let encryptedOffset = 0;
-        let nextEncrypted   = _encryptChunk(file, 0, chunkSize, fileKey);
+        let nextEncrypted   = firstEncrypted; // already in-flight from prepareUpload
+
         for (let i = 0; i < totalChunks; i++) {
             await _checkCtrl(ctrl, location);
 
@@ -139,6 +158,25 @@ const Upload = (() => {
         }
 
         return { fileId: null, fileKeyBytes, location };
+    }
+
+    /**
+     * Upload a file with E2E encryption.
+     *
+     * @param {File}       file       - Browser File object.
+     * @param {string|null} folderId  - Target folder UUID, or null for root.
+     * @param {CryptoKey}  masterKey  - Decrypted master key.
+     * @param {function}   onProgress - Called with (bytesEncrypted, totalEncryptedBytes).
+     * @param {object}    [ctrl]      - Optional control object for pause/stop.
+     *   ctrl.onCreated(uploadId)     - Called immediately after the upload is created on the server.
+     *   ctrl.waitIfPaused(): Promise - Resolves when the upload is no longer paused.
+     *   ctrl.isStopped(): boolean    - Returns true when the upload should abort.
+     * @returns {Promise<{fileId: string, location: string}>}
+     * @throws {UploadAbortedError}  When ctrl signals a stop.
+     */
+    async function uploadFile(file, folderId, masterKey, onProgress, ctrl = null) {
+        const prepared = await prepareUpload(file, folderId, masterKey);
+        return uploadFromPrepared(prepared, file, onProgress, ctrl);
     }
 
     /**
@@ -537,6 +575,8 @@ const Upload = (() => {
 
     return {
         uploadFile,
+        prepareUpload,
+        uploadFromPrepared,
         resumeUpload,
         fetchAndSetChunkSize,
         setServerChunkSize,
