@@ -10,7 +10,7 @@ USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9._+@-]{1,64}$")
 # --- Folder names ---
 FOLDER_NAME_MIN_LENGTH = 1
 FOLDER_NAME_MAX_LENGTH = 255
-FOLDER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9 _\-.'!()&]{1,255}$")
+FOLDER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9 _\-.'!()&,]{1,255}$")
 
 # --- File names ---
 # Cross-platform max: 255 chars (NTFS/ext4 component limit).

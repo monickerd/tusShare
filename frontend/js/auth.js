@@ -2012,6 +2012,15 @@ const Auth = (() => {
         }
     }
 
+    async function refreshCurrentUser() {
+        try {
+            const meData = await Api.get(`${Config.app.apiPrefix}/auth/me`);
+            _currentUser = meData.user;
+        } catch {
+            // Non-fatal: keep existing user object
+        }
+    }
+
     return {
         getCurrentUser,
         getMasterKeyObj,
@@ -2030,6 +2039,7 @@ const Auth = (() => {
         checkSession,
         touchKeyCache,
         startIdentityWatch,
+        refreshCurrentUser,
         loadOpaque: _loadOpaque,
     };
 })();

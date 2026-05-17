@@ -1522,6 +1522,8 @@ const Teams = (() => {
             file_keys:          updatedFileKeys,
             members:            wrappedMembers,
         });
+
+        return _bytesToB64(pkNewBytes);
     }
 
     async function _triggerRotation(teamId, team, refreshContainer) {
@@ -1651,9 +1653,12 @@ const Teams = (() => {
      *   (c) Teams with my_key_confirmed=false: submit Schnorr PoK for this member's slot.
      */
     async function _processOneTeamOps(team, asymKeys) {
+        // pre_public_key may be updated by a rotation below — track any new value so the PoK
+        // hash is computed against the current server key, not the stale value from the teams list.
+        let currentPkB64 = team.pre_public_key;
         if (team.rotation_pending) {
             try {
-                await _performRotation(team.id, asymKeys);
+                currentPkB64 = await _performRotation(team.id, asymKeys);
                 console.log(`[teams] background rotation complete for team ${team.id}`);
             } catch (err) {
                 console.warn(`[teams] background rotation failed for team ${team.id}:`, err.message);
@@ -1668,7 +1673,7 @@ const Teams = (() => {
         }
         if (team.my_key_confirmed === false) {
             try {
-                await _submitSchnorrPoK(team.id, team.pre_public_key, asymKeys);
+                await _submitSchnorrPoK(team.id, currentPkB64, asymKeys);
             } catch (err) {
                 console.warn(`[teams] Schnorr PoK failed for team ${team.id}:`, err.message);
             }

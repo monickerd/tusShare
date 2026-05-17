@@ -847,7 +847,10 @@ const Wizard = (() => {
         card.appendChild(Utils.el('button', {
             className: 'btn btn-primary',
             textContent: 'Go to Admin Panel →',
-            onClick: () => { globalThis.location.hash = '#/admin'; },
+            onClick: async () => {
+                await Auth.refreshCurrentUser();
+                globalThis.location.hash = '#/admin';
+            },
         }));
         wrapper.appendChild(card);
     }

@@ -1909,10 +1909,6 @@ const Files = (() => {
         for (const name of ctx.results.failed) Utils.showToast(`"${name}" failed to upload`, 'error');
     }
 
-    /**
-     * Upload an array of File objects sequentially, showing a progress overlay.
-     * Requires Auth.getMasterKeyObj() to return a valid CryptoKey.
-     */
     async function _uploadFiles(files, targetFolderId, _ctx = null) {
         const folderId = targetFolderId === undefined ? _currentFolderId : targetFolderId;
         const masterKey = Auth.getMasterKeyObj();
@@ -1930,16 +1926,23 @@ const Files = (() => {
         const existingFiles = await _getExistingFiles(folderId, _ctx.fileCache);
         const existingByName = new Map(existingFiles.map(f => [f.original_name.toLowerCase(), f]));
 
+        // Phase 1: resolve all conflicts sequentially (modals cannot overlap)
+        const resolved = [];
         for (let i = 0; i < files.length; i++) {
             const conflict = await _processFileConflict(files[i], existingByName, _ctx);
-            if (conflict.skip) continue;
+            if (!conflict.skip) {
+                resolved.push({ file: conflict.file, index: i, deletedForReplace: conflict.deletedForReplace });
+            }
+        }
 
+        // Phase 2: start uploads concurrently; stagger starts only when rate limiting applies
+        const uploads = [];
+        for (const { file, index, deletedForReplace } of resolved) {
             await _paceUploadIfNeeded(_ctx);
             _ctx.lastUploadMs = Date.now();
-
-            const outcome = await _executeFileUpload(conflict.file, folderId, masterKey, _ctx, files, i, conflict.deletedForReplace);
-            if (outcome === 'aborted' || outcome === 'error') break;
+            uploads.push(_executeFileUpload(file, folderId, masterKey, _ctx, files, index, deletedForReplace));
         }
+        await Promise.allSettled(uploads);
 
         if (isStandalone) _reportUploadResults(_ctx);
         _reloadCurrentView();
