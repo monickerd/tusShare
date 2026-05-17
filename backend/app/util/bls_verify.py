@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 _FR_ORDER = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
 
 try:
-    from py_ecc.bls12_381.bls12_381 import G1, G2, pairing, multiply, add, eq
+    from py_ecc.optimized_bls12_381 import G1, G2, pairing, multiply, add, eq
     from py_ecc.bls.point_compression import (
         compress_G1, decompress_G1,
         compress_G2, decompress_G2,
