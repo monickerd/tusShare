@@ -84,7 +84,7 @@ CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 # Detects any percent-encoded control character (U+0000–U+001F, U+007F, U+0080–U+009F).
 ENCODED_CONTROL_PATTERN = re.compile(
-    r"%(?:0[0-9a-fA-F]|1[0-9a-fA-F]|7[fF]|[89a-fA-F][0-9a-fA-F])",
+    r"%(?:0[0-9a-f]|1[0-9a-f]|7f|[89a-f][0-9a-f])",
     re.IGNORECASE,
 )
 

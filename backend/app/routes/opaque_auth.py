@@ -53,6 +53,7 @@ _ERR_INVALID_REG_REQUEST = "Invalid registration request"
 _ERR_INVALID_REG_UPLOAD = "Invalid registration upload"
 _ERR_INVALID_CREDENTIALS = "Invalid credentials"
 _SQL_COUNT_USERS = "SELECT COUNT(*) FROM users"
+_EVT_LOGIN_FAILURE = "auth.login.failure"
 
 _bg_tasks: set = set()
 
@@ -568,7 +569,7 @@ async def opaque_login_finish(
         # Session expired, not found, or already consumed — uniform error to
         # prevent distinguishing between "wrong password" and "no session"
         event_bus.emit(SecurityEvent(
-            event_type="auth.login.failure",
+            event_type=_EVT_LOGIN_FAILURE,
             severity="warning",
             outcome="failure",
             actor=EventActor(ip=_client_ip),
@@ -581,7 +582,7 @@ async def opaque_login_finish(
     # Username in the finish request must match what was used at start
     if stored_username.lower() != body.username.lower():
         event_bus.emit(SecurityEvent(
-            event_type="auth.login.failure",
+            event_type=_EVT_LOGIN_FAILURE,
             severity="warning",
             outcome="failure",
             actor=EventActor(ip=_client_ip),
@@ -602,7 +603,7 @@ async def opaque_login_finish(
     except ValueError as exc:
         logger.warning("OPAQUE login/finish error: %s", exc)
         event_bus.emit(SecurityEvent(
-            event_type="auth.login.failure",
+            event_type=_EVT_LOGIN_FAILURE,
             severity="warning",
             outcome="failure",
             actor=EventActor(ip=_client_ip),
@@ -612,7 +613,7 @@ async def opaque_login_finish(
 
     if session_key is None:
         event_bus.emit(SecurityEvent(
-            event_type="auth.login.failure",
+            event_type=_EVT_LOGIN_FAILURE,
             severity="warning",
             outcome="failure",
             actor=EventActor(ip=_client_ip),

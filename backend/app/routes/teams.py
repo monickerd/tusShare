@@ -1152,6 +1152,34 @@ async def _require_all_members_confirmed(db, team_id: str) -> None:
         )
 
 
+async def _validate_escrow_coverage(db, submitted_user_ids: set) -> None:
+    """Raise 422 if escrow_require_coverage is enabled and no escrow agent is in the rotation."""
+    cov_val = await get_admin_setting(db, "escrow_require_coverage")
+    if cov_val != "1":
+        return
+    raw_user_ids = await get_admin_setting(db, "escrow_default_user_ids")
+    raw_role_ids = await get_admin_setting(db, "escrow_default_role_ids")
+    escrow_user_ids: set[str] = set(json.loads(raw_user_ids or "[]"))
+    role_ids: list[str] = json.loads(raw_role_ids or "[]")
+    if role_ids:
+        ph = ",".join("?" for _ in role_ids)
+        cursor = await db.execute(
+            f"SELECT DISTINCT user_id FROM user_roles "
+            f"WHERE role_id IN ({ph}) AND scope_type IS NULL",
+            role_ids,
+        )
+        for row in await cursor.fetchall():
+            escrow_user_ids.add(row["user_id"])
+    if escrow_user_ids and not (submitted_user_ids & escrow_user_ids):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "escrow_require_coverage is enabled. Rotation must include at least "
+                f"one configured escrow agent: {list(escrow_user_ids)[:5]}"
+            ),
+        )
+
+
 async def _validate_rotation_inputs(db, team_id: str, user, body) -> None:
     """Validate file_keys and member list for a PRE key rotation."""
     if body.file_keys:
@@ -1207,30 +1235,7 @@ async def _validate_rotation_inputs(db, team_id: str, user, body) -> None:
             detail=f"Rotation must cover all current members: {list(missing)[:5]}"
         )
 
-    cov_val = await get_admin_setting(db, "escrow_require_coverage")
-    if cov_val == "1":
-        raw_user_ids = await get_admin_setting(db, "escrow_default_user_ids")
-        raw_role_ids = await get_admin_setting(db, "escrow_default_role_ids")
-        escrow_user_ids: set[str] = set(json.loads(raw_user_ids or "[]"))
-        role_ids: list[str] = json.loads(raw_role_ids or "[]")
-        if role_ids:
-            ph = ",".join("?" for _ in role_ids)
-            cursor = await db.execute(
-                f"SELECT DISTINCT user_id FROM user_roles "
-                f"WHERE role_id IN ({ph}) AND scope_type IS NULL",
-                role_ids,
-            )
-            for row in await cursor.fetchall():
-                escrow_user_ids.add(row["user_id"])
-        if escrow_user_ids and not (submitted_user_ids & escrow_user_ids):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "escrow_require_coverage is enabled. Rotation must include at least "
-                    f"one configured escrow agent: {list(escrow_user_ids)[:5]}"
-                ),
-            )
-
+    await _validate_escrow_coverage(db, submitted_user_ids)
     await _require_all_members_confirmed(db, team_id)
 
 

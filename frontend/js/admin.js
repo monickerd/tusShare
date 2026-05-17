@@ -173,22 +173,24 @@ const Admin = (() => {
     // Entry point
     // ------------------------------------------------------------------
 
+    function _filterTabsByFlags(tabs, flags) {
+        return tabs
+            .map(tab => ({
+                ...tab,
+                sections: tab.sections.filter(([id]) => {
+                    const req = _SECTION_FLAGS[id];
+                    return !req || req.some(f => flags[f] === '1');
+                }),
+            }))
+            .filter(tab => tab.sections.length > 0);
+    }
+
     function renderAdminPage(container) {
         container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         _loadAdminPrefs().then(prefs => {
             _adminRoleOrder = Array.isArray(prefs.role_order) ? prefs.role_order : null;
             const flags = Auth.getCurrentUser()?.flags || {};
-            const hasFlag = (f) => flags[f] === '1';
-            const liveTabs = _applyLayoutPrefs(prefs)
-                .map(tab => ({
-                    ...tab,
-                    sections: tab.sections.filter(([id]) => {
-                        const req = _SECTION_FLAGS[id];
-                        return !req || req.some(hasFlag);
-                    }),
-                }))
-                .filter(tab => tab.sections.length > 0);
-            _renderAdmin(container, liveTabs);
+            _renderAdmin(container, _filterTabsByFlags(_applyLayoutPrefs(prefs), flags));
         });
     }
 

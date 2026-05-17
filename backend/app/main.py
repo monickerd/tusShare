@@ -144,10 +144,7 @@ async def _run_mfa_cleanup(db_session_factory, interval: int = 120) -> None:
             logger.exception("Error in MFA cleanup task")
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application startup and shutdown lifecycle."""
-    # Refuse to start with an empty or placeholder JWT secret
+def _validate_startup_config() -> None:
     if not settings.JWT_SECRET or settings.JWT_SECRET == "CHANGE-ME-IN-PRODUCTION":
         raise RuntimeError(
             "TUSSHARE_JWT_SECRET must be set to a strong random value. "
@@ -160,15 +157,9 @@ async def lifespan(app: FastAPI):
             "Set TUSSHARE_JWT_ALGORITHM to HS512 (recommended) or HS256."
         )
 
-    # Ensure data directories exist (used by the default local storage volume)
-    settings.FILES_DIR.mkdir(parents=True, exist_ok=True)
-    settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Initialize database
-    await init_db()
-
-    # Warn if any legacy bcrypt accounts remain; the migration path will be removed in a future release.
-    async with db_session() as db:
+async def _warn_legacy_bcrypt(db_session_factory) -> None:
+    async with db_session_factory() as db:
         _cur = await db.execute("SELECT COUNT(*) FROM users WHERE auth_method = 'legacy'")
         _row = await _cur.fetchone()
         if _row and _row[0] > 0:
@@ -179,6 +170,41 @@ async def lifespan(app: FastAPI):
                 "The bcrypt migration code path will be removed in a future release.",
                 _row[0],
             )
+
+
+async def _warn_unencrypted_volumes(db_session_factory) -> None:
+    if not settings.STORAGE_ENCRYPTION_KEY:
+        async with db_session_factory() as db:
+            _cur = await db.execute(
+                "SELECT COUNT(*) FROM storage_volumes "
+                "WHERE provider != 'local' AND config_enc IS NOT NULL"
+            )
+            _row = await _cur.fetchone()
+            if _row and _row[0] > 0:
+                logger.warning(
+                    "Found %d non-local storage volume(s) with encrypted credentials, "
+                    "but TUSSHARE_STORAGE_ENCRYPTION_KEY is not set. "
+                    "These volumes are protected only by a key derived from JWT_SECRET. "
+                    "Set TUSSHARE_STORAGE_ENCRYPTION_KEY to a dedicated 32-byte base64url key "
+                    "and re-save each volume to improve credential isolation.",
+                    _row[0],
+                )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application startup and shutdown lifecycle."""
+    _validate_startup_config()
+
+    # Ensure data directories exist (used by the default local storage volume)
+    settings.FILES_DIR.mkdir(parents=True, exist_ok=True)
+    settings.UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Initialize database
+    await init_db()
+
+    # Warn if any legacy bcrypt accounts remain; the migration path will be removed in a future release.
+    await _warn_legacy_bcrypt(db_session)
 
     # Load live settings cache (must run after init_db so admin_settings rows exist)
     async with db_session() as db:
@@ -192,25 +218,8 @@ async def lifespan(app: FastAPI):
     async with db_session() as db:
         storage_manager = await storage.init(db, db_session)
 
-    # Warn if non-local volumes exist but STORAGE_ENCRYPTION_KEY is absent — those
-    # volumes were encrypted with the JWT_SECRET fallback key.  A DB-only breach
-    # would expose storage credentials alongside everything else.
-    if not settings.STORAGE_ENCRYPTION_KEY:
-        async with db_session() as db:
-            _vol_cur = await db.execute(
-                "SELECT COUNT(*) FROM storage_volumes "
-                "WHERE provider != 'local' AND config_enc IS NOT NULL"
-            )
-            _vol_row = await _vol_cur.fetchone()
-            if _vol_row and _vol_row[0] > 0:
-                logger.warning(
-                    "Found %d non-local storage volume(s) with encrypted credentials, "
-                    "but TUSSHARE_STORAGE_ENCRYPTION_KEY is not set. "
-                    "These volumes are protected only by a key derived from JWT_SECRET. "
-                    "Set TUSSHARE_STORAGE_ENCRYPTION_KEY to a dedicated 32-byte base64url key "
-                    "and re-save each volume to improve credential isolation.",
-                    _vol_row[0],
-                )
+    # Warn if non-local volumes exist but STORAGE_ENCRYPTION_KEY is absent.
+    await _warn_unencrypted_volumes(db_session)
 
     # Bootstrap admin user on first run
     async with db_session() as db:

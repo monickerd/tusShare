@@ -96,12 +96,12 @@ async def setup_users(browser: Browser, admin_client: AdminClient):
     # Create a two-member team (owner + member)
     owner_api = ApiClient.from_session(_owner["session"])
     async with owner_api:
-        _team_two_member = await create_team(owner_api, "Rotation Test Team (2 members)")
+        _team_two_member = await create_team(owner_api, "Rotation Test Team Two Members")
         await add_member(owner_api, _team_two_member["id"], "rot_member_34")
 
     # Create an owner-only team
     async with owner_api:
-        _team_owner_only = await create_team(owner_api, "Rotation Test Team (owner only)")
+        _team_owner_only = await create_team(owner_api, "Rotation Test Team Owner Only")
 
     yield
 

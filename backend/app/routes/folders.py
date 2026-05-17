@@ -430,6 +430,26 @@ async def _update_move_permissions(db, folder_id: str, move_to_root: bool, paren
         await copy_folder_permissions(db, new_parent_id, "folder", folder_id)
 
 
+def _emit_folder_update_event(user, folder_id: str, folder_row, body, is_move: bool) -> None:
+    if is_move:
+        new_parent = None if body.move_to_root else body.parent_id
+        event_bus.emit(SecurityEvent(
+            event_type="file.folder.moved",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"folder_id": folder_id, "old_parent_id": folder_row["parent_id"], "new_parent_id": new_parent},
+        ))
+    elif body.name is not None:
+        event_bus.emit(SecurityEvent(
+            event_type="file.folder.renamed",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"folder_id": folder_id, "old_name": folder_row["name"], "new_name": body.name},
+        ))
+
+
 @router.put("/{folder_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_folder(
     folder_id: str,
@@ -474,23 +494,7 @@ async def update_folder(
 
     old_parent = folder_row["parent_id"]
     is_move = body.move_to_root or (body.parent_id is not None and body.parent_id != old_parent)
-    if is_move:
-        new_parent = None if body.move_to_root else body.parent_id
-        event_bus.emit(SecurityEvent(
-            event_type="file.folder.moved",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=str(user.id), username=user.username),
-            detail={"folder_id": folder_id, "old_parent_id": old_parent, "new_parent_id": new_parent},
-        ))
-    elif body.name is not None:
-        event_bus.emit(SecurityEvent(
-            event_type="file.folder.renamed",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=str(user.id), username=user.username),
-            detail={"folder_id": folder_id, "old_name": folder_row["name"], "new_name": body.name},
-        ))
+    _emit_folder_update_event(user, folder_id, folder_row, body, is_move)
 
     # Notify old parent (rename) and new parent (move) if different
     old_parent = folder_row["parent_id"]

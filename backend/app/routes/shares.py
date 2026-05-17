@@ -1244,6 +1244,14 @@ async def _enforce_download_limit(
         raise HTTPException(status_code=410, detail="Download limit reached for this share")
 
 
+async def _require_blob_available(
+    storage_manager, db: Database, file_id: str, storage_key: str
+) -> None:
+    if not await storage_manager.exists(db, file_id, storage_key):
+        logger.error("Blob missing for shared file %s (storage_key=%s)", file_id, storage_key)  # NOSONAR
+        raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
+
+
 @router.get("/s/{token}/files/{file_id}/content", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 422: {"description": "Unprocessable Entity"}, 503: {"description": "503"}})
 async def download_shared_file(
     token: str,
@@ -1276,10 +1284,7 @@ async def download_shared_file(
     storage_key = row["storage_key"]
     encrypted_size: int = row["encrypted_size"]
 
-    blob_exists = await storage.get_manager().exists(db, file_id, storage_key)
-    if not blob_exists:
-        logger.error("Blob missing for shared file %s (storage_key=%s)", file_id, storage_key)  # NOSONAR — server-side audit log; values are Pydantic-validated
-        raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
+    await _require_blob_available(storage.get_manager(), db, file_id, storage_key)
 
     # --- Parse Range header ---
     range_header = request.headers.get("Range", "").strip()
@@ -1396,6 +1401,35 @@ async def resolve_short_link(
 _DOWNLOAD_COUNT_MIN_BYTES = 1024
 
 
+def _validate_share_upload_fields(
+    file_name: str, encrypted_file_key: str, key_iv: str, chunk_iv: str
+) -> tuple[str, str, str, str]:
+    try:
+        safe_name = sanitize_filename(file_name).name
+        return (
+            safe_name,
+            validate_base64(encrypted_file_key),
+            validate_base64(key_iv),
+            validate_base64(chunk_iv),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+def _check_creator_quota(creator, encrypted_size: int) -> None:
+    if creator and creator["disk_quota"] is not None:
+        if creator["disk_used"] + encrypted_size > creator["disk_quota"]:
+            raise HTTPException(status_code=413, detail="Share creator's disk quota exceeded")
+
+
+async def _bg_delete_blob(file_id: str, storage_key: str) -> None:
+    try:
+        async with db_session() as _db:
+            await storage.get_manager().delete_blob(_db, file_id, storage_key)
+    except Exception:
+        pass
+
+
 @router.post("/s/{share_id}/upload", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 413: {"description": "413"}, 422: {"description": "Unprocessable Entity"}, 429: {"description": "Too Many Requests"}})
 async def upload_to_share(
     share_id: str,
@@ -1445,14 +1479,9 @@ async def upload_to_share(
     if not share["target_folder_id"]:
         raise HTTPException(status_code=400, detail="Share has no target folder")
 
-    # Validate form fields
-    try:
-        safe_name = sanitize_filename(file_name).name
-        encrypted_file_key = validate_base64(encrypted_file_key)
-        key_iv = validate_base64(key_iv)
-        chunk_iv = validate_base64(chunk_iv)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+    safe_name, encrypted_file_key, key_iv, chunk_iv = _validate_share_upload_fields(
+        file_name, encrypted_file_key, key_iv, chunk_iv
+    )
 
     if size_bytes < 0:
         raise HTTPException(status_code=422, detail="Invalid size_bytes")
@@ -1515,10 +1544,7 @@ async def upload_to_share(
             "SELECT disk_quota, disk_used FROM users WHERE id = ?",
             (share["created_by"],),
         )
-        creator = await cursor.fetchone()
-        if creator and creator["disk_quota"] is not None:
-            if creator["disk_used"] + encrypted_size > creator["disk_quota"]:
-                raise HTTPException(status_code=413, detail="Share creator's disk quota exceeded")
+        _check_creator_quota(await cursor.fetchone(), encrypted_size)
 
         await db.execute(
             "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
@@ -1552,13 +1578,7 @@ async def upload_to_share(
         await db.commit()
     except Exception:
         await db.rollback()
-        async def _bg_delete(fid: str, key: str) -> None:
-            try:
-                async with db_session() as _db:
-                    await storage.get_manager().delete_blob(_db, fid, key)
-            except Exception:
-                pass
-        _t = asyncio.create_task(_bg_delete(file_id, storage_key))
+        _t = asyncio.create_task(_bg_delete_blob(file_id, storage_key))
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
         raise

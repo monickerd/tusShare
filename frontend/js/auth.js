@@ -53,6 +53,14 @@ const Auth = (() => {
     // forward on every successful restore so the window stays open during an
     // active session (e.g. long-running uploads). sessionStorage is cleared when
     // the tab closes, and we clear it explicitly on logout.
+    //
+    // Security trade-off (T1-H1): storing the master key in sessionStorage means
+    // an XSS vulnerability with an active session yields immediate full key
+    // compromise. This is an accepted trade-off: the OPFS download pipeline
+    // requires access to raw key bytes during the session, and WebAuthn PRF
+    // binding (which would eliminate the sessionStorage exposure) is deferred.
+    // Mitigations in place: strict CSP, all innerHTML paths removed, SRI on all
+    // scripts, sessionStorage scoped to tab lifetime.
     // ------------------------------------------------------------------
 
     async function _saveSessionKeyData(key, salt) {

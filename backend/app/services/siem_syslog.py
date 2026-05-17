@@ -121,7 +121,12 @@ def _syslog_pri(facility: int, severity: str) -> int:
 
 
 def _format_rfc5424(dest: dict, event: SecurityEvent) -> bytes:
-    """RFC 5424 structured syslog message."""
+    """RFC 5424 structured syslog message.
+
+    user_agent is intentionally omitted from all three syslog formats (RFC 5424,
+    CEF, LEEF). Events arriving via the bus carry user_agent=None, and including
+    it would require sanitising control characters to prevent syslog injection.
+    """
     pri = _syslog_pri(dest.get("facility", 16), event.severity)
     ts = event.timestamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     hostname = "-"

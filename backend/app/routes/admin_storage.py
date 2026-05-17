@@ -137,7 +137,7 @@ async def list_volumes(
     return [dict(row) for row in rows]
 
 
-@router.post("/volumes", dependencies=[Depends(require_step_up(_STEPUP))], responses={409: {"description": "Conflict"}})
+@router.post("/volumes", dependencies=[Depends(require_step_up(_STEPUP))], responses={409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
 async def create_volume(
     body: VolumeCreateModel,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -203,7 +203,7 @@ async def get_volume(
     return result
 
 
-@router.put("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}})
+@router.put("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
 async def update_volume(
     volume_id: str,
     body: VolumeCreateModel,
