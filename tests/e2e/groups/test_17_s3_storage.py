@@ -521,8 +521,12 @@ async def test_17_17_migrated_file_still_downloadable(s3_env):
     if "migration_done" not in _state:
         pytest.skip("17-16 did not confirm migration — skipping")
 
-    client = ApiClient.from_session(s3_env["admin_session"])
-    r = await client.get(f"/files/{_state['migration_file_id']}/content")
+    # Refresh the admin session to ensure the access token hasn't expired — group 17
+    # includes two app restarts and several slow operations that can push past the
+    # 5-minute access-token TTL.  The admin_client holds the refresh token cookie.
+    admin = s3_env["admin_client"]
+    await admin.refresh_session()
+    r = await admin.get(f"/files/{_state['migration_file_id']}/content")
     assert r.status_code == 200, (
         f"Expected 200 downloading migrated file from warm S3 bucket, "
         f"got {r.status_code}: {r.text[:200]}"

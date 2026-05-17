@@ -51,6 +51,14 @@ class AdminClient:
         """Build from a helpers.auth.UserSession."""
         return cls(session.cookies)
 
+    async def refresh_session(self) -> None:
+        """Call /auth/refresh to rotate the refresh token and obtain a fresh access token."""
+        r = await self._client.post(f"{API}/auth/refresh")
+        r.raise_for_status()
+
+    async def get(self, path: str, **kwargs: Any) -> httpx.Response:
+        return await self._client.get(f"{API}{path}", **kwargs)
+
     async def aclose(self) -> None:
         await self._client.aclose()
 

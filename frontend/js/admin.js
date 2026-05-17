@@ -173,14 +173,16 @@ const Admin = (() => {
     // Entry point
     // ------------------------------------------------------------------
 
+    function _sectionVisibleForFlags(id, flags) {
+        const req = _SECTION_FLAGS[id];
+        return !req || req.some(f => flags[f] === '1');
+    }
+
     function _filterTabsByFlags(tabs, flags) {
         return tabs
             .map(tab => ({
                 ...tab,
-                sections: tab.sections.filter(([id]) => {
-                    const req = _SECTION_FLAGS[id];
-                    return !req || req.some(f => flags[f] === '1');
-                }),
+                sections: tab.sections.filter(([id]) => _sectionVisibleForFlags(id, flags)),
             }))
             .filter(tab => tab.sections.length > 0);
     }
