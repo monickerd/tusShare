@@ -298,10 +298,11 @@ async def _get_items_with_files(
         cursor = await db.execute(
             """
             WITH RECURSIVE folder_tree AS (
-                SELECT id FROM folders WHERE id = ?
+                SELECT id, name, name AS rel_path
+                FROM folders WHERE id = ?
                 UNION ALL
-                SELECT f2.id FROM folders f2
-                JOIN folder_tree ft ON f2.parent_id = ft.id
+                SELECT f2.id, f2.name, ft.rel_path || '/' || f2.name
+                FROM folders f2 JOIN folder_tree ft ON f2.parent_id = ft.id
             )
             SELECT si.id          AS item_id,
                    'file'         AS resource_type,
@@ -315,15 +316,15 @@ async def _get_items_with_files(
                    f.mime_type,
                    f.total_chunks,
                    f.folder_id,
-                   fol.name       AS folder_name
+                   ft.name        AS folder_name,
+                   ft.rel_path    AS folder_path
             FROM files f
             JOIN share_items si
                 ON si.share_id = ?
                AND si.resource_type = 'file'
                AND si.resource_id = f.id
-            LEFT JOIN folders fol ON fol.id = f.folder_id
-            WHERE f.folder_id IN (SELECT id FROM folder_tree)
-              AND f.upload_complete = 1
+            JOIN folder_tree ft ON ft.id = f.folder_id
+            WHERE f.upload_complete = 1
               AND f.deleted_at IS NULL
             """,
             (folder_id, share_id),
@@ -343,7 +344,8 @@ async def _get_items_with_files(
                    f.mime_type,
                    f.total_chunks,
                    f.folder_id,
-                   fol.name       AS folder_name
+                   fol.name       AS folder_name,
+                   fol.name       AS folder_path
             FROM share_items si
             JOIN files f
                 ON si.resource_type = 'file'
@@ -371,6 +373,7 @@ async def _get_items_with_files(
             "total_chunks": r["total_chunks"],
             "folder_id": r["folder_id"],
             "folder_name": r["folder_name"],
+            "folder_path": r["folder_path"],
         }
         for r in rows
     ]

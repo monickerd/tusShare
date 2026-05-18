@@ -854,5 +854,5 @@ const Download = (() => {
         _saveBlob(_buildZip(zipEntries), zipName);
     }
 
-    return { downloadFile, downloadBatch, listPartialDownloads, clearPartialDownload };
+    return { downloadFile, downloadBatch, listPartialDownloads, clearPartialDownload, buildZip: _buildZip, saveBlob: _saveBlob };
 })();

@@ -157,84 +157,60 @@ const Shares = (() => {
      * @param {function}    onProgress    - Called with (chunksDecrypted, totalChunks).
      * @param {string|null} sessionToken  - share_session_token for unauthenticated access.
      */
-    async function _downloadSharedFile(token, fileInfo, shareKey, onProgress, sessionToken = null) {
-        // 1. Decrypt file key using shareKey
+    async function _decryptSharedFileToBytes(token, fileInfo, shareKey, onProgress, sessionToken = null) {
         const fileKey = await Crypto.unwrapFileKeyFromShare(
-            fileInfo.encrypted_file_key,
-            fileInfo.key_iv,
-            shareKey,
+            fileInfo.encrypted_file_key, fileInfo.key_iv, shareKey,
         );
-
-        // 2. Fetch chunk manifest
         const manifest = await _fetchSharedManifest(token, fileInfo.resource_id, sessionToken);
 
         if (manifest.chunks.length !== manifest.total_chunks) {
-            throw new Error(
-                `Manifest incomplete: expected ${manifest.total_chunks} chunks, ` +
-                `got ${manifest.chunks.length}`
-            );
+            throw new Error(`Manifest incomplete: expected ${manifest.total_chunks} chunks, got ${manifest.chunks.length}`);
         }
 
-        // 3. Fetch + decrypt each chunk
         const totalChunks = manifest.chunks.length;
         const decryptedChunks = [];
         let totalBytes = 0;
 
         for (let i = 0; i < totalChunks; i++) {
             const chunk = manifest.chunks[i];
-            const rangeStart = chunk.offset;
-            const rangeEnd   = chunk.offset + chunk.size_bytes - 1;
-
-            const chunkHeaders = { Range: `bytes=${rangeStart}-${rangeEnd}` };
-            if (sessionToken) chunkHeaders['Authorization'] = `Bearer ${sessionToken}`;
+            const headers = { Range: `bytes=${chunk.offset}-${chunk.offset + chunk.size_bytes - 1}` };
+            if (sessionToken) headers['Authorization'] = `Bearer ${sessionToken}`;
             const resp = await fetch(`/s/${token}/files/${fileInfo.resource_id}/content`, {
-                headers: chunkHeaders,
-                credentials: 'same-origin',
+                headers, credentials: 'same-origin',
             });
-
-            if (resp.status === 410) {
-                throw new Error('Download limit reached — this share is no longer available.');
-            }
+            if (resp.status === 410) throw new Error('Download limit reached — this share is no longer available.');
             if (!resp.ok) {
                 const body = await resp.json().catch(() => ({}));
                 throw new Error(body.detail || `Failed to fetch chunk ${i + 1}: HTTP ${resp.status}`);
             }
-
             const ciphertext = await resp.arrayBuffer();
-
             let plaintext;
             try {
                 plaintext = await Crypto.decryptChunk(ciphertext, chunk.iv, fileKey);
             } catch {
-                throw new Error(
-                    `Chunk ${i + 1}/${totalChunks} failed integrity check — ` +
-                    `data may be corrupted (offset ${rangeStart})`
-                );
+                throw new Error(`Chunk ${i + 1}/${totalChunks} failed integrity check (offset ${chunk.offset})`);
             }
-
             decryptedChunks.push(plaintext);
             totalBytes += plaintext.byteLength;
-
             if (onProgress) onProgress(i + 1, totalChunks);
         }
 
-        // 4. Post-decryption size check
         if (manifest.size_bytes > 0 && totalBytes !== manifest.size_bytes) {
-            throw new Error(
-                `Size mismatch after decryption: expected ${manifest.size_bytes} bytes, ` +
-                `got ${totalBytes} bytes`
-            );
+            throw new Error(`Size mismatch: expected ${manifest.size_bytes}, got ${totalBytes}`);
         }
 
-        // 5. Assemble and save
-        const blob = new Blob(decryptedChunks.map(ab => new Uint8Array(ab)));
-        const url  = URL.createObjectURL(blob);
+        const buf = new Uint8Array(totalBytes);
+        let off = 0;
+        for (const ab of decryptedChunks) { buf.set(new Uint8Array(ab), off); off += ab.byteLength; }
+        return buf;
+    }
+
+    async function _downloadSharedFile(token, fileInfo, shareKey, onProgress, sessionToken = null) {
+        const data = await _decryptSharedFileToBytes(token, fileInfo, shareKey, onProgress, sessionToken);
+        const url  = URL.createObjectURL(new Blob([data]));
         const a    = document.createElement('a');
-        a.href     = url;
-        a.download = fileInfo.file_name || 'download';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+        a.href = url; a.download = fileInfo.file_name || 'download';
+        document.body.appendChild(a); a.click(); a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 10000);
     }
 
@@ -743,7 +719,10 @@ const Shares = (() => {
             });
             const arrow = Utils.el('span', { textContent: '▼', style: 'font-size:10px' });
             folderHeader.appendChild(arrow);
-            folderHeader.appendChild(Utils.el('span', { textContent: `📁 ${folderName} (${files.length})`, style: 'flex:1' }));
+            folderHeader.appendChild(Utils.el('span', { className: 'share-folder-label', style: 'flex:1;display:flex;align-items:center;gap:6px' }, [
+                Utils.el('span', { className: 'folder-link', style: 'text-decoration:underline', textContent: folderName }),
+                Utils.el('span', { className: 'text-muted', textContent: `– ${files.length} file${files.length === 1 ? '' : 's'}` }),
+            ]));
             if (canRemove) {
                 const folderId = files[0]?.folder_id;
                 const removeFolderBtn = Utils.el('button', {
@@ -1044,39 +1023,11 @@ const Shares = (() => {
         }
         if (meta.children.length > 0) page.appendChild(meta);
 
-        if (!shareData.files || shareData.files.length === 0) {
+        const files = shareData.files || [];
+        if (files.length === 0) {
             page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No files in this share.' }));
         } else {
-            // File list with per-file download buttons
-            const table = Utils.el('table', { className: 'file-table' }, [
-                Utils.el('thead', {}, [
-                    Utils.el('tr', {}, [
-                        Utils.el('th', { textContent: 'File' }),
-                        Utils.el('th', { textContent: 'Size' }),
-                        Utils.el('th', { textContent: '' }),
-                    ]),
-                ]),
-            ]);
-            const tbody = Utils.el('tbody');
-
-            for (const fileInfo of shareData.files) {
-                const row = Utils.el('tr');
-                row.appendChild(Utils.el('td', { textContent: fileInfo.file_name || fileInfo.resource_id }));
-                row.appendChild(Utils.el('td', { textContent: Utils.formatBytes(fileInfo.size_bytes) }));
-
-                const dlBtn = Utils.el('button', {
-                    className: 'btn btn-primary btn-sm',
-                    textContent: 'Download',
-                });
-                dlBtn.addEventListener('click', () =>
-                    _handlePublicDownload(dlBtn, token, fileInfo, shareKey, shareSessionToken)
-                );
-                row.appendChild(Utils.el('td', {}, [dlBtn]));
-                tbody.appendChild(row);
-            }
-
-            table.appendChild(tbody);
-            page.appendChild(table);
+            page.appendChild(_buildPublicFileTree(files, token, shareKey, shareSessionToken));
         }
 
         // Upload section — shown when the share owner enabled upload
@@ -1084,6 +1035,139 @@ const Shares = (() => {
             page.appendChild(_buildPublicUploadSection(
                 shareData.share_id, shareKey, shareSessionToken
             ));
+        }
+    }
+
+    /**
+     * Build the folder-structured file tree for a public share page.
+     * Groups files by folder_path, adds per-file and per-folder Download buttons,
+     * and a top-level "Download All as ZIP" button that preserves folder structure.
+     */
+    function _buildPublicFileTree(files, token, shareKey, sessionToken) {
+        const wrap = Utils.el('div', { className: 'public-share-tree' });
+
+        // Group by folder_path (relative path from share root, e.g. "Root/Sub/Sub2")
+        const byPath = new Map();
+        for (const f of files) {
+            const p = f.folder_path || f.folder_name || '';
+            if (!byPath.has(p)) byPath.set(p, []);
+            byPath.get(p).push(f);
+        }
+
+        const totalSize = files.reduce((s, f) => s + (f.size_bytes || 0), 0);
+
+        // "Download All as ZIP" header bar
+        const headerBar = Utils.el('div', { className: 'public-share-header-bar' });
+        headerBar.appendChild(Utils.el('span', {
+            className: 'text-muted',
+            textContent: `${files.length} file${files.length === 1 ? '' : 's'} · ${Utils.formatBytes(totalSize)}`,
+        }));
+
+        const dlAllBtn = Utils.el('button', { className: 'btn btn-primary', textContent: 'Download All as ZIP' });
+        const dlAllProgress = Utils.el('span', { className: 'text-muted', style: 'margin-left:8px;display:none' });
+        dlAllBtn.addEventListener('click', () =>
+            _downloadPublicZip(files, token, shareKey, sessionToken, dlAllBtn, dlAllProgress, 'shared_files')
+        );
+        headerBar.appendChild(dlAllBtn);
+        headerBar.appendChild(dlAllProgress);
+        wrap.appendChild(headerBar);
+
+        // Folder groups
+        const sortedPaths = [...byPath.keys()].sort();
+        for (const folderPath of sortedPaths) {
+            const folderFiles = byPath.get(folderPath);
+            const folderSize = folderFiles.reduce((s, f) => s + (f.size_bytes || 0), 0);
+            const displayName = folderPath || 'Files';
+
+            const groupEl = Utils.el('div', { className: 'public-share-folder-group' });
+
+            // Folder header row
+            const folderHeader = Utils.el('div', { className: 'public-share-folder-header' });
+            const arrow = Utils.el('span', { className: 'public-share-arrow', textContent: '▼' });
+            folderHeader.appendChild(arrow);
+
+            const nameSpan = Utils.el('span', { className: 'public-share-folder-name', textContent: displayName });
+            folderHeader.appendChild(nameSpan);
+
+            folderHeader.appendChild(Utils.el('span', {
+                className: 'text-muted public-share-folder-meta',
+                textContent: `${folderFiles.length} file${folderFiles.length === 1 ? '' : 's'} · ${Utils.formatBytes(folderSize)}`,
+            }));
+
+            const dlFolderBtn = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Download Folder' });
+            const dlFolderProgress = Utils.el('span', { className: 'text-muted', style: 'margin-left:6px;display:none' });
+            const folderZipName = displayName.replace(/\//g, '_');
+            dlFolderBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                _downloadPublicZip(folderFiles, token, shareKey, sessionToken, dlFolderBtn, dlFolderProgress, folderZipName);
+            });
+            folderHeader.appendChild(dlFolderBtn);
+            folderHeader.appendChild(dlFolderProgress);
+            groupEl.appendChild(folderHeader);
+
+            // File table
+            const table = Utils.el('table', { className: 'file-table public-share-file-table' });
+            const tbody = Utils.el('tbody');
+            for (const fileInfo of folderFiles) {
+                const row = Utils.el('tr');
+                row.appendChild(Utils.el('td', { textContent: fileInfo.file_name || fileInfo.resource_id }));
+                row.appendChild(Utils.el('td', { className: 'text-muted', textContent: Utils.formatBytes(fileInfo.size_bytes) }));
+
+                const dlBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Download' });
+                dlBtn.addEventListener('click', () => _handlePublicDownload(dlBtn, token, fileInfo, shareKey, sessionToken));
+                row.appendChild(Utils.el('td', { style: 'text-align:right' }, [dlBtn]));
+                tbody.appendChild(row);
+            }
+            table.appendChild(tbody);
+            groupEl.appendChild(table);
+
+            // Collapse toggle on folder header
+            folderHeader.style.cursor = 'pointer';
+            folderHeader.addEventListener('click', () => {
+                const hidden = table.style.display === 'none';
+                table.style.display = hidden ? '' : 'none';
+                arrow.textContent = hidden ? '▼' : '▶';
+            });
+
+            wrap.appendChild(groupEl);
+        }
+
+        return wrap;
+    }
+
+    async function _downloadPublicZip(files, token, shareKey, sessionToken, btn, progressEl, baseName) {
+        btn.disabled = true;
+        const orig = btn.textContent;
+        progressEl.style.display = '';
+        const zipEntries = [];
+        let done = 0;
+
+        try {
+            for (const fileInfo of files) {
+                progressEl.textContent = `Decrypting ${done + 1}/${files.length}…`;
+                const totalChunks = fileInfo.total_chunks || 1;
+                const data = await _decryptSharedFileToBytes(token, fileInfo, shareKey,
+                    (c, t) => { progressEl.textContent = `File ${done + 1}/${files.length}: chunk ${c}/${t}`; },
+                    sessionToken,
+                );
+                const pathInZip = fileInfo.folder_path
+                    ? `${fileInfo.folder_path}/${fileInfo.file_name}`
+                    : (fileInfo.file_name || fileInfo.resource_id);
+                zipEntries.push({ path: pathInZip, data });
+                done++;
+            }
+            progressEl.textContent = 'Building ZIP…';
+            const ts = new Date().toISOString().slice(0, 16).replace('T', '-').replace(':', '-');
+            const zipBlob = Download.buildZip(zipEntries);
+            Download.saveBlob(zipBlob, `${baseName}_${ts}.zip`);
+            progressEl.textContent = 'Done';
+        } catch (err) {
+            progressEl.textContent = `Failed: ${err.message}`;
+            Utils.showToast(`ZIP download failed: ${err.message}`, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = orig;
+            setTimeout(() => { progressEl.style.display = 'none'; }, 5000);
         }
     }
 
@@ -1654,7 +1738,10 @@ const Shares = (() => {
             const folderHeader = Utils.el('div', {
                 className: 'share-file-folder-header',
                 style: 'cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 0;font-weight:600',
-            }, [arrow, Utils.el('span', { textContent: `📁 ${folderName} (${files.length})` })]);
+            }, [arrow, Utils.el('span', { className: 'share-folder-label', style: 'display:flex;align-items:center;gap:6px' }, [
+                Utils.el('span', { className: 'folder-link', style: 'text-decoration:underline', textContent: folderName }),
+                Utils.el('span', { className: 'text-muted', textContent: `– ${files.length} file${files.length === 1 ? '' : 's'}` }),
+            ])]);
             groupEl.appendChild(folderHeader);
 
             const fileList = Utils.el('ul', { className: 'share-file-sublist', style: 'list-style:none;padding:0 0 0 18px;margin:0' });
