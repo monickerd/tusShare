@@ -34,7 +34,7 @@ from app.validation.sanitizers import (
     validate_uuid,
 )
 from app.config import settings
-from app.routes._access import check_data_permission, is_in_shared_tree, is_team_folder_member, _team_level_for_user
+from app.routes._access import check_data_permission, get_folder_team_id, is_in_shared_tree, is_team_folder_member, _team_level_for_user
 from app.conf.teams import TEAM_ROLE_SUPERVISOR, TEAM_ROLE_OWNER
 from app.util.http import content_disposition, parse_range_header
 from app.util.db import get_admin_setting
@@ -248,15 +248,6 @@ async def _get_share_for_manage(db, share_id: str, user: AuthenticatedUser):
     return row
 
 
-async def _get_folder_team_id(db, folder_id: str) -> str | None:
-    """Return the team_id if folder_id is a team folder root, else None."""
-    if not folder_id:
-        return None
-    cursor = await db.execute("SELECT team_id FROM team_folders WHERE folder_id = ?", (folder_id,))
-    row = await cursor.fetchone()
-    return row["team_id"] if row else None
-
-
 async def _can_manage_share(db, share: dict, user: AuthenticatedUser) -> bool:
     """True if user may update or delete this share.
 
@@ -316,12 +307,15 @@ async def _get_items_with_files(
                    f.original_name,
                    f.size_bytes,
                    f.mime_type,
-                   f.total_chunks
+                   f.total_chunks,
+                   f.folder_id,
+                   fol.name       AS folder_name
             FROM files f
             JOIN share_items si
                 ON si.share_id = ?
                AND si.resource_type = 'file'
                AND si.resource_id = f.id
+            LEFT JOIN folders fol ON fol.id = f.folder_id
             WHERE f.folder_id = ?
               AND f.upload_complete = 1
               AND f.deleted_at IS NULL
@@ -341,12 +335,16 @@ async def _get_items_with_files(
                    f.original_name,
                    f.size_bytes,
                    f.mime_type,
-                   f.total_chunks
+                   f.total_chunks,
+                   f.folder_id,
+                   fol.name       AS folder_name
             FROM share_items si
             JOIN files f
                 ON si.resource_type = 'file'
                AND si.resource_id = f.id
                AND f.upload_complete = 1
+               AND f.deleted_at IS NULL
+            LEFT JOIN folders fol ON fol.id = f.folder_id
             WHERE si.share_id = ?
             """,
             (share_id,),
@@ -365,6 +363,8 @@ async def _get_items_with_files(
             "size_bytes": r["size_bytes"],
             "mime_type": r["mime_type"],
             "total_chunks": r["total_chunks"],
+            "folder_id": r["folder_id"],
+            "folder_name": r["folder_name"],
         }
         for r in rows
     ]
@@ -592,7 +592,14 @@ async def list_shares(
 ):
     """List all active and inactive shares created by the current user."""
     cursor = await db.execute(
-        "SELECT * FROM shares WHERE created_by = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        """
+        SELECT s.*, fol.name AS folder_name
+        FROM shares s
+        LEFT JOIN folders fol ON fol.id = s.target_folder_id
+        WHERE s.created_by = ?
+        ORDER BY s.created_at DESC
+        LIMIT ? OFFSET ?
+        """,
         (user.id, limit, offset),
     )
     shares = await cursor.fetchall()
@@ -623,6 +630,7 @@ async def list_shares(
             "download_count": s["download_count"],
             "allow_upload": bool(s["allow_upload"]),
             "target_folder_id": s["target_folder_id"],
+            "folder_name": s["folder_name"],
             "created_at": s["created_at"],
             "items": items,
             "short_links": short_links,
@@ -684,12 +692,15 @@ async def _resolve_upload_folder(
         return None, False, 0
     if not body.target_folder_id:
         raise HTTPException(status_code=400, detail="target_folder_id is required when allow_upload is true")
-    cursor = await db.execute(
-        "SELECT id FROM folders WHERE id = ? AND owner_id = ?",
-        (body.target_folder_id, user.id),
-    )
-    if await cursor.fetchone() is None:
+    cursor = await db.execute("SELECT owner_id FROM folders WHERE id = ?", (body.target_folder_id,))
+    folder_row = await cursor.fetchone()
+    if folder_row is None:
         raise HTTPException(status_code=404, detail="Target folder not found")
+    if not user.is_admin and folder_row["owner_id"] != user.id:
+        team_id = await get_folder_team_id(db, body.target_folder_id)
+        level = await _team_level_for_user(db, team_id, user.id) if team_id else None
+        if level not in ("admin", "write"):
+            raise HTTPException(status_code=404, detail="Target folder not found")
 
     # Compute available quota for this creator
     cursor = await db.execute(
@@ -1122,6 +1133,37 @@ async def add_share_items(
         )
     await db.commit()
     return {"added": len(body.items)}
+
+
+@router.delete("/api/v1/shares/{share_id}/items/{resource_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def remove_share_item(
+    share_id: str,
+    resource_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Remove a single file from an explicit (non-folder) share.
+
+    Only allowed when the requester can manage the share.  Folder shares
+    (target_folder_id set) are not affected — to stop sharing a folder share,
+    delete the share entirely via DELETE /shares/{id}.
+    """
+    share_id   = validate_uuid(share_id)
+    resource_id = validate_uuid(resource_id)
+    await _get_share_for_manage(db, share_id, user)
+
+    result = await db.execute(
+        "DELETE FROM share_items WHERE share_id = ? AND resource_type = 'file' AND resource_id = ?",
+        (share_id, resource_id),
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Item not found in share")
+    await db.execute(
+        "DELETE FROM pending_share_keying WHERE share_id = ? AND file_id = ?",
+        (share_id, resource_id),
+    )
+    await db.commit()
+    return {"removed": True}
 
 
 @router.post("/api/v1/shares/{share_id}/short-link", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 503: {"description": "503"}})

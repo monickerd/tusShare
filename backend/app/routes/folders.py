@@ -10,7 +10,7 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, DuplicateError, get_db
 from app.middleware.rate_limit import check_management_write_rate_limit
 from app.models.file import File, Folder
-from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
+from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member, _team_level_for_user
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus, sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
@@ -322,7 +322,10 @@ async def list_folder_files_recursive(
         raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
     if folder_row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        team_id = await get_folder_team_id(db, folder_id)
+        level   = await _team_level_for_user(db, team_id, user.id) if team_id else None
+        if level not in ("admin", "write"):
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # Recursive CTE shared by both the count and data queries.
     # Scoped to owner_id so we never traverse folders owned by other users

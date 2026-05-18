@@ -1149,21 +1149,22 @@ const App = (() => {
 
         const nav = Utils.el('nav', { className: 'sidebar-nav' }, [
             Utils.el('a', { href: '#/files', className: 'sidebar-link', id: 'nav-files', textContent: 'My Files' }),
+
+            Utils.el('div', { className: 'sidebar-section-label', textContent: 'Teams' }),
             Utils.el('div', { className: 'sidebar-submenu' }, [
-                Utils.el('a', { href: '#/shares', className: 'sidebar-link sidebar-sublink', id: 'nav-shares', textContent: 'Shared From Me' }),
+                Utils.el('a', { href: '#/team-folders', className: 'sidebar-link sidebar-sublink', id: 'nav-team-folders', textContent: 'Team Folders' }),
+                Utils.el('a', { href: '#/teams',        className: 'sidebar-link sidebar-sublink', id: 'nav-teams',        textContent: 'Manage Teams' }),
             ]),
 
             Utils.el('div', { className: 'sidebar-section-label', textContent: 'Shared' }),
             Utils.el('div', { className: 'sidebar-submenu' }, [
-                Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', textContent: 'Shared With Me' }),
-                Utils.el('a', { href: '#/team-folders',    className: 'sidebar-link sidebar-sublink', id: 'nav-team-folders', textContent: 'Team Folders' }),
+                Utils.el('a', { href: '#/shares',          className: 'sidebar-link sidebar-sublink', id: 'nav-shares',   textContent: 'Shared From Me' }),
+                Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', textContent: 'Shared To Me' }),
             ]),
-
-            Utils.el('a', { href: '#/teams', className: 'sidebar-link', id: 'nav-teams', textContent: 'Manage Teams' }),
         ]);
         if (user?.is_admin) {
             nav.appendChild(Utils.el('a', {
-                href: '#/admin', className: 'sidebar-link sidebar-admin', id: 'nav-admin', textContent: 'Admin',
+                href: '#/admin', className: 'sidebar-link sidebar-admin', id: 'nav-admin', textContent: 'Admin Dashboard',
             }));
         }
 

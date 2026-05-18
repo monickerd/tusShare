@@ -539,14 +539,15 @@ const Shares = (() => {
         container.appendChild(page);
 
         try {
+            const masterKey = Auth.getMasterKeyObj();
             const data = await Api.get(`${_prefix()}/shares`);
-            _renderSharesList(listEl, data.shares);
+            _renderSharesList(listEl, data.shares, masterKey);
         } catch (err) {
             listEl.textContent = `Failed to load shares: ${err.message}`;
         }
     }
 
-    function _renderSharesList(container, shares) {
+    function _renderSharesList(container, shares, masterKey) {
         _clearEl(container);
 
         if (shares.length === 0) {
@@ -558,17 +559,271 @@ const Shares = (() => {
         }
 
         for (const share of shares) {
-            container.appendChild(_createShareCard(share));
+            container.appendChild(_createShareCard(share, masterKey));
         }
     }
 
-    function _buildShareCardHeader(share) {
-        const header = Utils.el('div', { className: 'share-card-header' });
+    /**
+     * Build and show the unified share detail modal for a single share (Shared From Me).
+     *
+     * @param {object} share     - Share object from GET /api/v1/shares (includes items with folder_id/folder_name)
+     * @param {object} masterKey - Owner's CryptoKey, for HKDF share URL re-derivation
+     * @param {HTMLElement} [cardEl] - Optional card element to remove on delete
+     */
+    async function openSingleShareDetailModal(share, masterKey, cardEl) {
+        const overlay = Utils.el('div', { className: 'modal-overlay' });
+        overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+
+        const dialog = Utils.el('div', { className: 'modal share-detail-modal' });
+
+        // Title: folder name link or "N files"
         const fileCount = (share.items || []).length;
-        header.appendChild(Utils.el('span', {
-            className: 'share-card-title',
+        let titleEl;
+        if (share.target_folder_id && share.folder_name) {
+            titleEl = Utils.el('h3', {}, [
+                Utils.el('a', {
+                    href: `#/files/${share.target_folder_id}`,
+                    textContent: share.folder_name,
+                    className: 'folder-link',
+                    onClick: () => overlay.remove(),
+                }),
+            ]);
+        } else {
+            titleEl = Utils.el('h3', { textContent: `${fileCount} file${fileCount === 1 ? '' : 's'}` });
+        }
+        dialog.appendChild(titleEl);
+
+        // Meta: expiry, downloads
+        const metaEl = Utils.el('p', { className: 'share-entry-meta text-muted' });
+        const parts = [`Created ${Utils.formatDate(share.created_at)}`];
+        if (share.expires_at) {
+            const expired = new Date(share.expires_at) < new Date();
+            parts.push(expired ? 'Expired' : `Expires ${Utils.formatDate(share.expires_at)}`);
+        } else {
+            parts.push('No expiry');
+        }
+        if (share.max_downloads) parts.push(`${share.download_count}/${share.max_downloads} downloads`);
+        metaEl.textContent = parts.join(' · ');
+        dialog.appendChild(metaEl);
+
+        // URL row
+        const urlRow = Utils.el('div', { className: 'share-entry-url-row', style: 'margin-bottom:8px' });
+        const storedKey = _loadShareKey(share.id);
+        const keyB64 = storedKey || (share.key_type === 'hkdf-v1' && masterKey
+            ? await Crypto.deriveShareKey(masterKey, share.token).then(k => Crypto.exportKeyToBase64url(k)).catch(() => null)
+            : null);
+        if (keyB64) {
+            _appendUrlCopyPair(urlRow, _buildShareUrl(share.token, keyB64), 'Link copied');
+        } else {
+            urlRow.appendChild(Utils.el('span', { className: 'text-muted', textContent: 'Share URL available only in the original session. Re-create the share to get a new link.' }));
+        }
+        dialog.appendChild(urlRow);
+
+        // Short links
+        for (const sl of (share.short_links || [])) {
+            const slRow = Utils.el('div', { className: 'share-entry-shortlink-row', style: 'margin-bottom:8px' });
+            _appendUrlCopyPair(slRow, _buildShortLinkUrl(sl.slug), 'Short link copied');
+            dialog.appendChild(slRow);
+        }
+
+        // File list section
+        const isFileShare = !share.target_folder_id;
+        const fileSection = _buildShareFileListSection(share.items || [], share.id, isFileShare, (removedId) => {
+            // Remove from local items array and refresh count in title
+            share.items = (share.items || []).filter(it => it.resource_id !== removedId);
+            if (!share.target_folder_id) {
+                titleEl.textContent = `${share.items.length} file${share.items.length === 1 ? '' : 's'}`;
+            }
+        });
+        dialog.appendChild(fileSection);
+
+        // Action buttons
+        const actionsRow = Utils.el('div', { className: 'share-entry-actions', style: 'margin-top:12px' });
+
+        const updateExpiryBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Update expiry…',
+            onClick: () => _openUpdateExpiryDialog({ share_id: share.id, expires_at: share.expires_at }, dialog, overlay),
+        });
+        actionsRow.appendChild(updateExpiryBtn);
+
+        if (share.is_active && keyB64) {
+            const addSlBtn = Utils.el('button', {
+                className: 'btn btn-secondary btn-sm',
+                textContent: 'Add short link',
+                onClick: () => _promptCreateShortLink(share, keyB64, dialog),
+            });
+            actionsRow.appendChild(addSlBtn);
+        }
+
+        const deleteBtn = Utils.el('button', {
+            className: 'btn btn-danger btn-sm',
+            textContent: 'Delete share',
+            onClick: async () => {
+                if (!await Utils.showConfirm('Delete this share? Recipients will lose access immediately.')) return;
+                try {
+                    await Api.del(`${_prefix()}/shares/${share.id}`);
+                    _removeShareKey(share.id);
+                    overlay.remove();
+                    if (cardEl) cardEl.remove();
+                    Utils.showToast('Share deleted', 'success');
+                } catch (err) {
+                    Utils.showToast(`Delete failed: ${err.message}`, 'error');
+                }
+            },
+        });
+        actionsRow.appendChild(deleteBtn);
+
+        dialog.appendChild(actionsRow);
+
+        const closeBtn = Utils.el('button', {
+            className: 'btn btn-secondary',
+            textContent: 'Close',
+            onClick: () => overlay.remove(),
+        });
+        dialog.appendChild(Utils.el('div', { className: 'modal-actions', style: 'margin-top:8px' }, [closeBtn]));
+
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+    }
+
+    /**
+     * Build a scrollable file list section grouped by folder, with optional remove buttons.
+     *
+     * @param {Array}    items      - File items with file_name, size_bytes, folder_id, folder_name, resource_id
+     * @param {string}   shareId    - Share ID (for remove calls)
+     * @param {boolean}  canRemove  - Show Remove button per file
+     * @param {Function} onRemove   - Called with resource_id after successful removal
+     */
+    function _buildShareFileListSection(items, shareId, canRemove, onRemove) {
+        const section = Utils.el('div', { className: 'share-file-section' });
+
+        if (!items.length) {
+            section.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No files in this share.' }));
+            return section;
+        }
+
+        // Filter bar
+        const filterInput = Utils.el('input', {
+            type: 'text',
+            className: 'input-sm',
+            placeholder: 'Filter files…',
+            style: 'width:100%;margin-bottom:8px',
+        });
+        section.appendChild(filterInput);
+
+        // Group files by folder
+        const byFolder = new Map();
+        for (const item of items) {
+            const key  = item.folder_id  || '__root__';
+            const name = item.folder_name || '(root)';
+            if (!byFolder.has(key)) byFolder.set(key, { name, files: [] });
+            byFolder.get(key).files.push(item);
+        }
+
+        const listWrap = Utils.el('div', { className: 'share-file-list-wrap', style: 'max-height:300px;overflow-y:auto' });
+
+        for (const [, { name: folderName, files }] of byFolder) {
+            const groupEl = Utils.el('div', { className: 'share-file-group' });
+
+            // Folder header (collapsible)
+            const folderHeader = Utils.el('div', {
+                className: 'share-file-folder-header',
+                style: 'cursor:pointer;display:flex;align-items:center;gap:6px;padding:4px 0;font-weight:600',
+            });
+            const arrow = Utils.el('span', { textContent: '▼', style: 'font-size:10px' });
+            folderHeader.appendChild(arrow);
+            folderHeader.appendChild(Utils.el('span', { textContent: `📁 ${folderName} (${files.length})` }));
+            groupEl.appendChild(folderHeader);
+
+            const fileList = Utils.el('ul', { className: 'share-file-sublist', style: 'list-style:none;padding:0 0 0 18px;margin:0' });
+            for (const item of files) {
+                if (!item.file_name) continue;
+                const li = Utils.el('li', {
+                    className: 'share-file-item',
+                    style: 'display:flex;align-items:center;gap:6px;padding:3px 0',
+                    dataset: { name: item.file_name.toLowerCase() },
+                });
+                li.appendChild(Utils.el('span', {
+                    textContent: `${item.file_name} (${Utils.formatBytes(item.size_bytes)})`,
+                    style: 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
+                }));
+                if (canRemove) {
+                    const removeBtn = Utils.el('button', {
+                        className: 'btn btn-danger btn-xs',
+                        textContent: 'Remove',
+                    });
+                    removeBtn.addEventListener('click', async () => {
+                        if (!await Utils.showConfirm(`Remove "${item.file_name}" from this share?`)) return;
+                        try {
+                            await Api.del(`${_prefix()}/shares/${shareId}/items/${item.resource_id}`);
+                            li.remove();
+                            Utils.showToast(`"${item.file_name}" removed from share`, 'success');
+                            if (onRemove) onRemove(item.resource_id);
+                        } catch (err) {
+                            Utils.showToast(`Remove failed: ${err.message}`, 'error');
+                        }
+                    });
+                    li.appendChild(removeBtn);
+                }
+                fileList.appendChild(li);
+            }
+            groupEl.appendChild(fileList);
+
+            // Collapse toggle
+            folderHeader.addEventListener('click', () => {
+                const collapsed = fileList.style.display === 'none';
+                fileList.style.display = collapsed ? '' : 'none';
+                arrow.textContent = collapsed ? '▼' : '▶';
+            });
+
+            listWrap.appendChild(groupEl);
+        }
+
+        section.appendChild(listWrap);
+
+        // Filter wires to all file item rows
+        filterInput.addEventListener('input', () => {
+            const term = filterInput.value.toLowerCase();
+            for (const li of listWrap.querySelectorAll('.share-file-item')) {
+                const name = li.dataset.name || '';
+                li.style.display = !term || name.includes(term) ? '' : 'none';
+            }
+        });
+
+        return section;
+    }
+
+    function _createShareCard(share, masterKey) {
+        const card = Utils.el('div', {
+            className: 'share-card' + (share.is_active ? '' : ' share-inactive'),
+        });
+
+        // Header: folder name (link) or file count
+        const fileCount = (share.items || []).length;
+        const header = Utils.el('div', { className: 'share-card-header' });
+
+        let titleEl;
+        if (share.target_folder_id && share.folder_name) {
+            titleEl = Utils.el('a', {
+                href: `#/files/${share.target_folder_id}`,
+                className: 'share-card-title folder-link',
+                textContent: share.folder_name,
+            });
+        } else {
+            titleEl = Utils.el('span', { className: 'share-card-title', textContent: 'Files' });
+        }
+        header.appendChild(titleEl);
+
+        // File count as clickable link
+        const fileCountBtn = Utils.el('button', {
+            className: 'btn-link share-card-file-count',
             textContent: `${fileCount} file${fileCount === 1 ? '' : 's'}`,
-        }));
+            onClick: () => openSingleShareDetailModal(share, masterKey, card),
+        });
+        header.appendChild(fileCountBtn);
+
+        // Badges
         if (!share.is_active) {
             header.appendChild(Utils.el('span', { className: 'badge badge-muted', textContent: 'Inactive' }));
         }
@@ -576,7 +831,7 @@ const Shares = (() => {
             const expired = new Date(share.expires_at) < new Date();
             header.appendChild(Utils.el('span', {
                 className: 'badge ' + (expired ? 'badge-danger' : 'badge-info'),
-                textContent: expired ? 'Expired' : `Expires ${Utils.timeAgo(share.expires_at)}`,
+                textContent: expired ? 'Expired' : `Expires ${Utils.formatDate(share.expires_at)}`,
             }));
         }
         if (share.max_downloads) {
@@ -586,38 +841,21 @@ const Shares = (() => {
             }));
         }
         if (share.allow_upload) {
-            header.appendChild(Utils.el('span', {
-                className: 'badge badge-upload',
-                textContent: 'Upload enabled',
-            }));
+            header.appendChild(Utils.el('span', { className: 'badge badge-upload', textContent: 'Upload enabled' }));
         }
-        return header;
-    }
+        card.appendChild(header);
 
-    function _createShareCard(share) {
-        const card = Utils.el('div', {
-            className: 'share-card' + (share.is_active ? '' : ' share-inactive'),
-        });
-
-        card.appendChild(_buildShareCardHeader(share));
-
-        // File list
-        const fileList = Utils.el('ul', { className: 'share-file-list' });
-        for (const item of (share.items || [])) {
-            if (item.file_name) {
-                fileList.appendChild(Utils.el('li', {
-                    textContent: `${item.file_name} (${Utils.formatBytes(item.size_bytes)})`,
-                }));
-            }
-        }
-        if (fileList.children.length > 0) card.appendChild(fileList);
-
-        // Share URL (if shareKey available in sessionStorage)
+        // Share URL (if key available)
         const shareKeyB64url = _loadShareKey(share.id);
         if (shareKeyB64url) {
             const urlBox = Utils.el('div', { className: 'share-url-box' });
             _renderShareUrlBox(urlBox, _buildShareUrl(share.token, shareKeyB64url));
             card.appendChild(urlBox);
+        } else if (share.key_type === 'hkdf-v1') {
+            card.appendChild(Utils.el('p', {
+                className: 'text-muted share-key-gone',
+                textContent: 'HKDF share — URL re-derivable from "More Details".',
+            }));
         } else {
             card.appendChild(Utils.el('p', {
                 className: 'text-muted share-key-gone',
@@ -625,7 +863,7 @@ const Shares = (() => {
             }));
         }
 
-        // Short links (key stored server-side — URL has no fragment)
+        // Short links
         for (const sl of (share.short_links || [])) {
             const slBox = Utils.el('div', { className: 'share-url-box' });
             _renderShareUrlBox(slBox, _buildShortLinkUrl(sl.slug), sl.slug);
@@ -635,21 +873,18 @@ const Shares = (() => {
         // Action buttons
         const actions = Utils.el('div', { className: 'share-card-actions' });
 
-        if (share.is_active && shareKeyB64url) {
-            const addSlBtn = Utils.el('button', {
-                className: 'btn btn-secondary btn-sm',
-                textContent: 'Add short link',
-                onClick: () => _promptCreateShortLink(share, shareKeyB64url, card),
-            });
-            actions.appendChild(addSlBtn);
-        }
+        const detailsBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'More Details…',
+            onClick: () => openSingleShareDetailModal(share, masterKey, card),
+        });
+        actions.appendChild(detailsBtn);
 
         const deleteBtn = Utils.el('button', {
             className: 'btn btn-danger btn-sm',
             textContent: 'Delete',
             onClick: async () => {
-                const ok = await Utils.showConfirm('Delete this share? Recipients will lose access immediately.');
-                if (!ok) return;
+                if (!await Utils.showConfirm('Delete this share? Recipients will lose access immediately.')) return;
                 try {
                     await Api.del(`${_prefix()}/shares/${share.id}`);
                     _removeShareKey(share.id);
@@ -1285,7 +1520,7 @@ const Shares = (() => {
             const expired = new Date(share.expires_at) < new Date();
             header.appendChild(Utils.el('span', {
                 className: 'badge ' + (expired ? 'badge-danger' : 'badge-info'),
-                textContent: expired ? 'Expired' : `Expires ${Utils.timeAgo(share.expires_at)}`,
+                textContent: expired ? 'Expired' : `Expires ${Utils.formatDate(share.expires_at)}`,
             }));
         }
         card.appendChild(header);
@@ -1772,5 +2007,6 @@ const Shares = (() => {
         renderPublicSharePage,
         renderShortLinkPage,
         openFolderShareDetailModal,
+        openSingleShareDetailModal,
     };
 })();

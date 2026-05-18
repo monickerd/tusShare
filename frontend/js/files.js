@@ -463,26 +463,50 @@ const Files = (() => {
             });
         }
 
-        // "Load more" button if there are more files than the first page
+        // "Load more" / "Load all" buttons if there are more files than the first page
         if (files.length > _pageSize) {
             let shown = _pageSize;
+            const btnRow = Utils.el('div', { className: 'load-more-row' });
+
             const loadMore = Utils.el('button', {
-                className: 'btn btn-secondary btn-full',
+                className: 'btn btn-secondary',
                 textContent: `Show more (${files.length - shown} remaining)`,
-                onClick: () => {
-                    const nextBatch = files.slice(shown, shown + _pageSize);
-                    for (const file of nextBatch) {
-                        tbody.appendChild(_createFileRow(file));
-                    }
-                    shown += nextBatch.length;
-                    if (shown >= files.length) {
-                        loadMore.remove();
-                    } else {
-                        loadMore.textContent = `Show more (${files.length - shown} remaining)`;
-                    }
-                },
             });
-            container.appendChild(loadMore);
+            const loadAll = Utils.el('button', {
+                className: 'btn btn-secondary',
+                textContent: `Load all ${files.length} files`,
+            });
+
+            const updateButtons = () => {
+                if (shown >= files.length) {
+                    btnRow.remove();
+                } else {
+                    loadMore.textContent = `Show more (${files.length - shown} remaining)`;
+                    loadAll.textContent = `Load all ${files.length} files`;
+                }
+            };
+
+            loadMore.addEventListener('click', () => {
+                const nextBatch = files.slice(shown, shown + _pageSize);
+                for (const file of nextBatch) {
+                    tbody.appendChild(_createFileRow(file));
+                }
+                shown += nextBatch.length;
+                updateButtons();
+            });
+
+            loadAll.addEventListener('click', () => {
+                const rest = files.slice(shown);
+                for (const file of rest) {
+                    tbody.appendChild(_createFileRow(file));
+                }
+                shown = files.length;
+                updateButtons();
+            });
+
+            btnRow.appendChild(loadMore);
+            btnRow.appendChild(loadAll);
+            container.appendChild(btnRow);
         }
     }
 

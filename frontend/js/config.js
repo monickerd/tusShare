@@ -88,7 +88,7 @@ const Config = Object.freeze({
     ui: Object.freeze({
         toastFadeOutMs: 300,
         toastAutoHideMs: 5000,
-        paginationDefaultLimit: 20,
+        paginationDefaultLimit: 25,
         paginationMaxLimit: 100,
         fileNameMaxDisplay: 60,     // truncate long names in UI
     }),
