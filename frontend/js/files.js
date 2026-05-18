@@ -47,6 +47,14 @@ const Files = (() => {
 
     const _uploadSemaphore = _makeTransferSemaphore(Config.upload.maxConcurrent);
 
+    function _runTeamKeyBatch(batch, folderId) {
+        const teamKeys = _batchRegisterTeamFileKeys(batch)
+            .catch(err => console.warn('Batch team key registration failed', err));
+        const shareKeys = _fulfillPendingShareKeys(batch, folderId)
+            .catch(err => console.warn('Batch share key fulfillment failed', err));
+        return Promise.allSettled([teamKeys, shareKeys]);
+    }
+
     // Serialised time-based batcher for post-upload finishing work (team keys + share items).
     // When the first item lands after a quiet period, a timer fires after intervalMs and
     // flushes everything that has accumulated — uniform regardless of file size.  Flushes
@@ -57,12 +65,7 @@ const Files = (() => {
         let timer     = null;
 
         function _runBatch(batch) {
-            chain = chain.then(() => Promise.allSettled([
-                _batchRegisterTeamFileKeys(batch)
-                    .catch(err => console.warn('Batch team key registration failed', err)),
-                _fulfillPendingShareKeys(batch, folderId)
-                    .catch(err => console.warn('Batch share key fulfillment failed', err)),
-            ]));
+            chain = chain.then(() => _runTeamKeyBatch(batch, folderId));
         }
 
         return {
@@ -2007,7 +2010,7 @@ const Files = (() => {
             detailsBtn.addEventListener('click', async () => {
                 try {
                     const resp = await Api.get(`${Config.app.apiPrefix}/shares/${s.share_id}`);
-                    Shares.openSingleShareDetailModal(resp.share, masterKey, resp.share.can_manage);
+                    Shares.openSingleShareDetailModal(resp.share, masterKey, null, resp.share.can_manage);
                 } catch (err) {
                     Utils.showToast(`Could not load share details: ${err.message}`, 'error');
                 }

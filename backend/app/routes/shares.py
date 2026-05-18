@@ -694,6 +694,24 @@ async def _verify_share_items_access(db: Database, user: AuthenticatedUser, item
                 raise HTTPException(status_code=404, detail=f"File not found or access denied: {item.resource_id}")
 
 
+async def _compute_upload_budget(db: Database, user: AuthenticatedUser, body: "CreateShareRequest") -> int:
+    """Return the upload budget in bytes or raise 400."""
+    cursor = await db.execute("SELECT disk_quota, disk_used FROM users WHERE id = ?", (user.id,))
+    u = await cursor.fetchone()
+    available = (
+        max(0, u["disk_quota"] - u["disk_used"])
+        if (u and u["disk_quota"] is not None)
+        else _SHARE_UPLOAD_DEFAULT_BUDGET
+    )
+    requested = body.upload_max_bytes if body.upload_max_bytes is not None else _SHARE_UPLOAD_DEFAULT_BUDGET
+    if requested <= 0:
+        raise HTTPException(status_code=400, detail="upload_max_bytes must be positive")
+    budget = min(requested, available, _SHARE_UPLOAD_DEFAULT_BUDGET)
+    if budget == 0:
+        raise HTTPException(status_code=400, detail="No upload quota available for this share")
+    return budget
+
+
 async def _resolve_upload_folder(
     db: Database, body: "CreateShareRequest", user: AuthenticatedUser
 ) -> tuple[str | None, bool, int]:
@@ -711,24 +729,7 @@ async def _resolve_upload_folder(
         level = await _team_level_for_user(db, team_id, user.id) if team_id else None
         if level not in ("admin", "write"):
             raise HTTPException(status_code=404, detail="Target folder not found")
-
-    # Compute available quota for this creator
-    cursor = await db.execute(
-        "SELECT disk_quota, disk_used FROM users WHERE id = ?", (user.id,)
-    )
-    u = await cursor.fetchone()
-    if u and u["disk_quota"] is not None:
-        available = max(0, u["disk_quota"] - u["disk_used"])
-    else:
-        available = _SHARE_UPLOAD_DEFAULT_BUDGET
-
-    # Client may request a smaller budget; hard cap at available quota
-    requested = body.upload_max_bytes if body.upload_max_bytes is not None else _SHARE_UPLOAD_DEFAULT_BUDGET
-    if requested <= 0:
-        raise HTTPException(status_code=400, detail="upload_max_bytes must be positive")
-    budget = min(requested, available, _SHARE_UPLOAD_DEFAULT_BUDGET)
-    if budget == 0:
-        raise HTTPException(status_code=400, detail="No upload quota available for this share")
+    budget = await _compute_upload_budget(db, user, body)
     return body.target_folder_id, True, budget
 
 

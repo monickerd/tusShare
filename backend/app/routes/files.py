@@ -844,6 +844,19 @@ async def _apply_move_side_effects(db, body: UpdateFileRequest, file_id: str, ro
         )
 
 
+async def _require_file_write_access(db, row, user: AuthenticatedUser) -> None:
+    """Raise 403 if user is not the file owner, not an admin, and not a team write+ member."""
+    if row["owner_id"] == user.id or user.is_admin:
+        return
+    if row["folder_id"]:
+        team_id = await get_folder_team_id(db, row["folder_id"])
+        if team_id:
+            level = await _team_level_for_user(db, team_id, user.id)
+            if level in ("admin", "write"):
+                return
+    raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+
 @router.put("/{file_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_file(
     file_id: str,
@@ -860,15 +873,7 @@ async def update_file(
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
-    if row["owner_id"] != user.id and not user.is_admin:
-        allowed = False
-        if row["folder_id"]:
-            team_id = await get_folder_team_id(db, row["folder_id"])
-            if team_id:
-                level = await _team_level_for_user(db, team_id, user.id)
-                allowed = level in ("admin", "write")
-        if not allowed:
-            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+    await _require_file_write_access(db, row, user)
 
     updates, params, removed_chars = await _build_file_update_fields(db, body, user)
     updates.append("updated_at = NOW()")
@@ -935,15 +940,7 @@ async def delete_file(
     if row is None:
         raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
 
-    if row["owner_id"] != user.id and not user.is_admin:
-        allowed = False
-        if row["folder_id"]:
-            team_id = await get_folder_team_id(db, row["folder_id"])
-            if team_id:
-                level = await _team_level_for_user(db, team_id, user.id)
-                allowed = level in ("admin", "write")
-        if not allowed:
-            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+    await _require_file_write_access(db, row, user)
 
     ip = _get_client_ip(request)
     # Check whether trash is enabled.

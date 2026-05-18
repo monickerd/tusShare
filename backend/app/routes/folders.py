@@ -296,6 +296,122 @@ async def get_folder_contents(
     }
 
 
+async def _list_team_folder_files(
+    db, folder_id: str, team_id: str, user_id: str, limit: int, offset: int
+) -> tuple[list, int]:
+    _cte = """
+        WITH RECURSIVE folder_tree(id) AS (
+            SELECT ? AS id
+            UNION ALL
+            SELECT f.id
+              FROM folders f
+              JOIN folder_tree ft ON f.parent_id = ft.id
+             WHERE f.deleted_at IS NULL
+        )
+    """
+    count_cursor = await db.execute(
+        _cte + """
+        SELECT COUNT(*) AS total
+          FROM files fi
+          JOIN folder_tree ft ON fi.folder_id = ft.id
+         WHERE fi.upload_complete = 1
+           AND fi.deleted_at IS NULL
+        """,
+        (folder_id,),
+    )
+    count_row = await count_cursor.fetchone()
+    total = count_row["total"] if count_row else 0
+
+    cursor = await db.execute(
+        _cte + """
+        SELECT fi.id, fi.original_name, fi.size_bytes, fi.owner_id, fi.folder_id,
+               fi.encrypted_file_key, fi.key_iv,
+               ftk.pre_c1, ftk.encrypted_file_key AS team_encrypted_file_key,
+               ftk.key_iv AS team_key_iv,
+               fold.name AS folder_name
+          FROM files fi
+          JOIN folder_tree ft ON fi.folder_id = ft.id
+          LEFT JOIN file_team_keys ftk ON ftk.file_id = fi.id AND ftk.team_id = ?
+          LEFT JOIN folders fold ON fold.id = fi.folder_id
+         WHERE fi.upload_complete = 1
+           AND fi.deleted_at IS NULL
+         ORDER BY fi.original_name
+         LIMIT ? OFFSET ?
+        """,
+        (folder_id, team_id, limit, offset),
+    )
+    rows = await cursor.fetchall()
+    files = [
+        {
+            "id": r["id"],
+            "original_name": r["original_name"],
+            "size_bytes": r["size_bytes"],
+            "folder_id": r["folder_id"],
+            "folder_name": r["folder_name"],
+            "encrypted_file_key": r["encrypted_file_key"] if r["owner_id"] == user_id else None,
+            "key_iv": r["key_iv"] if r["owner_id"] == user_id else None,
+            "pre_c1": r["pre_c1"],
+            "team_encrypted_file_key": r["team_encrypted_file_key"],
+            "team_key_iv": r["team_key_iv"],
+        }
+        for r in rows
+    ]
+    return files, total
+
+
+async def _list_personal_folder_files(
+    db, folder_id: str, user_id: str, limit: int, offset: int
+) -> tuple[list, int]:
+    _cte = """
+        WITH RECURSIVE folder_tree(id) AS (
+            SELECT ? AS id
+            UNION ALL
+            SELECT f.id
+              FROM folders f
+              JOIN folder_tree ft ON f.parent_id = ft.id
+             WHERE f.owner_id = ?
+        )
+    """
+    count_cursor = await db.execute(
+        _cte + """
+        SELECT COUNT(*) AS total
+          FROM files fi
+          JOIN folder_tree ft ON fi.folder_id = ft.id
+         WHERE fi.upload_complete = 1
+           AND fi.owner_id = ?
+        """,
+        (folder_id, user_id, user_id),
+    )
+    count_row = await count_cursor.fetchone()
+    total = count_row["total"] if count_row else 0
+
+    cursor = await db.execute(
+        _cte + """
+        SELECT fi.id, fi.original_name, fi.size_bytes,
+               fi.encrypted_file_key, fi.key_iv
+          FROM files fi
+          JOIN folder_tree ft ON fi.folder_id = ft.id
+         WHERE fi.upload_complete = 1
+           AND fi.owner_id = ?
+         ORDER BY fi.original_name
+         LIMIT ? OFFSET ?
+        """,
+        (folder_id, user_id, user_id, limit, offset),
+    )
+    rows = await cursor.fetchall()
+    files = [
+        {
+            "id": r["id"],
+            "original_name": r["original_name"],
+            "size_bytes": r["size_bytes"],
+            "encrypted_file_key": r["encrypted_file_key"],
+            "key_iv": r["key_iv"],
+        }
+        for r in rows
+    ]
+    return files, total
+
+
 @router.get("/{folder_id}/files", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def list_folder_files_recursive(
     folder_id: str,
@@ -328,116 +444,9 @@ async def list_folder_files_recursive(
             raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     if team_id:
-        # Team folder: return ALL files in the subtree regardless of owner.
-        # Include file_team_keys data so non-owner members can re-wrap keys for shares.
-        _cte = """
-            WITH RECURSIVE folder_tree(id) AS (
-                SELECT ? AS id
-                UNION ALL
-                SELECT f.id
-                  FROM folders f
-                  JOIN folder_tree ft ON f.parent_id = ft.id
-                 WHERE f.deleted_at IS NULL
-            )
-        """
-        count_cursor = await db.execute(
-            _cte + """
-            SELECT COUNT(*) AS total
-              FROM files fi
-              JOIN folder_tree ft ON fi.folder_id = ft.id
-             WHERE fi.upload_complete = 1
-               AND fi.deleted_at IS NULL
-            """,
-            (folder_id,),
-        )
-        count_row = await count_cursor.fetchone()
-        total = count_row["total"] if count_row else 0
-
-        cursor = await db.execute(
-            _cte + """
-            SELECT fi.id, fi.original_name, fi.size_bytes, fi.owner_id, fi.folder_id,
-                   fi.encrypted_file_key, fi.key_iv,
-                   ftk.pre_c1, ftk.encrypted_file_key AS team_encrypted_file_key,
-                   ftk.key_iv AS team_key_iv,
-                   fold.name AS folder_name
-              FROM files fi
-              JOIN folder_tree ft ON fi.folder_id = ft.id
-              LEFT JOIN file_team_keys ftk ON ftk.file_id = fi.id AND ftk.team_id = ?
-              LEFT JOIN folders fold ON fold.id = fi.folder_id
-             WHERE fi.upload_complete = 1
-               AND fi.deleted_at IS NULL
-             ORDER BY fi.original_name
-             LIMIT ? OFFSET ?
-            """,
-            (folder_id, team_id, limit, offset),
-        )
-        rows = await cursor.fetchall()
-        files = [
-            {
-                "id": r["id"],
-                "original_name": r["original_name"],
-                "size_bytes": r["size_bytes"],
-                "folder_id": r["folder_id"],
-                "folder_name": r["folder_name"],
-                # Personal key only for the file's owner
-                "encrypted_file_key": r["encrypted_file_key"] if r["owner_id"] == user.id else None,
-                "key_iv": r["key_iv"] if r["owner_id"] == user.id else None,
-                # Team key path for all team members
-                "pre_c1": r["pre_c1"],
-                "team_encrypted_file_key": r["team_encrypted_file_key"],
-                "team_key_iv": r["team_key_iv"],
-            }
-            for r in rows
-        ]
+        files, total = await _list_team_folder_files(db, folder_id, team_id, user.id, limit, offset)
     else:
-        # Personal folder: only return files owned by the requester.
-        _cte = """
-            WITH RECURSIVE folder_tree(id) AS (
-                SELECT ? AS id
-                UNION ALL
-                SELECT f.id
-                  FROM folders f
-                  JOIN folder_tree ft ON f.parent_id = ft.id
-                 WHERE f.owner_id = ?
-            )
-        """
-        count_cursor = await db.execute(
-            _cte + """
-            SELECT COUNT(*) AS total
-              FROM files fi
-              JOIN folder_tree ft ON fi.folder_id = ft.id
-             WHERE fi.upload_complete = 1
-               AND fi.owner_id = ?
-            """,
-            (folder_id, user.id, user.id),
-        )
-        count_row = await count_cursor.fetchone()
-        total = count_row["total"] if count_row else 0
-
-        cursor = await db.execute(
-            _cte + """
-            SELECT fi.id, fi.original_name, fi.size_bytes,
-                   fi.encrypted_file_key, fi.key_iv
-              FROM files fi
-              JOIN folder_tree ft ON fi.folder_id = ft.id
-             WHERE fi.upload_complete = 1
-               AND fi.owner_id = ?
-             ORDER BY fi.original_name
-             LIMIT ? OFFSET ?
-            """,
-            (folder_id, user.id, user.id, limit, offset),
-        )
-        rows = await cursor.fetchall()
-        files = [
-            {
-                "id": r["id"],
-                "original_name": r["original_name"],
-                "size_bytes": r["size_bytes"],
-                "encrypted_file_key": r["encrypted_file_key"],
-                "key_iv": r["key_iv"],
-            }
-            for r in rows
-        ]
+        files, total = await _list_personal_folder_files(db, folder_id, user.id, limit, offset)
 
     return {"files": files, "total": total, "offset": offset, "limit": limit}
 
@@ -514,6 +523,16 @@ def _emit_folder_update_event(user, folder_id: str, folder_row, body, is_move: b
         ))
 
 
+async def _require_folder_write_access(db, folder_id: str, folder_row, user: AuthenticatedUser) -> None:
+    """Raise 403 if user is not the folder owner, not an admin, and not a team write+ member."""
+    if folder_row["owner_id"] == user.id or user.is_admin:
+        return
+    team_id = await get_folder_team_id(db, folder_id)
+    level = await _team_level_for_user(db, team_id, user.id) if team_id else None
+    if level not in ("admin", "write"):
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+
 @router.put("/{folder_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def update_folder(
     folder_id: str,
@@ -529,14 +548,7 @@ async def update_folder(
     if folder_row is None:
         raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
-    if folder_row["owner_id"] != user.id and not user.is_admin:
-        team_id = await get_folder_team_id(db, folder_id)
-        if team_id:
-            level = await _team_level_for_user(db, team_id, user.id)
-        else:
-            level = None
-        if level not in ("admin", "write"):
-            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+    await _require_folder_write_access(db, folder_id, folder_row, user)
 
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot modify the shared folder")
@@ -598,14 +610,7 @@ async def delete_folder(
     if folder_row is None:
         raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
 
-    if folder_row["owner_id"] != user.id and not user.is_admin:
-        team_id = await get_folder_team_id(db, folder_id)
-        if team_id:
-            level = await _team_level_for_user(db, team_id, user.id)
-        else:
-            level = None
-        if level not in ("admin", "write"):
-            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+    await _require_folder_write_access(db, folder_id, folder_row, user)
 
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot delete the shared folder")
