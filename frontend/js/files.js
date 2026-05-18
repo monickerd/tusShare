@@ -525,7 +525,7 @@ const Files = (() => {
             Utils.el('td', { textContent: Utils.timeAgo(folder.updated_at) }),
             Utils.el('td', { className: 'row-actions' }, [
                 _createContextButton([
-                    { label: 'Share', action: () => Shares.openFolderShareDialog(folder) },
+                    { label: 'Share', action: () => Shares.openFolderShareDialog({ ...folder, teamId: _currentTeamId }) },
                     { label: 'Move/Copy', action: () => _openMoveCopyModal([{ type: 'folder', id: folder.id, name: folder.name }]) },
                     { label: 'Rename', action: () => _renameFolder(folder) },
                     folder.user_can_manage ? {
@@ -1183,7 +1183,7 @@ const Files = (() => {
 
         // Single folder selected — use folder share dialog
         if (folderItems.length === 1 && fileItems.length === 0) {
-            Shares.openFolderShareDialog({ id: folderItems[0].id, name: '(selected folder)' });
+            Shares.openFolderShareDialog({ id: folderItems[0].id, name: '(selected folder)', teamId: _currentTeamId });
             return;
         }
 

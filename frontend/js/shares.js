@@ -279,15 +279,20 @@ const Shares = (() => {
      *
      * @param {Array}       selectedFiles - File objects: { id, original_name, size_bytes, encrypted_file_key, key_iv }
      * @param {object|null} folderCtx     - { id, name } when sharing a whole folder; null for file shares.
+     * @param {BigInt|null} teamSkBigInt  - Team secret key scalar, set for team folder shares.
      */
-    async function openShareDialog(selectedFiles, folderCtx = null) {
+    async function openShareDialog(selectedFiles, folderCtx = null, teamSkBigInt = null) {
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey) {
             Utils.showToast('Master key not available — please re-enter your password.', 'error');
             return;
         }
 
-        const files = selectedFiles.filter(f => f.encrypted_file_key && f.key_iv);
+        // Accept files with personal key OR team key (for team folder shares by non-owners)
+        const files = selectedFiles.filter(f =>
+            (f.encrypted_file_key && f.key_iv) ||
+            (f.pre_c1 && f.team_encrypted_file_key && teamSkBigInt != null)
+        );
         if (files.length === 0 && !folderCtx) {
             Utils.showToast('No shareable files selected.', 'info');
             return;
@@ -395,6 +400,7 @@ const Shares = (() => {
                     generateShortLink: shortLinkChk.checked,
                     allowUpload: allowUploadChk ? allowUploadChk.checked : false,
                     folderId: folderCtx ? folderCtx.id : null,
+                    teamSkBigInt,
                 }, statusArea);
                 if (shareKeyB64url) {
                     createBtn.style.display = 'none';
@@ -432,7 +438,7 @@ const Shares = (() => {
      * Returns the shareKeyB64url on success.
      */
     async function _doCreateShare(files, masterKey, opts, statusArea) {
-        const { expiresAt, maxDownloads, generateShortLink, allowUpload, folderId } = opts;
+        const { expiresAt, maxDownloads, generateShortLink, allowUpload, folderId, teamSkBigInt } = opts;
 
         if (maxDownloads !== null && maxDownloads !== undefined &&
             (Number.isNaN(maxDownloads) || maxDownloads < 1)) {
@@ -446,12 +452,20 @@ const Shares = (() => {
         const shareKey = await Crypto.deriveShareKey(masterKey, token);
         const shareKeyB64url = await Crypto.exportKeyToBase64url(shareKey);
 
-        // Re-wrap each file key with shareKey
+        // Re-wrap each file key with shareKey.
+        // Two key paths: personal (owner's masterKey) and team PRE (for non-owner team members).
         const items = [];
         for (const f of files) {
-            const fileKey = await Crypto.decryptFileKey(
-                f.encrypted_file_key, f.key_iv, masterKey
-            );
+            let fileKey;
+            if (f.encrypted_file_key && f.key_iv) {
+                fileKey = await Crypto.decryptFileKey(f.encrypted_file_key, f.key_iv, masterKey);
+            } else if (f.pre_c1 && f.team_encrypted_file_key && teamSkBigInt != null) {
+                fileKey = await Teams.decryptFileKeyFromTeam(
+                    f.pre_c1, f.team_encrypted_file_key, f.team_key_iv, teamSkBigInt
+                );
+            } else {
+                continue; // Cannot key this file — skip
+            }
             const { wrappedKeyB64, ivB64 } = await Crypto.wrapFileKeyForShare(fileKey, shareKey);
             items.push({
                 resource_type: 'file',
@@ -1400,6 +1414,24 @@ const Shares = (() => {
             return;
         }
 
+        // For team folders, unwrap the team secret key so we can re-wrap file keys
+        // for files uploaded by other team members (team PRE key path).
+        let teamSkBigInt = null;
+        if (folder.teamId) {
+            try {
+                const asymKeys = Auth.getAsymmetricKeys();
+                if (asymKeys) {
+                    const myKeyEntry = await Api.get(`${_prefix()}/teams/${folder.teamId}/my-key`);
+                    const { sk_bigint } = await Teams.unwrapTeamKey(
+                        myKeyEntry, asymKeys.x25519PrivateKey, asymKeys.mlkem768SecretKey
+                    );
+                    teamSkBigInt = sk_bigint;
+                }
+            } catch (_) {
+                // Non-critical: only owned files will be keyed if team key unavailable
+            }
+        }
+
         let files;
         try {
             const data = await Api.get(
@@ -1418,7 +1450,7 @@ const Shares = (() => {
             );
         }
 
-        openShareDialog(files, { id: folder.id, name: folder.name });
+        openShareDialog(files, { id: folder.id, name: folder.name }, teamSkBigInt);
     }
 
     // -----------------------------------------------------------------------

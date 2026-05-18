@@ -18,7 +18,7 @@ from app.database import Database, db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import _get_client_ip
 from app.models.file import File, FileChunk
-from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member
+from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member, _team_level_for_user
 from app.services import event_bus, sse_broker
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
@@ -861,7 +861,14 @@ async def update_file(
     if row is None:
         raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        allowed = False
+        if row["folder_id"]:
+            team_id = await get_folder_team_id(db, row["folder_id"])
+            if team_id:
+                level = await _team_level_for_user(db, team_id, user.id)
+                allowed = level in ("admin", "write")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     updates, params, removed_chars = await _build_file_update_fields(db, body, user)
     updates.append("updated_at = NOW()")
@@ -929,7 +936,14 @@ async def delete_file(
         raise HTTPException(status_code=404, detail=_ERR_FILE_NOT_FOUND)
 
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        allowed = False
+        if row["folder_id"]:
+            team_id = await get_folder_team_id(db, row["folder_id"])
+            if team_id:
+                level = await _team_level_for_user(db, team_id, user.id)
+                allowed = level in ("admin", "write")
+        if not allowed:
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     ip = _get_client_ip(request)
     # Check whether trash is enabled.
