@@ -260,7 +260,7 @@ async def _can_manage_share(db, share: dict, user: AuthenticatedUser) -> bool:
     if share["created_by"] == user.id or user.is_admin:
         return True
     if share["target_folder_id"]:
-        team_id = await _get_folder_team_id(db, share["target_folder_id"])
+        team_id = await get_folder_team_id(db, share["target_folder_id"])
         if team_id:
             level = await _team_level_for_user(db, team_id, user.id)
             if level in ("admin", "write"):
@@ -297,6 +297,12 @@ async def _get_items_with_files(
     if folder_id:
         cursor = await db.execute(
             """
+            WITH RECURSIVE folder_tree AS (
+                SELECT id FROM folders WHERE id = ?
+                UNION ALL
+                SELECT f2.id FROM folders f2
+                JOIN folder_tree ft ON f2.parent_id = ft.id
+            )
             SELECT si.id          AS item_id,
                    'file'         AS resource_type,
                    f.id           AS resource_id,
@@ -316,11 +322,11 @@ async def _get_items_with_files(
                AND si.resource_type = 'file'
                AND si.resource_id = f.id
             LEFT JOIN folders fol ON fol.id = f.folder_id
-            WHERE f.folder_id = ?
+            WHERE f.folder_id IN (SELECT id FROM folder_tree)
               AND f.upload_complete = 1
               AND f.deleted_at IS NULL
             """,
-            (share_id, folder_id),
+            (folder_id, share_id),
         )
     else:
         cursor = await db.execute(
@@ -611,7 +617,7 @@ async def list_shares(
 
     result = []
     for s in shares:
-        items = await _get_items_with_files(db, s["id"])
+        items = await _get_items_with_files(db, s["id"], s["target_folder_id"] or None)
         sl_cursor = await db.execute(
             "SELECT slug, expires_at FROM short_links WHERE share_id = ?", (s["id"],)
         )
@@ -622,6 +628,7 @@ async def list_shares(
         result.append({
             "id": s["id"],
             "token": s["token"],
+            "key_type": s["key_type"],
             "share_type": s["share_type"],
             "expires_at": s["expires_at"],
             "is_active": bool(s["is_active"]),
@@ -972,7 +979,7 @@ async def get_folder_shares(
     if folder is None:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    team_id = await _get_folder_team_id(db, folder_id)
+    team_id = await get_folder_team_id(db, folder_id)
     is_member = team_id and await _team_level_for_user(db, team_id, user.id) is not None
 
     if folder["owner_id"] != user.id and not is_member and not user.is_admin:
@@ -1038,7 +1045,7 @@ async def get_pending_share_keys(
     folder_id = validate_uuid(folder_id)
 
     # Determine team-level access once for the folder; used for all shares below.
-    team_id = await _get_folder_team_id(db, folder_id)
+    team_id = await get_folder_team_id(db, folder_id)
     team_level = None
     if team_id:
         team_level = await _team_level_for_user(db, team_id, user.id)

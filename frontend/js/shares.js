@@ -845,18 +845,19 @@ const Shares = (() => {
         }
         card.appendChild(header);
 
-        // Share URL (if key available)
+        // Share URL — derive inline for HKDF shares, use stored key otherwise
+        const urlBox = Utils.el('div', { className: 'share-url-box' });
+        card.appendChild(urlBox);
         const shareKeyB64url = _loadShareKey(share.id);
         if (shareKeyB64url) {
-            const urlBox = Utils.el('div', { className: 'share-url-box' });
             _renderShareUrlBox(urlBox, _buildShareUrl(share.token, shareKeyB64url));
-            card.appendChild(urlBox);
-        } else if (share.key_type === 'hkdf-v1') {
-            card.appendChild(Utils.el('p', {
-                className: 'text-muted share-key-gone',
-                textContent: 'HKDF share — URL re-derivable from "More Details".',
-            }));
+        } else if (share.key_type === 'hkdf-v1' && masterKey) {
+            Crypto.deriveShareKey(masterKey, share.token)
+                .then(k => Crypto.exportKeyToBase64url(k))
+                .then(keyB64 => _renderShareUrlBox(urlBox, _buildShareUrl(share.token, keyB64)))
+                .catch(() => { urlBox.remove(); });
         } else {
+            urlBox.remove();
             card.appendChild(Utils.el('p', {
                 className: 'text-muted share-key-gone',
                 textContent: 'Share URL not available — key is only accessible during the session it was created.',
