@@ -532,19 +532,19 @@ async def list_received_shares(
     result = []
     for s in shares:
         items = await _get_items_with_files(db, s["id"])
-        # Look up sender username
         sender_cursor = await db.execute(
             "SELECT username FROM users WHERE id = ?", (s["created_by"],)
         )
         sender_row = await sender_cursor.fetchone()
         result.append({
-            "id": s["id"],
-            "token": s["token"],
-            "share_type": s["share_type"],
+            "id":              s["id"],
+            "token":           s["token"],
+            "key_type":        s["key_type"],
+            "share_type":      s["share_type"],
             "sender_username": sender_row["username"] if sender_row else None,
-            "expires_at": s["expires_at"],
-            "created_at": s["created_at"],
-            "files": items,
+            "expires_at":      s["expires_at"],
+            "created_at":      s["created_at"],
+            "items":           items,
         })
 
     return {"shares": result, "total": total, "offset": offset, "limit": limit}
@@ -696,7 +696,7 @@ async def _resolve_upload_folder(
 ) -> tuple[str | None, bool, int]:
     """Validate upload folder and compute per-share budget. Returns (folder_id, allow_upload, upload_max_bytes)."""
     if not (body.share_type == "link" and body.allow_upload):
-        return None, False, 0
+        return body.target_folder_id, False, 0
     if not body.target_folder_id:
         raise HTTPException(status_code=400, detail="target_folder_id is required when allow_upload is true")
     cursor = await db.execute("SELECT owner_id FROM folders WHERE id = ?", (body.target_folder_id,))
@@ -859,11 +859,15 @@ async def get_share(
     db: Annotated[Database, Depends(get_db)],
     _rl: Annotated[None, Depends(check_management_rate_limit)],
 ):
-    """Get a single share with its items and short links."""
-    share_id = validate_uuid(share_id)
-    share = await _get_share_for_owner(db, share_id, user)
+    """Get a single share with its items and short links.
 
-    items = await _get_items_with_files(db, share_id)
+    Accessible by the share creator, a global admin, or a team member
+    with write+ access to the share's target folder.
+    """
+    share_id = validate_uuid(share_id)
+    share = await _get_share_for_manage(db, share_id, user)
+
+    items = await _get_items_with_files(db, share_id, share["target_folder_id"] or None)
     sl_cursor = await db.execute(
         "SELECT slug, expires_at FROM short_links WHERE share_id = ?", (share_id,)
     )
@@ -872,21 +876,35 @@ async def get_share(
         for r in await sl_cursor.fetchall()
     ]
 
+    # Resolve folder name for the response
+    folder_name = None
+    if share["target_folder_id"]:
+        fol_cursor = await db.execute(
+            "SELECT name FROM folders WHERE id = ?", (share["target_folder_id"],)
+        )
+        fol_row = await fol_cursor.fetchone()
+        folder_name = fol_row["name"] if fol_row else None
+
+    can_manage = await _can_manage_share(db, share, user)
+
     return {
         "share": {
-            "id": share["id"],
-            "token": share["token"],
-            "share_type": share["share_type"],
-            "expires_at": share["expires_at"],
-            "is_active": bool(share["is_active"]),
-            "has_password": share["password_hash"] is not None,
-            "max_downloads": share["max_downloads"],
-            "download_count": share["download_count"],
-            "allow_upload": bool(share["allow_upload"]),
+            "id":               share["id"],
+            "token":            share["token"],
+            "key_type":         share["key_type"],
+            "share_type":       share["share_type"],
+            "expires_at":       share["expires_at"],
+            "is_active":        bool(share["is_active"]),
+            "has_password":     share["password_hash"] is not None,
+            "max_downloads":    share["max_downloads"],
+            "download_count":   share["download_count"],
+            "allow_upload":     bool(share["allow_upload"]),
             "target_folder_id": share["target_folder_id"],
-            "created_at": share["created_at"],
-            "items": items,
-            "short_links": short_links,
+            "folder_name":      folder_name,
+            "created_at":       share["created_at"],
+            "items":            items,
+            "short_links":      short_links,
+            "can_manage":       can_manage,
         }
     }
 
@@ -988,39 +1006,51 @@ async def get_folder_shares(
     now = datetime.now(timezone.utc).isoformat()
     cursor = await db.execute(
         """
-        SELECT s.id, s.token, s.key_type, s.created_by, s.created_at, s.expires_at,
+        SELECT DISTINCT s.id, s.token, s.key_type, s.created_by, s.created_at, s.expires_at,
                s.is_active, s.allow_upload,
                u.username AS creator_username,
                sl.slug    AS short_link_slug
         FROM shares s
         JOIN users u ON u.id = s.created_by
         LEFT JOIN short_links sl ON sl.share_id = s.id
-        WHERE s.target_folder_id = ?
-          AND s.share_type = 'link'
+        WHERE s.share_type = 'link'
           AND s.is_active = 1
           AND (s.expires_at IS NULL OR s.expires_at > ?)
+          AND (
+            s.target_folder_id = ?
+            OR EXISTS (
+                SELECT 1 FROM share_items si
+                JOIN files f ON f.id = si.resource_id
+                WHERE si.share_id = s.id
+                  AND si.resource_type = 'file'
+                  AND f.folder_id = ?
+                  AND f.deleted_at IS NULL
+            )
+          )
         ORDER BY s.created_at DESC
         """,
-        (folder_id, now),
+        (now, folder_id, folder_id),
     )
     rows = await cursor.fetchall()
 
+    team_level_cache: dict | None = None
     result = []
     for r in rows:
         can_manage = r["created_by"] == user.id or user.is_admin
         if not can_manage and team_id:
-            level = await _team_level_for_user(db, team_id, user.id)
-            can_manage = level in ("admin", "write")
+            if team_level_cache is None:
+                team_level_cache = await _team_level_for_user(db, team_id, user.id)
+            can_manage = team_level_cache in ("admin", "write")
         result.append({
-            "share_id":        r["id"],
-            "token":           r["token"],
-            "key_type":        r["key_type"],
+            "share_id":         r["id"],
+            "token":            r["token"],
+            "key_type":         r["key_type"],
             "creator_username": r["creator_username"],
-            "created_at":      r["created_at"],
-            "expires_at":      r["expires_at"],
-            "allow_upload":    bool(r["allow_upload"]),
-            "short_link_slug": r["short_link_slug"],
-            "can_manage":      can_manage,
+            "created_at":       r["created_at"],
+            "expires_at":       r["expires_at"],
+            "allow_upload":     bool(r["allow_upload"]),
+            "short_link_slug":  r["short_link_slug"],
+            "can_manage":       can_manage,
         })
     return result
 
@@ -1171,6 +1201,53 @@ async def remove_share_item(
     )
     await db.commit()
     return {"removed": True}
+
+
+@router.delete("/api/v1/shares/{share_id}/folder-items/{folder_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def remove_share_folder_items(
+    share_id: str,
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Remove all files within a folder subtree from a share.
+
+    Walks the folder tree rooted at folder_id and deletes share_items +
+    pending_share_keying entries for every file found there.
+    """
+    share_id  = validate_uuid(share_id)
+    folder_id = validate_uuid(folder_id)
+    await _get_share_for_manage(db, share_id, user)
+
+    cursor = await db.execute(
+        """
+        WITH RECURSIVE folder_tree AS (
+            SELECT id FROM folders WHERE id = ?
+            UNION ALL
+            SELECT f2.id FROM folders f2 JOIN folder_tree ft ON f2.parent_id = ft.id
+        )
+        SELECT id FROM files
+        WHERE folder_id IN (SELECT id FROM folder_tree)
+          AND deleted_at IS NULL
+        """,
+        (folder_id,),
+    )
+    file_ids = [r["id"] for r in await cursor.fetchall()]
+
+    if not file_ids:
+        return {"removed": 0}
+
+    placeholders = ",".join(["?" for _ in file_ids])
+    result = await db.execute(
+        f"DELETE FROM share_items WHERE share_id = ? AND resource_type = 'file' AND resource_id IN ({placeholders})",
+        (share_id, *file_ids),
+    )
+    await db.execute(
+        f"DELETE FROM pending_share_keying WHERE share_id = ? AND file_id IN ({placeholders})",
+        (share_id, *file_ids),
+    )
+    await db.commit()
+    return {"removed": result.rowcount}
 
 
 @router.post("/api/v1/shares/{share_id}/short-link", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 503: {"description": "503"}})

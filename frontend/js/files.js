@@ -1994,16 +1994,27 @@ const Files = (() => {
         const masterKey = Auth.getMasterKeyObj();
 
         const banner = Utils.el('div', { className: 'folder-share-banner' });
-        banner.appendChild(Utils.el('span', { textContent: 'This folder is being shared.' }));
+        const label = shares.length === 1 ? 'This folder is being shared.' : `This folder has ${shares.length} active shares.`;
+        banner.appendChild(Utils.el('span', { textContent: label }));
 
-        const detailsLink = Utils.el('button', {
-            className: 'btn-link',
-            textContent: 'More details…',
-        });
-        detailsLink.addEventListener('click', () =>
-            Shares.openFolderShareDetailModal(shares, masterKey)
-        );
-        banner.appendChild(detailsLink);
+        for (const s of shares) {
+            const detailsBtn = Utils.el('button', {
+                className: 'btn-link',
+                textContent: s.creator_username
+                    ? `Details (${s.creator_username})…`
+                    : 'More details…',
+            });
+            detailsBtn.addEventListener('click', async () => {
+                try {
+                    const resp = await Api.get(`${Config.app.apiPrefix}/shares/${s.share_id}`);
+                    Shares.openSingleShareDetailModal(resp.share, masterKey, resp.share.can_manage);
+                } catch (err) {
+                    Utils.showToast(`Could not load share details: ${err.message}`, 'error');
+                }
+            });
+            banner.appendChild(detailsBtn);
+        }
+
         bannerSlot.appendChild(banner);
     }
 
