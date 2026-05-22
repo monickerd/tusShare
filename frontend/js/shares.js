@@ -785,7 +785,7 @@ const Shares = (() => {
         }
 
         const listWrap = Utils.el('div', { className: 'share-file-list-wrap', style: 'max-height:300px;overflow-y:auto' });
-        for (const [key, { name: folderName, files }] of byFolder) {
+        for (const { name: folderName, files } of byFolder.values()) {
             listWrap.appendChild(_buildShareFolderGroupEl(shareId, files[0]?.folder_id || null, folderName, files, canRemove, onRemove));
         }
         section.appendChild(listWrap);
@@ -1772,7 +1772,7 @@ const Shares = (() => {
             if (!byFolder.has(key)) byFolder.set(key, { name, files: [] });
             byFolder.get(key).files.push(item);
         }
-        for (const [, { name: folderName, files }] of byFolder) {
+        for (const { name: folderName, files } of byFolder.values()) {
             listWrap.appendChild(_buildReceivedShareFolderGroup(folderName, files, share));
         }
         section.appendChild(listWrap);
