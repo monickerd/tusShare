@@ -39,26 +39,26 @@ const Wizard = (() => {
         high_security: {
             escrow_require_coverage:     true,
             notify_escrow_on_revocation: true,
-            can_create_link_shares:      false,
-            can_create_user_shares:      true,
-            can_create_upload_grants:    true,
-            can_share_folders:           false,
+            shares_link_create:          false,
+            shares_user_create:          true,
+            shares_upload_grant_create:  true,
+            shares_folder_create:        false,
         },
         recommended: {
             escrow_require_coverage:     false,
             notify_escrow_on_revocation: true,
-            can_create_link_shares:      true,
-            can_create_user_shares:      true,
-            can_create_upload_grants:    true,
-            can_share_folders:           true,
+            shares_link_create:          true,
+            shares_user_create:          true,
+            shares_upload_grant_create:  true,
+            shares_folder_create:        true,
         },
         open: {
             escrow_require_coverage:     false,
             notify_escrow_on_revocation: false,
-            can_create_link_shares:      true,
-            can_create_user_shares:      true,
-            can_create_upload_grants:    true,
-            can_share_folders:           true,
+            shares_link_create:          true,
+            shares_user_create:          true,
+            shares_upload_grant_create:  true,
+            shares_folder_create:        true,
         },
     };
 
@@ -598,10 +598,10 @@ const Wizard = (() => {
 
             const sh = Utils.el('div');
             sh.appendChild(Utils.el('strong', { textContent: 'Sharing (role_user defaults)', style: 'display:block;margin-bottom:8px;font-size:13px' }));
-            sh.appendChild(_buildToggle('Allow link shares',   'can_create_link_shares',   'Publicly accessible share links'));
-            sh.appendChild(_buildToggle('Allow user shares',   'can_create_user_shares',   'Direct file shares to specific users'));
-            sh.appendChild(_buildToggle('Allow upload grants', 'can_create_upload_grants', 'Let others upload into a user\'s folder'));
-            sh.appendChild(_buildToggle('Allow folder shares', 'can_share_folders',         'Share entire folder trees'));
+            sh.appendChild(_buildToggle('Allow link shares',   'shares_link_create',         'Publicly accessible share links'));
+            sh.appendChild(_buildToggle('Allow user shares',   'shares_user_create',         'Direct file shares to specific users'));
+            sh.appendChild(_buildToggle('Allow upload grants', 'shares_upload_grant_create', 'Let others upload into a user\'s folder'));
+            sh.appendChild(_buildToggle('Allow folder shares', 'shares_folder_create',       'Share entire folder trees'));
             advPanel.appendChild(sh);
         }
         _renderAdv();
@@ -613,10 +613,10 @@ const Wizard = (() => {
             _adv = {
                 escrow_require_coverage:     (s.escrow_require_coverage?.value     ?? '0') !== '0',
                 notify_escrow_on_revocation: (s.notify_escrow_on_revocation?.value ?? '1') !== '0',
-                can_create_link_shares:   f.can_create_link_shares?.value   !== false && f.can_create_link_shares?.value   !== '0',
-                can_create_user_shares:   f.can_create_user_shares?.value   !== false && f.can_create_user_shares?.value   !== '0',
-                can_create_upload_grants: f.can_create_upload_grants?.value !== false && f.can_create_upload_grants?.value !== '0',
-                can_share_folders:        f.can_share_folders?.value        !== false && f.can_share_folders?.value        !== '0',
+                shares_link_create:          f.shares_link_create?.value          !== false && f.shares_link_create?.value          !== '0',
+                shares_user_create:          f.shares_user_create?.value          !== false && f.shares_user_create?.value          !== '0',
+                shares_upload_grant_create:  f.shares_upload_grant_create?.value  !== false && f.shares_upload_grant_create?.value  !== '0',
+                shares_folder_create:        f.shares_folder_create?.value        !== false && f.shares_folder_create?.value        !== '0',
             };
             _renderAdv();
         }

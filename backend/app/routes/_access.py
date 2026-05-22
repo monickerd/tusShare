@@ -18,17 +18,25 @@ from app.conf.teams import TEAM_ROLE_MEMBER, TEAM_ROLE_OWNER, TEAM_ROLE_SUPERVIS
 
 # ---------------------------------------------------------------------------
 # Permission level → implied action set
-# read  preserves the pre-Phase-1 behaviour: it still implies download so that
-# existing 'read' rows in the permissions table continue to allow file retrieval.
-# New grants that should be view-only (no download) can use a future 'view' level.
+#
+# 'read' and 'download' are intentionally identical action sets. In an
+# E2E-encrypted system the raw bytes are ciphertext, so fetching a file
+# without the decryption key is meaningless — there is no useful "metadata
+# only" access tier below download. 'read' is kept as a named level for
+# backward-compat with pre-Phase-1 rows already in the permissions table;
+# 'download' is the preferred label for new explicit grants.
+#
+# 'rename' covers in-place name changes only. Folder restructuring (changing
+# parent_id) requires 'write' because it triggers permission re-inheritance
+# across the affected subtree.
 # ---------------------------------------------------------------------------
 _LEVEL_ACTIONS: dict[str, frozenset[str]] = {
     "admin":              frozenset({"read", "write", "delete", "download", "rename", "manage_permissions"}),
     "write":              frozenset({"read", "write", "delete", "download", "rename"}),
-    "read":               frozenset({"read", "download"}),   # backward-compat: read ⇒ download
-    "download":           frozenset({"read", "download"}),
+    "read":               frozenset({"read", "download"}),   # backward-compat alias; prefer 'download' for new grants
+    "download":           frozenset({"read", "download"}),   # preferred level for explicit download grants
     "delete":             frozenset({"read", "delete"}),
-    "rename":             frozenset({"read", "rename"}),
+    "rename":             frozenset({"read", "rename"}),     # in-place name change only; parent_id changes use 'write'
     "manage_permissions": frozenset({"read", "manage_permissions"}),
     "deny":               frozenset(),
     "none":               frozenset(),

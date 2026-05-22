@@ -13,8 +13,8 @@ PUT  /admin/sharing/rules/{rule_id}         — update rule + conditions      [s
 DELETE /admin/sharing/rules/{rule_id}       — delete rule                   [step-up]
 
 All mutation endpoints require:
-  • require_admin dependency (can_view_admin_panel)
-  • FLAG_MANAGE_SHARING (can_manage_sharing)
+  • require_admin dependency (admin_panel_view)
+  • FLAG_SHARING_MANAGE (sharing_manage)
   • Step-up token for action key "policy.sharing.*"
 
 Lock model: is_locked=TRUE on a rule means only admins with role_tier ≤ locked_min_tier
@@ -36,11 +36,11 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import (
-    FLAG_MANAGE_SHARING,
-    FLAG_CREATE_LINK_SHARES,
-    FLAG_CREATE_USER_SHARES,
-    FLAG_CREATE_UPLOAD_GRANTS,
-    FLAG_SHARE_FOLDERS,
+    FLAG_SHARING_MANAGE,
+    FLAG_SHARES_LINK_CREATE,
+    FLAG_SHARES_USER_CREATE,
+    FLAG_SHARES_UPLOAD_GRANT_CREATE,
+    FLAG_SHARES_FOLDER_CREATE,
     ROLE_TIER,
     admin_best_tier,
 )
@@ -52,7 +52,7 @@ from app.validation.sanitizers import validate_uuid
 from typing import Annotated
 
 
-_ERR_PERM_MANAGE_SHARING = "can_manage_sharing permission required"
+_ERR_PERM_MANAGE_SHARING = "sharing_manage permission required"
 _SQL_RULE_BY_ID = "SELECT * FROM sharing_rules WHERE id = ?"
 _ERR_RULE_NOT_FOUND = "Rule not found"
 
@@ -63,10 +63,10 @@ router = APIRouter()
 _STEPUP = "policy.sharing.*"
 
 _SHARING_CAPABILITY_FLAGS = [
-    FLAG_CREATE_LINK_SHARES,
-    FLAG_CREATE_USER_SHARES,
-    FLAG_CREATE_UPLOAD_GRANTS,
-    FLAG_SHARE_FOLDERS,
+    FLAG_SHARES_LINK_CREATE,
+    FLAG_SHARES_USER_CREATE,
+    FLAG_SHARES_UPLOAD_GRANT_CREATE,
+    FLAG_SHARES_FOLDER_CREATE,
 ]
 
 _VALID_OPERATORS = frozenset({
@@ -331,7 +331,7 @@ async def list_sharing_attributes(
     all keys seen per source (ldap / oidc), so admins know what attribute paths
     are available for sharing rule conditions.
     """
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
 
     cursor = await db.execute(
         "SELECT auth_method, oidc_claims_cache FROM users "
@@ -366,7 +366,7 @@ async def get_sharing_flags(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Return sharing capability flag assignments for every role that has any of the 4 flags."""
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
 
     placeholders = ",".join(["?" for _ in _SHARING_CAPABILITY_FLAGS])
     cursor = await db.execute(
@@ -413,7 +413,7 @@ async def update_sharing_flags(
     Body: { role_id, flags: { flag_name: true|false, ... } }
     Only the specified flags are updated; others are untouched.
     """
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
 
     # Verify role exists
     cursor = await db.execute("SELECT id FROM roles WHERE id = ?", (body.role_id,))
@@ -452,7 +452,7 @@ async def list_sharing_rules(
     active_only: Annotated[bool, Query()] = False,
 ):
     """List all sharing rules ordered by priority."""
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
 
     where = "WHERE is_active = TRUE" if active_only else ""
     cursor = await db.execute(
@@ -484,7 +484,7 @@ async def test_sharing_rules(
     Returns the list of rules that would fire, in evaluation order.
     No state is changed; no security events are emitted.
     """
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
 
     # Verify sender exists
     cursor = await db.execute("SELECT id FROM users WHERE id = ?", (body.sender_user_id,))
@@ -523,7 +523,7 @@ async def create_sharing_rule(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Create a sharing rule with its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
 
     my_tier = _admin_tier(admin)
 
@@ -599,7 +599,7 @@ async def get_sharing_rule(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single sharing rule with its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
     rule_id = validate_uuid(rule_id)
 
     cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
@@ -631,7 +631,7 @@ async def update_sharing_rule(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Update a sharing rule's metadata and/or replace its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
     rule_id = validate_uuid(rule_id)
 
     cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
@@ -729,7 +729,7 @@ async def delete_sharing_rule(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a sharing rule and all its conditions."""
-    require_flag(admin, FLAG_MANAGE_SHARING, _ERR_PERM_MANAGE_SHARING)
+    require_flag(admin, FLAG_SHARING_MANAGE, _ERR_PERM_MANAGE_SHARING)
     rule_id = validate_uuid(rule_id)
 
     cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))

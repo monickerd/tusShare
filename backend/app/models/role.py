@@ -27,39 +27,102 @@ ADMIN_ROLE_IDS: frozenset[str] = frozenset({
 })
 
 # ---------------------------------------------------------------------------
-# Permission flag name constants
+# Permission flag name constants  (NOUN_VERB / NOUN_SUBNOUN_VERB convention)
 # ---------------------------------------------------------------------------
-FLAG_VIEW_ADMIN_PANEL        = "can_view_admin_panel"
-FLAG_MANAGE_SYSTEM_SETTINGS  = "can_manage_system_settings"
-FLAG_MANAGE_ORG_SETTINGS     = "can_manage_org_settings"
-FLAG_MANAGE_USERS            = "can_manage_users"
-FLAG_MANAGE_INVITES          = "can_manage_invites"
-FLAG_MANAGE_TEAMS            = "can_manage_teams"
-FLAG_MANAGE_TEAM_MEMBERS     = "can_manage_team_members"
-FLAG_MANAGE_ROLES            = "can_manage_roles"
-FLAG_CREATE_ROLES            = "can_create_roles"
-FLAG_CREATE_CROSS_TEAM_ROLES = "can_create_cross_team_roles"
-FLAG_VIEW_DISK_USAGE         = "can_view_disk_usage"
-FLAG_VIEW_AUDIT_LOG          = "can_view_audit_log"
-FLAG_EXPORT_AUDIT_LOG        = "can_export_audit_log"
-FLAG_MANAGE_INTEGRATIONS     = "can_manage_integrations"
-FLAG_MANAGE_POLICIES         = "can_manage_policies"
-FLAG_ACCESS_ALL_FILES        = "can_access_all_files"
-FLAG_MANAGE_USER_MFA         = "can_manage_user_mfa"
-FLAG_MANAGE_ESCROW           = "can_manage_escrow"
-FLAG_MANAGE_SHARING          = "can_manage_sharing"
-FLAG_MANAGE_SERVICE_ACCOUNTS = "can_manage_service_accounts"
-FLAG_COPY_FILES              = "can_copy_files"
+
+# Admin panel + global settings
+FLAG_ADMIN_PANEL_VIEW          = "admin_panel_view"
+FLAG_SYSTEM_SETTINGS_MANAGE    = "system_settings_manage"
+FLAG_ORG_SETTINGS_MANAGE       = "org_settings_manage"
+
+# User management (split from old can_manage_users)
+# Read-only listing → FLAG_USERS_VIEW; mutations → FLAG_USERS_MANAGE;
+# permanent account deletion → FLAG_USERS_DELETE (requires MANAGE).
+FLAG_USERS_VIEW                = "users_view"
+FLAG_USERS_MANAGE              = "users_manage"
+FLAG_USERS_DELETE              = "users_delete"
+FLAG_USERS_INVITE_MANAGE       = "users_invite_manage"
+FLAG_USERS_MFA_MANAGE          = "users_mfa_manage"
+
+# Team management
+FLAG_TEAMS_MANAGE              = "teams_manage"
+FLAG_TEAMS_MEMBERS_MANAGE      = "teams_members_manage"
+
+# Role management
+FLAG_ROLES_MANAGE              = "roles_manage"
+FLAG_ROLES_CREATE              = "roles_create"
+FLAG_ROLES_CROSS_TEAM_CREATE   = "roles_cross_team_create"
+
+# Observability
+FLAG_DISK_USAGE_VIEW           = "disk_usage_view"
+FLAG_AUDIT_LOG_VIEW            = "audit_log_view"
+FLAG_AUDIT_LOG_EXPORT          = "audit_log_export"
+
+# Integrations (split from old can_manage_integrations)
+FLAG_INTEGRATIONS_IDP_MANAGE              = "integrations_idp_manage"
+FLAG_INTEGRATIONS_NOTIFICATIONS_MANAGE    = "integrations_notifications_manage"
+
+# Policy management (split from old can_manage_policies)
+FLAG_POLICIES_VIEW             = "policies_view"
+FLAG_POLICIES_MANAGE           = "policies_manage"
+FLAG_POLICIES_FIELDS_MANAGE    = "policies_fields_manage"
+
+# File access bypass (split from old can_access_all_files)
+# READ covers reads and downloads; WRITE also implies read (check: READ or WRITE).
+FLAG_FILES_ACCESS_ALL_READ     = "files_access_all_read"
+FLAG_FILES_ACCESS_ALL_WRITE    = "files_access_all_write"
+
+# File operations
+FLAG_FILES_COPY                = "files_copy"
+
+# Security / key management
+FLAG_ESCROW_MANAGE             = "escrow_manage"
+FLAG_SHARING_MANAGE            = "sharing_manage"
+FLAG_SERVICE_ACCOUNTS_MANAGE   = "service_accounts_manage"
 
 # Sharing capability flags — default ON for role_user; admins remove to restrict
-FLAG_CREATE_LINK_SHARES      = "can_create_link_shares"
-FLAG_CREATE_USER_SHARES      = "can_create_user_shares"
-FLAG_CREATE_UPLOAD_GRANTS    = "can_create_upload_grants"
-FLAG_SHARE_FOLDERS           = "can_share_folders"
+FLAG_SHARES_LINK_CREATE        = "shares_link_create"
+FLAG_SHARES_USER_CREATE        = "shares_user_create"
+FLAG_SHARES_UPLOAD_GRANT_CREATE = "shares_upload_grant_create"
+FLAG_SHARES_FOLDER_CREATE      = "shares_folder_create"
 
 # Flags that may only be activated by server_admin or org_admin, regardless
 # of other role permissions.  Enforced server-side at flag-update endpoints.
-SENSITIVE_FLAGS: frozenset[str] = frozenset({FLAG_ACCESS_ALL_FILES})
+SENSITIVE_FLAGS: frozenset[str] = frozenset({
+    FLAG_FILES_ACCESS_ALL_READ,
+    FLAG_FILES_ACCESS_ALL_WRITE,
+})
+
+# Hard prerequisites: enabling flag X requires all flags in FLAG_REQUIRES[X] to
+# also be active on the role.  Used for UI warnings and (optionally) enforcement.
+FLAG_REQUIRES: dict[str, list[str]] = {
+    FLAG_USERS_DELETE:              [FLAG_USERS_MANAGE],
+    FLAG_USERS_MFA_MANAGE:          [FLAG_USERS_MANAGE],
+    FLAG_USERS_INVITE_MANAGE:       [FLAG_USERS_VIEW],
+    FLAG_TEAMS_MEMBERS_MANAGE:      [FLAG_TEAMS_MANAGE],
+    FLAG_ROLES_CREATE:              [FLAG_ROLES_MANAGE],
+    FLAG_ROLES_CROSS_TEAM_CREATE:   [FLAG_ROLES_CREATE, FLAG_ROLES_MANAGE],
+    FLAG_AUDIT_LOG_EXPORT:          [FLAG_AUDIT_LOG_VIEW],
+    FLAG_POLICIES_MANAGE:           [FLAG_POLICIES_VIEW],
+    FLAG_POLICIES_FIELDS_MANAGE:    [FLAG_POLICIES_MANAGE, FLAG_POLICIES_VIEW],
+    FLAG_FILES_ACCESS_ALL_WRITE:    [FLAG_FILES_ACCESS_ALL_READ],
+    FLAG_SHARES_UPLOAD_GRANT_CREATE: [FLAG_SHARES_LINK_CREATE],
+    FLAG_SHARES_FOLDER_CREATE:      [FLAG_SHARES_LINK_CREATE],
+}
+
+# Soft relationships: flags that are commonly used together.
+# Used to surface "you may also want to enable X" hints in the role editor.
+FLAG_RELATED: dict[str, list[str]] = {
+    FLAG_USERS_VIEW:                 [FLAG_USERS_MANAGE, FLAG_USERS_INVITE_MANAGE],
+    FLAG_USERS_MANAGE:               [FLAG_USERS_DELETE, FLAG_USERS_MFA_MANAGE],
+    FLAG_AUDIT_LOG_VIEW:             [FLAG_AUDIT_LOG_EXPORT, FLAG_DISK_USAGE_VIEW],
+    FLAG_POLICIES_VIEW:              [FLAG_POLICIES_MANAGE],
+    FLAG_FILES_ACCESS_ALL_READ:      [FLAG_FILES_ACCESS_ALL_WRITE],
+    FLAG_SHARES_LINK_CREATE:         [FLAG_SHARES_USER_CREATE, FLAG_SHARES_UPLOAD_GRANT_CREATE],
+    FLAG_SHARING_MANAGE:             [FLAG_POLICIES_MANAGE],
+    FLAG_ESCROW_MANAGE:              [FLAG_FILES_ACCESS_ALL_READ],
+    FLAG_INTEGRATIONS_IDP_MANAGE:    [FLAG_INTEGRATIONS_NOTIFICATIONS_MANAGE],
+}
 
 
 # ---------------------------------------------------------------------------

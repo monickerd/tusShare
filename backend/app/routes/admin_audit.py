@@ -33,7 +33,7 @@ from app.auth.interface import AuthenticatedUser
 from app.auth.idp_crypto import encrypt_token, decrypt_token
 from app.database import Database, get_db
 from app.middleware.rate_limit import _get_client_ip
-from app.models.role import FLAG_MANAGE_USERS, FLAG_VIEW_ADMIN_PANEL
+from app.models.role import FLAG_ADMIN_PANEL_VIEW
 from app.services.siem_filters import PROFILE_META
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
@@ -74,7 +74,7 @@ async def _require_audit_read(
         return await check_api_key(x_api_key, "audit_read")
     if optional_user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
-    if not optional_user.has_flag(FLAG_VIEW_ADMIN_PANEL):
+    if not optional_user.has_flag(FLAG_ADMIN_PANEL_VIEW):
         raise HTTPException(status_code=403, detail="Admin access required")
     return None
 

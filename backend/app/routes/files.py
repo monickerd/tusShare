@@ -40,13 +40,15 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
     """Verify user has read access to a file. Raises 403 if denied.
 
     Evaluation order:
-      1. Owner or FLAG_ACCESS_ALL_FILES → allow immediately.
+      1. Owner or files_access_all_read/write flag → allow immediately.
       2. Public shared-folder tree → allow (backward-compat public sharing).
       3. Full Phase 1 permission chain via check_data_permission:
          explicit deny/allow ACL → team-based grant → ancestry walk → deny.
     """
-    from app.models.role import FLAG_ACCESS_ALL_FILES
-    if file_row["owner_id"] == user.id or user.has_flag(FLAG_ACCESS_ALL_FILES):
+    from app.models.role import FLAG_FILES_ACCESS_ALL_READ, FLAG_FILES_ACCESS_ALL_WRITE
+    if (file_row["owner_id"] == user.id
+            or user.has_flag(FLAG_FILES_ACCESS_ALL_READ)
+            or user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE)):
         return
     if file_row["folder_id"] and await is_in_shared_tree(db, file_row["folder_id"]):
         return
@@ -650,10 +652,10 @@ async def batch_copy_files(
     Blob ref-counting is tracked via multiple files rows sharing storage_key;
     the hard-delete path only removes the blob when the last reference is deleted.
     """
-    from app.models.role import FLAG_COPY_FILES
+    from app.models.role import FLAG_FILES_COPY
     from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 
-    if not user.has_flag(FLAG_COPY_FILES):
+    if not user.has_flag(FLAG_FILES_COPY):
         raise HTTPException(status_code=403, detail="copy.permission_denied")
 
     dest_id = body.destination_folder_id

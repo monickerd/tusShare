@@ -9,7 +9,7 @@ PATCH  /admin/service-accounts/{id}         update name/description/active/expir
 DELETE /admin/service-accounts/{id}         delete account + key  [step-up]
 POST   /admin/service-accounts/{id}/rotate-key  replace key, return new one  [step-up]
 
-All mutations require FLAG_MANAGE_SERVICE_ACCOUNTS.  Step-up action key:
+All mutations require FLAG_SERVICE_ACCOUNTS_MANAGE.  Step-up action key:
   admin.service_accounts.*
 """
 from __future__ import annotations
@@ -29,7 +29,7 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
-from app.models.role import FLAG_MANAGE_SERVICE_ACCOUNTS
+from app.models.role import FLAG_SERVICE_ACCOUNTS_MANAGE
 from app.routes._access import require_flag
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
@@ -158,7 +158,7 @@ async def list_service_accounts(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
+    require_flag(admin, FLAG_SERVICE_ACCOUNTS_MANAGE, _ERR_PERM_SERVICE_ACCOUNTS)
 
     cursor = await db.execute(
         """
@@ -199,7 +199,7 @@ async def create_service_account(
     db: Annotated[Database, Depends(get_db)],
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
+    require_flag(admin, FLAG_SERVICE_ACCOUNTS_MANAGE, _ERR_PERM_SERVICE_ACCOUNTS)
 
     sa_id  = str(uuid.uuid4())
     raw_key = _generate_raw_key()
@@ -262,7 +262,7 @@ async def get_service_account(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
+    require_flag(admin, FLAG_SERVICE_ACCOUNTS_MANAGE, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -316,7 +316,7 @@ async def update_service_account(
     db: Annotated[Database, Depends(get_db)],
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
+    require_flag(admin, FLAG_SERVICE_ACCOUNTS_MANAGE, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -381,7 +381,7 @@ async def delete_service_account(
     db: Annotated[Database, Depends(get_db)],
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
+    require_flag(admin, FLAG_SERVICE_ACCOUNTS_MANAGE, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(
@@ -420,7 +420,7 @@ async def rotate_service_account_key(
     db: Annotated[Database, Depends(get_db)],
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP))],
 ):
-    require_flag(admin, FLAG_MANAGE_SERVICE_ACCOUNTS, _ERR_PERM_SERVICE_ACCOUNTS)
+    require_flag(admin, FLAG_SERVICE_ACCOUNTS_MANAGE, _ERR_PERM_SERVICE_ACCOUNTS)
     sa_id = validate_uuid(sa_id)
 
     cursor = await db.execute(

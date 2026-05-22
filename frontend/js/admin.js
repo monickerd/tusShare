@@ -93,28 +93,28 @@ const Admin = (() => {
     // Maps section IDs to the flags (any one of which) that grant access.
     // Sections whose ID is absent are shown to all admins.
     const _SECTION_FLAGS = {
-        'settings':         ['can_manage_system_settings', 'can_manage_org_settings'],
-        'storage':          ['can_manage_system_settings'],
-        'disk':             ['can_view_disk_usage'],
-        'theme':            ['can_manage_system_settings', 'can_manage_org_settings'],
-        'notifications':    ['can_manage_integrations'],
-        'users':            ['can_manage_users'],
-        'invites':          ['can_manage_invites'],
-        'service-accounts': ['can_manage_service_accounts'],
-        'idp':              ['can_manage_system_settings'],
-        'teams':            ['can_manage_teams'],
-        'roles':            ['can_manage_roles', 'can_create_roles'],
-        'mfa':              ['can_manage_user_mfa'],
-        'policy':           ['can_manage_policies'],
-        'escrow':           ['can_manage_escrow'],
-        'profiles':         ['can_manage_org_settings', 'can_manage_sharing'],
-        'api-keys':         ['can_manage_integrations', 'can_manage_system_settings'],
-        'antivirus':        ['can_manage_system_settings'],
-        'sharing':          ['can_manage_sharing'],
-        'rate-limits':      ['can_manage_system_settings'],
-        'session-policy':   ['can_manage_system_settings'],
-        'audit':            ['can_view_audit_log'],
-        'export':           ['can_manage_system_settings'],
+        'settings':         ['system_settings_manage', 'org_settings_manage'],
+        'storage':          ['system_settings_manage'],
+        'disk':             ['disk_usage_view'],
+        'theme':            ['system_settings_manage', 'org_settings_manage'],
+        'notifications':    ['integrations_notifications_manage'],
+        'users':            ['users_view', 'users_manage'],
+        'invites':          ['users_invite_manage'],
+        'service-accounts': ['service_accounts_manage'],
+        'idp':              ['integrations_idp_manage', 'system_settings_manage'],
+        'teams':            ['teams_manage'],
+        'roles':            ['roles_manage', 'roles_create'],
+        'mfa':              ['users_mfa_manage'],
+        'policy':           ['policies_view', 'policies_manage'],
+        'escrow':           ['escrow_manage'],
+        'profiles':         ['org_settings_manage', 'sharing_manage'],
+        'api-keys':         ['integrations_notifications_manage', 'system_settings_manage'],
+        'antivirus':        ['system_settings_manage'],
+        'sharing':          ['sharing_manage'],
+        'rate-limits':      ['system_settings_manage'],
+        'session-policy':   ['system_settings_manage'],
+        'audit':            ['audit_log_view'],
+        'export':           ['system_settings_manage'],
     };
 
     // ------------------------------------------------------------------
@@ -1277,11 +1277,12 @@ const Admin = (() => {
 
     async function _renderRoles(container) {
         container.innerHTML = '<p class="text-muted">Loading…</p>';
-        let data, capData;
+        let data, capData, flagMeta;
         try {
-            [data, capData] = await Promise.all([
+            [data, capData, flagMeta] = await Promise.all([
                 Api.get(`${_api()}/admin/roles`),
                 Api.get(`${_api()}/admin/roles/capabilities`),
+                Api.get(`${_api()}/admin/roles/flag-metadata`).catch(() => ({ requires: {}, related: {} })),
             ]);
         } catch (err) {
             _showError(container, 'Failed to load roles: ' + err.message);
@@ -1336,6 +1337,7 @@ const Admin = (() => {
                 el.appendChild(_buildRoleCard(
                     role, flags, flagsByCategory, adminTier, refresh,
                     withAlias ? _TEAM_ROLE_ALIAS[role.id] : undefined,
+                    flagMeta,
                 ));
             }
             return el;
@@ -1430,7 +1432,7 @@ const Admin = (() => {
         container.appendChild(buildList(teamRoles, true));
     }
 
-    function _buildRoleCard(role, flags, flagsByCategory, adminTier, refreshFn, alias) {
+    function _buildRoleCard(role, flags, flagsByCategory, adminTier, refreshFn, alias, flagMeta) {
         const body = Utils.el('div', { className: 'role-card-body', style: 'display:none' });
         let bodyLoaded = false;
 
@@ -1442,7 +1444,7 @@ const Admin = (() => {
                 toggleBtn.classList.toggle('collapsed', open);
                 if (!open && !bodyLoaded) {
                     bodyLoaded = true;
-                    _populateRoleCardBody(body, role, flags, flagsByCategory, adminTier, refreshFn);
+                    _populateRoleCardBody(body, role, flags, flagsByCategory, adminTier, refreshFn, flagMeta || { requires: {}, related: {} });
                 }
             },
         });
@@ -1465,7 +1467,7 @@ const Admin = (() => {
         return card;
     }
 
-    function _populateRoleCardBody(container, role, flags, flagsByCategory, adminTier, refreshFn) {
+    function _populateRoleCardBody(container, role, flags, flagsByCategory, adminTier, refreshFn, flagMeta) {
         // Rename / description form (always shown — system roles can be renamed)
         const fldName = Utils.el('input', {
             type: 'text', className: 'input-sm', value: role.name,
@@ -1608,6 +1610,56 @@ const Admin = (() => {
             },
         });
 
+        // Dependency warnings panel — updated live as checkboxes change
+        const depWarnings = Utils.el('div', { className: 'flag-dep-warnings', style: 'display:none' });
+        const requires = (flagMeta && flagMeta.requires) || {};
+        const related  = (flagMeta && flagMeta.related)  || {};
+
+        function _updateDepWarnings() {
+            const warnings = [];
+            const hints    = [];
+
+            for (const [flag, deps] of Object.entries(requires)) {
+                const flagChk = flagInputs[flag]?.chk;
+                if (!flagChk || !flagChk.checked) continue;
+                for (const dep of deps) {
+                    const depChk = flagInputs[dep]?.chk;
+                    if (!depChk || !depChk.checked) {
+                        warnings.push(`⚠ "${flag}" requires "${dep}" to also be enabled.`);
+                    }
+                }
+            }
+
+            for (const [flag, rels] of Object.entries(related)) {
+                const flagChk = flagInputs[flag]?.chk;
+                if (!flagChk || !flagChk.checked) continue;
+                const missing = rels.filter(r => flagInputs[r]?.chk && !flagInputs[r].chk.checked);
+                if (missing.length) {
+                    hints.push(`💡 "${flag}" is often used with: ${missing.join(', ')}`);
+                }
+            }
+
+            depWarnings.innerHTML = '';
+            if (warnings.length || hints.length) {
+                depWarnings.style.display = '';
+                for (const w of warnings) {
+                    depWarnings.appendChild(Utils.el('div', { className: 'flag-dep-warning', textContent: w }));
+                }
+                for (const h of hints) {
+                    depWarnings.appendChild(Utils.el('div', { className: 'flag-dep-hint', textContent: h }));
+                }
+            } else {
+                depWarnings.style.display = 'none';
+            }
+        }
+
+        // Wire change listeners to all checkboxes
+        for (const { chk } of Object.values(flagInputs)) {
+            chk.addEventListener('change', _updateDepWarnings);
+        }
+        // Run once on render to catch pre-existing issues
+        _updateDepWarnings();
+
         container.innerHTML = '';
         container.appendChild(Utils.el('div', { className: 'role-card-content' }, [
             Utils.el('div', { className: 'role-meta-form' }, [
@@ -1625,6 +1677,7 @@ const Admin = (() => {
             Utils.el('div', { className: 'role-flags' }, [
                 Utils.el('h4', { className: 'role-flags-title', textContent: 'Permission Flags' }),
                 ...flagSections,
+                depWarnings,
                 Utils.el('div', { className: 'role-flags-actions' }, [saveFlagsBtn]),
             ]),
         ]));
@@ -5635,6 +5688,61 @@ const Admin = (() => {
         'in', 'not_in', 'matches_re', 'cross_eq', 'cross_neq',
     ];
 
+    async function _renderLinkShareSettings(container) {
+        const wrap = Utils.el('div', { className: 'policy-subsection', style: 'margin-bottom:24px' });
+        wrap.appendChild(Utils.el('h4', { textContent: 'Link Share Settings' }));
+
+        let currentVal = 0;
+        try {
+            const data = await Api.get(`${_api()}/admin/settings`);
+            const raw = (data.settings || {}).link_share_max_expiry_days;
+            currentVal = parseInt(raw, 10) || 0;
+        } catch (_) {}
+
+        const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:8px' });
+        const label = Utils.el('label', {
+            textContent: 'Maximum link share duration (days):',
+            style: 'margin:0;white-space:nowrap',
+        });
+        const inp = Utils.el('input', {
+            type: 'number',
+            className: 'form-control form-control-sm',
+            style: 'width:90px',
+            min: '0',
+            step: '1',
+            value: String(currentVal),
+        });
+        const hint = Utils.el('span', {
+            className: 'text-muted',
+            textContent: '(0 = no limit)',
+            style: 'font-size:0.85em',
+        });
+        row.appendChild(label);
+        row.appendChild(inp);
+        row.appendChild(hint);
+        wrap.appendChild(row);
+
+        const saveBtn = Utils.el('button', {
+            className: 'btn btn-primary btn-sm',
+            textContent: 'Save',
+        });
+        saveBtn.addEventListener('click', async () => {
+            const v = parseInt(inp.value, 10);
+            if (isNaN(v) || v < 0) { Utils.showToast('Enter a non-negative integer', 'error'); return; }
+            saveBtn.disabled = true;
+            try {
+                await Api.put(`${_api()}/admin/settings`, { settings: { link_share_max_expiry_days: String(v) } });
+                Utils.showToast('Link share settings saved', 'success');
+            } catch (err) {
+                Utils.showToast('Save failed: ' + err.message, 'error');
+            } finally {
+                saveBtn.disabled = false;
+            }
+        });
+        wrap.appendChild(saveBtn);
+        container.appendChild(wrap);
+    }
+
     async function _renderSharingSection(container) {
         container.innerHTML = '<p class="text-muted">Loading…</p>';
         let data;
@@ -5647,6 +5755,9 @@ const Admin = (() => {
             return;
         }
         container.innerHTML = '';
+
+        // Link share settings sub-section
+        await _renderLinkShareSettings(container);
 
         // Header + create button
         const createBtn = Utils.el('button', {

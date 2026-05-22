@@ -107,7 +107,7 @@ class AuthenticatedUser:
         return any(
             entry["role_id"] in ADMIN_ROLE_IDS or entry["role_id"] is None
             for entry in self.scoped_roles
-            if entry["flags"].get("can_view_admin_panel", "0") not in ("0", "", "false", "False", "no")
+            if entry["flags"].get("admin_panel_view", "0") not in ("0", "", "false", "False", "no")
         )
 
     @property

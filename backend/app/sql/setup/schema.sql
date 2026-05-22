@@ -1313,182 +1313,223 @@ INSERT INTO roles (id, name, description, is_system) VALUES
 -- PERMISSION FLAGS
 -------------------------------------------------
 INSERT INTO role_permission_flags (flag, description, category, is_sensitive) VALUES
-    ('can_view_admin_panel',        'Access the admin panel',                                             'admin',         0), -- NOSONAR
-    ('can_manage_system_settings',  'Configure server-level settings (disk, logging, startup)',           'admin',         0), -- NOSONAR
-    ('can_manage_org_settings',     'Configure org-level settings (branding, org policies)',              'admin',         0), -- NOSONAR
-    ('can_manage_users',            'Create, update, and delete user accounts',                           'admin',         0), -- NOSONAR
-    ('can_manage_invites',          'Create and revoke platform-level registration invite links',          'admin',         0), -- NOSONAR
-    ('can_manage_teams',            'Create, delete, and configure teams',                                'admin',         0), -- NOSONAR
-    ('can_manage_team_members',     'Invite and remove members within a team',                            'admin',         0), -- NOSONAR
-    ('can_manage_roles',            'Define roles and grant or revoke role assignments',                   'roles',         0), -- NOSONAR
-    ('can_create_roles',            'Create custom roles (permission set capped to creator''s own)',       'roles',         0), -- NOSONAR
-    ('can_create_cross_team_roles', 'Create roles that span multiple teams',                              'roles',         0), -- NOSONAR
-    ('can_view_disk_usage',         'View disk usage statistics',                                         'observability', 0), -- NOSONAR
-    ('can_view_audit_log',          'View the server-wide audit trail',                                   'audit',         0), -- NOSONAR
-    ('can_export_audit_log',        'Export the audit trail to CSV or TXT',                               'audit',         0), -- NOSONAR
-    ('can_manage_integrations',     'Configure LDAP, SSO, and external identity providers',               'integrations',  0), -- NOSONAR
-    ('can_manage_policies',         'Define and enforce org- and team-level policies',                    'policy',        0), -- NOSONAR
-    ('can_access_all_files',        'Bypass file ownership checks — grants access to all files',          'files',         1), -- NOSONAR
-    ('can_define_policy_fields',    'Register new LDAP/OIDC attribute fields for policy conditions',      'policy',        0), -- NOSONAR
-    ('can_act_as_escrow',           'User can be added as a key escrow recovery agent',                   'security',      1), -- NOSONAR
-    ('can_manage_user_mfa',         'View and remove MFA credentials for other users (admin)',             'security',      1), -- NOSONAR
-    ('can_manage_escrow',           'Manage org-level escrow defaults and folder-level escrow policies',  'security',      1), -- NOSONAR
-    ('can_manage_sharing',          'Manage sharing restriction flags and identity-scoped sharing rules', 'security',      0), -- NOSONAR
-    ('can_create_link_shares',      'May create anonymous link shares',                                   'sharing',       0), -- NOSONAR
-    ('can_create_user_shares',      'May create user-to-user KEM shares',                                 'sharing',       0), -- NOSONAR
-    ('can_create_upload_grants',    'May enable upload access on a share',                                'sharing',       0), -- NOSONAR
-    ('can_share_folders',           'May create upload-only folder shares',                               'sharing',       0), -- NOSONAR
-    ('can_manage_service_accounts', 'Create, rotate, and delete machine-identity service accounts',       'admin',         0), -- NOSONAR
-    ('can_copy_files',              'May copy files within copy_boundary policy',                          'files',         0); -- NOSONAR
+    -- Admin panel + global settings
+    ('admin_panel_view',                    'Access the admin panel',                                                   'admin',         0), -- NOSONAR
+    ('system_settings_manage',              'Configure server-level settings (disk, logging, startup)',                 'admin',         0), -- NOSONAR
+    ('org_settings_manage',                 'Configure org-level settings (branding, org policies)',                    'admin',         0), -- NOSONAR
+    -- User management (split; view ⊂ manage ⊂ delete)
+    ('users_view',                          'List users and view profile / MFA status / activity (read-only)',          'admin',         0), -- NOSONAR
+    ('users_manage',                        'Create, edit, suspend, and force-MFA-reset users; implies view',           'admin',         0), -- NOSONAR
+    ('users_delete',                        'Permanently delete user accounts (irreversible); requires manage',         'admin',         0), -- NOSONAR
+    ('users_invite_manage',                 'Create and revoke platform-level registration invite links',               'admin',         0), -- NOSONAR
+    ('users_mfa_manage',                    'View and remove MFA credentials for other users (admin)',                  'security',      1), -- NOSONAR
+    -- Team management
+    ('teams_manage',                        'Create, delete, and configure teams',                                      'admin',         0), -- NOSONAR
+    ('teams_members_manage',                'Invite and remove members within a team',                                  'admin',         0), -- NOSONAR
+    -- Role management
+    ('roles_manage',                        'Define roles and grant or revoke role assignments',                        'roles',         0), -- NOSONAR
+    ('roles_create',                        'Create custom roles (permission set capped to creator''s own)',            'roles',         0), -- NOSONAR
+    ('roles_cross_team_create',             'Create roles that span multiple teams',                                    'roles',         0), -- NOSONAR
+    -- Observability
+    ('disk_usage_view',                     'View disk usage statistics',                                              'observability', 0), -- NOSONAR
+    ('audit_log_view',                      'View the server-wide audit trail',                                        'audit',         0), -- NOSONAR
+    ('audit_log_export',                    'Export the audit trail to CSV or TXT',                                    'audit',         0), -- NOSONAR
+    -- Integrations (split)
+    ('integrations_idp_manage',             'Configure LDAP / OIDC identity providers',                                'integrations',  0), -- NOSONAR
+    ('integrations_notifications_manage',   'Configure SIEM webhooks and notification channels',                       'integrations',  0), -- NOSONAR
+    -- Policy management (split; view ⊂ manage)
+    ('policies_view',                       'Read all policies and conditions (audit / troubleshooting)',               'policy',        0), -- NOSONAR
+    ('policies_manage',                     'Create, edit, and delete policies and conditions; implies view',           'policy',        0), -- NOSONAR
+    ('policies_fields_manage',              'Register new LDAP/OIDC attribute fields for policy conditions',           'policy',        0), -- NOSONAR
+    -- File access bypass (split; write implies read)
+    ('files_access_all_read',               'Bypass ACL for reads and downloads (audit mode)',                         'files',         1), -- NOSONAR
+    ('files_access_all_write',              'Bypass ACL for writes and deletes; implies files_access_all_read',        'files',         1), -- NOSONAR
+    -- File operations
+    ('files_copy',                          'May copy files within copy_boundary policy',                              'files',         0), -- NOSONAR
+    -- Security / key management
+    ('can_act_as_escrow',                   'User can be added as a key escrow recovery agent',                        'security',      1), -- NOSONAR
+    ('escrow_manage',                       'Manage org-level escrow defaults and folder-level escrow policies',       'security',      1), -- NOSONAR
+    ('sharing_manage',                      'Manage sharing restriction flags and identity-scoped sharing rules',      'security',      0), -- NOSONAR
+    ('service_accounts_manage',             'Create, rotate, and delete machine-identity service accounts',            'admin',         0), -- NOSONAR
+    -- Sharing capability flags (default ON for role_user; admins remove to restrict)
+    ('shares_link_create',                  'May create anonymous link shares',                                        'sharing',       0), -- NOSONAR
+    ('shares_user_create',                  'May create user-to-user KEM shares',                                      'sharing',       0), -- NOSONAR
+    ('shares_upload_grant_create',          'May enable upload access on a share',                                     'sharing',       0), -- NOSONAR
+    ('shares_folder_create',                'May create upload-only folder shares',                                    'sharing',       0); -- NOSONAR
 
 -------------------------------------------------
 -- PERMISSION FLAG GRANTS PER ROLE
 -------------------------------------------------
 
--- server_admin: full access except can_access_all_files
+-- server_admin: full access; file-bypass flags start at 0 (require explicit activation)
 INSERT INTO role_permissions (role_id, flag, value) VALUES
-    ('server_admin', 'can_view_admin_panel',        '1'),
-    ('server_admin', 'can_manage_system_settings',  '1'),
-    ('server_admin', 'can_manage_org_settings',     '1'),
-    ('server_admin', 'can_manage_users',            '1'),
-    ('server_admin', 'can_manage_invites',          '1'),
-    ('server_admin', 'can_manage_teams',            '1'),
-    ('server_admin', 'can_manage_team_members',     '1'),
-    ('server_admin', 'can_manage_roles',            '1'),
-    ('server_admin', 'can_create_roles',            '1'),
-    ('server_admin', 'can_create_cross_team_roles', '1'),
-    ('server_admin', 'can_view_disk_usage',         '1'),
-    ('server_admin', 'can_view_audit_log',          '1'),
-    ('server_admin', 'can_export_audit_log',        '1'),
-    ('server_admin', 'can_manage_integrations',     '1'),
-    ('server_admin', 'can_manage_policies',         '1'),
-    ('server_admin', 'can_access_all_files',        '0'),
-    ('server_admin', 'can_define_policy_fields',    '1'),
-    ('server_admin', 'can_manage_user_mfa',         '1'),
-    ('server_admin', 'can_manage_escrow',           '1'),
-    ('server_admin', 'can_manage_sharing',          '1'),
-    ('server_admin', 'can_create_link_shares',      '1'),
-    ('server_admin', 'can_create_user_shares',      '1'),
-    ('server_admin', 'can_create_upload_grants',    '1'),
-    ('server_admin', 'can_share_folders',           '1'),
-    ('server_admin', 'can_manage_service_accounts', '1'),
-    ('server_admin', 'can_copy_files',              '1');
+    ('server_admin', 'admin_panel_view',                  '1'),
+    ('server_admin', 'system_settings_manage',            '1'),
+    ('server_admin', 'org_settings_manage',               '1'),
+    ('server_admin', 'users_view',                        '1'),
+    ('server_admin', 'users_manage',                      '1'),
+    ('server_admin', 'users_delete',                      '1'),
+    ('server_admin', 'users_invite_manage',               '1'),
+    ('server_admin', 'users_mfa_manage',                  '1'),
+    ('server_admin', 'teams_manage',                      '1'),
+    ('server_admin', 'teams_members_manage',              '1'),
+    ('server_admin', 'roles_manage',                      '1'),
+    ('server_admin', 'roles_create',                      '1'),
+    ('server_admin', 'roles_cross_team_create',           '1'),
+    ('server_admin', 'disk_usage_view',                   '1'),
+    ('server_admin', 'audit_log_view',                    '1'),
+    ('server_admin', 'audit_log_export',                  '1'),
+    ('server_admin', 'integrations_idp_manage',           '1'),
+    ('server_admin', 'integrations_notifications_manage', '1'),
+    ('server_admin', 'policies_view',                     '1'),
+    ('server_admin', 'policies_manage',                   '1'),
+    ('server_admin', 'policies_fields_manage',            '1'),
+    ('server_admin', 'files_access_all_read',             '0'),
+    ('server_admin', 'files_access_all_write',            '0'),
+    ('server_admin', 'files_copy',                        '1'),
+    ('server_admin', 'escrow_manage',                     '1'),
+    ('server_admin', 'sharing_manage',                    '1'),
+    ('server_admin', 'service_accounts_manage',           '1'),
+    ('server_admin', 'shares_link_create',                '1'),
+    ('server_admin', 'shares_user_create',                '1'),
+    ('server_admin', 'shares_upload_grant_create',        '1'),
+    ('server_admin', 'shares_folder_create',              '1');
 
--- org_admin: org-wide; no system-level or integration settings
+-- org_admin: org-wide; no server-level or IDP integration settings
 INSERT INTO role_permissions (role_id, flag, value) VALUES
-    ('org_admin', 'can_view_admin_panel',        '1'),
-    ('org_admin', 'can_manage_system_settings',  '0'),
-    ('org_admin', 'can_manage_org_settings',     '1'),
-    ('org_admin', 'can_manage_users',            '1'),
-    ('org_admin', 'can_manage_invites',          '1'),
-    ('org_admin', 'can_manage_teams',            '1'),
-    ('org_admin', 'can_manage_team_members',     '1'),
-    ('org_admin', 'can_manage_roles',            '1'),
-    ('org_admin', 'can_create_roles',            '1'),
-    ('org_admin', 'can_create_cross_team_roles', '1'),
-    ('org_admin', 'can_view_disk_usage',         '1'),
-    ('org_admin', 'can_view_audit_log',          '1'),
-    ('org_admin', 'can_export_audit_log',        '1'),
-    ('org_admin', 'can_manage_integrations',     '0'),
-    ('org_admin', 'can_manage_policies',         '1'),
-    ('org_admin', 'can_access_all_files',        '0'),
-    ('org_admin', 'can_define_policy_fields',    '1'),
-    ('org_admin', 'can_manage_user_mfa',         '1'),
-    ('org_admin', 'can_manage_escrow',           '1'),
-    ('org_admin', 'can_manage_sharing',          '1'),
-    ('org_admin', 'can_create_link_shares',      '1'),
-    ('org_admin', 'can_create_user_shares',      '1'),
-    ('org_admin', 'can_create_upload_grants',    '1'),
-    ('org_admin', 'can_share_folders',           '1'),
-    ('org_admin', 'can_manage_service_accounts', '1'),
-    ('org_admin', 'can_copy_files',              '1');
+    ('org_admin', 'admin_panel_view',                  '1'),
+    ('org_admin', 'system_settings_manage',            '0'),
+    ('org_admin', 'org_settings_manage',               '1'),
+    ('org_admin', 'users_view',                        '1'),
+    ('org_admin', 'users_manage',                      '1'),
+    ('org_admin', 'users_delete',                      '1'),
+    ('org_admin', 'users_invite_manage',               '1'),
+    ('org_admin', 'users_mfa_manage',                  '1'),
+    ('org_admin', 'teams_manage',                      '1'),
+    ('org_admin', 'teams_members_manage',              '1'),
+    ('org_admin', 'roles_manage',                      '1'),
+    ('org_admin', 'roles_create',                      '1'),
+    ('org_admin', 'roles_cross_team_create',           '1'),
+    ('org_admin', 'disk_usage_view',                   '1'),
+    ('org_admin', 'audit_log_view',                    '1'),
+    ('org_admin', 'audit_log_export',                  '1'),
+    ('org_admin', 'integrations_idp_manage',           '0'),
+    ('org_admin', 'integrations_notifications_manage', '0'),
+    ('org_admin', 'policies_view',                     '1'),
+    ('org_admin', 'policies_manage',                   '1'),
+    ('org_admin', 'policies_fields_manage',            '1'),
+    ('org_admin', 'files_access_all_read',             '0'),
+    ('org_admin', 'files_access_all_write',            '0'),
+    ('org_admin', 'files_copy',                        '1'),
+    ('org_admin', 'escrow_manage',                     '1'),
+    ('org_admin', 'sharing_manage',                    '1'),
+    ('org_admin', 'service_accounts_manage',           '1'),
+    ('org_admin', 'shares_link_create',                '1'),
+    ('org_admin', 'shares_user_create',                '1'),
+    ('org_admin', 'shares_upload_grant_create',        '1'),
+    ('org_admin', 'shares_folder_create',              '1');
 
 -- operational_admin: user/team lifecycle only
 INSERT INTO role_permissions (role_id, flag, value) VALUES
-    ('operational_admin', 'can_view_admin_panel',        '1'),
-    ('operational_admin', 'can_manage_system_settings',  '0'),
-    ('operational_admin', 'can_manage_org_settings',     '0'),
-    ('operational_admin', 'can_manage_users',            '1'),
-    ('operational_admin', 'can_manage_invites',          '1'),
-    ('operational_admin', 'can_manage_teams',            '1'),
-    ('operational_admin', 'can_manage_team_members',     '1'),
-    ('operational_admin', 'can_manage_roles',            '1'),
-    ('operational_admin', 'can_create_roles',            '0'),
-    ('operational_admin', 'can_create_cross_team_roles', '0'),
-    ('operational_admin', 'can_view_disk_usage',         '0'),
-    ('operational_admin', 'can_view_audit_log',          '0'),
-    ('operational_admin', 'can_export_audit_log',        '0'),
-    ('operational_admin', 'can_manage_integrations',     '0'),
-    ('operational_admin', 'can_manage_policies',         '0'),
-    ('operational_admin', 'can_access_all_files',        '0'),
-    ('operational_admin', 'can_define_policy_fields',    '0'),
-    ('operational_admin', 'can_manage_user_mfa',         '0'),
-    ('operational_admin', 'can_manage_escrow',           '0'),
-    ('operational_admin', 'can_manage_sharing',          '0'),
-    ('operational_admin', 'can_create_link_shares',      '0'),
-    ('operational_admin', 'can_create_user_shares',      '0'),
-    ('operational_admin', 'can_create_upload_grants',    '0'),
-    ('operational_admin', 'can_share_folders',           '0'),
-    ('operational_admin', 'can_manage_service_accounts', '1'),
-    ('operational_admin', 'can_copy_files',              '1');
+    ('operational_admin', 'admin_panel_view',                  '1'),
+    ('operational_admin', 'system_settings_manage',            '0'),
+    ('operational_admin', 'org_settings_manage',               '0'),
+    ('operational_admin', 'users_view',                        '1'),
+    ('operational_admin', 'users_manage',                      '1'),
+    ('operational_admin', 'users_delete',                      '0'),
+    ('operational_admin', 'users_invite_manage',               '1'),
+    ('operational_admin', 'users_mfa_manage',                  '0'),
+    ('operational_admin', 'teams_manage',                      '1'),
+    ('operational_admin', 'teams_members_manage',              '1'),
+    ('operational_admin', 'roles_manage',                      '1'),
+    ('operational_admin', 'roles_create',                      '0'),
+    ('operational_admin', 'roles_cross_team_create',           '0'),
+    ('operational_admin', 'disk_usage_view',                   '0'),
+    ('operational_admin', 'audit_log_view',                    '0'),
+    ('operational_admin', 'audit_log_export',                  '0'),
+    ('operational_admin', 'integrations_idp_manage',           '0'),
+    ('operational_admin', 'integrations_notifications_manage', '0'),
+    ('operational_admin', 'policies_view',                     '0'),
+    ('operational_admin', 'policies_manage',                   '0'),
+    ('operational_admin', 'policies_fields_manage',            '0'),
+    ('operational_admin', 'files_access_all_read',             '0'),
+    ('operational_admin', 'files_access_all_write',            '0'),
+    ('operational_admin', 'files_copy',                        '1'),
+    ('operational_admin', 'escrow_manage',                     '0'),
+    ('operational_admin', 'sharing_manage',                    '0'),
+    ('operational_admin', 'service_accounts_manage',           '1'),
+    ('operational_admin', 'shares_link_create',                '0'),
+    ('operational_admin', 'shares_user_create',                '0'),
+    ('operational_admin', 'shares_upload_grant_create',        '0'),
+    ('operational_admin', 'shares_folder_create',              '0');
 
 -- team_admin: team-scoped; can create roles and manage within their team
 INSERT INTO role_permissions (role_id, flag, value) VALUES
-    ('team_admin', 'can_view_admin_panel',        '1'),
-    ('team_admin', 'can_manage_system_settings',  '0'),
-    ('team_admin', 'can_manage_org_settings',     '0'),
-    ('team_admin', 'can_manage_users',            '0'),
-    ('team_admin', 'can_manage_invites',          '1'),
-    ('team_admin', 'can_manage_teams',            '1'),
-    ('team_admin', 'can_manage_team_members',     '1'),
-    ('team_admin', 'can_manage_roles',            '1'),
-    ('team_admin', 'can_create_roles',            '1'),
-    ('team_admin', 'can_create_cross_team_roles', '0'),
-    ('team_admin', 'can_view_disk_usage',         '0'),
-    ('team_admin', 'can_view_audit_log',          '0'),
-    ('team_admin', 'can_export_audit_log',        '0'),
-    ('team_admin', 'can_manage_integrations',     '0'),
-    ('team_admin', 'can_manage_policies',         '0'),
-    ('team_admin', 'can_access_all_files',        '0'),
-    ('team_admin', 'can_define_policy_fields',    '0'),
-    ('team_admin', 'can_manage_user_mfa',         '0'),
-    ('team_admin', 'can_manage_escrow',           '0'),
-    ('team_admin', 'can_manage_sharing',          '0'),
-    ('team_admin', 'can_create_link_shares',      '0'),
-    ('team_admin', 'can_create_user_shares',      '0'),
-    ('team_admin', 'can_create_upload_grants',    '0'),
-    ('team_admin', 'can_share_folders',           '0'),
-    ('team_admin', 'can_manage_service_accounts', '0'),
-    ('team_admin', 'can_copy_files',              '1');
+    ('team_admin', 'admin_panel_view',                  '1'),
+    ('team_admin', 'system_settings_manage',            '0'),
+    ('team_admin', 'org_settings_manage',               '0'),
+    ('team_admin', 'users_view',                        '0'),
+    ('team_admin', 'users_manage',                      '0'),
+    ('team_admin', 'users_delete',                      '0'),
+    ('team_admin', 'users_invite_manage',               '1'),
+    ('team_admin', 'users_mfa_manage',                  '0'),
+    ('team_admin', 'teams_manage',                      '1'),
+    ('team_admin', 'teams_members_manage',              '1'),
+    ('team_admin', 'roles_manage',                      '1'),
+    ('team_admin', 'roles_create',                      '1'),
+    ('team_admin', 'roles_cross_team_create',           '0'),
+    ('team_admin', 'disk_usage_view',                   '0'),
+    ('team_admin', 'audit_log_view',                    '0'),
+    ('team_admin', 'audit_log_export',                  '0'),
+    ('team_admin', 'integrations_idp_manage',           '0'),
+    ('team_admin', 'integrations_notifications_manage', '0'),
+    ('team_admin', 'policies_view',                     '0'),
+    ('team_admin', 'policies_manage',                   '0'),
+    ('team_admin', 'policies_fields_manage',            '0'),
+    ('team_admin', 'files_access_all_read',             '0'),
+    ('team_admin', 'files_access_all_write',            '0'),
+    ('team_admin', 'files_copy',                        '1'),
+    ('team_admin', 'escrow_manage',                     '0'),
+    ('team_admin', 'sharing_manage',                    '0'),
+    ('team_admin', 'service_accounts_manage',           '0'),
+    ('team_admin', 'shares_link_create',                '0'),
+    ('team_admin', 'shares_user_create',                '0'),
+    ('team_admin', 'shares_upload_grant_create',        '0'),
+    ('team_admin', 'shares_folder_create',              '0');
 
 -- team_manager: member management only
 INSERT INTO role_permissions (role_id, flag, value) VALUES
-    ('team_manager', 'can_view_admin_panel',        '0'),
-    ('team_manager', 'can_manage_system_settings',  '0'),
-    ('team_manager', 'can_manage_org_settings',     '0'),
-    ('team_manager', 'can_manage_users',            '0'),
-    ('team_manager', 'can_manage_invites',          '0'),
-    ('team_manager', 'can_manage_teams',            '0'),
-    ('team_manager', 'can_manage_team_members',     '1'),
-    ('team_manager', 'can_manage_roles',            '0'),
-    ('team_manager', 'can_create_roles',            '0'),
-    ('team_manager', 'can_create_cross_team_roles', '0'),
-    ('team_manager', 'can_view_disk_usage',         '0'),
-    ('team_manager', 'can_view_audit_log',          '0'),
-    ('team_manager', 'can_export_audit_log',        '0'),
-    ('team_manager', 'can_manage_integrations',     '0'),
-    ('team_manager', 'can_manage_policies',         '0'),
-    ('team_manager', 'can_access_all_files',        '0'),
-    ('team_manager', 'can_define_policy_fields',    '0'),
-    ('team_manager', 'can_manage_user_mfa',         '0'),
-    ('team_manager', 'can_manage_escrow',           '0'),
-    ('team_manager', 'can_manage_sharing',          '0'),
-    ('team_manager', 'can_create_link_shares',      '0'),
-    ('team_manager', 'can_create_user_shares',      '0'),
-    ('team_manager', 'can_create_upload_grants',    '0'),
-    ('team_manager', 'can_share_folders',           '0'),
-    ('team_manager', 'can_manage_service_accounts', '0'),
-    ('team_manager', 'can_copy_files',              '1');
+    ('team_manager', 'admin_panel_view',                  '0'),
+    ('team_manager', 'system_settings_manage',            '0'),
+    ('team_manager', 'org_settings_manage',               '0'),
+    ('team_manager', 'users_view',                        '0'),
+    ('team_manager', 'users_manage',                      '0'),
+    ('team_manager', 'users_delete',                      '0'),
+    ('team_manager', 'users_invite_manage',               '0'),
+    ('team_manager', 'users_mfa_manage',                  '0'),
+    ('team_manager', 'teams_manage',                      '0'),
+    ('team_manager', 'teams_members_manage',              '1'),
+    ('team_manager', 'roles_manage',                      '0'),
+    ('team_manager', 'roles_create',                      '0'),
+    ('team_manager', 'roles_cross_team_create',           '0'),
+    ('team_manager', 'disk_usage_view',                   '0'),
+    ('team_manager', 'audit_log_view',                    '0'),
+    ('team_manager', 'audit_log_export',                  '0'),
+    ('team_manager', 'integrations_idp_manage',           '0'),
+    ('team_manager', 'integrations_notifications_manage', '0'),
+    ('team_manager', 'policies_view',                     '0'),
+    ('team_manager', 'policies_manage',                   '0'),
+    ('team_manager', 'policies_fields_manage',            '0'),
+    ('team_manager', 'files_access_all_read',             '0'),
+    ('team_manager', 'files_access_all_write',            '0'),
+    ('team_manager', 'files_copy',                        '1'),
+    ('team_manager', 'escrow_manage',                     '0'),
+    ('team_manager', 'sharing_manage',                    '0'),
+    ('team_manager', 'service_accounts_manage',           '0'),
+    ('team_manager', 'shares_link_create',                '0'),
+    ('team_manager', 'shares_user_create',                '0'),
+    ('team_manager', 'shares_upload_grant_create',        '0'),
+    ('team_manager', 'shares_folder_create',              '0');
 
 -- escrow_agent: only the escrow capability flag
 INSERT INTO role_permissions (role_id, flag, value) VALUES
@@ -1496,40 +1537,45 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
 
 -- role_admin (legacy alias): same grants as server_admin for backward compat
 INSERT INTO role_permissions (role_id, flag, value) VALUES
-    ('role_admin', 'can_view_admin_panel',        '1'),
-    ('role_admin', 'can_manage_system_settings',  '1'),
-    ('role_admin', 'can_manage_org_settings',     '1'),
-    ('role_admin', 'can_manage_users',            '1'),
-    ('role_admin', 'can_manage_invites',          '1'),
-    ('role_admin', 'can_manage_teams',            '1'),
-    ('role_admin', 'can_manage_team_members',     '1'),
-    ('role_admin', 'can_manage_roles',            '1'),
-    ('role_admin', 'can_create_roles',            '1'),
-    ('role_admin', 'can_create_cross_team_roles', '1'),
-    ('role_admin', 'can_view_disk_usage',         '1'),
-    ('role_admin', 'can_view_audit_log',          '1'),
-    ('role_admin', 'can_export_audit_log',        '1'),
-    ('role_admin', 'can_manage_integrations',     '1'),
-    ('role_admin', 'can_manage_policies',         '1'),
-    ('role_admin', 'can_access_all_files',        '0'),
-    ('role_admin', 'can_define_policy_fields',    '1'),
-    ('role_admin', 'can_manage_user_mfa',         '1'),
-    ('role_admin', 'can_manage_escrow',           '1'),
-    ('role_admin', 'can_manage_sharing',          '1'),
-    ('role_admin', 'can_create_link_shares',      '1'),
-    ('role_admin', 'can_create_user_shares',      '1'),
-    ('role_admin', 'can_create_upload_grants',    '1'),
-    ('role_admin', 'can_share_folders',           '1'),
-    ('role_admin', 'can_manage_service_accounts', '1'),
-    ('role_admin', 'can_copy_files',              '1');
+    ('role_admin', 'admin_panel_view',                  '1'),
+    ('role_admin', 'system_settings_manage',            '1'),
+    ('role_admin', 'org_settings_manage',               '1'),
+    ('role_admin', 'users_view',                        '1'),
+    ('role_admin', 'users_manage',                      '1'),
+    ('role_admin', 'users_delete',                      '1'),
+    ('role_admin', 'users_invite_manage',               '1'),
+    ('role_admin', 'users_mfa_manage',                  '1'),
+    ('role_admin', 'teams_manage',                      '1'),
+    ('role_admin', 'teams_members_manage',              '1'),
+    ('role_admin', 'roles_manage',                      '1'),
+    ('role_admin', 'roles_create',                      '1'),
+    ('role_admin', 'roles_cross_team_create',           '1'),
+    ('role_admin', 'disk_usage_view',                   '1'),
+    ('role_admin', 'audit_log_view',                    '1'),
+    ('role_admin', 'audit_log_export',                  '1'),
+    ('role_admin', 'integrations_idp_manage',           '1'),
+    ('role_admin', 'integrations_notifications_manage', '1'),
+    ('role_admin', 'policies_view',                     '1'),
+    ('role_admin', 'policies_manage',                   '1'),
+    ('role_admin', 'policies_fields_manage',            '1'),
+    ('role_admin', 'files_access_all_read',             '0'),
+    ('role_admin', 'files_access_all_write',            '0'),
+    ('role_admin', 'files_copy',                        '1'),
+    ('role_admin', 'escrow_manage',                     '1'),
+    ('role_admin', 'sharing_manage',                    '1'),
+    ('role_admin', 'service_accounts_manage',           '1'),
+    ('role_admin', 'shares_link_create',                '1'),
+    ('role_admin', 'shares_user_create',                '1'),
+    ('role_admin', 'shares_upload_grant_create',        '1'),
+    ('role_admin', 'shares_folder_create',              '1');
 
 -- role_user: sharing capabilities; no admin flags
 INSERT INTO role_permissions (role_id, flag, value) VALUES
-    ('role_user', 'can_create_link_shares',   '1'),
-    ('role_user', 'can_create_user_shares',   '1'),
-    ('role_user', 'can_create_upload_grants', '1'),
-    ('role_user', 'can_share_folders',        '1'),
-    ('role_user', 'can_copy_files',           '1');
+    ('role_user', 'shares_link_create',        '1'),
+    ('role_user', 'shares_user_create',        '1'),
+    ('role_user', 'shares_upload_grant_create','1'),
+    ('role_user', 'shares_folder_create',      '1'),
+    ('role_user', 'files_copy',                '1');
 
 -- team_member and role_user have no other flags granted.
 
@@ -1583,6 +1629,7 @@ INSERT INTO admin_settings (key, value) VALUES ('trash_enabled',                
 INSERT INTO admin_settings (key, value) VALUES ('trash_retention_days',          '30')     ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('copy_boundary',                  'any')    ON CONFLICT (key) DO NOTHING;
 INSERT INTO admin_settings (key, value) VALUES ('anon_share_upload_rate_limit',   '20')     ON CONFLICT (key) DO NOTHING; -- requests per 60 s per share_id
+INSERT INTO admin_settings (key, value) VALUES ('link_share_max_expiry_days',      '0')      ON CONFLICT (key) DO NOTHING; -- 0 = no cap
 
 -------------------------------------------------
 -- DEFAULT LOCAL STORAGE VOLUME

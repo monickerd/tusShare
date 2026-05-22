@@ -13,8 +13,8 @@ DELETE /admin/escrow/folder-policies/{folder_id}   — delete policy  [step-up]
 GET    /admin/escrow/coverage-report               — teams with no escrow agent slot filled
 
 All mutation endpoints require:
-  • require_admin dependency (can_view_admin_panel)
-  • FLAG_MANAGE_ESCROW (can_manage_escrow)
+  • require_admin dependency (admin_panel_view)
+  • FLAG_ESCROW_MANAGE (escrow_manage)
   • Step-up token for action key "policy.escrow.*"
 
 The lock model: when is_locked=TRUE on an admin_settings row, only admins
@@ -35,7 +35,7 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
-from app.models.role import FLAG_MANAGE_ESCROW, ROLE_TIER, admin_best_tier
+from app.models.role import FLAG_ESCROW_MANAGE, ROLE_TIER, admin_best_tier
 from app.routes._access import require_flag
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
@@ -45,7 +45,7 @@ from app.validation.sanitizers import validate_uuid
 from typing import Annotated
 
 
-_ERR_PERM_MANAGE_ESCROW = "can_manage_escrow permission required"
+_ERR_PERM_MANAGE_ESCROW = "escrow_manage permission required"
 _SQL_ESCROW_BY_FOLDER = "SELECT * FROM folder_escrow_policies WHERE folder_id = ?"
 
 logger = logging.getLogger(__name__)
@@ -109,7 +109,7 @@ async def get_escrow_settings(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Return org-level escrow defaults and lock state."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
+    require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
     cursor = await db.execute(
         "SELECT key, value, is_locked, locked_min_tier FROM admin_settings "
         "WHERE key IN ('escrow_default_user_ids', 'escrow_default_role_ids', 'escrow_require_coverage')"
@@ -188,7 +188,7 @@ async def update_escrow_settings(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Update org-level escrow defaults."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
+    require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
     my_tier = _admin_tier(admin)
 
     cursor = await db.execute(
@@ -288,7 +288,7 @@ async def list_folder_policies(
     db: Annotated[Database, Depends(get_db)],
 ):
     """List all folder-level escrow policy overrides."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
+    require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
     cursor = await db.execute(
         "SELECT fep.*, f.name as folder_name FROM folder_escrow_policies fep "
         "JOIN folders f ON f.id = fep.folder_id "
@@ -324,7 +324,7 @@ async def get_folder_policy(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Get the policy override for a specific folder, including full agent list."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
+    require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
     folder_id = validate_uuid(folder_id)
 
     cursor = await db.execute(
@@ -419,7 +419,7 @@ async def upsert_folder_policy(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Create or replace the escrow policy for a folder."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
+    require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
     folder_id = validate_uuid(folder_id)
     my_tier = _admin_tier(admin)
     _validate_policy_body(body)
@@ -474,7 +474,7 @@ async def delete_folder_policy(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Delete the escrow policy override for a folder."""
-    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
+    require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
     folder_id = validate_uuid(folder_id)
     my_tier = _admin_tier(admin)
 
@@ -517,7 +517,7 @@ async def get_coverage_report(
     An "unprotected" team is one where no member in user_team_keys holds the
     can_act_as_escrow permission.
     """
-    require_flag(admin, FLAG_MANAGE_ESCROW, _ERR_PERM_MANAGE_ESCROW)
+    require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
 
     # A team is "unprotected" if no explicitly-added escrow member (team_member scoped
     # role, not the owner's team_admin) currently holds can_act_as_escrow.

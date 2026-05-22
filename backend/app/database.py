@@ -339,3 +339,259 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                 ON pending_share_keying(share_id);
         """)
 
+    # ---------------------------------------------------------------------------
+    # Flag rename + split migration (G1) — idempotent; safe to run on every boot.
+    #
+    # Strategy:
+    #   1. INSERT new flag definitions (ON CONFLICT DO NOTHING).
+    #   2. For renamed flags: INSERT successor rows for all roles that held the old
+    #      flag, then DELETE the old rows.
+    #   3. For split flags (USERS, INTEGRATIONS, POLICIES, FILES_ACCESS_ALL):
+    #      INSERT all successor rows for roles that held the retired flag, then
+    #      DELETE the retired flag rows and definition.
+    #   4. Seed new admin_settings keys.
+    # ---------------------------------------------------------------------------
+    async with conn.transaction():
+        await conn.execute("""
+            -- ── New flag definitions ──────────────────────────────────────────
+            INSERT INTO role_permission_flags (flag, description, category, is_sensitive) VALUES
+                ('admin_panel_view',                  'Access the admin panel',                                             'admin',         0),
+                ('system_settings_manage',            'Configure server-level settings (disk, logging, startup)',           'admin',         0),
+                ('org_settings_manage',               'Configure org-level settings (branding, org policies)',              'admin',         0),
+                ('users_view',                        'List users and view profile / MFA status / activity (read-only)',    'admin',         0),
+                ('users_manage',                      'Create, edit, suspend, and force-MFA-reset users; implies view',     'admin',         0),
+                ('users_delete',                      'Permanently delete user accounts (irreversible); requires manage',   'admin',         0),
+                ('users_invite_manage',               'Create and revoke platform-level registration invite links',         'admin',         0),
+                ('users_mfa_manage',                  'View and remove MFA credentials for other users (admin)',            'security',      1),
+                ('teams_manage',                      'Create, delete, and configure teams',                                'admin',         0),
+                ('teams_members_manage',              'Invite and remove members within a team',                            'admin',         0),
+                ('roles_manage',                      'Define roles and grant or revoke role assignments',                  'roles',         0),
+                ('roles_create',                      'Create custom roles (permission set capped to creator''s own)',      'roles',         0),
+                ('roles_cross_team_create',           'Create roles that span multiple teams',                              'roles',         0),
+                ('disk_usage_view',                   'View disk usage statistics',                                         'observability', 0),
+                ('audit_log_view',                    'View the server-wide audit trail',                                   'audit',         0),
+                ('audit_log_export',                  'Export the audit trail to CSV or TXT',                               'audit',         0),
+                ('integrations_idp_manage',           'Configure LDAP / OIDC identity providers',                          'integrations',  0),
+                ('integrations_notifications_manage', 'Configure SIEM webhooks and notification channels',                 'integrations',  0),
+                ('policies_view',                     'Read all policies and conditions (audit / troubleshooting)',         'policy',        0),
+                ('policies_manage',                   'Create, edit, and delete policies and conditions; implies view',    'policy',        0),
+                ('policies_fields_manage',            'Register new LDAP/OIDC attribute fields for policy conditions',    'policy',        0),
+                ('files_access_all_read',             'Bypass ACL for reads and downloads (audit mode)',                   'files',         1),
+                ('files_access_all_write',            'Bypass ACL for writes and deletes; implies files_access_all_read', 'files',         1),
+                ('files_copy',                        'May copy files within copy_boundary policy',                        'files',         0),
+                ('escrow_manage',                     'Manage org-level escrow defaults and folder-level escrow policies', 'security',      1),
+                ('sharing_manage',                    'Manage sharing restriction flags and identity-scoped sharing rules','security',      0),
+                ('service_accounts_manage',           'Create, rotate, and delete machine-identity service accounts',     'admin',         0),
+                ('shares_link_create',                'May create anonymous link shares',                                  'sharing',       0),
+                ('shares_user_create',                'May create user-to-user KEM shares',                                'sharing',       0),
+                ('shares_upload_grant_create',        'May enable upload access on a share',                               'sharing',       0),
+                ('shares_folder_create',              'May create upload-only folder shares',                              'sharing',       0)
+            ON CONFLICT (flag) DO NOTHING;
+
+            -- ── Simple renames: migrate role_permissions rows then delete old defs ──
+
+            -- can_view_admin_panel → admin_panel_view
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'admin_panel_view', value FROM role_permissions WHERE flag = 'can_view_admin_panel'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_view_admin_panel';
+            DELETE FROM role_permission_flags WHERE flag = 'can_view_admin_panel';
+
+            -- can_manage_system_settings → system_settings_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'system_settings_manage', value FROM role_permissions WHERE flag = 'can_manage_system_settings'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_system_settings';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_system_settings';
+
+            -- can_manage_org_settings → org_settings_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'org_settings_manage', value FROM role_permissions WHERE flag = 'can_manage_org_settings'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_org_settings';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_org_settings';
+
+            -- can_manage_invites → users_invite_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'users_invite_manage', value FROM role_permissions WHERE flag = 'can_manage_invites'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_invites';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_invites';
+
+            -- can_manage_user_mfa → users_mfa_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'users_mfa_manage', value FROM role_permissions WHERE flag = 'can_manage_user_mfa'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_user_mfa';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_user_mfa';
+
+            -- can_manage_teams → teams_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'teams_manage', value FROM role_permissions WHERE flag = 'can_manage_teams'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_teams';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_teams';
+
+            -- can_manage_team_members → teams_members_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'teams_members_manage', value FROM role_permissions WHERE flag = 'can_manage_team_members'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_team_members';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_team_members';
+
+            -- can_manage_roles → roles_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'roles_manage', value FROM role_permissions WHERE flag = 'can_manage_roles'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_roles';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_roles';
+
+            -- can_create_roles → roles_create
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'roles_create', value FROM role_permissions WHERE flag = 'can_create_roles'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_create_roles';
+            DELETE FROM role_permission_flags WHERE flag = 'can_create_roles';
+
+            -- can_create_cross_team_roles → roles_cross_team_create
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'roles_cross_team_create', value FROM role_permissions WHERE flag = 'can_create_cross_team_roles'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_create_cross_team_roles';
+            DELETE FROM role_permission_flags WHERE flag = 'can_create_cross_team_roles';
+
+            -- can_view_disk_usage → disk_usage_view
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'disk_usage_view', value FROM role_permissions WHERE flag = 'can_view_disk_usage'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_view_disk_usage';
+            DELETE FROM role_permission_flags WHERE flag = 'can_view_disk_usage';
+
+            -- can_view_audit_log → audit_log_view
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'audit_log_view', value FROM role_permissions WHERE flag = 'can_view_audit_log'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_view_audit_log';
+            DELETE FROM role_permission_flags WHERE flag = 'can_view_audit_log';
+
+            -- can_export_audit_log → audit_log_export
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'audit_log_export', value FROM role_permissions WHERE flag = 'can_export_audit_log'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_export_audit_log';
+            DELETE FROM role_permission_flags WHERE flag = 'can_export_audit_log';
+
+            -- can_define_policy_fields → policies_fields_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'policies_fields_manage', value FROM role_permissions WHERE flag = 'can_define_policy_fields'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_define_policy_fields';
+            DELETE FROM role_permission_flags WHERE flag = 'can_define_policy_fields';
+
+            -- can_manage_escrow → escrow_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'escrow_manage', value FROM role_permissions WHERE flag = 'can_manage_escrow'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_escrow';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_escrow';
+
+            -- can_manage_sharing → sharing_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'sharing_manage', value FROM role_permissions WHERE flag = 'can_manage_sharing'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_sharing';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_sharing';
+
+            -- can_manage_service_accounts → service_accounts_manage
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'service_accounts_manage', value FROM role_permissions WHERE flag = 'can_manage_service_accounts'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_service_accounts';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_service_accounts';
+
+            -- can_copy_files → files_copy
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'files_copy', value FROM role_permissions WHERE flag = 'can_copy_files'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_copy_files';
+            DELETE FROM role_permission_flags WHERE flag = 'can_copy_files';
+
+            -- can_create_link_shares → shares_link_create
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'shares_link_create', value FROM role_permissions WHERE flag = 'can_create_link_shares'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_create_link_shares';
+            DELETE FROM role_permission_flags WHERE flag = 'can_create_link_shares';
+
+            -- can_create_user_shares → shares_user_create
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'shares_user_create', value FROM role_permissions WHERE flag = 'can_create_user_shares'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_create_user_shares';
+            DELETE FROM role_permission_flags WHERE flag = 'can_create_user_shares';
+
+            -- can_create_upload_grants → shares_upload_grant_create
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'shares_upload_grant_create', value FROM role_permissions WHERE flag = 'can_create_upload_grants'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_create_upload_grants';
+            DELETE FROM role_permission_flags WHERE flag = 'can_create_upload_grants';
+
+            -- can_share_folders → shares_folder_create
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'shares_folder_create', value FROM role_permissions WHERE flag = 'can_share_folders'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_share_folders';
+            DELETE FROM role_permission_flags WHERE flag = 'can_share_folders';
+
+            -- ── Split: can_manage_users → users_view + users_manage + users_delete ──
+            -- Roles that held '1' get all three successors; roles with '0' get '0'.
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'users_view', value FROM role_permissions WHERE flag = 'can_manage_users'
+                ON CONFLICT DO NOTHING;
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'users_manage', value FROM role_permissions WHERE flag = 'can_manage_users'
+                ON CONFLICT DO NOTHING;
+            -- users_delete: only grant '1' where manage was '1' (same value for now;
+            -- admins can revoke it post-migration if they want finer control).
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'users_delete', value FROM role_permissions WHERE flag = 'can_manage_users'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_users';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_users';
+
+            -- ── Split: can_manage_integrations → idp + notifications ──
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'integrations_idp_manage', value FROM role_permissions WHERE flag = 'can_manage_integrations'
+                ON CONFLICT DO NOTHING;
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'integrations_notifications_manage', value FROM role_permissions WHERE flag = 'can_manage_integrations'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_integrations';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_integrations';
+
+            -- ── Split: can_manage_policies → policies_view + policies_manage ──
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'policies_view', value FROM role_permissions WHERE flag = 'can_manage_policies'
+                ON CONFLICT DO NOTHING;
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'policies_manage', value FROM role_permissions WHERE flag = 'can_manage_policies'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_manage_policies';
+            DELETE FROM role_permission_flags WHERE flag = 'can_manage_policies';
+
+            -- ── Split: can_access_all_files → files_access_all_read + files_access_all_write ──
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'files_access_all_read', value FROM role_permissions WHERE flag = 'can_access_all_files'
+                ON CONFLICT DO NOTHING;
+            INSERT INTO role_permissions (role_id, flag, value)
+                SELECT role_id, 'files_access_all_write', value FROM role_permissions WHERE flag = 'can_access_all_files'
+                ON CONFLICT DO NOTHING;
+            DELETE FROM role_permissions WHERE flag = 'can_access_all_files';
+            DELETE FROM role_permission_flags WHERE flag = 'can_access_all_files';
+
+            -- ── New admin_settings seeds ──────────────────────────────────────
+            INSERT INTO admin_settings (key, value) VALUES ('link_share_max_expiry_days', '0')
+                ON CONFLICT (key) DO NOTHING;
+        """)
+

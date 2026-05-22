@@ -18,8 +18,8 @@ and may be slow for large deployments — a background-task variant is planned f
 future infrastructure work.
 
 Access control:
-  All endpoints require can_manage_policies.
-  Team-scoped policies: admins with can_manage_policies may manage any policy;
+  All endpoints require policies_manage.
+  Team-scoped policies: admins with policies_manage may manage any policy;
   future work may further scope this to the admin's effective scope.
 """
 
@@ -40,7 +40,7 @@ from app.models.policy import (
     evaluate_user_policies,
     sweep_policy_for_all_users,
 )
-from app.models.role import FLAG_MANAGE_POLICIES
+from app.models.role import FLAG_POLICIES_MANAGE
 from app.routes._access import require_flag
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
@@ -53,7 +53,7 @@ router = APIRouter()
 
 _MAX_POLICY_NAME_LEN  = 80
 _MAX_VALUE_LEN        = 500
-_ERR_PERM_POLICIES    = "can_manage_policies required"
+_ERR_PERM_POLICIES    = "policies_manage required"
 _SQL_TEAM_EXISTS      = "SELECT 1 FROM teams WHERE id = ?"
 _ERR_TEAM_NOT_FOUND   = "Team not found"
 
@@ -184,7 +184,7 @@ async def list_policies(
     db: Annotated[Database, Depends(get_db)],
 ):
     """List all policies with their conditions."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
 
     cursor = await db.execute("SELECT * FROM policies ORDER BY scope_type, name")
     policy_rows = await cursor.fetchall()
@@ -224,7 +224,7 @@ async def create_policy(
 
     For team-scoped policies, scope_id must be a valid team UUID.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
 
     if len(body.name) < 1 or len(body.name) > _MAX_POLICY_NAME_LEN:
         raise HTTPException(
@@ -272,7 +272,7 @@ async def get_policy(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single policy with its conditions."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     policy    = await _load_policy(db, policy_id)
     conditions = await _load_conditions(db, policy_id)
@@ -291,7 +291,7 @@ async def update_policy(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Rename a policy."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -342,7 +342,7 @@ async def delete_policy(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a policy and all its conditions and grants (CASCADE)."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     policy = await _load_policy(db, policy_id)
     await db.execute("DELETE FROM policies WHERE id = ?", (policy_id,))
@@ -377,7 +377,7 @@ async def create_condition(
     After adding the condition, Trigger 2 fires: the policy is immediately
     re-evaluated against all applicable users.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -439,7 +439,7 @@ async def list_conditions(
     db: Annotated[Database, Depends(get_db)],
 ):
     """List all conditions on a policy."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id  = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
     conditions = await _load_conditions(db, policy_id)
@@ -465,7 +465,7 @@ async def update_condition(
 
     After update, Trigger 2 fires.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     cond_id   = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
@@ -535,7 +535,7 @@ async def delete_condition(
 
     After deletion, Trigger 2 fires.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     cond_id   = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
@@ -596,7 +596,7 @@ async def list_effects(
     db: Annotated[Database, Depends(get_db)],
 ):
     """List all effects defined on a policy."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -682,7 +682,7 @@ async def create_effect(
     After creating the effect, Trigger 2 fires to immediately apply the new effect
     to all users currently matching this policy.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
 
@@ -732,7 +732,7 @@ async def delete_effect(
 
     Manual rows (policy_effect_id IS NULL) are not affected.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     effect_id = validate_uuid(effect_id)
     await _load_policy(db, policy_id)   # 404 guard
@@ -777,9 +777,9 @@ async def list_exemptions(
     """List all per-user exemptions for a policy.
 
     Each entry shows who was exempted, by whom, and the optional reason.
-    Only can_manage_policies admins may call this endpoint.
+    Only policies_manage admins may call this endpoint.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)
 
@@ -812,9 +812,9 @@ async def create_exemption(
 
     After creation, evaluate_user_policies runs immediately for the user so
     any policy-sourced grants are revoked without waiting for their next login.
-    Only can_manage_policies admins may call this endpoint.
+    Only policies_manage admins may call this endpoint.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     target_user_id = validate_uuid(body.user_id)
     await _load_policy(db, policy_id)
@@ -864,9 +864,9 @@ async def delete_exemption(
 
     After deletion, evaluate_user_policies runs immediately so grants are
     re-written if the policy still matches the user.
-    Only can_manage_policies admins may call this endpoint.
+    Only policies_manage admins may call this endpoint.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     target_user_id = validate_uuid(target_user_id)
     await _load_policy(db, policy_id)

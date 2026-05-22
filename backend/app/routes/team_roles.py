@@ -4,15 +4,15 @@ Mounted at /api/v1/teams (alongside existing teams router), providing
 sub-routes under /{team_id}/custom-roles.
 
 Access control:
-  - View roles / assignments : team member OR can_manage_roles (global)
-  - Create role              : team_admin for this team OR can_create_roles (global)
-                               Cross-team creation requires can_create_cross_team_roles
-  - Manage roles (edit/delete/permissions/assign) : team_admin OR can_manage_roles
+  - View roles / assignments : team member OR roles_manage (global)
+  - Create role              : team_admin for this team OR roles_create (global)
+                               Cross-team creation requires roles_cross_team_create
+  - Manage roles (edit/delete/permissions/assign) : team_admin OR roles_manage
 
 Inheritance cap (hard invariant on creation):
-  - If creator lacks can_manage_roles, their effective move flags for this team
+  - If creator lacks roles_manage, their effective move flags for this team
     cap what they can grant to the new role.
-  - Users with can_manage_roles bypass the cap (they're managing on behalf of others).
+  - Users with roles_manage bypass the cap (they're managing on behalf of others).
 """
 
 import uuid
@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
-from app.models.role import FLAG_CREATE_ROLES, FLAG_CREATE_CROSS_TEAM_ROLES, FLAG_MANAGE_ROLES
+from app.models.role import FLAG_ROLES_CREATE, FLAG_ROLES_CROSS_TEAM_CREATE, FLAG_ROLES_MANAGE
 from app.models.team import get_team, get_team_member_role
 from app.models.team_role import (
     MAX_TEAM_ROLE_DESC_LEN,
@@ -64,34 +64,34 @@ def _is_team_admin(member_role: str | None) -> bool:
 
 def _check_can_view(user: AuthenticatedUser, member_role: str | None):
     """Viewable by any team member or global role managers."""
-    if member_role is None and not user.has_flag(FLAG_MANAGE_ROLES):
-        raise HTTPException(status_code=403, detail="Team membership or can_manage_roles required")  # NOSONAR — helper; 403 documented in callers
+    if member_role is None and not user.has_flag(FLAG_ROLES_MANAGE):
+        raise HTTPException(status_code=403, detail="Team membership or roles_manage required")  # NOSONAR — helper; 403 documented in callers
 
 
 def _check_can_manage(user: AuthenticatedUser, member_role: str | None):
-    """Editable/deletable by team_admin for this team or global can_manage_roles."""
-    if user.has_flag(FLAG_MANAGE_ROLES):
+    """Editable/deletable by team_admin for this team or global roles_manage."""
+    if user.has_flag(FLAG_ROLES_MANAGE):
         return
     if not _is_team_admin(member_role):
-        raise HTTPException(status_code=403, detail="Team Admin or can_manage_roles required")  # NOSONAR — helper; 403 documented in callers
+        raise HTTPException(status_code=403, detail="Team Admin or roles_manage required")  # NOSONAR — helper; 403 documented in callers
 
 
 def _check_can_create(user: AuthenticatedUser, member_role: str | None):
     """
     Can create a role in this team if:
-      - user has can_create_roles (global) AND (is team member OR has can_create_cross_team_roles)
-      - OR user is team_admin for this team (their team_admin global role carries can_create_roles)
+      - user has roles_create (global) AND (is team member OR has roles_cross_team_create)
+      - OR user is team_admin for this team (their team_admin global role carries roles_create)
     """
     if _is_team_admin(member_role):
         return  # team_admin for this team: implicitly authorised
-    if not user.has_flag(FLAG_CREATE_ROLES):
-        raise HTTPException(status_code=403, detail="can_create_roles required")
+    if not user.has_flag(FLAG_ROLES_CREATE):
+        raise HTTPException(status_code=403, detail="roles_create required")
     if member_role is None:
         # Not a member of this team — needs cross-team authority
-        if not user.has_flag(FLAG_CREATE_CROSS_TEAM_ROLES):
+        if not user.has_flag(FLAG_ROLES_CROSS_TEAM_CREATE):
             raise HTTPException(
                 status_code=403,
-                detail="can_create_cross_team_roles required to create roles in a team you do not belong to",
+                detail="roles_cross_team_create required to create roles in a team you do not belong to",
             )
 
 
@@ -217,8 +217,8 @@ async def create_team_role(
 ):
     """Create a custom role for a team.
 
-    Requires team_admin for this team OR can_create_roles (+ cross-team flag if
-    not a member).  Enforces an inheritance cap: without can_manage_roles, the
+    Requires team_admin for this team OR roles_create (+ cross-team flag if
+    not a member).  Enforces an inheritance cap: without roles_manage, the
     new role's move flags may not exceed the creator's own effective move flags
     in this team.
     """
@@ -241,8 +241,8 @@ async def create_team_role(
 
     _validate_permission_flags(body.permissions)
 
-    # Inheritance cap: if creator lacks can_manage_roles, cap flags to their own
-    if not user.has_flag(FLAG_MANAGE_ROLES):
+    # Inheritance cap: if creator lacks roles_manage, cap flags to their own
+    if not user.has_flag(FLAG_ROLES_MANAGE):
         creator_flags = await get_user_team_move_flags(db, user.id, team_id)
         for flag, val in body.permissions.items():
             if val == "1" and not creator_flags.get(flag, False):
@@ -400,7 +400,7 @@ async def update_team_role_permissions(
 ):
     """Set permission flag values for a custom team role.
 
-    Requires team_admin or can_manage_roles.  No inheritance cap here —
+    Requires team_admin or roles_manage.  No inheritance cap here —
     a team admin managing roles can set any flags for their team's custom roles.
     """
     team_id = validate_uuid(team_id)

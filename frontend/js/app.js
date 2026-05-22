@@ -93,6 +93,8 @@ const App = (() => {
         { pattern: /^#\/mfa$/,                                                                handler: _routeMfa },
         { pattern: /^#\/s\/(.+)$/,                                                            handler: _routePublicShare },
         { pattern: /^#\/l\/(.+)$/,                                                            handler: _routeShortLink },
+        { pattern: /^#\/trash\/teams\/([a-f0-9-]+)$/,                                         handler: _routeTeamTrash },
+        { pattern: /^#\/trash$/,                                                               handler: _routeTrash },
     ];
 
     async function _handleOidcCallbacks(qs) {
@@ -1130,6 +1132,207 @@ const App = (() => {
         });
     }
 
+    function _routeTrash(container) {
+        _renderShell(container);
+        _renderTrashPage(document.getElementById('main-content'), null);
+    }
+
+    function _routeTeamTrash(container, teamId) {
+        _renderShell(container);
+        _renderTrashPage(document.getElementById('main-content'), teamId);
+    }
+
+    async function _renderTrashPage(container, teamId) {
+        container.innerHTML = '<p class="text-muted" style="padding:24px">Loading trash…</p>';
+        const api = Config.app.apiPrefix;
+        const url = teamId ? `${api}/trash/teams/${teamId}` : `${api}/trash`;
+
+        let data;
+        try {
+            data = await Api.get(url);
+        } catch (err) {
+            container.innerHTML = '';
+            container.appendChild(Utils.el('p', { className: 'text-muted', style: 'padding:24px', textContent: 'Failed to load trash: ' + err.message }));
+            return;
+        }
+
+        container.innerHTML = '';
+
+        // Header
+        const titleText = teamId ? 'Team Trash' : 'My Trash';
+        const header = Utils.el('div', { style: 'display:flex;align-items:center;gap:12px;padding:16px 24px 8px' }, [
+            Utils.el('h2', { textContent: titleText, style: 'margin:0;flex:1' }),
+        ]);
+
+        const retentionHint = Utils.el('p', {
+            className: 'text-muted',
+            style: 'padding:0 24px 8px;font-size:0.9em',
+            textContent: `Items are permanently deleted after ${data.retention_days} day(s) in trash.`,
+        });
+
+        container.appendChild(header);
+        container.appendChild(retentionHint);
+
+        const files = data.files || [];
+        const folders = data.folders || [];
+        const allItems = [
+            ...files.map(f => ({ ...f, _kind: 'file' })),
+            ...folders.map(f => ({ ...f, _kind: 'folder' })),
+        ].sort((a, b) => (a.deleted_at || '').localeCompare(b.deleted_at || ''));
+
+        if (allItems.length === 0) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', style: 'padding:0 24px', textContent: 'Trash is empty.' }));
+            return;
+        }
+
+        // Bulk action bar
+        const bulkBar = Utils.el('div', { style: 'display:flex;gap:8px;padding:0 24px 12px;align-items:center' });
+        const selectAllChk = Utils.el('input', { type: 'checkbox', title: 'Select all' });
+        const restoreBtn = Utils.el('button', { className: 'btn btn-sm btn-secondary', textContent: 'Restore Selected', disabled: true });
+        const deleteBtn  = Utils.el('button', { className: 'btn btn-sm btn-danger',   textContent: 'Delete Selected',  disabled: true });
+        const selCount   = Utils.el('span', { className: 'text-muted', style: 'font-size:0.9em', textContent: '' });
+        bulkBar.appendChild(selectAllChk);
+        bulkBar.appendChild(restoreBtn);
+        bulkBar.appendChild(deleteBtn);
+        bulkBar.appendChild(selCount);
+        container.appendChild(bulkBar);
+
+        // Table
+        const table = Utils.el('table', { className: 'data-table', style: 'width:100%;border-collapse:collapse' });
+        const thead = Utils.el('thead');
+        thead.appendChild(Utils.el('tr', {}, [
+            Utils.el('th', { style: 'width:32px' }),
+            Utils.el('th', { textContent: 'Name' }),
+            Utils.el('th', { textContent: 'Type' }),
+            Utils.el('th', { textContent: 'Deleted' }),
+            Utils.el('th', { textContent: 'Expires' }),
+            Utils.el('th', { textContent: 'Deleted By' }),
+            Utils.el('th', { textContent: 'Actions' }),
+        ]));
+        table.appendChild(thead);
+
+        const tbody = Utils.el('tbody');
+        const checkboxes = [];
+
+        function _fmtDate(iso) {
+            if (!iso) return '—';
+            try { return new Date(iso).toLocaleString(); } catch { return iso; }
+        }
+
+        for (const item of allItems) {
+            const chk = Utils.el('input', { type: 'checkbox' });
+            checkboxes.push({ chk, item });
+
+            const restoreItemBtn = Utils.el('button', {
+                className: 'btn btn-xs btn-secondary',
+                textContent: 'Restore',
+                style: 'margin-right:4px',
+            });
+            const deleteItemBtn = Utils.el('button', {
+                className: 'btn btn-xs btn-danger',
+                textContent: 'Delete',
+            });
+
+            restoreItemBtn.addEventListener('click', async () => {
+                restoreItemBtn.disabled = true;
+                try {
+                    const endpoint = item._kind === 'file'
+                        ? `${api}/trash/files/${item.id}/restore`
+                        : `${api}/trash/folders/${item.id}/restore`;
+                    await Api.post(endpoint, {});
+                    Utils.showToast('Restored', 'success');
+                    _renderTrashPage(container, teamId);
+                } catch (err) {
+                    Utils.showToast('Restore failed: ' + err.message, 'error');
+                    restoreItemBtn.disabled = false;
+                }
+            });
+
+            deleteItemBtn.addEventListener('click', async () => {
+                if (!confirm(`Permanently delete "${item.name}"? This cannot be undone.`)) return;
+                deleteItemBtn.disabled = true;
+                try {
+                    const endpoint = item._kind === 'file'
+                        ? `${api}/trash/files/${item.id}`
+                        : `${api}/trash/folders/${item.id}`;
+                    await Api.del(endpoint);
+                    Utils.showToast('Permanently deleted', 'success');
+                    _renderTrashPage(container, teamId);
+                } catch (err) {
+                    Utils.showToast('Delete failed: ' + err.message, 'error');
+                    deleteItemBtn.disabled = false;
+                }
+            });
+
+            const tr = Utils.el('tr', {}, [
+                Utils.el('td', {}, [chk]),
+                Utils.el('td', { textContent: item.name || item.id }),
+                Utils.el('td', { textContent: item._kind }),
+                Utils.el('td', { textContent: _fmtDate(item.deleted_at) }),
+                Utils.el('td', { textContent: _fmtDate(item.permanent_delete_at) }),
+                Utils.el('td', { textContent: item.deleted_by_username || '—' }),
+                Utils.el('td', {}, [restoreItemBtn, deleteItemBtn]),
+            ]);
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        container.appendChild(table);
+
+        // Bulk action wiring
+        function _updateBulkBar() {
+            const sel = checkboxes.filter(c => c.chk.checked);
+            const n = sel.length;
+            restoreBtn.disabled = n === 0;
+            deleteBtn.disabled  = n === 0;
+            selCount.textContent = n > 0 ? `${n} selected` : '';
+            selectAllChk.indeterminate = n > 0 && n < checkboxes.length;
+            selectAllChk.checked = n === checkboxes.length;
+        }
+
+        checkboxes.forEach(c => c.chk.addEventListener('change', _updateBulkBar));
+        selectAllChk.addEventListener('change', () => {
+            checkboxes.forEach(c => { c.chk.checked = selectAllChk.checked; });
+            _updateBulkBar();
+        });
+
+        restoreBtn.addEventListener('click', async () => {
+            const sel = checkboxes.filter(c => c.chk.checked).map(c => c.item);
+            if (!sel.length) return;
+            restoreBtn.disabled = true;
+            try {
+                const body = {
+                    file_ids:   sel.filter(i => i._kind === 'file').map(i => i.id),
+                    folder_ids: sel.filter(i => i._kind === 'folder').map(i => i.id),
+                };
+                const res = await Api.post(`${api}/trash/recover-bulk`, body);
+                Utils.showToast(`Restored ${res.restored_files + res.restored_folders} item(s)${res.failed ? `, ${res.failed} failed` : ''}`, 'success');
+                _renderTrashPage(container, teamId);
+            } catch (err) {
+                Utils.showToast('Bulk restore failed: ' + err.message, 'error');
+                restoreBtn.disabled = false;
+            }
+        });
+
+        deleteBtn.addEventListener('click', async () => {
+            const sel = checkboxes.filter(c => c.chk.checked).map(c => c.item);
+            if (!sel.length) return;
+            if (!confirm(`Permanently delete ${sel.length} item(s)? This cannot be undone.`)) return;
+            deleteBtn.disabled = true;
+            try {
+                const body = {
+                    file_ids:   sel.filter(i => i._kind === 'file').map(i => i.id),
+                    folder_ids: sel.filter(i => i._kind === 'folder').map(i => i.id),
+                };
+                const res = await Api.post(`${api}/trash/bulk-delete`, body);
+                Utils.showToast(`Deleted ${res.deleted_files + res.deleted_folders} item(s)${res.failed ? `, ${res.failed} failed` : ''}`, 'success');
+                _renderTrashPage(container, teamId);
+            } catch (err) {
+                Utils.showToast('Bulk delete failed: ' + err.message, 'error');
+                deleteBtn.disabled = false;
+            }
+        });
+    }
+
     function _renderShell(container) {
         // Only re-render shell if not already present
         if (container.querySelector('.app-shell')) return;
@@ -1160,6 +1363,11 @@ const App = (() => {
             Utils.el('div', { className: 'sidebar-submenu' }, [
                 Utils.el('a', { href: '#/shares',          className: 'sidebar-link sidebar-sublink', id: 'nav-shares',   textContent: 'Shared From Me' }),
                 Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', textContent: 'Shared To Me' }),
+            ]),
+
+            Utils.el('div', { className: 'sidebar-section-label', textContent: 'Trash' }),
+            Utils.el('div', { className: 'sidebar-submenu', id: 'nav-trash-submenu' }, [
+                Utils.el('a', { href: '#/trash', className: 'sidebar-link sidebar-sublink', id: 'nav-trash', textContent: 'My Trash' }),
             ]),
         ]);
         if (user?.is_admin) {
@@ -1290,6 +1498,7 @@ const App = (() => {
             { id: 'nav-team-folders', test: h => /^#\/team-folders(\/.*)?$/.test(h) },
             { id: 'nav-teams',        test: h => /^#\/teams(\/.*)?$/.test(h) },
             { id: 'nav-admin',        test: h => h === '#/admin' },
+            { id: 'nav-trash',        test: h => /^#\/trash(\/.*)?$/.test(h) },
         ];
         rules.forEach(({ id, test }) => {
             const el = document.getElementById(id);

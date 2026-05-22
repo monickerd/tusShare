@@ -12,7 +12,7 @@ import asyncio
 import logging
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -235,6 +235,32 @@ async def _get_share_for_owner(db, share_id: str, user: AuthenticatedUser):
     if row["created_by"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
     return row
+
+
+async def _check_share_expiry_cap(db, expires_at: str | None, share_type: str) -> None:
+    """Raise 400 if expires_at exceeds the admin-configured link share max expiry cap.
+
+    Only applies when share_type='link' and the cap is set (> 0).
+    A cap of 0 (default) means no restriction.
+    """
+    if share_type != "link" or expires_at is None:
+        return
+    row = await (await db.execute(
+        "SELECT value FROM admin_settings WHERE key = 'link_share_max_expiry_days'"
+    )).fetchone()
+    try:
+        max_days = int(row["value"]) if row and row["value"] else 0
+    except (ValueError, TypeError):
+        max_days = 0
+    if max_days <= 0:
+        return
+    dt = datetime.fromisoformat(expires_at.replace("Z", _UTC_OFFSET))
+    cap_dt = datetime.now(timezone.utc) + timedelta(days=max_days)
+    if dt > cap_dt:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Link share expiry cannot exceed {max_days} day(s)",
+        )
 
 
 async def _get_share_for_manage(db, share_id: str, user: AuthenticatedUser):
@@ -827,6 +853,7 @@ async def create_share(
         has_items=bool(body.items),
         target_folder_id=body.target_folder_id,
     )
+    await _check_share_expiry_cap(db, body.expires_at, body.share_type)
 
     if not body.items and not (body.allow_upload and body.target_folder_id):
         raise HTTPException(
@@ -924,7 +951,8 @@ async def update_share(
 ):
     """Update share settings (active state, expiry, download limit)."""
     share_id = validate_uuid(share_id)
-    await _get_share_for_manage(db, share_id, user)
+    share = await _get_share_for_manage(db, share_id, user)
+    await _check_share_expiry_cap(db, body.expires_at, share["share_type"])
 
     updates: list[str] = []
     params: list = []

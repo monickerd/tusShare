@@ -57,10 +57,10 @@ _PROFILES: dict[str, dict] = {
         },
         "role_flag_overrides": {
             "role_user": {
-                "can_create_link_shares":   {"value": "0", "is_locked": True, "locked_min_tier": 1},
-                "can_create_user_shares":   {"value": "1", "is_locked": True, "locked_min_tier": 1},
-                "can_create_upload_grants": {"value": "1", "is_locked": True, "locked_min_tier": 1},
-                "can_share_folders":        {"value": "0", "is_locked": True, "locked_min_tier": 1},
+                "shares_link_create":        {"value": "0", "is_locked": True, "locked_min_tier": 1},
+                "shares_user_create":        {"value": "1", "is_locked": True, "locked_min_tier": 1},
+                "shares_upload_grant_create": {"value": "1", "is_locked": True, "locked_min_tier": 1},
+                "shares_folder_create":      {"value": "0", "is_locked": True, "locked_min_tier": 1},
             },
         },
         "sharing_rules": [
@@ -97,10 +97,10 @@ _PROFILES: dict[str, dict] = {
         },
         "role_flag_overrides": {
             "role_user": {
-                "can_create_link_shares":   {"value": "1", "is_locked": True, "locked_min_tier": 2},
-                "can_create_user_shares":   {"value": "1", "is_locked": True, "locked_min_tier": 2},
-                "can_create_upload_grants": {"value": "1", "is_locked": True, "locked_min_tier": 2},
-                "can_share_folders":        {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_link_create":        {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_user_create":        {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_upload_grant_create": {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_folder_create":      {"value": "1", "is_locked": True, "locked_min_tier": 2},
             },
         },
         "sharing_rules": [],
@@ -117,10 +117,10 @@ _PROFILES: dict[str, dict] = {
         },
         "role_flag_overrides": {
             "role_user": {
-                "can_create_link_shares":   {"value": "1", "is_locked": False, "locked_min_tier": None},
-                "can_create_user_shares":   {"value": "1", "is_locked": False, "locked_min_tier": None},
-                "can_create_upload_grants": {"value": "1", "is_locked": False, "locked_min_tier": None},
-                "can_share_folders":        {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_link_create":        {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_user_create":        {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_upload_grant_create": {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_folder_create":      {"value": "1", "is_locked": False, "locked_min_tier": None},
             },
         },
         "sharing_rules": [],
@@ -168,10 +168,10 @@ _PROFILE_ADMIN_SETTING_KEYS = [
 ]
 
 _PROFILE_SHARING_FLAGS = [
-    "can_create_link_shares",
-    "can_create_user_shares",
-    "can_create_upload_grants",
-    "can_share_folders",
+    "shares_link_create",
+    "shares_user_create",
+    "shares_upload_grant_create",
+    "shares_folder_create",
 ]
 
 

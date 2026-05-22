@@ -14,7 +14,7 @@ More conditions = more restrictive scope.  An admin with no scope conditions is
 unrestricted (can target all users).  This composing correctly.
 
 Access control:
-  All endpoints require can_manage_policies.
+  All endpoints require policies_manage.
 """
 
 import uuid
@@ -26,13 +26,13 @@ from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.models.policy import AdminScopeCondition, VALID_OPERATORS
-from app.models.role import FLAG_MANAGE_POLICIES
+from app.models.role import FLAG_POLICIES_MANAGE
 from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
 from typing import Annotated
 
 
-_ERR_PERM_MANAGE_POLICIES = "can_manage_policies required"
+_ERR_PERM_MANAGE_POLICIES = "policies_manage required"
 
 router = APIRouter()
 
@@ -91,7 +91,7 @@ async def list_scope_conditions(
 
     Returns all conditions across all holders.  The UI groups them by holder.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_MANAGE_POLICIES)
     cursor = await db.execute(
         "SELECT * FROM admin_scope_conditions ORDER BY holder_type, holder_id, field"
     )
@@ -111,7 +111,7 @@ async def list_scope_conditions_for_holder(
     db: Annotated[Database, Depends(get_db)],
 ):
     """List scope conditions for a specific user or role."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_MANAGE_POLICIES)
 
     if holder_type not in ("user", "role"):
         raise HTTPException(status_code=400, detail="holder_type must be 'user' or 'role'")
@@ -143,7 +143,7 @@ async def create_scope_condition(
     holder_type='user'  → holder_id must be a valid user UUID.
     holder_type='role'  → holder_id is a role name (e.g. 'org_admin').
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_MANAGE_POLICIES)
 
     if body.holder_type not in ("user", "role"):
         raise HTTPException(status_code=400, detail="holder_type must be 'user' or 'role'")
@@ -196,7 +196,7 @@ async def get_scope_condition(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Get a single scope condition by ID."""
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_MANAGE_POLICIES)
     cond_id = validate_uuid(cond_id)
     cond = await _load_scope_cond(db, cond_id)
     return {"condition": cond.to_dict()}
@@ -218,7 +218,7 @@ async def update_scope_condition(
     Changing operator/value may propagate through inherited policy conditions
     (they will be re-evaluated on next user login/step-up).
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_MANAGE_POLICIES)
     cond_id = validate_uuid(cond_id)
     await _load_scope_cond(db, cond_id)  # 404 guard
 
@@ -267,7 +267,7 @@ async def delete_scope_condition(
     inherited_scope_id set to NULL and scope_detached set to 1 (via DB trigger).
     Affected policies will show a review banner in the UI.
     """
-    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_MANAGE_POLICIES)
+    require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_MANAGE_POLICIES)
     cond_id = validate_uuid(cond_id)
     await _load_scope_cond(db, cond_id)  # 404 guard
 

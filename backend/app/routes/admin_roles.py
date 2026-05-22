@@ -2,9 +2,9 @@
 
 Provides CRUD for role definitions and their permission flag assignments.
 All write operations enforce the modular permission framework:
-  - can_manage_roles  → create, edit, delete roles; update their flags; assign/revoke roles
-  - can_create_roles  → create new custom roles (subject to inheritance cap)
-  - Sensitive flags (can_access_all_files) → only server_admin or org_admin may activate
+  - roles_manage      → create, edit, delete roles; update their flags; assign/revoke roles
+  - roles_create      → create new custom roles (subject to inheritance cap)
+  - Sensitive flags (files_access_all_read/write) → only server_admin or org_admin may activate
 
 Inheritance cap (hard invariant): a newly created role's permission set must be
 a strict subset of the creator's own effective permissions.  Enforced here at
@@ -24,9 +24,11 @@ from app.auth.dependencies import get_current_user, require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.models.role import (
-    FLAG_CREATE_ROLES,
-    FLAG_MANAGE_ROLES,
-    FLAG_MANAGE_USERS,
+    FLAG_REQUIRES,
+    FLAG_RELATED,
+    FLAG_ROLES_CREATE,
+    FLAG_ROLES_MANAGE,
+    FLAG_USERS_MANAGE,
     ROLE_ORG_ADMIN,
     ROLE_SERVER_ADMIN,
     ROLE_TIER,
@@ -39,7 +41,7 @@ from app.schemas.security_event import EventActor, SecurityEvent
 from typing import Annotated
 
 
-_ERR_PERM_MANAGE_ROLES = "can_manage_roles required"
+_ERR_PERM_MANAGE_ROLES = "roles_manage required"
 
 router = APIRouter()
 
@@ -170,7 +172,7 @@ async def list_roles(
     Also returns the full flag registry so the UI can render toggles without
     a second round-trip.
     """
-    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
+    require_flag(admin, FLAG_ROLES_MANAGE, _ERR_PERM_MANAGE_ROLES)
     cursor = await db.execute(
         "SELECT * FROM roles ORDER BY is_system DESC, id"
     )
@@ -218,8 +220,8 @@ async def get_admin_capabilities(
     # Flags the caller currently holds (inheritance cap for create-role modal)
     grantable_flags = [f for f, v in (admin.flags or {}).items() if v == "1"]
 
-    # Roles the caller can assign: requires can_manage_roles; tier cap applies
-    if admin.has_flag(FLAG_MANAGE_ROLES):
+    # Roles the caller can assign: requires roles_manage; tier cap applies
+    if admin.has_flag(FLAG_ROLES_MANAGE):
         cursor = await db.execute("SELECT id FROM roles ORDER BY id")
         all_role_ids = [r["id"] for r in await cursor.fetchall()]
         grantable_role_ids = [
@@ -230,7 +232,7 @@ async def get_admin_capabilities(
         grantable_role_ids = []
 
     # Scope: None means org-wide; a set means restricted to those team IDs
-    team_ids = admin.get_team_ids_with_flag(FLAG_MANAGE_USERS)
+    team_ids = admin.get_team_ids_with_flag(FLAG_USERS_MANAGE)
 
     return {
         "admin_tier": my_tier,
@@ -240,6 +242,26 @@ async def get_admin_capabilities(
             "org_wide": team_ids is None,
             "team_ids": sorted(team_ids) if team_ids is not None else None,
         },
+    }
+
+
+@router.get("/flag-metadata")
+async def get_flag_metadata(
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return FLAG_REQUIRES and FLAG_RELATED maps for the role editor UI.
+
+    The frontend uses these to show dependency warnings (e.g. 'enabling
+    users_delete also requires users_manage') and related-flag hints.
+    No specific flag required — every admin may read this metadata.
+    """
+    cursor = await db.execute("SELECT flag, description, category, is_sensitive FROM role_permission_flags ORDER BY flag")
+    flag_defs = {r["flag"]: {"description": r["description"], "category": r["category"], "is_sensitive": bool(r["is_sensitive"])} for r in await cursor.fetchall()}
+    return {
+        "requires": FLAG_REQUIRES,
+        "related":  FLAG_RELATED,
+        "flags":    flag_defs,
     }
 
 
@@ -255,11 +277,11 @@ async def create_role(
 ):
     """Create a custom role.
 
-    Requires can_create_roles.  Enforces the inheritance cap: the new role's
+    Requires roles_create.  Enforces the inheritance cap: the new role's
     permission set must be a strict subset of the creator's effective permissions.
     Sensitive flags cannot be activated unless the creator holds server_admin or org_admin.
     """
-    require_flag(admin, FLAG_CREATE_ROLES, "can_create_roles required")
+    require_flag(admin, FLAG_ROLES_CREATE, "roles_create required")
 
     # Validate role ID
     if not _ROLE_ID_RE.match(body.id):
@@ -290,7 +312,7 @@ async def create_role(
                 detail=f"Cannot grant flag '{flag}': you do not hold this permission yourself",
             )
 
-    # Sensitive flag check (can_access_all_files etc.)
+    # Sensitive flag check (files_access_all_read/write etc.)
     for flag in SENSITIVE_FLAGS:
         if body.permissions.get(flag, "0") == "1":
             _check_sensitive_flag_authority(admin)
@@ -351,7 +373,7 @@ async def update_role(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Update a role's name and/or description. System roles can be renamed."""
-    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
+    require_flag(admin, FLAG_ROLES_MANAGE, _ERR_PERM_MANAGE_ROLES)
 
     await _load_role(db, role_id)
 
@@ -395,7 +417,7 @@ async def delete_role(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Delete a custom role. System roles cannot be deleted."""
-    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
+    require_flag(admin, FLAG_ROLES_MANAGE, _ERR_PERM_MANAGE_ROLES)
 
     row = await _load_role(db, role_id)
     if row["is_system"]:
@@ -447,8 +469,8 @@ async def update_role_permissions(
 ):
     """Set permission flag values and lock state for a role.
 
-    Requires can_manage_roles.  Sensitive flags require server_admin or org_admin.
-    The inheritance cap does NOT apply here (an admin with can_manage_roles can
+    Requires roles_manage.  Sensitive flags require server_admin or org_admin.
+    The inheritance cap does NOT apply here (an admin with roles_manage can
     grant flags they don't personally hold, subject to the sensitive-flag gate).
     This mirrors how an org admin can delegate permissions to lower tiers.
 
@@ -456,7 +478,7 @@ async def update_role_permissions(
     tier may modify its value or lock state.  An admin may not lock a flag at a
     tier lower (higher privilege) than their own.
     """
-    require_flag(admin, FLAG_MANAGE_ROLES, _ERR_PERM_MANAGE_ROLES)
+    require_flag(admin, FLAG_ROLES_MANAGE, _ERR_PERM_MANAGE_ROLES)
     my_tier = admin_best_tier(admin.roles)
 
     await _load_role(db, role_id)  # 404 if missing

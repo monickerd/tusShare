@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
-from app.models.role import FLAG_MANAGE_USERS
+from app.models.role import FLAG_USERS_MANAGE
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
 from app.middleware.rate_limit import _get_client_ip
@@ -81,7 +81,7 @@ async def emergency_revoke(
     if user_id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot self-revoke")
 
-    if not admin.has_flag(FLAG_MANAGE_USERS):
+    if not admin.has_flag(FLAG_USERS_MANAGE):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     # Verify target user exists
@@ -322,12 +322,12 @@ async def clear_transfer_lock(
 ):
     """Explicitly clear the transfer lock on a single file.
 
-    The admin who applies the lock (or any admin with FLAG_MANAGE_USERS) can
+    The admin who applies the lock (or any admin with FLAG_USERS_MANAGE) can
     clear it. Clearing is logged via the event bus.
     """
     file_id = validate_uuid(file_id)
 
-    if not admin.has_flag(FLAG_MANAGE_USERS):
+    if not admin.has_flag(FLAG_USERS_MANAGE):
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     cursor = await db.execute(

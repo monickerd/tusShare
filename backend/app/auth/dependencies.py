@@ -101,9 +101,9 @@ async def get_optional_user(
 def require_admin(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> AuthenticatedUser:
-    """Require the current user to hold the can_view_admin_panel permission."""
-    from app.models.role import FLAG_VIEW_ADMIN_PANEL
-    if not user.has_flag(FLAG_VIEW_ADMIN_PANEL):
+    """Require the current user to hold the admin_panel_view permission."""
+    from app.models.role import FLAG_ADMIN_PANEL_VIEW
+    if not user.has_flag(FLAG_ADMIN_PANEL_VIEW):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
 

@@ -748,7 +748,7 @@ async def get_effective_escrow_agents(
     folder-level policy override (replace/merge/none) or the org default when
     no override exists.
 
-    Does not require can_manage_escrow — any user with a user role can call
+    Does not require escrow_manage — any user with a user role can call
     this so that team creation works without an admin account.
     """
     folder_id = validate_uuid(folder_id)

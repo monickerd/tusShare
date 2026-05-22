@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
-from app.models.role import FLAG_MANAGE_INVITES, FLAG_MANAGE_ORG_SETTINGS, ROLE_TIER, admin_best_tier
+from app.models.role import FLAG_USERS_INVITE_MANAGE, FLAG_ORG_SETTINGS_MANAGE, ROLE_TIER, admin_best_tier
 from app.database import Database, get_db
 import app.storage.manager as storage
 from app.services import live_settings, sse_broker, event_bus
@@ -228,12 +228,12 @@ async def update_setting_locks(
 ):
     """Set or clear lock state on admin settings.
 
-    Only admins holding can_manage_org_settings may call this endpoint.
+    Only admins holding org_settings_manage may call this endpoint.
     An admin can only lock a setting at a tier ≥ their own (they cannot lock
     out themselves or anyone more privileged).
     """
-    if not admin.has_flag(FLAG_MANAGE_ORG_SETTINGS):
-        raise HTTPException(status_code=403, detail="can_manage_org_settings required")
+    if not admin.has_flag(FLAG_ORG_SETTINGS_MANAGE):
+        raise HTTPException(status_code=403, detail="org_settings_manage required")
 
     admin_tier = admin_best_tier(admin.roles)
 
@@ -348,8 +348,8 @@ async def create_invite(
 
     The raw token is returned once. The server stores only its SHA-256 hash.
     """
-    if not admin.has_flag(FLAG_MANAGE_INVITES):
-        raise HTTPException(status_code=403, detail="can_manage_invites permission required")
+    if not admin.has_flag(FLAG_USERS_INVITE_MANAGE):
+        raise HTTPException(status_code=403, detail="users_invite_manage permission required")
     raw_token  = secrets.token_urlsafe(_INVITE_TOKEN_BYTES)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
     invite_id  = str(uuid.uuid4())

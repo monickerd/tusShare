@@ -1,6 +1,6 @@
 """Admin MFA management routes.
 
-Requires can_manage_user_mfa permission flag (Tier 2+).
+Requires users_mfa_manage permission flag (Tier 2+).
 Admin actions that modify a user's MFA state also require step-up authentication
 because they are registered as sensitive functions.
 
@@ -22,7 +22,7 @@ from app.auth.mfa import list_active_credentials
 from app.auth.stepup import log_security_event, verify_step_up_token
 from app.database import Database, get_db
 from app.middleware.rate_limit import _get_client_ip
-from app.models.role import FLAG_MANAGE_USER_MFA
+from app.models.role import FLAG_USERS_MFA_MANAGE
 from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
 from typing import Annotated
@@ -30,7 +30,7 @@ from typing import Annotated
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_ERR_PERM_MANAGE_MFA = "can_manage_user_mfa permission required"
+_ERR_PERM_MANAGE_MFA = "users_mfa_manage permission required"
 _ERR_INVALID_USER_ID = "Invalid user ID"
 _SQL_REVOKE_TOKENS   = "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?"
 
@@ -58,7 +58,7 @@ async def admin_list_mfa(
     db: Annotated[Database, Depends(get_db)],
 ):
     """List active MFA credentials for a user."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
+    require_flag(admin, FLAG_USERS_MFA_MANAGE, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
@@ -89,7 +89,7 @@ async def admin_wipe_mfa(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Wipe all MFA credentials for a user.  Requires step-up."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
+    require_flag(admin, FLAG_USERS_MFA_MANAGE, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
     except ValueError:
@@ -125,7 +125,7 @@ async def admin_remove_credential(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Remove a specific MFA credential for a user.  Requires step-up."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
+    require_flag(admin, FLAG_USERS_MFA_MANAGE, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
         cred_id = validate_uuid(cred_id)
@@ -172,7 +172,7 @@ async def admin_reset_mfa(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Wipe all MFA credentials and force re-enrollment on next login.  Requires step-up."""
-    require_flag(admin, FLAG_MANAGE_USER_MFA, _ERR_PERM_MANAGE_MFA)
+    require_flag(admin, FLAG_USERS_MFA_MANAGE, _ERR_PERM_MANAGE_MFA)
     try:
         user_id = validate_uuid(user_id)
     except ValueError:

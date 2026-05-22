@@ -32,8 +32,8 @@ async def get_file_access_logs(
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
-    from app.models.role import FLAG_ACCESS_ALL_FILES
-    if row["owner_id"] != user.id and not user.has_flag(FLAG_ACCESS_ALL_FILES):
+    from app.models.role import FLAG_FILES_ACCESS_ALL_READ
+    if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_READ):
         raise HTTPException(status_code=403, detail="Access denied")
 
     cursor = await db.execute(
@@ -63,15 +63,15 @@ async def get_share_access_logs(
     share_id = validate_uuid(share_id)
     pagination = validate_pagination(page, limit)
 
-    # Verify share ownership or admin (FLAG_ACCESS_ALL_FILES, consistent with file log check)
+    # Verify share ownership or admin (FLAG_FILES_ACCESS_ALL_READ, consistent with file log check)
     cursor = await db.execute(
         "SELECT created_by FROM shares WHERE id = ?", (share_id,)
     )
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Share not found")
-    from app.models.role import FLAG_ACCESS_ALL_FILES
-    if row["created_by"] != user.id and not user.has_flag(FLAG_ACCESS_ALL_FILES):
+    from app.models.role import FLAG_FILES_ACCESS_ALL_READ
+    if row["created_by"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_READ):
         raise HTTPException(status_code=403, detail="Access denied")
 
     cursor = await db.execute(

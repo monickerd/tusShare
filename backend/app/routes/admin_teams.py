@@ -8,7 +8,7 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.models.policy import get_blocking_policies
-from app.models.role import FLAG_MANAGE_TEAMS
+from app.models.role import FLAG_TEAMS_MANAGE
 from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.validation.sanitizers import validate_uuid
 
@@ -19,8 +19,8 @@ _ERR_TEAM_NOT_FOUND = "Team not found"
 
 
 def _require_team_admin(admin: AuthenticatedUser) -> None:
-    if not admin.has_flag(FLAG_MANAGE_TEAMS):
-        raise HTTPException(status_code=403, detail="Requires can_manage_teams permission")  # NOSONAR
+    if not admin.has_flag(FLAG_TEAMS_MANAGE):
+        raise HTTPException(status_code=403, detail="teams_manage permission required")  # NOSONAR
 
 
 @router.get("/teams")
@@ -29,7 +29,7 @@ async def list_all_teams(
     db: Annotated[Database, Depends(get_db)],
 ):
     _require_team_admin(admin)
-    allowed = scope_team_ids(admin, FLAG_MANAGE_TEAMS)
+    allowed = scope_team_ids(admin, FLAG_TEAMS_MANAGE)
 
     if allowed is None:
         # Org-wide admin: return all teams.
@@ -97,7 +97,7 @@ async def get_team_detail(
     _require_team_admin(admin)
     if not validate_uuid(team_id):
         raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
-    require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
+    require_team_scope(admin, team_id, FLAG_TEAMS_MANAGE)
 
     cursor = await db.execute(
         """
@@ -167,7 +167,7 @@ async def admin_delete_team(
     _require_team_admin(admin)
     if not validate_uuid(team_id):
         raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
-    require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
+    require_team_scope(admin, team_id, FLAG_TEAMS_MANAGE)
 
     cursor = await db.execute("SELECT id, name FROM teams WHERE id = ?", (team_id,))
     row = await cursor.fetchone()
@@ -196,7 +196,7 @@ async def admin_remove_team_member(
         raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
     if not validate_uuid(user_id):
         raise HTTPException(status_code=400, detail="Invalid user ID")
-    require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
+    require_team_scope(admin, team_id, FLAG_TEAMS_MANAGE)
 
     cursor = await db.execute("SELECT id, owner_id FROM teams WHERE id = ?", (team_id,))
     team_row = await cursor.fetchone()
@@ -250,7 +250,7 @@ async def get_team_folder_role_levels(
     _require_team_admin(admin)
     if not validate_uuid(team_id):
         raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
-    require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
+    require_team_scope(admin, team_id, FLAG_TEAMS_MANAGE)
 
     cursor = await db.execute("SELECT id FROM teams WHERE id = ?", (team_id,))
     if await cursor.fetchone() is None:
@@ -287,7 +287,7 @@ async def set_team_folder_role_levels(
     _require_team_admin(admin)
     if not validate_uuid(team_id):
         raise HTTPException(status_code=400, detail=_ERR_INVALID_TEAM_ID)
-    require_team_scope(admin, team_id, FLAG_MANAGE_TEAMS)
+    require_team_scope(admin, team_id, FLAG_TEAMS_MANAGE)
 
     cursor = await db.execute("SELECT id FROM teams WHERE id = ?", (team_id,))
     if await cursor.fetchone() is None:

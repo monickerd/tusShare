@@ -12,13 +12,13 @@ Usage pattern:
         team_id: str,
         admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     ):
-        require_team_scope(admin, team_id, "can_manage_teams")
+        require_team_scope(admin, team_id, "teams_manage")
         ...
 
     # For list endpoints, limit to scoped teams:
     @router.get("/teams")
     async def list_teams(...):
-        allowed = scope_team_ids(admin, "can_manage_teams")
+        allowed = scope_team_ids(admin, "teams_manage")
         # allowed is None → org-wide admin, no filter; set → filter to those IDs
 """
 
@@ -30,7 +30,7 @@ from app.auth.interface import AuthenticatedUser
 def require_team_scope(
     user: AuthenticatedUser,
     team_id: str,
-    flag: str = "can_manage_teams",
+    flag: str = "teams_manage",
 ) -> None:
     """Raise 403 if *user* does not hold *flag* within the given team scope.
 
@@ -49,7 +49,7 @@ def require_team_scope(
 
 def scope_team_ids(
     user: AuthenticatedUser,
-    flag: str = "can_manage_teams",
+    flag: str = "teams_manage",
 ) -> set[str] | None:
     """Return the set of team IDs the user may administer for *flag*.
 
@@ -59,7 +59,7 @@ def scope_team_ids(
     Callers should filter their query results to the returned set when it is
     not None:
 
-        allowed = scope_team_ids(admin, "can_manage_teams")
+        allowed = scope_team_ids(admin, "teams_manage")
         if allowed is not None and team_id not in allowed:
             raise HTTPException(404)  # hide out-of-scope teams
     """

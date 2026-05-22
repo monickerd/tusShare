@@ -34,10 +34,10 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import HTTPException
 
 from app.models.role import (
-    FLAG_CREATE_LINK_SHARES,
-    FLAG_CREATE_USER_SHARES,
-    FLAG_CREATE_UPLOAD_GRANTS,
-    FLAG_SHARE_FOLDERS,
+    FLAG_SHARES_LINK_CREATE,
+    FLAG_SHARES_USER_CREATE,
+    FLAG_SHARES_UPLOAD_GRANT_CREATE,
+    FLAG_SHARES_FOLDER_CREATE,
 )
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
@@ -68,23 +68,23 @@ def check_sharing_flags(
 
     Called at the very start of POST /shares, before any DB writes.
     """
-    if share_type == "link" and not actor.has_flag(FLAG_CREATE_LINK_SHARES):
+    if share_type == "link" and not actor.has_flag(FLAG_SHARES_LINK_CREATE):
         raise HTTPException(
             status_code=403,
             detail="Link share creation is not permitted for your role",
         )
-    if share_type == "user" and not actor.has_flag(FLAG_CREATE_USER_SHARES):
+    if share_type == "user" and not actor.has_flag(FLAG_SHARES_USER_CREATE):
         raise HTTPException(
             status_code=403,
             detail="User share creation is not permitted for your role",
         )
-    if allow_upload and not actor.has_flag(FLAG_CREATE_UPLOAD_GRANTS):
+    if allow_upload and not actor.has_flag(FLAG_SHARES_UPLOAD_GRANT_CREATE):
         raise HTTPException(
             status_code=403,
             detail="Enabling upload access on a share is not permitted for your role",
         )
     # Upload-only folder share: no items, just a target_folder_id
-    if not has_items and target_folder_id and not actor.has_flag(FLAG_SHARE_FOLDERS):
+    if not has_items and target_folder_id and not actor.has_flag(FLAG_SHARES_FOLDER_CREATE):
         raise HTTPException(
             status_code=403,
             detail="Creating folder shares is not permitted for your role",

@@ -17,7 +17,7 @@ from typing import Literal
 
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.models.role import FLAG_MANAGE_USERS, FLAG_MANAGE_ROLES, FLAG_MANAGE_TEAMS
+from app.models.role import FLAG_USERS_VIEW, FLAG_USERS_MANAGE, FLAG_USERS_DELETE, FLAG_ROLES_MANAGE, FLAG_TEAMS_MANAGE
 from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.database import Database, db_session, get_db
 from app.models.role import ADMIN_ROLE_IDS, ROLE_USER, ROLE_TIER, admin_best_tier, grant_role, revoke_role
@@ -31,7 +31,7 @@ from app.validation.validators import validate_pagination
 from typing import Annotated
 
 
-_ERR_PERM_MANAGE_USERS = "can_manage_users permission required"
+_ERR_PERM_MANAGE_USERS = "users_manage permission required"
 _ERR_USER_NOT_FOUND = "User not found"
 _SQL_USERNAME_BY_ID = "SELECT username FROM users WHERE id = ?"
 
@@ -118,7 +118,7 @@ def _validate_role_grant_scope(
         if not scope_id:
             raise HTTPException(status_code=400, detail="scope_id required when scope_type is set")
         scope_id = validate_uuid(scope_id)
-        require_team_scope(admin, scope_id, FLAG_MANAGE_TEAMS)
+        require_team_scope(admin, scope_id, FLAG_TEAMS_MANAGE)
         return scope_id
     granted_tier = ROLE_TIER.get(role_id)
     if granted_tier is not None:
@@ -144,7 +144,7 @@ def _validate_role_revoke_scope(
         if not scope_id:
             raise HTTPException(status_code=400, detail="scope_id required when scope_type is set")
         scope_id = validate_uuid(scope_id)
-        require_team_scope(admin, scope_id, FLAG_MANAGE_TEAMS)
+        require_team_scope(admin, scope_id, FLAG_TEAMS_MANAGE)
         return scope_id
     if user_id == admin.id and role_id in ADMIN_ROLE_IDS:
         raise HTTPException(status_code=400, detail="Cannot remove your own admin role")
@@ -164,16 +164,16 @@ def _validate_role_revoke_scope(
 # ---------------------------------------------------------------------------
 
 async def _require_user_in_scope(db, admin: AuthenticatedUser, user_id: str) -> None:
-    """Raise 403 if a scoped admin (FLAG_MANAGE_USERS) cannot act on this user.
+    """Raise 403 if a scoped admin (FLAG_USERS_MANAGE) cannot act on this user.
 
     Scoped admins may only manage users who are members of their allowed teams.
-    Org-wide admins (global FLAG_MANAGE_USERS grant) pass unconditionally.
+    Org-wide admins (global FLAG_USERS_MANAGE grant) pass unconditionally.
     """
-    allowed = scope_team_ids(admin, FLAG_MANAGE_USERS)
+    allowed = scope_team_ids(admin, FLAG_USERS_MANAGE)
     if allowed is None:
         return  # org-wide grant — unrestricted
     if not allowed:
-        raise HTTPException(status_code=403, detail="Admin scope has no teams with can_manage_users")  # NOSONAR
+        raise HTTPException(status_code=403, detail="Admin scope has no teams with users_manage")  # NOSONAR
     placeholders = ",".join("?" * len(allowed))
     cursor = await db.execute(
         f"SELECT 1 FROM user_team_keys WHERE user_id = ? AND team_id IN ({placeholders}) LIMIT 1",
@@ -195,11 +195,18 @@ async def list_users(
     limit: int = 20,
 ):
     """List all users with pagination."""
-    if not admin.has_flag(FLAG_MANAGE_USERS):
-        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
+    if not (admin.has_flag(FLAG_USERS_VIEW) or admin.has_flag(FLAG_USERS_MANAGE)):
+        raise HTTPException(status_code=403, detail="users_view or users_manage permission required")
     pagination = validate_pagination(page, limit)
 
-    allowed = scope_team_ids(admin, FLAG_MANAGE_USERS)
+    # scope: None = org-wide (unrestricted); set = team-scoped IDs.
+    # Either manage or view flag satisfies the scope; take the union (None wins = unrestricted).
+    _manage_scope = scope_team_ids(admin, FLAG_USERS_MANAGE)
+    _view_scope   = scope_team_ids(admin, FLAG_USERS_VIEW)
+    if _manage_scope is None or _view_scope is None:
+        allowed = None  # at least one global grant → org-wide
+    else:
+        allowed = _manage_scope | _view_scope  # both scoped → union
     if allowed is None:
         # Org-wide: return all users.
         cursor = await db.execute(
@@ -309,7 +316,7 @@ async def get_user(
 ):
     """Get a single user's details including roles, permissions, teams, and recent audit."""
     user_id = validate_uuid(user_id)
-    if admin.has_flag(FLAG_MANAGE_USERS):
+    if admin.has_flag(FLAG_USERS_VIEW) or admin.has_flag(FLAG_USERS_MANAGE):
         await _require_user_in_scope(db, admin, user_id)
     cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     row = await cursor.fetchone()
@@ -440,7 +447,7 @@ async def lock_user(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Deactivate a user account (lock). Revokes all sessions and shares."""
-    if not admin.has_flag(FLAG_MANAGE_USERS):
+    if not admin.has_flag(FLAG_USERS_MANAGE):
         raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     user_id = validate_uuid(user_id)
     await _require_user_in_scope(db, admin, user_id)
@@ -463,7 +470,7 @@ async def unlock_user(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Reactivate a previously locked user account."""
-    if not admin.has_flag(FLAG_MANAGE_USERS):
+    if not admin.has_flag(FLAG_USERS_MANAGE):
         raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     user_id = validate_uuid(user_id)
     await _require_user_in_scope(db, admin, user_id)
@@ -491,7 +498,7 @@ async def reset_user_password(
     This endpoint revokes all refresh tokens (forcing logout everywhere) and
     emits an audit event. Share an invite link via the invites API for full reset.
     """
-    if not admin.has_flag(FLAG_MANAGE_USERS):
+    if not admin.has_flag(FLAG_USERS_MANAGE):
         raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     user_id = validate_uuid(user_id)
     await _require_user_in_scope(db, admin, user_id)
@@ -543,7 +550,7 @@ async def update_user(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Update a user's settings (quotas, active status)."""
-    if not admin.has_flag(FLAG_MANAGE_USERS):
+    if not admin.has_flag(FLAG_USERS_MANAGE):
         raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     user_id = validate_uuid(user_id)
     await _require_user_in_scope(db, admin, user_id)
@@ -637,17 +644,17 @@ async def add_role_to_user(
 ):
     """Grant a role to a user — global or scoped to a team.
 
-    Requires can_manage_roles.  For roles in the fixed tier hierarchy, the
+    Requires roles_manage.  For roles in the fixed tier hierarchy, the
     granted role's tier must be >= the granting admin's own best tier so that
     a lower-tier admin cannot promote anyone to a higher tier than themselves.
     Custom (non-tiered) roles have no tier restriction.
 
     To grant a team-scoped role (e.g. team_admin for a specific team), include
     {"scope_type": "team", "scope_id": "<team_uuid>"} in the request body.
-    The calling admin must hold FLAG_MANAGE_TEAMS within that team's scope.
+    The calling admin must hold FLAG_TEAMS_MANAGE within that team's scope.
     """
-    if not admin.has_flag(FLAG_MANAGE_ROLES):
-        raise HTTPException(status_code=403, detail="can_manage_roles permission required")
+    if not admin.has_flag(FLAG_ROLES_MANAGE):
+        raise HTTPException(status_code=403, detail="roles_manage permission required")
 
     user_id = validate_uuid(user_id)
 
@@ -699,14 +706,14 @@ async def remove_role_from_user(
 ):
     """Revoke a role from a user — global or scoped.
 
-    Requires can_manage_roles.  The same tier cap as grant applies: you cannot
+    Requires roles_manage.  The same tier cap as grant applies: you cannot
     revoke a role with higher authority than your own tier.
 
     To revoke a team-scoped role, pass ?scope_type=team&scope_id=<team_uuid>.
-    The calling admin must hold FLAG_MANAGE_TEAMS within that team's scope.
+    The calling admin must hold FLAG_TEAMS_MANAGE within that team's scope.
     """
-    if not admin.has_flag(FLAG_MANAGE_ROLES):
-        raise HTTPException(status_code=403, detail="can_manage_roles permission required")
+    if not admin.has_flag(FLAG_ROLES_MANAGE):
+        raise HTTPException(status_code=403, detail="roles_manage permission required")
 
     user_id = validate_uuid(user_id)
 
@@ -757,8 +764,8 @@ async def delete_user(
     Collects file storage keys before deleting (CASCADE removes DB rows),
     then cleans up blobs from disk in a background thread.
     """
-    if not admin.has_flag(FLAG_MANAGE_USERS):
-        raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
+    if not admin.has_flag(FLAG_USERS_DELETE):
+        raise HTTPException(status_code=403, detail="users_delete permission required")
 
     user_id = validate_uuid(user_id)
     await _require_user_in_scope(db, admin, user_id)
@@ -835,10 +842,10 @@ async def clear_user_asymmetric_keys(
     excluded from escrow-agent resolution and team-key wrapping until they
     re-register their keys via POST /auth/me/asymmetric-keys.
 
-    Requires can_manage_users. Typical use: key revocation after suspected
+    Requires users_manage. Typical use: key revocation after suspected
     compromise, or resetting a test user's key state.
     """
-    if not admin.has_flag(FLAG_MANAGE_USERS):
+    if not admin.has_flag(FLAG_USERS_MANAGE):
         raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
 
     user_id = validate_uuid(user_id)

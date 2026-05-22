@@ -1766,6 +1766,60 @@
     opacity: 0.65;
 }
 
+.flag-dep-warnings {
+    margin: var(--space-3) 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.flag-dep-warning {
+    font-size: var(--font-size-sm);
+    color: var(--color-danger, #dc3545);
+    background: color-mix(in srgb, var(--color-danger, #dc3545) 8%, transparent);
+    border-left: 3px solid var(--color-danger, #dc3545);
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-sm);
+}
+
+.flag-dep-hint {
+    font-size: var(--font-size-sm);
+    color: var(--color-info, #0dcaf0);
+    background: color-mix(in srgb, var(--color-info, #0dcaf0) 8%, transparent);
+    border-left: 3px solid var(--color-info, #0dcaf0);
+    padding: var(--space-1) var(--space-3);
+    border-radius: var(--radius-sm);
+}
+
+.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+}
+
+.data-table th,
+.data-table td {
+    padding: var(--space-2) var(--space-3);
+    text-align: left;
+    border-bottom: 1px solid var(--color-border);
+}
+
+.data-table th {
+    font-weight: 600;
+    color: var(--color-text-muted);
+    background: var(--color-surface-secondary, transparent);
+}
+
+.data-table tbody tr:hover {
+    background: var(--color-surface-hover, transparent);
+}
+
+.btn-xs {
+    padding: 2px var(--space-2);
+    font-size: var(--font-size-xs);
+    border-radius: var(--radius-sm);
+}
+
 .admin-scope-banner {
     font-size: var(--font-size-sm);
     padding: var(--space-2) var(--space-3);
