@@ -63,6 +63,7 @@ from app.util.bls_verify import (
     verify_batch_dleq,
     verify_schnorr_pok,
 )
+from app.models.policy import get_blocking_policies
 from app.models.role import grant_role, revoke_role
 from app.models.team import (
     TeamFileKey,
@@ -843,6 +844,16 @@ async def update_member_role(
                 detail="Cannot demote the only owner — promote another member first",
             )
 
+    blocks = await get_blocking_policies(db, target_user_id, team_id)
+    if blocks:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "This member's role is assigned by a policy. Create a policy exemption for this user before changing their role manually.",
+                "blocked_by": blocks,
+            },
+        )
+
     await db.execute(
         "UPDATE user_roles SET role_id = ? "
         "WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
@@ -884,6 +895,16 @@ async def remove_member(
     caller_role = await get_team_member_role(db, team_id, user.id)
     if caller_role == TEAM_ROLE_SUPERVISOR and current_role == TEAM_ROLE_SUPERVISOR:
         raise HTTPException(status_code=403, detail="Supervisors cannot remove other supervisors")
+
+    blocks = await get_blocking_policies(db, target_user_id, team_id)
+    if blocks:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "This membership is enforced by a policy. Create a policy exemption for this user before removing them.",
+                "blocked_by": blocks,
+            },
+        )
 
     await db.execute(
         "DELETE FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
@@ -1348,6 +1369,33 @@ async def rotate_team_keys(
         target=EventTarget(type="team", id=team_id),
         detail={"file_count": len(body.file_keys), "member_count": len(body.members)},
     ))
+
+    # Detect policy-enrolled members omitted from the rotation payload.
+    # Their user_team_keys were wiped by the rotation; mark grants as needing re-wrap.
+    submitted_ids = {m.user_id for m in body.members}
+    cursor = await db.execute(
+        "SELECT DISTINCT user_id FROM user_roles "
+        "WHERE scope_type = 'team' AND scope_id = ? AND policy_effect_id IS NOT NULL",
+        (team_id,),
+    )
+    policy_member_ids = {r["user_id"] for r in await cursor.fetchall()}
+    omitted = policy_member_ids - submitted_ids
+    if omitted:
+        for uid in omitted:
+            await db.execute(
+                "UPDATE policy_team_grants SET key_wrapped = 0 "
+                "WHERE user_id = ? AND effect_id IN "
+                "(SELECT id FROM policy_effects WHERE target_id = ?)",
+                (uid, team_id),
+            )
+        await db.commit()
+        return {
+            "ok": True,
+            "rotated_files": len(body.file_keys),
+            "warning": f"{len(omitted)} policy-enrolled member(s) were not included in this rotation and will need their keys re-wrapped at next login.",
+            "policy_members_omitted": list(omitted),
+        }
+
     return {"ok": True, "rotated_files": len(body.file_keys)}
 
 

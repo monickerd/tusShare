@@ -499,6 +499,14 @@ async def _update_move_permissions(db, folder_id: str, move_to_root: bool, paren
         "DELETE FROM permissions WHERE resource_type = 'folder' AND resource_id = ? AND recursive = 1",
         (folder_id,),
     )
+    # Any policy_folder_grants whose recursive ACL row was just stripped are now stale.
+    # Mark acl_written=0 so re-evaluation knows to re-insert the permissions row.
+    await db.execute(
+        "UPDATE policy_folder_grants SET acl_written = 0 "
+        "WHERE folder_id = ? AND acl_written = 1 "
+        "  AND effect_id IN (SELECT id FROM policy_effects WHERE recursive = 1)",
+        (folder_id,),
+    )
     if new_parent_id:
         await copy_folder_permissions(db, new_parent_id, "folder", folder_id)
 

@@ -12,7 +12,8 @@
 --   Teams:      teams, file_team_keys, team_folders, team_roles, team_role_permissions,
 --               team_role_assignments, team_ephemeral_slots
 --   Policy:     policy_field_definitions, admin_scope_conditions, policies,
---               policy_conditions, policy_effects, policy_team_grants, policy_folder_grants
+--               policy_conditions, policy_effects, policy_team_grants, policy_folder_grants,
+--               policy_exemptions
 --   ACL:        user_roles, user_team_keys, permissions
 --   Admin:      admin_settings, invites, invite_short_links
 --   Audit:      access_logs, bandwidth_log, security_events
@@ -793,6 +794,25 @@ CREATE TABLE policy_folder_grants (
 CREATE INDEX idx_policy_folder_grants_user   ON policy_folder_grants(user_id);
 CREATE INDEX idx_policy_folder_grants_folder ON policy_folder_grants(folder_id);
 CREATE INDEX idx_policy_folder_grants_effect ON policy_folder_grants(effect_id);
+
+-------------------------------------------------
+-- POLICY EXEMPTIONS
+-- Per-user, per-policy opt-outs.  evaluate_user_policies skips matching policies
+-- for exempted users and revokes any previously written grants.
+-- Only can_manage_policies admins may create/delete exemptions.
+-------------------------------------------------
+CREATE TABLE policy_exemptions (
+    id          TEXT        NOT NULL PRIMARY KEY,
+    policy_id   TEXT        NOT NULL REFERENCES policies(id) ON DELETE CASCADE,
+    user_id     TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    exempted_by TEXT        REFERENCES users(id) ON DELETE SET NULL,
+    reason      TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(policy_id, user_id)
+);
+
+CREATE INDEX idx_policy_exemptions_policy ON policy_exemptions(policy_id);
+CREATE INDEX idx_policy_exemptions_user   ON policy_exemptions(user_id);
 
 -------------------------------------------------
 -- USER ↔ ROLE MAPPING

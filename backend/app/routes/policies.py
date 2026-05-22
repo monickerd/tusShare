@@ -37,6 +37,7 @@ from app.models.policy import (
     PolicyCondition,
     PolicyEffect,
     VALID_OPERATORS,
+    evaluate_user_policies,
     sweep_policy_for_all_users,
 )
 from app.models.role import FLAG_MANAGE_POLICIES
@@ -740,3 +741,153 @@ async def delete_effect(
     await db.execute("DELETE FROM policy_effects WHERE id = ?", (effect_id,))
     await db.commit()
     return {"message": "Effect deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Background per-user re-evaluation (used by exemption endpoints)
+# ---------------------------------------------------------------------------
+
+async def _bg_evaluate_user(user_id: str) -> None:
+    """Re-evaluate policies for a single user in a background task with its own DB connection."""
+    try:
+        async with db_session() as _db:
+            await evaluate_user_policies(_db, user_id, force=True)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Policy exemptions
+# GET    /admin/policies/{policy_id}/exemptions
+# POST   /admin/policies/{policy_id}/exemptions
+# DELETE /admin/policies/{policy_id}/exemptions/{user_id}
+# ---------------------------------------------------------------------------
+
+class CreateExemptionRequest(BaseModel):
+    user_id: str
+    reason:  str | None = None
+
+
+@router.get("/{policy_id}/exemptions", responses={404: {"description": "Not Found"}})
+async def list_exemptions(
+    policy_id: str,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """List all per-user exemptions for a policy.
+
+    Each entry shows who was exempted, by whom, and the optional reason.
+    Only can_manage_policies admins may call this endpoint.
+    """
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    policy_id = validate_uuid(policy_id)
+    await _load_policy(db, policy_id)
+
+    cursor = await db.execute(
+        """
+        SELECT pe.id, pe.policy_id, pe.user_id, pe.exempted_by, pe.reason,
+               pe.created_at, u.username, u.email
+        FROM policy_exemptions pe
+        JOIN users u ON u.id = pe.user_id
+        WHERE pe.policy_id = ?
+        ORDER BY pe.created_at DESC
+        """,
+        (policy_id,),
+    )
+    rows = await cursor.fetchall()
+    return {"exemptions": [dict(r) for r in rows]}
+
+
+@router.post(
+    "/{policy_id}/exemptions",
+    responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Already exempted"}},
+)
+async def create_exemption(
+    policy_id: str,
+    body: CreateExemptionRequest,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Exempt a specific user from this policy.
+
+    After creation, evaluate_user_policies runs immediately for the user so
+    any policy-sourced grants are revoked without waiting for their next login.
+    Only can_manage_policies admins may call this endpoint.
+    """
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    policy_id = validate_uuid(policy_id)
+    target_user_id = validate_uuid(body.user_id)
+    await _load_policy(db, policy_id)
+
+    cursor = await db.execute("SELECT 1 FROM users WHERE id = ?", (target_user_id,))
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    exemption_id = str(uuid.uuid4())
+    try:
+        await db.execute(
+            "INSERT INTO policy_exemptions (id, policy_id, user_id, exempted_by, reason) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (exemption_id, policy_id, target_user_id, user.id, body.reason),
+        )
+        await db.commit()
+    except Exception:
+        raise HTTPException(status_code=409, detail="User is already exempted from this policy")
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.policy.exemption_created",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"policy_id": policy_id, "target_user_id": target_user_id, "reason": body.reason},
+    ))
+
+    _t = asyncio.create_task(_bg_evaluate_user(target_user_id))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)
+
+    return {"message": "Exemption created", "id": exemption_id}
+
+
+@router.delete(
+    "/{policy_id}/exemptions/{target_user_id}",
+    status_code=204,
+    responses={404: {"description": "Not Found"}},
+)
+async def delete_exemption(
+    policy_id: str,
+    target_user_id: str,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Remove a per-user policy exemption, re-enabling the policy for that user.
+
+    After deletion, evaluate_user_policies runs immediately so grants are
+    re-written if the policy still matches the user.
+    Only can_manage_policies admins may call this endpoint.
+    """
+    require_flag(user, FLAG_MANAGE_POLICIES, _ERR_PERM_POLICIES)
+    policy_id = validate_uuid(policy_id)
+    target_user_id = validate_uuid(target_user_id)
+    await _load_policy(db, policy_id)
+
+    result = await db.execute(
+        "DELETE FROM policy_exemptions WHERE policy_id = ? AND user_id = ? RETURNING id",
+        (policy_id, target_user_id),
+    )
+    deleted = await result.fetchone()
+    if deleted is None:
+        raise HTTPException(status_code=404, detail="Exemption not found")
+    await db.commit()
+
+    event_bus.emit(SecurityEvent(
+        event_type="admin.policy.exemption_deleted",
+        severity="warning",
+        outcome="success",
+        actor=EventActor(user_id=str(user.id), username=user.username),
+        detail={"policy_id": policy_id, "target_user_id": target_user_id},
+    ))
+
+    _t = asyncio.create_task(_bg_evaluate_user(target_user_id))
+    _bg_tasks.add(_t)
+    _t.add_done_callback(_bg_tasks.discard)

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
+from app.models.policy import get_blocking_policies
 from app.models.role import FLAG_MANAGE_TEAMS
 from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.validation.sanitizers import validate_uuid
@@ -210,6 +211,16 @@ async def admin_remove_team_member(
     )
     if await cursor.fetchone() is None:
         raise HTTPException(status_code=404, detail="User is not a member of this team")
+
+    blocks = await get_blocking_policies(db, user_id, team_id)
+    if blocks:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "This membership is enforced by a policy. Create a policy exemption for this user before removing them.",
+                "blocked_by": blocks,
+            },
+        )
 
     await db.execute(
         "DELETE FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",

@@ -615,15 +615,9 @@ async def _apply_team_member_effect(
     await db.execute(
         "INSERT INTO policy_team_grants "
         "(id, effect_id, user_id, key_wrapped) VALUES (?, ?, ?, ?) "
-        "ON CONFLICT DO NOTHING",
+        "ON CONFLICT (effect_id, user_id) DO UPDATE SET key_wrapped = EXCLUDED.key_wrapped",
         (tg_id, effect_id, user_id, 1 if has_key else 0),
     )
-    if has_key:
-        await db.execute(
-            "UPDATE policy_team_grants SET key_wrapped = 1 "
-            "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
-            (effect_id, user_id),
-        )
 
     if not escrow_agent_ids:
         return
@@ -700,15 +694,11 @@ async def _apply_folder_acl_effect(
         "INSERT INTO policy_folder_grants "
         "(id, effect_id, user_id, folder_id, acl_written, key_wrapped) "
         "VALUES (?, ?, ?, ?, ?, ?) "
-        "ON CONFLICT DO NOTHING",
+        "ON CONFLICT (effect_id, user_id, folder_id) DO UPDATE SET "
+        "    acl_written = EXCLUDED.acl_written, "
+        "    key_wrapped = EXCLUDED.key_wrapped",
         (fg_id, effect_id, user_id, target_id, 1 if acl_written else 0, key_wrapped),
     )
-    if key_wrapped:
-        await db.execute(
-            "UPDATE policy_folder_grants SET key_wrapped = 1 "
-            "WHERE effect_id = ? AND user_id = ? AND folder_id = ? AND key_wrapped = 0",
-            (effect_id, user_id, target_id),
-        )
 
 
 async def _check_policy_debounce(db, user_id: str, force: bool) -> bool:
@@ -924,6 +914,15 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
     # 7. Evaluate each policy; collect matching policy IDs
     matching_policy_ids = _collect_matching_policy_ids(policies, conditions_by_policy, all_resolved)
 
+    # 7.5. Remove exempted policies — treat them as non-matching so grants are revoked
+    cursor = await db.execute(
+        "SELECT policy_id FROM policy_exemptions WHERE user_id = ?",
+        (user_id,),
+    )
+    exempted_ids = {r["policy_id"] for r in await cursor.fetchall()}
+    if exempted_ids:
+        matching_policy_ids -= exempted_ids
+
     # 8. Write grants for matching policies
     if matching_policy_ids:
         await _write_matching_policy_grants(db, user_id, policies, matching_policy_ids)
@@ -1126,6 +1125,31 @@ async def _fetch_oidc_userinfo(row) -> dict:
     except Exception as exc:
         logger.warning("policy: OIDC UserInfo fetch error: %s", exc)
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Policy enforcement helpers (used by route guards)
+# ---------------------------------------------------------------------------
+
+async def get_blocking_policies(db, user_id: str, team_id: str) -> list[dict]:
+    """Return policies currently enforcing a user's team membership.
+
+    Returns a list of {policy_id, policy_name} dicts — empty when the membership
+    is entirely manual (no policy_effect_id rows).  Used by remove/role-change
+    endpoints to build a structured 409 response.
+    """
+    cursor = await db.execute(
+        """
+        SELECT DISTINCT p.id AS policy_id, p.name AS policy_name
+        FROM user_roles ur
+        JOIN policy_effects pe ON pe.id = ur.policy_effect_id
+        JOIN policies p ON p.id = pe.policy_id
+        WHERE ur.user_id = ? AND ur.scope_type = 'team' AND ur.scope_id = ?
+          AND ur.policy_effect_id IS NOT NULL
+        """,
+        (user_id, team_id),
+    )
+    return [{"policy_id": r["policy_id"], "policy_name": r["policy_name"]} for r in await cursor.fetchall()]
 
 
 # ---------------------------------------------------------------------------

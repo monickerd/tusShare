@@ -186,6 +186,10 @@ async def _execute_file_move_tx(
             "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
             (item.id,),
         )
+        # Recursive file-level permissions may have been propagated from a folder
+        # that has a policy_folder_grant with acl_written=1.  The folder grant
+        # itself is not stale (it still covers the folder), so no tracking update
+        # is needed here — only the derived file rows were cleared.
         if dest_id:
             await copy_folder_permissions(db, dest_id, "file", item.id)
         if src_team_id and src_team_id != dest_team_id:
@@ -833,6 +837,8 @@ async def _apply_move_side_effects(db, body: UpdateFileRequest, file_id: str, ro
         "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ? AND recursive = 1",
         (file_id,),
     )
+    # policy_folder_grants tracks folder-level grants only; derived file permissions
+    # are not tracked separately and re-inherit from the new parent after copy below.
     if new_folder_id:
         await copy_folder_permissions(db, new_folder_id, "file", file_id)
     old_team_id = await get_folder_team_id(db, row["folder_id"]) if row["folder_id"] else None
