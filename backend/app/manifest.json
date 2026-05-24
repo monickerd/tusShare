@@ -1,5 +1,5 @@
 {
-  "generated": "2026-05-24T08:41:45.967763+00:00",
+  "generated": "2026-05-24T08:58:05.289170+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
     "frontend/js/admin.js": "sha256-fUcY+d8rRDd8GmIruNlkEBqfUW1rSZFpRqNBdCEp+fo=",
@@ -20,8 +20,8 @@
     "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
     "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",
-    "frontend/css/components.css": "sha256-yXr4EQg7ZHc6Qde2MxVY4b8eCW50Gr3oum5qN4d7HZE=",
-    "frontend/css/main.css": "sha256-YAaIwa3n0Cb2xv/KV/4DMjnC3sxnOT3MOUNqEXq97m0=",
+    "frontend/css/components.css": "sha256-Y63GiMt8bAWP7Ce5XCTIFkRcgV20o8h2Y9AWHpgP0Nw=",
+    "frontend/css/main.css": "sha256-aVh3JfVbYT0CAPrdlNoJJtDY/iB2dGjLN/8aZVUnsU0=",
     "frontend/themes/default/colors.css": "sha256-CB1u+Y9bz3pcQj1cfuV6Z1RGrDcCmzsiTZQ69eqIrfI=",
     "frontend/themes/default/layout.css": "sha256-0wFe9nBp73p10q+zbxwk87p4ZOy17ATNAVV0qEMh+vw=",
     "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",

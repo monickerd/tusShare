@@ -896,6 +896,10 @@
     font-size: var(--font-size-sm);
 }
 
+.toolbar-filter {
+    width: 360px;
+}
+
 .input-xs {
     width: 80px;
     padding: 2px var(--space-2);
@@ -2439,7 +2443,8 @@
     color: var(--color-primary, #2563eb);
 }
 
-/* 2×2 grid icon — element is top-left square; box-shadows are the other three */
+/* 2×2 grid icon — element is top-left square; box-shadows are the other three.
+   Visual extent is 12×12px but the element is 5×5px, so translate to re-center. */
 .view-toggle-grid-icon {
     display: inline-block;
     width: 5px;
@@ -2450,10 +2455,10 @@
         7px 0   0 currentColor,
         0   7px 0 currentColor,
         7px 7px 0 currentColor;
-    margin: 1px;
+    transform: translate(-3.5px, -3.5px);
 }
 
-/* Three horizontal lines */
+/* Three horizontal lines — shadows extend downward so shift up to re-center. */
 .view-toggle-list-icon {
     display: inline-block;
     width: 14px;
@@ -2463,6 +2468,7 @@
     box-shadow:
         0 4px 0 currentColor,
         0 8px 0 currentColor;
+    transform: translateY(-4px);
 }
 
 /* ---- Team list-view table ---- */
