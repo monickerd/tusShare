@@ -108,6 +108,7 @@ const Files = (() => {
         }
         clearTimeout(_liveReloadTimer);
         _liveReloadTimer = null;
+        _closeUploadMenu();
     }
 
     /**
@@ -123,17 +124,27 @@ const Files = (() => {
         _currentTeamSKBytes = null;
         _clearContainer(container);
 
+        const uploadNewBtn = Utils.el('button', {
+            id: 'upload-new-btn',
+            className: 'btn-upload-new',
+            title: 'Upload or create',
+            textContent: '+',
+            onClick: (e) => _toggleUploadMenu(e.currentTarget),
+        });
         const main = Utils.el('main', { className: 'files-main' }, [
             Utils.el('div', { id: 'folder-share-banner' }),
             Utils.el('div', { className: 'files-toolbar', id: 'files-toolbar' }, [
-                Utils.el('div', { id: 'breadcrumbs', className: 'breadcrumbs' }),
-                Utils.el('div', { className: 'toolbar-actions' }, [
+                Utils.el('div', { className: 'toolbar-left' }, [
+                    uploadNewBtn,
+                    Utils.el('span', { className: 'toolbar-divider' }),
+                    Utils.el('div', { id: 'breadcrumbs', className: 'breadcrumbs' }),
+                ]),
+                Utils.el('div', { className: 'toolbar-right' }, [
                     Utils.el('input', {
                         type: 'text',
                         id: 'file-list-filter',
-                        className: 'input-sm',
+                        className: 'input-sm toolbar-filter',
                         placeholder: 'Filter by name…',
-                        style: 'width:200px;margin-right:12px',
                         onInput: (e) => {
                             const term = e.target.value.toLowerCase();
                             const listEl = document.getElementById('file-list');
@@ -145,14 +156,13 @@ const Files = (() => {
                         },
                     }),
                     Utils.el('button', {
-                        className: 'btn btn-secondary btn-sm',
-                        textContent: 'New Folder',
-                        onClick: () => _promptNewFolder(),
-                    }),
-                    Utils.el('button', {
-                        className: 'btn btn-primary btn-sm',
-                        textContent: 'Upload',
-                        onClick: () => _triggerUpload(),
+                        className: 'btn btn-sm btn-secondary trash-nav-btn',
+                        textContent: 'Recently Deleted',
+                        onClick: () => {
+                            globalThis.location.hash = _isTeamView && _currentTeamId
+                                ? `#/trash/teams/${_currentTeamId}`
+                                : '#/trash';
+                        },
                     }),
                 ]),
             ]),
@@ -894,6 +904,37 @@ const Files = (() => {
     }
 
     let _activeMenu = null;
+    let _activeUploadMenu = null;
+
+    function _closeUploadMenu() {
+        if (_activeUploadMenu?.parentNode) _activeUploadMenu.remove();
+        _activeUploadMenu = null;
+        const btn = document.getElementById('upload-new-btn');
+        if (btn) btn.classList.remove('active');
+    }
+
+    function _toggleUploadMenu(btn) {
+        if (_activeUploadMenu) { _closeUploadMenu(); return; }
+        btn.classList.add('active');
+        const menu = Utils.el('div', { className: 'upload-new-menu' }, [
+            Utils.el('button', { className: 'upload-new-item', textContent: 'Upload File',   onClick: () => { _closeUploadMenu(); _triggerUpload(); } }),
+            Utils.el('button', { className: 'upload-new-item', textContent: 'Upload Folder', onClick: () => { _closeUploadMenu(); _triggerFolderUpload(); } }),
+            Utils.el('button', { className: 'upload-new-item', textContent: 'New Folder',    onClick: () => { _closeUploadMenu(); _promptNewFolder(); } }),
+        ]);
+        document.body.appendChild(menu);
+        const rect = btn.getBoundingClientRect();
+        menu.style.position = 'fixed';
+        menu.style.left = `${rect.left}px`;
+        menu.style.top = `${rect.bottom + 4}px`;
+        _activeUploadMenu = menu;
+        const _outside = (e) => {
+            if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
+                _closeUploadMenu();
+                document.removeEventListener('mousedown', _outside, true);
+            }
+        };
+        document.addEventListener('mousedown', _outside, true);
+    }
 
     function _showContextMenu(anchor, items) {
         _dismissContextMenu();
@@ -1882,6 +1923,76 @@ const Files = (() => {
             input.remove();
         });
         input.click();
+    }
+
+    function _triggerFolderUpload() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.webkitdirectory = true;
+        input.addEventListener('change', async () => {
+            const files = Array.from(input.files);
+            input.remove();
+            if (files.length) await _uploadFolderFiles(files);
+        });
+        input.click();
+    }
+
+    async function _uploadFolderFiles(files) {
+        if (files.length > Config.upload.bulkWarnThreshold) {
+            if (!await _showBulkUploadWarning(files.length)) return;
+        }
+        const ctx = {
+            results: { ok: 0, failed: [], firstName: null },
+            mergeState: { decision: null },
+            conflictState: { decisionDifferent: null, decisionIdentical: null },
+            fileCache: new Map(),
+            lastUploadMs: null,
+        };
+
+        // Build a directory tree from webkitRelativePath values
+        const dirMap = new Map([['', { files: [], subdirs: new Set() }]]);
+        for (const file of files) {
+            const parts = file.webkitRelativePath.split('/');
+            for (let depth = 1; depth < parts.length; depth++) {
+                const path   = parts.slice(0, depth).join('/');
+                const parent = parts.slice(0, depth - 1).join('/');
+                if (!dirMap.has(path)) dirMap.set(path, { files: [], subdirs: new Set() });
+                dirMap.get(parent).subdirs.add(path);
+            }
+            const dirPath = parts.slice(0, -1).join('/');
+            dirMap.get(dirPath).files.push(file);
+        }
+
+        async function processDir(dirPath, parentServerId) {
+            const entry = dirMap.get(dirPath);
+            if (!entry) return;
+            if (entry.files.length) await _uploadFiles(entry.files, parentServerId, ctx);
+            for (const subPath of entry.subdirs) {
+                const name = subPath.split('/').pop();
+                let newId = null;
+                try {
+                    const r = await Api.post(`${Config.app.apiPrefix}/folders`, { name, parent_id: parentServerId || null });
+                    newId = r.folder.id;
+                } catch (err) {
+                    if (err.status === 409 && err.existingFolderId) {
+                        let action = ctx.mergeState.decision;
+                        if (!action) {
+                            const choice = await _showFolderMergeModal(name);
+                            if (choice.applyToAll) ctx.mergeState.decision = choice.action;
+                            action = choice.action;
+                        }
+                        newId = action === 'merge' ? err.existingFolderId : null;
+                    } else {
+                        ctx.results.failed.push(name);
+                    }
+                }
+                if (newId) await processDir(subPath, newId);
+            }
+        }
+
+        await processDir('', _currentFolderId);
+        _reportUploadResults(ctx);
+        _reloadCurrentView();
     }
 
     /** Register a team file key after upload; no-op when not in a team context. */

@@ -1367,10 +1367,6 @@ const App = (() => {
                 Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', textContent: 'Shared To Me' }),
             ]),
 
-            Utils.el('div', { className: 'sidebar-section-label', textContent: 'Trash' }),
-            Utils.el('div', { className: 'sidebar-submenu', id: 'nav-trash-submenu' }, [
-                Utils.el('a', { href: '#/trash', className: 'sidebar-link sidebar-sublink', id: 'nav-trash', textContent: 'My Trash' }),
-            ]),
         ]);
         if (user?.is_admin) {
             nav.appendChild(Utils.el('a', {
@@ -1500,7 +1496,6 @@ const App = (() => {
             { id: 'nav-team-folders', test: h => /^#\/team-folders(\/.*)?$/.test(h) },
             { id: 'nav-teams',        test: h => /^#\/teams(\/.*)?$/.test(h) },
             { id: 'nav-admin',        test: h => h === '#/admin' },
-            { id: 'nav-trash',        test: h => /^#\/trash(\/.*)?$/.test(h) },
         ];
         rules.forEach(({ id, test }) => {
             const el = document.getElementById(id);
