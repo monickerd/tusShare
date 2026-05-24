@@ -167,10 +167,10 @@ async def get_team_member_count(db, team_id: str) -> int:
 
 
 async def get_user_teams(db, user_id: str) -> list[dict]:
-    """Return all teams the user belongs to with role, key state, and pending flags.
+    """Return all teams the user belongs to with roles, key state, and pending flags.
 
     Extra fields per team (beyond Team.to_dict()):
-      my_role               — caller's role in this team
+      my_roles              — list of role IDs the caller holds in this team
       my_key_confirmed      — True if caller's user_team_keys.key_confirmed = 1
       has_pending_key_grants — True if any policy_team_grants.key_wrapped=0 exist
                                on this team (caller should fulfil them on login)
@@ -178,26 +178,26 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
     cursor = await db.execute(
         "SELECT t.id, t.name, t.description, t.owner_id, t.pre_public_key, "
         "       t.rotation_pending, t.created_at, t.updated_at, "
-        "       ur.role_id AS my_role, "
-        "       COALESCE(utk.key_confirmed, 0) AS my_key_confirmed, "
+        "       array_agg(ur.role_id) AS my_roles, "
+        "       COALESCE(MAX(utk.key_confirmed), 0) AS my_key_confirmed, "
         "       CASE WHEN EXISTS("
         "           SELECT 1 FROM policy_team_grants ptg "
         "           JOIN policy_effects pe ON pe.id = ptg.effect_id "
         "           WHERE pe.target_id = t.id AND ptg.key_wrapped = 0"
         "       ) THEN 1 ELSE 0 END AS has_pending_key_grants "
         "FROM teams t "
-        "JOIN user_roles ur ON ur.scope_id = t.id AND ur.scope_type = 'team' "
-        "LEFT JOIN user_team_keys utk "
-        "       ON utk.team_id = t.id AND utk.user_id = ur.user_id "
-        "WHERE ur.user_id = ? "
+        "JOIN user_roles ur ON ur.scope_id = t.id AND ur.scope_type = 'team' AND ur.user_id = ? "
+        "LEFT JOIN user_team_keys utk ON utk.team_id = t.id AND utk.user_id = ? "
+        "GROUP BY t.id, t.name, t.description, t.owner_id, t.pre_public_key, "
+        "         t.rotation_pending, t.created_at, t.updated_at "
         "ORDER BY t.name",
-        (user_id,),
+        (user_id, user_id),
     )
     rows = await cursor.fetchall()
     return [
         {
             **Team.from_row(r).to_dict(),
-            "my_role":               r["my_role"],
+            "my_roles":              list(r["my_roles"]) if r["my_roles"] else [],
             "my_key_confirmed":      bool(r["my_key_confirmed"]),
             "has_pending_key_grants": bool(r["has_pending_key_grants"]),
         }

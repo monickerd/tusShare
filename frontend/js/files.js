@@ -905,10 +905,15 @@ const Files = (() => {
 
     let _activeMenu = null;
     let _activeUploadMenu = null;
+    let _uploadMenuOutsideListener = null;
 
     function _closeUploadMenu() {
         if (_activeUploadMenu?.parentNode) _activeUploadMenu.remove();
         _activeUploadMenu = null;
+        if (_uploadMenuOutsideListener) {
+            document.removeEventListener('mousedown', _uploadMenuOutsideListener, true);
+            _uploadMenuOutsideListener = null;
+        }
         const btn = document.getElementById('upload-new-btn');
         if (btn) btn.classList.remove('active');
     }
@@ -927,13 +932,12 @@ const Files = (() => {
         menu.style.left = `${rect.left}px`;
         menu.style.top = `${rect.bottom + 4}px`;
         _activeUploadMenu = menu;
-        const _outside = (e) => {
+        _uploadMenuOutsideListener = (e) => {
             if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
                 _closeUploadMenu();
-                document.removeEventListener('mousedown', _outside, true);
             }
         };
-        document.addEventListener('mousedown', _outside, true);
+        document.addEventListener('mousedown', _uploadMenuOutsideListener, true);
     }
 
     function _showContextMenu(anchor, items) {

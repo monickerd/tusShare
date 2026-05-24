@@ -1433,6 +1433,7 @@ const Admin = (() => {
     }
 
     function _hasDepWarnings(role, flagMeta) {
+        if (role.is_system) return false;
         const requires = flagMeta?.requires ?? {};
         const perms = role.permissions ?? {};
         for (const [flag, deps] of Object.entries(requires)) {

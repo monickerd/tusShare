@@ -261,6 +261,8 @@ class UpdatePrefsRequest(BaseModel):
     admin_layout: dict | None = None
     pinned_folders: list | None = None
     role_order: list | None = None
+    teams_view: str | None = None
+    team_folders_view: str | None = None
 
 
 @router.patch("/me/prefs")
@@ -280,6 +282,14 @@ async def update_my_prefs(
     if body.role_order is not None:
         cleaned_order = [str(x)[:64] for x in body.role_order if isinstance(x, str)]
         prefs["role_order"] = cleaned_order
+
+    if body.teams_view is not None:
+        if body.teams_view in ("tile", "list"):
+            prefs["teams_view"] = body.teams_view
+
+    if body.team_folders_view is not None:
+        if body.team_folders_view in ("tile", "list"):
+            prefs["team_folders_view"] = body.team_folders_view
 
     if body.pinned_folders is not None:
         cleaned = []

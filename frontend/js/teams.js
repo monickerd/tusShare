@@ -378,21 +378,109 @@ const Teams = (() => {
     /**
      * Render the Teams list page into container.
      */
+    function _makeViewToggle(tileActive) {
+        const tileBtn = Utils.el('button', {
+            className: 'view-toggle-btn' + (tileActive ? ' active' : ''),
+            title: 'Tile view',
+        });
+        tileBtn.appendChild(Utils.el('span', { className: 'view-toggle-grid-icon' }));
+
+        const listBtn = Utils.el('button', {
+            className: 'view-toggle-btn' + (!tileActive ? ' active' : ''),
+            title: 'List view',
+        });
+        listBtn.appendChild(Utils.el('span', { className: 'view-toggle-list-icon' }));
+
+        return { tileBtn, listBtn };
+    }
+
+    function _buildTeamsListTable(teams) {
+        let sortKey = 'name', sortAsc = true;
+        const tbody = Utils.el('tbody');
+
+        function _renderRows() {
+            tbody.innerHTML = '';
+            const sorted = [...teams].sort((a, b) => {
+                let av, bv;
+                if (sortKey === 'my_roles') {
+                    const roles = t => (t.my_roles || []).sort((x, y) => _ROLE_PRIORITY(x) - _ROLE_PRIORITY(y));
+                    av = roles(a).map(r => _ROLE_LABEL[r] || 'Custom').join(', ');
+                    bv = roles(b).map(r => _ROLE_LABEL[r] || 'Custom').join(', ');
+                } else if (sortKey === 'status') {
+                    av = a.rotation_pending ? 'z' : a.my_key_confirmed ? 'a' : 'b';
+                    bv = b.rotation_pending ? 'z' : b.my_key_confirmed ? 'a' : 'b';
+                } else {
+                    av = a[sortKey] ?? '';
+                    bv = b[sortKey] ?? '';
+                }
+                const cmp = String(av).localeCompare(String(bv));
+                return sortAsc ? cmp : -cmp;
+            });
+            for (const team of sorted) {
+                const sortedRoles = [...(team.my_roles || [])].sort((a, b) => _ROLE_PRIORITY(a) - _ROLE_PRIORITY(b));
+                const roleText = sortedRoles.map(r => _ROLE_LABEL[r] || 'Custom').join(', ') || '—';
+                const status = team.rotation_pending ? 'Rotation pending'
+                    : team.my_key_confirmed ? 'Confirmed' : 'Pending';
+                tbody.appendChild(Utils.el('tr', { dataset: { name: team.name.toLowerCase() } }, [
+                    Utils.el('td', {}, [Utils.el('a', {
+                        href: `#/teams/${team.id}`,
+                        className: 'teams-list-link',
+                        textContent: team.name,
+                    })]),
+                    Utils.el('td', { textContent: roleText }),
+                    Utils.el('td', { textContent: status }),
+                ]));
+            }
+        }
+
+        const thead = Utils.el('thead');
+        const cols = [
+            { label: 'Team Name', key: 'name' },
+            { label: 'Roles',     key: 'my_roles' },
+            { label: 'Key Status', key: 'status' },
+        ];
+        const headerRow = Utils.el('tr');
+        for (const col of cols) {
+            const th = Utils.el('th', { textContent: col.label, dataset: { key: col.key } });
+            th.addEventListener('click', () => {
+                if (sortKey === col.key) { sortAsc = !sortAsc; }
+                else { sortKey = col.key; sortAsc = true; }
+                for (const el of thead.querySelectorAll('th')) el.dataset.sort = '';
+                th.dataset.sort = sortAsc ? 'asc' : 'desc';
+                _renderRows();
+            });
+            headerRow.appendChild(th);
+        }
+        thead.appendChild(headerRow);
+        _renderRows();
+
+        return Utils.el('table', { className: 'team-list-table' }, [thead, tbody]);
+    }
+
     async function renderTeamsPage(container) {
         _clearEl(container);
 
-        let teams;
+        let teams, savedView;
         try {
-            const data = await Api.get(`${_api}/teams`);
-            teams = data.teams || [];
+            const [teamsData, prefsData] = await Promise.all([
+                Api.get(`${_api}/teams`),
+                Api.get(`${_api}/auth/me/prefs`).catch(() => ({ ui_prefs: {} })),
+            ]);
+            teams = teamsData.teams || [];
+            savedView = prefsData.ui_prefs?.teams_view || 'tile';
         } catch (err) {
             container.appendChild(Utils.el('p', { textContent: 'Failed to load teams: ' + err.message }));
             return;
         }
 
-        // Header row: "My Teams" left, "+ New Team" right
+        let view = savedView;
+        const { tileBtn, listBtn } = _makeViewToggle(view === 'tile');
+
         const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px' });
-        header.appendChild(Utils.el('h2', { textContent: 'My Teams', style: 'margin:0' }));
+        header.appendChild(Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+            Utils.el('h2', { textContent: 'My Teams', style: 'margin:0' }),
+            tileBtn, listBtn,
+        ]));
         header.appendChild(Utils.el('button', {
             className: 'btn btn-primary btn-sm',
             textContent: '+ New Team',
@@ -405,7 +493,6 @@ const Teams = (() => {
             return;
         }
 
-        // Live-filter search bar
         const filterInput = Utils.el('input', {
             type: 'text',
             className: 'input-sm',
@@ -414,21 +501,62 @@ const Teams = (() => {
         });
         container.appendChild(filterInput);
 
-        const list = Utils.el('div', { className: 'team-list', style: 'padding:8px 0' });
-        for (const team of teams) {
-            list.appendChild(_createTeamCard(team));
-        }
-        container.appendChild(list);
+        const contentEl = Utils.el('div');
+        container.appendChild(contentEl);
 
-        Utils.inlineFilter(filterInput, () => list.querySelectorAll('.team-card'), card => card.dataset.name || '');
+        function _renderContent() {
+            contentEl.innerHTML = '';
+            if (view === 'list') {
+                const table = _buildTeamsListTable(teams);
+                contentEl.appendChild(table);
+                filterInput.oninput = () => {
+                    const q = filterInput.value.toLowerCase();
+                    for (const row of table.querySelectorAll('tbody tr')) {
+                        row.style.display = !q || (row.dataset.name || '').includes(q) ? '' : 'none';
+                    }
+                };
+            } else {
+                const grid = Utils.el('div', { className: 'team-list', style: 'padding:8px 0' });
+                for (const team of teams) grid.appendChild(_createTeamCard(team));
+                contentEl.appendChild(grid);
+                filterInput.oninput = () => {
+                    const q = filterInput.value.toLowerCase();
+                    for (const card of grid.querySelectorAll('.team-card')) {
+                        card.style.display = !q || (card.dataset.name || '').toLowerCase().includes(q) ? '' : 'none';
+                    }
+                };
+            }
+            filterInput.value = '';
+        }
+
+        tileBtn.addEventListener('click', () => {
+            if (view === 'tile') return;
+            view = 'tile';
+            tileBtn.classList.add('active');
+            listBtn.classList.remove('active');
+            _renderContent();
+            Api.patch(`${_api}/auth/me/prefs`, { teams_view: 'tile' }).catch(() => {});
+        });
+        listBtn.addEventListener('click', () => {
+            if (view === 'list') return;
+            view = 'list';
+            listBtn.classList.add('active');
+            tileBtn.classList.remove('active');
+            _renderContent();
+            Api.patch(`${_api}/auth/me/prefs`, { teams_view: 'list' }).catch(() => {});
+        });
+
+        _renderContent();
     }
 
+    const _ROLE_LABEL = { team_admin: 'Owner', team_manager: 'Supervisor', team_member: 'Member' };
+    const _ROLE_PRIORITY = (r) => r === 'team_admin' ? 0 : r === 'team_manager' ? 1 : r === 'team_member' ? 9 : 5;
+
     function _createTeamCard(team) {
-        const roleLabel = {
-            team_admin:   'Owner',
-            team_manager: 'Supervisor',
-            team_member:  'Member',
-        }[team.my_role] || team.my_role;
+        // my_roles is an array (aggregated server-side); fall back for legacy single my_role
+        const roles = Array.isArray(team.my_roles) ? team.my_roles
+            : team.my_role ? [team.my_role] : [];
+        const sortedRoles = [...roles].sort((a, b) => _ROLE_PRIORITY(a) - _ROLE_PRIORITY(b));
 
         const card = Utils.el('a', {
             href: `#/teams/${team.id}`,
@@ -436,9 +564,25 @@ const Teams = (() => {
             dataset: { name: team.name },
         });
 
+        const badgesEl = Utils.el('span', { className: 'team-roles-badges' });
+        const MAX_VISIBLE = 2;
+        for (let i = 0; i < Math.min(sortedRoles.length, MAX_VISIBLE); i++) {
+            const rid = sortedRoles[i];
+            badgesEl.appendChild(Utils.el('span', {
+                className: 'team-role-badge',
+                textContent: _ROLE_LABEL[rid] || 'Custom',
+            }));
+        }
+        if (sortedRoles.length > MAX_VISIBLE) {
+            badgesEl.appendChild(Utils.el('span', {
+                className: 'team-role-badge team-role-badge-more',
+                textContent: `+${sortedRoles.length - MAX_VISIBLE}`,
+            }));
+        }
+
         const cardHeader = Utils.el('div', { className: 'team-card-header' }, [
             Utils.el('span', { className: 'team-card-name', textContent: team.name }),
-            Utils.el('span', { className: 'team-role-badge', textContent: roleLabel }),
+            badgesEl,
         ]);
         card.appendChild(cardHeader);
 
@@ -1742,13 +1886,65 @@ const Teams = (() => {
     // Team Folders page
     // =========================================================================
 
+    function _buildFolderListTable(folderItems) {
+        let sortKey = 'folderName', sortAsc = true;
+        const tbody = Utils.el('tbody');
+
+        function _renderRows() {
+            tbody.innerHTML = '';
+            const sorted = [...folderItems].sort((a, b) => {
+                const av = a[sortKey] ?? '', bv = b[sortKey] ?? '';
+                const cmp = String(av).localeCompare(String(bv));
+                return sortAsc ? cmp : -cmp;
+            });
+            for (const item of sorted) {
+                tbody.appendChild(Utils.el('tr', { dataset: { name: `${item.teamName} ${item.folderName}`.toLowerCase() } }, [
+                    Utils.el('td', {}, [Utils.el('a', {
+                        href: `#/team-folders/${item.folderId}`,
+                        className: 'teams-list-link',
+                        textContent: item.folderName,
+                    })]),
+                    Utils.el('td', { textContent: item.teamName }),
+                    Utils.el('td', { textContent: item.ownerLabel }),
+                ]));
+            }
+        }
+
+        const thead = Utils.el('thead');
+        const cols = [
+            { label: 'Folder Name', key: 'folderName' },
+            { label: 'Team',        key: 'teamName' },
+            { label: 'Owner',       key: 'ownerLabel' },
+        ];
+        const headerRow = Utils.el('tr');
+        for (const col of cols) {
+            const th = Utils.el('th', { textContent: col.label, dataset: { key: col.key } });
+            th.addEventListener('click', () => {
+                if (sortKey === col.key) { sortAsc = !sortAsc; }
+                else { sortKey = col.key; sortAsc = true; }
+                for (const el of thead.querySelectorAll('th')) el.dataset.sort = '';
+                th.dataset.sort = sortAsc ? 'asc' : 'desc';
+                _renderRows();
+            });
+            headerRow.appendChild(th);
+        }
+        thead.appendChild(headerRow);
+        _renderRows();
+
+        return Utils.el('table', { className: 'team-list-table' }, [thead, tbody]);
+    }
+
     async function renderTeamFoldersPage(container) {
         _clearEl(container);
         container.appendChild(Utils.el('div', { className: 'empty-state', textContent: 'Loading team folders…' }));
 
         try {
-            const data = await Api.get(`${_api}/teams`);
-            const teams = data.teams || [];
+            const [teamsData, prefsData] = await Promise.all([
+                Api.get(`${_api}/teams`),
+                Api.get(`${_api}/auth/me/prefs`).catch(() => ({ ui_prefs: {} })),
+            ]);
+            const teams = teamsData.teams || [];
+            const savedView = prefsData.ui_prefs?.team_folders_view || 'tile';
 
             if (teams.length === 0) {
                 _clearEl(container);
@@ -1758,11 +1954,32 @@ const Teams = (() => {
 
             const details = await Promise.all(teams.map(t => Api.get(`${_api}/teams/${t.id}`)));
 
+            // Flatten to one entry per folder
+            const folderItems = [];
+            for (const detail of details) {
+                const members = detail.members || [];
+                const teamName = detail.team.name;
+                const teamDesc = detail.team.description || '';
+                const ownerMember = members.find(m => m.user_id === detail.team.owner_id);
+                const ownerLabel = ownerMember ? ownerMember.username : detail.team.owner_id;
+                for (const f of detail.folders || []) {
+                    folderItems.push({ folderId: f.folder_id, folderName: f.folder_name, teamName, ownerLabel, teamDesc });
+                }
+            }
+
             _clearEl(container);
             const page = Utils.el('div', { className: 'page-content' });
 
-            // Header + search bar
-            page.appendChild(Utils.el('h2', { textContent: 'Team Folders', style: 'margin-bottom:8px' }));
+            let view = savedView;
+            const { tileBtn, listBtn } = _makeViewToggle(view === 'tile');
+
+            const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px' });
+            header.appendChild(Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+                Utils.el('h2', { textContent: 'Team Folders', style: 'margin:0' }),
+                tileBtn, listBtn,
+            ]));
+            page.appendChild(header);
+
             const filterInput = Utils.el('input', {
                 type: 'text',
                 className: 'input-sm',
@@ -1771,42 +1988,69 @@ const Teams = (() => {
             });
             page.appendChild(filterInput);
 
-            // Build one tile per folder
-            const tileGrid = Utils.el('div', { className: 'team-list', style: 'padding:4px 0' });
+            const contentEl = Utils.el('div');
+            page.appendChild(contentEl);
 
-            for (const detail of details) {
-                const folders = detail.folders || [];
-                const members = detail.members || [];
-                const teamName = detail.team.name;
-                const teamDesc = detail.team.description || '';
-                const ownerMember = members.find(m => m.user_id === detail.team.owner_id);
-                const ownerLabel = ownerMember ? ownerMember.username : detail.team.owner_id;
-
-                for (const f of folders) {
-                    const tile = Utils.el('a', {
-                        href: `#/team-folders/${f.folder_id}`,
-                        className: 'team-card team-card-link',
-                        dataset: { name: `${teamName} ${f.folder_name}` },
-                    });
-                    tile.appendChild(Utils.el('div', { className: 'team-card-header' }, [
-                        Utils.el('span', { className: 'team-card-name', textContent: f.folder_name }),
-                        Utils.el('span', { className: 'team-role-badge', textContent: teamName }),
-                    ]));
-                    tile.appendChild(Utils.el('p', {
-                        className: 'team-card-desc',
-                        textContent: `Owner: ${ownerLabel}${teamDesc ? ' — ' + teamDesc : ''}`,
-                    }));
-                    tileGrid.appendChild(tile);
+            function _renderContent() {
+                contentEl.innerHTML = '';
+                if (folderItems.length === 0) {
+                    contentEl.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folders have been added to your teams yet.' }));
+                    return;
                 }
+                if (view === 'list') {
+                    const table = _buildFolderListTable(folderItems);
+                    contentEl.appendChild(table);
+                    filterInput.oninput = () => {
+                        const q = filterInput.value.toLowerCase();
+                        for (const row of table.querySelectorAll('tbody tr')) {
+                            row.style.display = !q || (row.dataset.name || '').includes(q) ? '' : 'none';
+                        }
+                    };
+                } else {
+                    const grid = Utils.el('div', { className: 'team-list', style: 'padding:4px 0' });
+                    for (const item of folderItems) {
+                        const tile = Utils.el('a', {
+                            href: `#/team-folders/${item.folderId}`,
+                            className: 'team-card team-card-link',
+                            dataset: { name: `${item.teamName} ${item.folderName}` },
+                        });
+                        tile.appendChild(Utils.el('div', { className: 'team-card-header' }, [
+                            Utils.el('span', { className: 'team-card-name', textContent: item.folderName }),
+                        ]));
+                        const descParts = [`Team: ${item.teamName}`, `Owner: ${item.ownerLabel}`];
+                        if (item.teamDesc) descParts.push(item.teamDesc);
+                        tile.appendChild(Utils.el('p', { className: 'team-card-desc', textContent: descParts.join(' — ') }));
+                        grid.appendChild(tile);
+                    }
+                    contentEl.appendChild(grid);
+                    filterInput.oninput = () => {
+                        const q = filterInput.value.toLowerCase();
+                        for (const card of grid.querySelectorAll('.team-card')) {
+                            card.style.display = !q || (card.dataset.name || '').toLowerCase().includes(q) ? '' : 'none';
+                        }
+                    };
+                }
+                filterInput.value = '';
             }
 
-            if (tileGrid.children.length === 0) {
-                page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folders have been added to your teams yet.' }));
-            } else {
-                page.appendChild(tileGrid);
-                Utils.inlineFilter(filterInput, () => tileGrid.querySelectorAll('.team-card'), card => card.dataset.name || '');
-            }
+            tileBtn.addEventListener('click', () => {
+                if (view === 'tile') return;
+                view = 'tile';
+                tileBtn.classList.add('active');
+                listBtn.classList.remove('active');
+                _renderContent();
+                Api.patch(`${_api}/auth/me/prefs`, { team_folders_view: 'tile' }).catch(() => {});
+            });
+            listBtn.addEventListener('click', () => {
+                if (view === 'list') return;
+                view = 'list';
+                listBtn.classList.add('active');
+                tileBtn.classList.remove('active');
+                _renderContent();
+                Api.patch(`${_api}/auth/me/prefs`, { team_folders_view: 'list' }).catch(() => {});
+            });
 
+            _renderContent();
             container.appendChild(page);
         } catch (err) {
             _clearEl(container);

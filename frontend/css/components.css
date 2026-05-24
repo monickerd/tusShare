@@ -2399,6 +2399,121 @@
     white-space: nowrap;
 }
 
+.team-role-badge-more {
+    background: var(--color-surface, #f1f5f9);
+    color: var(--color-text-muted);
+}
+
+.team-roles-badges {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1, 4px);
+    flex-wrap: wrap;
+}
+
+/* ---- Tile / List view toggle ---- */
+
+.view-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 4px);
+    background: transparent;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+    flex-shrink: 0;
+}
+
+.view-toggle-btn:hover {
+    background: var(--color-surface);
+    color: var(--color-text);
+    border-color: var(--color-primary, #2563eb);
+}
+
+.view-toggle-btn.active {
+    background: var(--color-primary-muted, #dbeafe);
+    color: var(--color-primary, #2563eb);
+    border-color: var(--color-primary, #2563eb);
+}
+
+/* 2×2 grid icon — element is top-left square; box-shadows are the other three */
+.view-toggle-grid-icon {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 1px;
+    background: currentColor;
+    box-shadow:
+        7px 0   0 currentColor,
+        0   7px 0 currentColor,
+        7px 7px 0 currentColor;
+    margin: 1px;
+}
+
+/* Three horizontal lines */
+.view-toggle-list-icon {
+    display: inline-block;
+    width: 14px;
+    height: 2px;
+    border-radius: 1px;
+    background: currentColor;
+    box-shadow:
+        0 4px 0 currentColor,
+        0 8px 0 currentColor;
+}
+
+/* ---- Team list-view table ---- */
+
+.team-list-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--font-size-sm);
+    margin-top: var(--space-2);
+}
+
+.team-list-table th {
+    text-align: left;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 2px solid var(--color-border);
+    color: var(--color-text-muted);
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+
+.team-list-table th:hover {
+    color: var(--color-text);
+}
+
+.team-list-table th[data-sort="asc"]::after  { content: ' ↑'; }
+.team-list-table th[data-sort="desc"]::after { content: ' ↓'; }
+
+.team-list-table td {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--color-border);
+    vertical-align: middle;
+}
+
+.team-list-table tr:last-child td {
+    border-bottom: none;
+}
+
+.teams-list-link {
+    color: var(--color-primary, #2563eb);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.teams-list-link:hover {
+    text-decoration: underline;
+}
+
 /* ---- Team detail page sections ---- */
 
 .team-section {
@@ -2441,6 +2556,7 @@
     align-items: center;
     gap: var(--space-2);
     flex-wrap: wrap;
+    min-height: 28px;
 }
 
 .team-folder-row {
