@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
     <title>tusShare</title>
-    <!-- Restore appearance before CSS loads to prevent flash of wrong theme/size -->
-    <script>(function(){var t=localStorage.getItem('tus_theme')||'system';var s=localStorage.getItem('tus_text_size');document.documentElement.setAttribute('data-theme',t);if(s&&s!=='medium')document.documentElement.setAttribute('data-text-size',s);})()</script>
+    <!-- Restore appearance from localStorage before CSS loads — prevents flash of wrong theme/size -->
+    <script src="/js/theme-init.js"></script>
     <!-- Theme: default/colors.css now includes both dark (default) and light overrides -->
     <link rel="stylesheet" href="/themes/default/colors.css">
     <link rel="stylesheet" href="/themes/default/layout.css">

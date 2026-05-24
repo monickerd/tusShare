@@ -76,6 +76,26 @@
     --touch-target-min:     44px;
 }
 
-/* Text size overrides — set via data-text-size on <html> from Appearance settings */
-:root[data-text-size="small"] { --font-size-base: 13px; }
-:root[data-text-size="large"] { --font-size-base: 19px; }
+/* Text size overrides — set via data-text-size on <html> from Appearance settings.
+   All tokens must be scaled together because most elements use specific tokens
+   (--font-size-sm, --font-size-md etc.) rather than inheriting from base. */
+:root[data-text-size="small"] {
+    --font-size-base: 13px;
+    --font-size-xs:   10px;
+    --font-size-sm:   11px;
+    --font-size-md:   12px;
+    --font-size-lg:   14px;
+    --font-size-xl:   16px;
+    --font-size-2xl:  18px;
+    --font-size-3xl:  20px;
+}
+:root[data-text-size="large"] {
+    --font-size-base: 19px;
+    --font-size-xs:   13px;
+    --font-size-sm:   14px;
+    --font-size-md:   15px;
+    --font-size-lg:   19px;
+    --font-size-xl:   21px;
+    --font-size-2xl:  23px;
+    --font-size-3xl:  26px;
+}

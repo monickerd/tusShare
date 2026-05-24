@@ -85,130 +85,129 @@
 }
 
 /* =========================================================
-   LIGHT THEME — explicit user preference
+   LIGHT THEME — warm earth tones (~#e0d6cc range)
    ========================================================= */
 :root[data-theme="light"] {
     /* --- Core backgrounds --- */
-    --color-bg:             #f5f6f8;
-    --color-surface:        #ffffff;
-    --color-surface-hover:  #f0f1f3;
-    --color-surface-active: #e6e8ec;
+    --color-bg:             #e0d6cc;
+    --color-surface:        #ede8e2;
+    --color-surface-hover:  #d8cfc5;
+    --color-surface-active: #cec4ba;
 
     /* --- Borders --- */
-    --color-border:         #d8dbe3;
-    --color-border-light:   #e6e8ec;
+    --color-border:         #bfb4a8;
+    --color-border-light:   #d0c8be;
 
     /* --- Text --- */
-    --color-text:           #1a1d27;
-    --color-text-muted:     #6b7085;
-    --color-text-inverse:   #ffffff;
+    --color-text:           #2c2018;
+    --color-text-muted:     #796858;
+    --color-text-inverse:   #ede8e2;
 
     /* --- Primary accent --- */
     --color-primary:         #4a6cf7;
     --color-primary-hover:   #3b5de8;
-    --color-primary-muted:   rgba(74, 108, 247, 0.1);
+    --color-primary-muted:   rgba(74, 108, 247, 0.12);
     --color-primary-contrast: #ffffff;
 
     /* --- Semantic: danger --- */
-    --color-danger:         #e84040;
-    --color-danger-hover:   #d63030;
-    --color-danger-muted:   rgba(232, 64, 64, 0.1);
+    --color-danger:         #d43030;
+    --color-danger-hover:   #bc2020;
+    --color-danger-muted:   rgba(212, 48, 48, 0.12);
 
     /* --- Semantic: success --- */
     --color-success:        #2b9348;
     --color-success-hover:  #1e7b37;
-    --color-success-muted:  rgba(43, 147, 72, 0.1);
+    --color-success-muted:  rgba(43, 147, 72, 0.12);
     --color-success-border: rgba(43, 147, 72, 0.4);
 
     /* --- Semantic: warning --- */
-    --color-warning:        #e6a817;
-    --color-warning-hover:  #cc9400;
-    --color-warning-muted:  rgba(230, 168, 23, 0.1);
-    --color-warn:           #e6a817;
-    --color-warn-muted:     rgba(230, 168, 23, 0.1);
-    --color-warn-bg:        #fff8e1;
-    --color-warn-text:      #7a5800;
+    --color-warning:        #c47a00;
+    --color-warning-hover:  #a86600;
+    --color-warning-muted:  rgba(196, 122, 0, 0.12);
+    --color-warn:           #c47a00;
+    --color-warn-muted:     rgba(196, 122, 0, 0.12);
+    --color-warn-bg:        #f5e8c8;
+    --color-warn-text:      #6b4200;
 
     /* --- Semantic: info --- */
     --color-info:           #4a6cf7;
-    --color-info-bg:        rgba(74, 108, 247, 0.08);
-    --color-info-muted:     rgba(74, 108, 247, 0.1);
+    --color-info-bg:        rgba(74, 108, 247, 0.09);
+    --color-info-muted:     rgba(74, 108, 247, 0.12);
 
     /* --- Badge colors --- */
-    --color-badge-ldap-bg:     #e8f4e8;
-    --color-badge-ldap-text:   #2d6a2d;
-    --color-badge-oidc-bg:     #e8f0fb;
-    --color-badge-oidc-text:   #1a56a0;
-    --color-badge-effect-bg:   #f0f4e8;
-    --color-badge-effect-text: #4a6b1a;
-    --color-badge-effect-border: #4a6b1a;
+    --color-badge-ldap-bg:     #d8eed8;
+    --color-badge-ldap-text:   #1e5c1e;
+    --color-badge-oidc-bg:     #d8e6f8;
+    --color-badge-oidc-text:   #1a4890;
+    --color-badge-effect-bg:   #deecd8;
+    --color-badge-effect-text: #3a5c18;
+    --color-badge-effect-border: #3a5c18;
 
     /* --- Overlays --- */
-    --color-overlay:        rgba(0, 0, 0, 0.35);
+    --color-overlay:        rgba(44, 32, 24, 0.4);
     --color-overlay-blur:   4px;
 
     /* --- Scrollbar --- */
-    --color-scrollbar-track: #f5f6f8;
-    --color-scrollbar-thumb: #d8dbe3;
-    --color-scrollbar-hover: #b0b5c3;
+    --color-scrollbar-track: #e0d6cc;
+    --color-scrollbar-thumb: #bfb4a8;
+    --color-scrollbar-hover: #796858;
 
-    /* --- Shadows --- */
-    --shadow-toast:         0 4px 12px rgba(0, 0, 0, 0.12);
-    --shadow-modal:         0 8px 32px rgba(0, 0, 0, 0.15);
-    --shadow-dropdown:      0 4px 16px rgba(0, 0, 0, 0.1);
+    /* --- Shadows (warm-tinted) --- */
+    --shadow-toast:         0 4px 12px rgba(60, 40, 20, 0.14);
+    --shadow-modal:         0 8px 32px rgba(60, 40, 20, 0.18);
+    --shadow-dropdown:      0 4px 16px rgba(60, 40, 20, 0.12);
 }
 
 /* =========================================================
    SYSTEM PREFERENCE — follow OS dark/light setting
    Applied only when data-theme="system" is set.
-   Dark is already the default, so we only need to override
-   when the OS preference is light.
+   Dark is the default; override when OS prefers light.
    ========================================================= */
 @media (prefers-color-scheme: light) {
     :root[data-theme="system"] {
-        --color-bg:             #f5f6f8;
-        --color-surface:        #ffffff;
-        --color-surface-hover:  #f0f1f3;
-        --color-surface-active: #e6e8ec;
-        --color-border:         #d8dbe3;
-        --color-border-light:   #e6e8ec;
-        --color-text:           #1a1d27;
-        --color-text-muted:     #6b7085;
-        --color-text-inverse:   #ffffff;
+        --color-bg:             #e0d6cc;
+        --color-surface:        #ede8e2;
+        --color-surface-hover:  #d8cfc5;
+        --color-surface-active: #cec4ba;
+        --color-border:         #bfb4a8;
+        --color-border-light:   #d0c8be;
+        --color-text:           #2c2018;
+        --color-text-muted:     #796858;
+        --color-text-inverse:   #ede8e2;
         --color-primary:         #4a6cf7;
         --color-primary-hover:   #3b5de8;
-        --color-primary-muted:   rgba(74, 108, 247, 0.1);
+        --color-primary-muted:   rgba(74, 108, 247, 0.12);
         --color-primary-contrast: #ffffff;
-        --color-danger:         #e84040;
-        --color-danger-hover:   #d63030;
-        --color-danger-muted:   rgba(232, 64, 64, 0.1);
+        --color-danger:         #d43030;
+        --color-danger-hover:   #bc2020;
+        --color-danger-muted:   rgba(212, 48, 48, 0.12);
         --color-success:        #2b9348;
         --color-success-hover:  #1e7b37;
-        --color-success-muted:  rgba(43, 147, 72, 0.1);
+        --color-success-muted:  rgba(43, 147, 72, 0.12);
         --color-success-border: rgba(43, 147, 72, 0.4);
-        --color-warning:        #e6a817;
-        --color-warning-hover:  #cc9400;
-        --color-warning-muted:  rgba(230, 168, 23, 0.1);
-        --color-warn:           #e6a817;
-        --color-warn-muted:     rgba(230, 168, 23, 0.1);
-        --color-warn-bg:        #fff8e1;
-        --color-warn-text:      #7a5800;
+        --color-warning:        #c47a00;
+        --color-warning-hover:  #a86600;
+        --color-warning-muted:  rgba(196, 122, 0, 0.12);
+        --color-warn:           #c47a00;
+        --color-warn-muted:     rgba(196, 122, 0, 0.12);
+        --color-warn-bg:        #f5e8c8;
+        --color-warn-text:      #6b4200;
         --color-info:           #4a6cf7;
-        --color-info-bg:        rgba(74, 108, 247, 0.08);
-        --color-info-muted:     rgba(74, 108, 247, 0.1);
-        --color-badge-ldap-bg:     #e8f4e8;
-        --color-badge-ldap-text:   #2d6a2d;
-        --color-badge-oidc-bg:     #e8f0fb;
-        --color-badge-oidc-text:   #1a56a0;
-        --color-badge-effect-bg:   #f0f4e8;
-        --color-badge-effect-text: #4a6b1a;
-        --color-badge-effect-border: #4a6b1a;
-        --color-overlay:        rgba(0, 0, 0, 0.35);
-        --color-scrollbar-track: #f5f6f8;
-        --color-scrollbar-thumb: #d8dbe3;
-        --color-scrollbar-hover: #b0b5c3;
-        --shadow-toast:         0 4px 12px rgba(0, 0, 0, 0.12);
-        --shadow-modal:         0 8px 32px rgba(0, 0, 0, 0.15);
-        --shadow-dropdown:      0 4px 16px rgba(0, 0, 0, 0.1);
+        --color-info-bg:        rgba(74, 108, 247, 0.09);
+        --color-info-muted:     rgba(74, 108, 247, 0.12);
+        --color-badge-ldap-bg:     #d8eed8;
+        --color-badge-ldap-text:   #1e5c1e;
+        --color-badge-oidc-bg:     #d8e6f8;
+        --color-badge-oidc-text:   #1a4890;
+        --color-badge-effect-bg:   #deecd8;
+        --color-badge-effect-text: #3a5c18;
+        --color-badge-effect-border: #3a5c18;
+        --color-overlay:        rgba(44, 32, 24, 0.4);
+        --color-scrollbar-track: #e0d6cc;
+        --color-scrollbar-thumb: #bfb4a8;
+        --color-scrollbar-hover: #796858;
+        --shadow-toast:         0 4px 12px rgba(60, 40, 20, 0.14);
+        --shadow-modal:         0 8px 32px rgba(60, 40, 20, 0.18);
+        --shadow-dropdown:      0 4px 16px rgba(60, 40, 20, 0.12);
     }
 }
