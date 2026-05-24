@@ -1132,6 +1132,11 @@ const App = (() => {
         });
     }
 
+    function _fmtDate(iso) {
+        if (!iso) return '—';
+        try { return new Date(iso).toLocaleString(); } catch { return iso; }
+    }
+
     function _routeTrash(container) {
         _renderShell(container);
         _renderTrashPage(document.getElementById('main-content'), null);
@@ -1213,11 +1218,6 @@ const App = (() => {
 
         const tbody = Utils.el('tbody');
         const checkboxes = [];
-
-        function _fmtDate(iso) {
-            if (!iso) return '—';
-            try { return new Date(iso).toLocaleString(); } catch { return iso; }
-        }
 
         for (const item of allItems) {
             const chk = Utils.el('input', { type: 'checkbox' });
@@ -1305,7 +1305,8 @@ const App = (() => {
                     folder_ids: sel.filter(i => i._kind === 'folder').map(i => i.id),
                 };
                 const res = await Api.post(`${api}/trash/recover-bulk`, body);
-                Utils.showToast(`Restored ${res.restored_files + res.restored_folders} item(s)${res.failed ? `, ${res.failed} failed` : ''}`, 'success');
+                const restoreSuffix = res.failed ? `, ${res.failed} failed` : '';
+                Utils.showToast(`Restored ${res.restored_files + res.restored_folders} item(s)${restoreSuffix}`, 'success');
                 _renderTrashPage(container, teamId);
             } catch (err) {
                 Utils.showToast('Bulk restore failed: ' + err.message, 'error');
@@ -1324,7 +1325,8 @@ const App = (() => {
                     folder_ids: sel.filter(i => i._kind === 'folder').map(i => i.id),
                 };
                 const res = await Api.post(`${api}/trash/bulk-delete`, body);
-                Utils.showToast(`Deleted ${res.deleted_files + res.deleted_folders} item(s)${res.failed ? `, ${res.failed} failed` : ''}`, 'success');
+                const deleteSuffix = res.failed ? `, ${res.failed} failed` : '';
+                Utils.showToast(`Deleted ${res.deleted_files + res.deleted_folders} item(s)${deleteSuffix}`, 'success');
                 _renderTrashPage(container, teamId);
             } catch (err) {
                 Utils.showToast('Bulk delete failed: ' + err.message, 'error');

@@ -981,6 +981,7 @@
 .btn-xs {
     padding: 2px var(--space-2);
     font-size: var(--font-size-xs);
+    border-radius: var(--radius-sm);
 }
 
 .member-role-change {
@@ -1812,12 +1813,6 @@
 
 .data-table tbody tr:hover {
     background: var(--color-surface-hover, transparent);
-}
-
-.btn-xs {
-    padding: 2px var(--space-2);
-    font-size: var(--font-size-xs);
-    border-radius: var(--radius-sm);
 }
 
 .admin-scope-banner {

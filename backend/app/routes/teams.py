@@ -796,7 +796,7 @@ async def invite_member(
     return {"user_id": invitee_id}
 
 
-@router.put("/{team_id}/members/{target_user_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
+@router.put("/{team_id}/members/{target_user_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def update_member_role(
     team_id: str,
     target_user_id: str,
@@ -867,7 +867,7 @@ async def update_member_role(
     return {"ok": True}
 
 
-@router.delete("/{team_id}/members/{target_user_id}", status_code=204, responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
+@router.delete("/{team_id}/members/{target_user_id}", status_code=204, responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}}, dependencies=[Depends(check_management_rate_limit)])
 async def remove_member(
     team_id: str,
     target_user_id: str,

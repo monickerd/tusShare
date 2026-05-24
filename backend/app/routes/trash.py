@@ -104,7 +104,7 @@ async def list_trash(
 # Team trash
 # ---------------------------------------------------------------------------
 
-@router.get("/teams/{team_id}")
+@router.get("/teams/{team_id}", responses={403: {"description": "Forbidden"}})
 async def list_team_trash(
     team_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -334,9 +334,9 @@ async def _restore_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found in trash")
+        raise HTTPException(status_code=404, detail="File not found in trash")  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE):
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
     new_folder_id = row["folder_id"]
     if new_folder_id:
@@ -368,9 +368,9 @@ async def _restore_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> 
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Folder not found in trash")
+        raise HTTPException(status_code=404, detail="Folder not found in trash")  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
     new_parent_id = row["parent_id"]
     if new_parent_id:
@@ -433,9 +433,9 @@ async def _purge_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None:
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found in trash")
+        raise HTTPException(status_code=404, detail="File not found in trash")  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE):
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
     await purge_file(db, row["id"], row["storage_key"], row["encrypted_size"], row["owner_id"])
 
 
@@ -446,9 +446,9 @@ async def _purge_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> No
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Folder not found in trash")
+        raise HTTPException(status_code=404, detail="Folder not found in trash")  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
     cursor = await db.execute(
         """

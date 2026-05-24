@@ -178,7 +178,7 @@ async def admin_delete_team(
     return {"deleted": True, "name": row["name"]}
 
 
-@router.delete("/teams/{team_id}/members/{user_id}", status_code=204, responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
+@router.delete("/teams/{team_id}/members/{user_id}", status_code=204, responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
 async def admin_remove_team_member(
     team_id: str,
     user_id: str,

@@ -1467,6 +1467,12 @@ const Admin = (() => {
         return card;
     }
 
+    function _appendDepItems(container, items, className) {
+        for (const text of items) {
+            container.appendChild(Utils.el('div', { className, textContent: text }));
+        }
+    }
+
     function _populateRoleCardBody(container, role, flags, flagsByCategory, adminTier, refreshFn, flagMeta) {
         // Rename / description form (always shown — system roles can be renamed)
         const fldName = Utils.el('input', {
@@ -1612,27 +1618,24 @@ const Admin = (() => {
 
         // Dependency warnings panel — updated live as checkboxes change
         const depWarnings = Utils.el('div', { className: 'flag-dep-warnings', style: 'display:none' });
-        const requires = (flagMeta && flagMeta.requires) || {};
-        const related  = (flagMeta && flagMeta.related)  || {};
+        const requires = flagMeta?.requires ?? {};
+        const related  = flagMeta?.related  ?? {};
 
         function _updateDepWarnings() {
             const warnings = [];
             const hints    = [];
 
             for (const [flag, deps] of Object.entries(requires)) {
-                const flagChk = flagInputs[flag]?.chk;
-                if (!flagChk || !flagChk.checked) continue;
+                if (!flagInputs[flag]?.chk?.checked) continue;
                 for (const dep of deps) {
-                    const depChk = flagInputs[dep]?.chk;
-                    if (!depChk || !depChk.checked) {
+                    if (!flagInputs[dep]?.chk?.checked) {
                         warnings.push(`⚠ "${flag}" requires "${dep}" to also be enabled.`);
                     }
                 }
             }
 
             for (const [flag, rels] of Object.entries(related)) {
-                const flagChk = flagInputs[flag]?.chk;
-                if (!flagChk || !flagChk.checked) continue;
+                if (!flagInputs[flag]?.chk?.checked) continue;
                 const missing = rels.filter(r => flagInputs[r]?.chk && !flagInputs[r].chk.checked);
                 if (missing.length) {
                     hints.push(`💡 "${flag}" is often used with: ${missing.join(', ')}`);
@@ -1642,12 +1645,8 @@ const Admin = (() => {
             depWarnings.innerHTML = '';
             if (warnings.length || hints.length) {
                 depWarnings.style.display = '';
-                for (const w of warnings) {
-                    depWarnings.appendChild(Utils.el('div', { className: 'flag-dep-warning', textContent: w }));
-                }
-                for (const h of hints) {
-                    depWarnings.appendChild(Utils.el('div', { className: 'flag-dep-hint', textContent: h }));
-                }
+                _appendDepItems(depWarnings, warnings, 'flag-dep-warning');
+                _appendDepItems(depWarnings, hints, 'flag-dep-hint');
             } else {
                 depWarnings.style.display = 'none';
             }
@@ -5695,9 +5694,11 @@ const Admin = (() => {
         let currentVal = 0;
         try {
             const data = await Api.get(`${_api()}/admin/settings`);
-            const raw = (data.settings || {}).link_share_max_expiry_days;
-            currentVal = parseInt(raw, 10) || 0;
-        } catch (_) {}
+            const raw = data.settings?.link_share_max_expiry_days;
+            currentVal = Number.parseInt(raw, 10) || 0;
+        } catch (e) {
+            console.error('Failed to load link share settings:', e);
+        }
 
         const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:8px' });
         const label = Utils.el('label', {
@@ -5727,8 +5728,8 @@ const Admin = (() => {
             textContent: 'Save',
         });
         saveBtn.addEventListener('click', async () => {
-            const v = parseInt(inp.value, 10);
-            if (isNaN(v) || v < 0) { Utils.showToast('Enter a non-negative integer', 'error'); return; }
+            const v = Number.parseInt(inp.value, 10);
+            if (Number.isNaN(v) || v < 0) { Utils.showToast('Enter a non-negative integer', 'error'); return; }
             saveBtn.disabled = true;
             try {
                 await Api.put(`${_api()}/admin/settings`, { settings: { link_share_max_expiry_days: String(v) } });
