@@ -52,15 +52,19 @@ _PROFILES: dict[str, dict] = {
             "all security settings locked at tier 1 (server_admin only)."
         ),
         "admin_settings": {
-            "escrow_require_coverage":     {"value": "1", "is_locked": True,  "locked_min_tier": 1},
-            "notify_escrow_on_revocation": {"value": "1", "is_locked": True,  "locked_min_tier": 1},
+            "escrow_require_coverage":     {"value": "1",  "is_locked": True,  "locked_min_tier": 1},
+            "notify_escrow_on_revocation": {"value": "1",  "is_locked": True,  "locked_min_tier": 1},
+            # Cap link share expiry at 30 days even though link shares are blocked by
+            # role flags and the sharing rule below — belt-and-suspenders.
+            "link_share_max_expiry_days":  {"value": "30", "is_locked": True,  "locked_min_tier": 1},
         },
         "role_flag_overrides": {
             "role_user": {
-                "shares_link_create":        {"value": "0", "is_locked": True, "locked_min_tier": 1},
-                "shares_user_create":        {"value": "1", "is_locked": True, "locked_min_tier": 1},
-                "shares_upload_grant_create": {"value": "1", "is_locked": True, "locked_min_tier": 1},
-                "shares_folder_create":      {"value": "0", "is_locked": True, "locked_min_tier": 1},
+                "shares_link_create":         {"value": "0", "is_locked": True, "locked_min_tier": 1},
+                "shares_user_create":         {"value": "1", "is_locked": True, "locked_min_tier": 1},
+                # upload_grant requires shares_link_create; keep consistent with the '0' above
+                "shares_upload_grant_create": {"value": "0", "is_locked": True, "locked_min_tier": 1},
+                "shares_folder_create":       {"value": "0", "is_locked": True, "locked_min_tier": 1},
             },
         },
         "sharing_rules": [
@@ -92,15 +96,16 @@ _PROFILES: dict[str, dict] = {
             "escrow encouraged but not enforced; settings locked at tier 2 (org_admin)."
         ),
         "admin_settings": {
-            "escrow_require_coverage":     {"value": "0", "is_locked": True,  "locked_min_tier": 2},
-            "notify_escrow_on_revocation": {"value": "1", "is_locked": True,  "locked_min_tier": 2},
+            "escrow_require_coverage":     {"value": "0",   "is_locked": True,  "locked_min_tier": 2},
+            "notify_escrow_on_revocation": {"value": "1",   "is_locked": True,  "locked_min_tier": 2},
+            "link_share_max_expiry_days":  {"value": "365", "is_locked": True,  "locked_min_tier": 2},
         },
         "role_flag_overrides": {
             "role_user": {
-                "shares_link_create":        {"value": "1", "is_locked": True, "locked_min_tier": 2},
-                "shares_user_create":        {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_link_create":         {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_user_create":         {"value": "1", "is_locked": True, "locked_min_tier": 2},
                 "shares_upload_grant_create": {"value": "1", "is_locked": True, "locked_min_tier": 2},
-                "shares_folder_create":      {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_folder_create":       {"value": "1", "is_locked": True, "locked_min_tier": 2},
             },
         },
         "sharing_rules": [],
@@ -114,13 +119,14 @@ _PROFILES: dict[str, dict] = {
         "admin_settings": {
             "escrow_require_coverage":     {"value": "0", "is_locked": False, "locked_min_tier": None},
             "notify_escrow_on_revocation": {"value": "0", "is_locked": False, "locked_min_tier": None},
+            "link_share_max_expiry_days":  {"value": "0", "is_locked": False, "locked_min_tier": None},
         },
         "role_flag_overrides": {
             "role_user": {
-                "shares_link_create":        {"value": "1", "is_locked": False, "locked_min_tier": None},
-                "shares_user_create":        {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_link_create":         {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_user_create":         {"value": "1", "is_locked": False, "locked_min_tier": None},
                 "shares_upload_grant_create": {"value": "1", "is_locked": False, "locked_min_tier": None},
-                "shares_folder_create":      {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_folder_create":       {"value": "1", "is_locked": False, "locked_min_tier": None},
             },
         },
         "sharing_rules": [],
@@ -165,6 +171,7 @@ class ImportProfileRequest(BaseModel):
 _PROFILE_ADMIN_SETTING_KEYS = [
     "escrow_require_coverage",
     "notify_escrow_on_revocation",
+    "link_share_max_expiry_days",
 ]
 
 _PROFILE_SHARING_FLAGS = [

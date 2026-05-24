@@ -590,6 +590,12 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             DELETE FROM role_permissions WHERE flag = 'can_access_all_files';
             DELETE FROM role_permission_flags WHERE flag = 'can_access_all_files';
 
+            -- ── Role flag back-fills ──────────────────────────────────────────
+            -- server_admin should be eligible as an escrow agent on all installs
+            INSERT INTO role_permissions (role_id, flag, value)
+                VALUES ('server_admin', 'can_act_as_escrow', '1')
+                ON CONFLICT DO NOTHING;
+
             -- ── New admin_settings seeds ──────────────────────────────────────
             INSERT INTO admin_settings (key, value) VALUES ('link_share_max_expiry_days', '0')
                 ON CONFLICT (key) DO NOTHING;

@@ -1305,7 +1305,7 @@ const Admin = (() => {
         const createBtn = Utils.el('button', {
             className: 'btn btn-primary btn-sm',
             textContent: 'Create Custom Role',
-            onClick: () => _showCreateRoleModal(flags, grantableFlags, () => _renderRoles(container)),
+            onClick: () => _showCreateRoleModal(flags, grantableFlags, () => _renderRoles(container), flagMeta),
         });
 
         const refresh = () => _renderRoles(container);
@@ -1432,9 +1432,23 @@ const Admin = (() => {
         container.appendChild(buildList(teamRoles, true));
     }
 
+    function _hasDepWarnings(role, flagMeta) {
+        const requires = flagMeta?.requires ?? {};
+        const perms = role.permissions ?? {};
+        for (const [flag, deps] of Object.entries(requires)) {
+            if ((perms[flag]?.value ?? '0') !== '1') continue;
+            for (const dep of deps) {
+                if ((perms[dep]?.value ?? '0') !== '1') return true;
+            }
+        }
+        return false;
+    }
+
     function _buildRoleCard(role, flags, flagsByCategory, adminTier, refreshFn, alias, flagMeta) {
         const body = Utils.el('div', { className: 'role-card-body', style: 'display:none' });
         let bodyLoaded = false;
+
+        const hasWarnings = _hasDepWarnings(role, flagMeta);
 
         const toggleBtn = Utils.el('button', {
             className: 'role-card-toggle collapsed',
@@ -1448,6 +1462,13 @@ const Admin = (() => {
                 }
             },
         });
+        if (hasWarnings) {
+            toggleBtn.appendChild(Utils.el('span', {
+                className: 'role-card-warn-icon',
+                textContent: '⚠',
+                title: 'This role has permission dependency warnings — expand to review',
+            }));
+        }
         toggleBtn.appendChild(Utils.el('span', { className: 'role-card-name', textContent: role.name }));
         if (alias) {
             toggleBtn.appendChild(Utils.el('span', { className: 'role-card-alias', textContent: `(${alias})` }));
@@ -1661,6 +1682,7 @@ const Admin = (() => {
 
         container.innerHTML = '';
         container.appendChild(Utils.el('div', { className: 'role-card-content' }, [
+            depWarnings,
             Utils.el('div', { className: 'role-meta-form' }, [
                 Utils.el('div', { className: 'role-meta-fields' }, [
                     Utils.el('label', { textContent: 'Name' }),
@@ -1676,13 +1698,12 @@ const Admin = (() => {
             Utils.el('div', { className: 'role-flags' }, [
                 Utils.el('h4', { className: 'role-flags-title', textContent: 'Permission Flags' }),
                 ...flagSections,
-                depWarnings,
                 Utils.el('div', { className: 'role-flags-actions' }, [saveFlagsBtn]),
             ]),
         ]));
     }
 
-    function _showCreateRoleModal(flags, grantableFlags, refreshFn) {
+    function _showCreateRoleModal(flags, grantableFlags, refreshFn, flagMeta) {
         // Reuse the existing modal infrastructure — build a form in a dialog
         const flagsByCategory = {};
         for (const f of flags) {
@@ -1732,6 +1753,37 @@ const Admin = (() => {
                 ]);
             });
 
+        // Live dependency-warning banner (shown at top of modal)
+        const modalDepWarnings = Utils.el('div', { className: 'flag-dep-warnings', style: 'display:none' });
+        const _modalRequires = flagMeta?.requires ?? {};
+        const _modalRelated  = flagMeta?.related  ?? {};
+        function _updateModalDepWarnings() {
+            const warnings = [], hints = [];
+            for (const [flag, deps] of Object.entries(_modalRequires)) {
+                if (!flagInputs[flag]?.checked) continue;
+                for (const dep of deps) {
+                    if (flagInputs[dep] && !flagInputs[dep].checked)
+                        warnings.push(`⚠ "${flag}" requires "${dep}" to also be enabled.`);
+                }
+            }
+            for (const [flag, rels] of Object.entries(_modalRelated)) {
+                if (!flagInputs[flag]?.checked) continue;
+                const missing = rels.filter(r => flagInputs[r] && !flagInputs[r].checked);
+                if (missing.length) hints.push(`💡 "${flag}" is often used with: ${missing.join(', ')}`);
+            }
+            modalDepWarnings.innerHTML = '';
+            if (warnings.length || hints.length) {
+                modalDepWarnings.style.display = '';
+                _appendDepItems(modalDepWarnings, warnings, 'flag-dep-warning');
+                _appendDepItems(modalDepWarnings, hints, 'flag-dep-hint');
+            } else {
+                modalDepWarnings.style.display = 'none';
+            }
+        }
+        for (const chk of Object.values(flagInputs)) {
+            chk.addEventListener('change', _updateModalDepWarnings);
+        }
+
         const errorEl = Utils.el('p', { className: 'text-error', style: 'display:none' });
 
         const createBtn = Utils.el('button', {
@@ -1772,6 +1824,7 @@ const Admin = (() => {
         });
 
         const formContent = Utils.el('div', { className: 'create-role-form' }, [
+            modalDepWarnings,
             Utils.el('div', { className: 'role-meta-fields' }, [
                 Utils.el('label', { textContent: 'Role ID (slug, e.g. finance_reviewer)' }),
                 fldId,

@@ -1541,6 +1541,12 @@
     transform: rotate(-90deg);
 }
 
+.role-card-warn-icon {
+    font-size: var(--font-size-xs);
+    color: var(--color-warn, #f59e0b);
+    flex-shrink: 0;
+}
+
 .role-card-name {
     flex: 1;
 }

@@ -1387,6 +1387,7 @@ INSERT INTO role_permissions (role_id, flag, value) VALUES
     ('server_admin', 'files_access_all_read',             '0'),
     ('server_admin', 'files_access_all_write',            '0'),
     ('server_admin', 'files_copy',                        '1'),
+    ('server_admin', 'can_act_as_escrow',                 '1'),
     ('server_admin', 'escrow_manage',                     '1'),
     ('server_admin', 'sharing_manage',                    '1'),
     ('server_admin', 'service_accounts_manage',           '1'),

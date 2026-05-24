@@ -95,19 +95,38 @@ SENSITIVE_FLAGS: frozenset[str] = frozenset({
 
 # Hard prerequisites: enabling flag X requires all flags in FLAG_REQUIRES[X] to
 # also be active on the role.  Used for UI warnings and (optionally) enforcement.
+# All admin-panel-facing flags require admin_panel_view because without it the
+# admin panel UI (and most admin API endpoints) are inaccessible.
 FLAG_REQUIRES: dict[str, list[str]] = {
-    FLAG_USERS_DELETE:              [FLAG_USERS_MANAGE],
-    FLAG_USERS_MFA_MANAGE:          [FLAG_USERS_MANAGE],
-    FLAG_USERS_INVITE_MANAGE:       [FLAG_USERS_VIEW],
-    FLAG_TEAMS_MEMBERS_MANAGE:      [FLAG_TEAMS_MANAGE],
-    FLAG_ROLES_CREATE:              [FLAG_ROLES_MANAGE],
-    FLAG_ROLES_CROSS_TEAM_CREATE:   [FLAG_ROLES_CREATE, FLAG_ROLES_MANAGE],
-    FLAG_AUDIT_LOG_EXPORT:          [FLAG_AUDIT_LOG_VIEW],
-    FLAG_POLICIES_MANAGE:           [FLAG_POLICIES_VIEW],
-    FLAG_POLICIES_FIELDS_MANAGE:    [FLAG_POLICIES_MANAGE, FLAG_POLICIES_VIEW],
-    FLAG_FILES_ACCESS_ALL_WRITE:    [FLAG_FILES_ACCESS_ALL_READ],
-    FLAG_SHARES_UPLOAD_GRANT_CREATE: [FLAG_SHARES_LINK_CREATE],
-    FLAG_SHARES_FOLDER_CREATE:      [FLAG_SHARES_LINK_CREATE],
+    # Admin panel — prerequisite for every admin-facing capability
+    FLAG_USERS_VIEW:                        [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_USERS_MANAGE:                      [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_USERS_DELETE:                      [FLAG_ADMIN_PANEL_VIEW, FLAG_USERS_MANAGE],
+    FLAG_USERS_INVITE_MANAGE:               [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_USERS_MFA_MANAGE:                  [FLAG_ADMIN_PANEL_VIEW, FLAG_USERS_VIEW],
+    FLAG_TEAMS_MANAGE:                      [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_TEAMS_MEMBERS_MANAGE:              [FLAG_ADMIN_PANEL_VIEW, FLAG_TEAMS_MANAGE],
+    FLAG_ROLES_MANAGE:                      [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_ROLES_CREATE:                      [FLAG_ADMIN_PANEL_VIEW, FLAG_ROLES_MANAGE],
+    FLAG_ROLES_CROSS_TEAM_CREATE:           [FLAG_ADMIN_PANEL_VIEW, FLAG_ROLES_CREATE, FLAG_ROLES_MANAGE],
+    FLAG_DISK_USAGE_VIEW:                   [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_AUDIT_LOG_VIEW:                    [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_AUDIT_LOG_EXPORT:                  [FLAG_ADMIN_PANEL_VIEW, FLAG_AUDIT_LOG_VIEW],
+    FLAG_INTEGRATIONS_IDP_MANAGE:           [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_INTEGRATIONS_NOTIFICATIONS_MANAGE: [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_POLICIES_VIEW:                     [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_POLICIES_MANAGE:                   [FLAG_ADMIN_PANEL_VIEW, FLAG_POLICIES_VIEW],
+    FLAG_POLICIES_FIELDS_MANAGE:            [FLAG_ADMIN_PANEL_VIEW, FLAG_POLICIES_MANAGE, FLAG_POLICIES_VIEW],
+    FLAG_ESCROW_MANAGE:                     [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_SHARING_MANAGE:                    [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_SERVICE_ACCOUNTS_MANAGE:           [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_SYSTEM_SETTINGS_MANAGE:            [FLAG_ADMIN_PANEL_VIEW],
+    FLAG_ORG_SETTINGS_MANAGE:               [FLAG_ADMIN_PANEL_VIEW],
+    # File-access bypass (no admin panel required — used by escrow/audit paths)
+    FLAG_FILES_ACCESS_ALL_WRITE:            [FLAG_FILES_ACCESS_ALL_READ],
+    # Sharing capability dependencies
+    FLAG_SHARES_UPLOAD_GRANT_CREATE:        [FLAG_SHARES_LINK_CREATE],
+    FLAG_SHARES_FOLDER_CREATE:              [FLAG_SHARES_LINK_CREATE],
 }
 
 # Soft relationships: flags that are commonly used together.
