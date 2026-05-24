@@ -1,10 +1,10 @@
 {
-  "generated": "2026-05-22T06:33:48.465365+00:00",
+  "generated": "2026-05-24T05:58:05.137711+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
-    "frontend/js/admin.js": "sha256-dsJqtCOr7yPKJhX/Sh+KzOnTVuXQfji40XNd3DcoLd8=",
+    "frontend/js/admin.js": "sha256-LO84v8qnx0/oU956MWLYQ8utFIDsPIn4FeGSVlZPmns=",
     "frontend/js/api.js": "sha256-En38p7gRLyytuxBVkTeE31dC36cALUmOf2IIYMkJ628=",
-    "frontend/js/app.js": "sha256-4W7/IOPE+AtARfLXr9o/vcgU880aw0PU2y/0aMJgIaE=",
+    "frontend/js/app.js": "sha256-f5FPE+f4PjaJGN3IuCcimM0uHnee/wu4FmQMUX2PypM=",
     "frontend/js/auth.js": "sha256-zWLJpZ84Aiov5cPXGQMAwRS1fYPdj2Cu7G6VuMSEw5w=",
     "frontend/js/config.js": "sha256-XvMaf1MBJniFDZDKqEXwNItIv5UwA+UM3PJsdrIURJk=",
     "frontend/js/crypto.js": "sha256-ucwB1HV7whLZPKv2rJP3MZdxRx3pUdt9SwfcxgkTEoE=",
@@ -20,7 +20,7 @@
     "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
     "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",
-    "frontend/css/components.css": "sha256-X2nxQOmr6k/bBrUmwu7czckBBwWoRx/4ww5Vs5QWeMU=",
+    "frontend/css/components.css": "sha256-VTAjoAcQdHDqYGzEibWKeliwlKJc3isJ4Cy5Sz8AqHU=",
     "frontend/css/main.css": "sha256-0+9joocmfP7ZhxWQPTLr5jlEP+aNOFcsxXT6LT9dPr8=",
     "frontend/themes/default/colors.css": "sha256-CB1u+Y9bz3pcQj1cfuV6Z1RGrDcCmzsiTZQ69eqIrfI=",
     "frontend/themes/default/layout.css": "sha256-0wFe9nBp73p10q+zbxwk87p4ZOy17ATNAVV0qEMh+vw=",
