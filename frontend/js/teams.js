@@ -490,9 +490,9 @@ const Teams = (() => {
         const { tileBtn, listBtn } = _makeViewToggle(view === 'tile');
 
         const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px' });
-        header.appendChild(Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+        header.appendChild(Utils.el('div', { style: 'display:flex;align-items:center;gap:24px' }, [
             Utils.el('h2', { textContent: 'My Teams', style: 'margin:0' }),
-            tileBtn, listBtn,
+            Utils.el('div', { style: 'display:flex;align-items:center;gap:4px' }, [tileBtn, listBtn]),
         ]));
         header.appendChild(Utils.el('button', {
             className: 'btn btn-primary btn-sm',
@@ -1215,7 +1215,7 @@ const Teams = (() => {
             tbody.appendChild(Utils.el('tr', {}, [
                 Utils.el('td', {}, _buildMemberNameCellParts(m)),
                 Utils.el('td', { textContent: roleLabel }),
-                ...(isSupervisor ? [Utils.el('td', {}, actions)] : []),
+                ...(isSupervisor ? [Utils.el('td', {}, [Utils.el('div', { className: 'member-actions-wrap' }, actions)])] : []),
             ]));
         }
 
@@ -1993,9 +1993,9 @@ const Teams = (() => {
             const { tileBtn, listBtn } = _makeViewToggle(view === 'tile');
 
             const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px' });
-            header.appendChild(Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
+            header.appendChild(Utils.el('div', { style: 'display:flex;align-items:center;gap:24px' }, [
                 Utils.el('h2', { textContent: 'Team Folders', style: 'margin:0' }),
-                tileBtn, listBtn,
+                Utils.el('div', { style: 'display:flex;align-items:center;gap:4px' }, [tileBtn, listBtn]),
             ]));
             page.appendChild(header);
 
@@ -2036,7 +2036,7 @@ const Teams = (() => {
                         tile.appendChild(Utils.el('div', { className: 'team-card-header' }, [
                             Utils.el('span', { className: 'team-card-name', textContent: item.folderName }),
                         ]));
-                        const descParts = [`Team: ${item.teamName}`, `Owner: ${item.ownerLabel}`];
+                        const descParts = [`Owner: ${item.ownerLabel}`];
                         if (item.teamDesc) descParts.push(item.teamDesc);
                         tile.appendChild(Utils.el('p', { className: 'team-card-desc', textContent: descParts.join(' — ') }));
                         grid.appendChild(tile);

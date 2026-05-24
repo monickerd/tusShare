@@ -316,7 +316,7 @@ a:hover {
 }
 
 .toolbar-filter {
-    width: 180px;
+    width: 360px;
 }
 
 .trash-nav-btn {
@@ -332,23 +332,21 @@ a:hover {
     border-radius: var(--radius-sm, 4px);
     background: transparent;
     color: var(--color-text);
-    border: 1px solid var(--color-border);
+    border: none;
     cursor: pointer;
     font-size: 22px;
     font-weight: 400;
     line-height: 1;
     flex-shrink: 0;
-    transition: background var(--transition-fast), border-color var(--transition-fast);
+    transition: background var(--transition-fast), color var(--transition-fast);
     user-select: none;
 }
 .btn-upload-new:hover {
     background: var(--color-surface-hover, var(--color-surface));
-    border-color: var(--color-primary);
     color: var(--color-primary);
 }
 .btn-upload-new.active {
     background: var(--color-surface);
-    border-color: var(--color-primary);
     color: var(--color-primary);
 }
 

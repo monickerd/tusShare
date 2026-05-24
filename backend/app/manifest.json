@@ -1,5 +1,5 @@
 {
-  "generated": "2026-05-24T08:07:00.120216+00:00",
+  "generated": "2026-05-24T08:41:45.967763+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-albiLon/a1wwLTuJOMYOnpUVCTqs09vt9nYpEH5dYWA=",
     "frontend/js/admin.js": "sha256-fUcY+d8rRDd8GmIruNlkEBqfUW1rSZFpRqNBdCEp+fo=",
@@ -12,7 +12,7 @@
     "frontend/js/files.js": "sha256-rnYj2RXITOlRQmXbPrdHPPd+/YaRNcWvXGw+sUTuIO8=",
     "frontend/js/permissions.js": "sha256-cPntZh1Uy1zlR3t/9sh4KQw44SODsz/vj3u5Kt3X/yo=",
     "frontend/js/shares.js": "sha256-iz0Wp98Ygf/HmrquT1ohtpSa48XC3fHKBFyBdvdc3Ws=",
-    "frontend/js/teams.js": "sha256-ubM7BwyrBFRrxbfexoAgRaCZUqiVCqGn0ReciJc2+Do=",
+    "frontend/js/teams.js": "sha256-p2p00TvRAQ17Xut8JLEnqNLyGbRH/enFh3eVYahKJi8=",
     "frontend/js/transfer-manager.js": "sha256-gtkH4fbejPvLM92kaGh7tN56/XXjNs4vzmqUs27Mm0M=",
     "frontend/js/upload.js": "sha256-mXcGqJ9cg/RIu/rMEhcB22tSktWPxDA6Ok9avfmGz3I=",
     "frontend/js/utils.js": "sha256-RK+VZcPk/6NjD21O3QgK2YedG/IZ0zICW1ei7/Q3/io=",
@@ -20,8 +20,8 @@
     "frontend/js/lib/noble-curves-bls12381.js": "sha256-GAdubOjruPW7dROp61SW5qbF5ugkN1Nu8ruvQ+g5T0o=",
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
     "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",
-    "frontend/css/components.css": "sha256-FHT155rXZgkg7LkgWKCawkO9VFkS1fDP7JQD3opovx8=",
-    "frontend/css/main.css": "sha256-2v0OCXWVZVVEa6G8qv3oXDrLr1sofBOQ3lU1O9Y/Cgw=",
+    "frontend/css/components.css": "sha256-yXr4EQg7ZHc6Qde2MxVY4b8eCW50Gr3oum5qN4d7HZE=",
+    "frontend/css/main.css": "sha256-YAaIwa3n0Cb2xv/KV/4DMjnC3sxnOT3MOUNqEXq97m0=",
     "frontend/themes/default/colors.css": "sha256-CB1u+Y9bz3pcQj1cfuV6Z1RGrDcCmzsiTZQ69eqIrfI=",
     "frontend/themes/default/layout.css": "sha256-0wFe9nBp73p10q+zbxwk87p4ZOy17ATNAVV0qEMh+vw=",
     "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",
