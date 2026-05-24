@@ -1,11 +1,18 @@
 /*
  * tusShare Theme: Default (Dark)
  *
- * All color definitions for the dark theme.
- * To create a new theme, copy this folder and modify the values.
- * Switch themes by changing which theme folder is loaded in index.html.
+ * Dark theme is the default — variables are defined on :root.
+ * Light theme overrides are scoped under :root[data-theme="light"].
+ * System preference (dark/light follow OS) is handled under :root[data-theme="system"]
+ * via prefers-color-scheme media queries.
+ *
+ * The data-theme attribute is set on <html> by an inline script in index.html
+ * (reads localStorage before CSS loads to prevent flash) and managed by app.js.
  */
 
+/* =========================================================
+   DARK THEME (default)
+   ========================================================= */
 :root {
     /* --- Core backgrounds --- */
     --color-bg:             #0f1117;
@@ -23,26 +30,44 @@
     --color-text-inverse:   #0f1117;
 
     /* --- Primary accent --- */
-    --color-primary:        #6c8cff;
-    --color-primary-hover:  #8ba3ff;
-    --color-primary-muted:  rgba(108, 140, 255, 0.15);
+    --color-primary:         #6c8cff;
+    --color-primary-hover:   #8ba3ff;
+    --color-primary-muted:   rgba(108, 140, 255, 0.15);
+    --color-primary-contrast: #ffffff;
 
-    /* --- Semantic colors --- */
+    /* --- Semantic: danger --- */
     --color-danger:         #ff6b6b;
     --color-danger-hover:   #ff8787;
     --color-danger-muted:   rgba(255, 107, 107, 0.15);
 
+    /* --- Semantic: success --- */
     --color-success:        #51cf66;
     --color-success-hover:  #69db7c;
     --color-success-muted:  rgba(81, 207, 102, 0.15);
+    --color-success-border: rgba(81, 207, 102, 0.4);
 
+    /* --- Semantic: warning (--color-warn is a short alias) --- */
     --color-warning:        #fcc419;
     --color-warning-hover:  #ffd43b;
     --color-warning-muted:  rgba(252, 196, 25, 0.15);
+    --color-warn:           #fcc419;
+    --color-warn-muted:     rgba(252, 196, 25, 0.15);
+    --color-warn-bg:        rgba(252, 196, 25, 0.1);
+    --color-warn-text:      #fcc419;
 
+    /* --- Semantic: info --- */
     --color-info:           #6c8cff;
     --color-info-bg:        rgba(108, 140, 255, 0.12);
     --color-info-muted:     rgba(108, 140, 255, 0.15);
+
+    /* --- Badge colors (theme-specific) --- */
+    --color-badge-ldap-bg:     rgba(81, 207, 102, 0.15);
+    --color-badge-ldap-text:   #51cf66;
+    --color-badge-oidc-bg:     rgba(108, 140, 255, 0.15);
+    --color-badge-oidc-text:   #6c8cff;
+    --color-badge-effect-bg:   rgba(90, 175, 70, 0.12);
+    --color-badge-effect-text: #69db7c;
+    --color-badge-effect-border: #51cf66;
 
     /* --- Overlays --- */
     --color-overlay:        rgba(0, 0, 0, 0.6);
@@ -57,4 +82,133 @@
     --shadow-toast:         0 4px 12px rgba(0, 0, 0, 0.4);
     --shadow-modal:         0 8px 32px rgba(0, 0, 0, 0.5);
     --shadow-dropdown:      0 4px 16px rgba(0, 0, 0, 0.3);
+}
+
+/* =========================================================
+   LIGHT THEME — explicit user preference
+   ========================================================= */
+:root[data-theme="light"] {
+    /* --- Core backgrounds --- */
+    --color-bg:             #f5f6f8;
+    --color-surface:        #ffffff;
+    --color-surface-hover:  #f0f1f3;
+    --color-surface-active: #e6e8ec;
+
+    /* --- Borders --- */
+    --color-border:         #d8dbe3;
+    --color-border-light:   #e6e8ec;
+
+    /* --- Text --- */
+    --color-text:           #1a1d27;
+    --color-text-muted:     #6b7085;
+    --color-text-inverse:   #ffffff;
+
+    /* --- Primary accent --- */
+    --color-primary:         #4a6cf7;
+    --color-primary-hover:   #3b5de8;
+    --color-primary-muted:   rgba(74, 108, 247, 0.1);
+    --color-primary-contrast: #ffffff;
+
+    /* --- Semantic: danger --- */
+    --color-danger:         #e84040;
+    --color-danger-hover:   #d63030;
+    --color-danger-muted:   rgba(232, 64, 64, 0.1);
+
+    /* --- Semantic: success --- */
+    --color-success:        #2b9348;
+    --color-success-hover:  #1e7b37;
+    --color-success-muted:  rgba(43, 147, 72, 0.1);
+    --color-success-border: rgba(43, 147, 72, 0.4);
+
+    /* --- Semantic: warning --- */
+    --color-warning:        #e6a817;
+    --color-warning-hover:  #cc9400;
+    --color-warning-muted:  rgba(230, 168, 23, 0.1);
+    --color-warn:           #e6a817;
+    --color-warn-muted:     rgba(230, 168, 23, 0.1);
+    --color-warn-bg:        #fff8e1;
+    --color-warn-text:      #7a5800;
+
+    /* --- Semantic: info --- */
+    --color-info:           #4a6cf7;
+    --color-info-bg:        rgba(74, 108, 247, 0.08);
+    --color-info-muted:     rgba(74, 108, 247, 0.1);
+
+    /* --- Badge colors --- */
+    --color-badge-ldap-bg:     #e8f4e8;
+    --color-badge-ldap-text:   #2d6a2d;
+    --color-badge-oidc-bg:     #e8f0fb;
+    --color-badge-oidc-text:   #1a56a0;
+    --color-badge-effect-bg:   #f0f4e8;
+    --color-badge-effect-text: #4a6b1a;
+    --color-badge-effect-border: #4a6b1a;
+
+    /* --- Overlays --- */
+    --color-overlay:        rgba(0, 0, 0, 0.35);
+    --color-overlay-blur:   4px;
+
+    /* --- Scrollbar --- */
+    --color-scrollbar-track: #f5f6f8;
+    --color-scrollbar-thumb: #d8dbe3;
+    --color-scrollbar-hover: #b0b5c3;
+
+    /* --- Shadows --- */
+    --shadow-toast:         0 4px 12px rgba(0, 0, 0, 0.12);
+    --shadow-modal:         0 8px 32px rgba(0, 0, 0, 0.15);
+    --shadow-dropdown:      0 4px 16px rgba(0, 0, 0, 0.1);
+}
+
+/* =========================================================
+   SYSTEM PREFERENCE — follow OS dark/light setting
+   Applied only when data-theme="system" is set.
+   Dark is already the default, so we only need to override
+   when the OS preference is light.
+   ========================================================= */
+@media (prefers-color-scheme: light) {
+    :root[data-theme="system"] {
+        --color-bg:             #f5f6f8;
+        --color-surface:        #ffffff;
+        --color-surface-hover:  #f0f1f3;
+        --color-surface-active: #e6e8ec;
+        --color-border:         #d8dbe3;
+        --color-border-light:   #e6e8ec;
+        --color-text:           #1a1d27;
+        --color-text-muted:     #6b7085;
+        --color-text-inverse:   #ffffff;
+        --color-primary:         #4a6cf7;
+        --color-primary-hover:   #3b5de8;
+        --color-primary-muted:   rgba(74, 108, 247, 0.1);
+        --color-primary-contrast: #ffffff;
+        --color-danger:         #e84040;
+        --color-danger-hover:   #d63030;
+        --color-danger-muted:   rgba(232, 64, 64, 0.1);
+        --color-success:        #2b9348;
+        --color-success-hover:  #1e7b37;
+        --color-success-muted:  rgba(43, 147, 72, 0.1);
+        --color-success-border: rgba(43, 147, 72, 0.4);
+        --color-warning:        #e6a817;
+        --color-warning-hover:  #cc9400;
+        --color-warning-muted:  rgba(230, 168, 23, 0.1);
+        --color-warn:           #e6a817;
+        --color-warn-muted:     rgba(230, 168, 23, 0.1);
+        --color-warn-bg:        #fff8e1;
+        --color-warn-text:      #7a5800;
+        --color-info:           #4a6cf7;
+        --color-info-bg:        rgba(74, 108, 247, 0.08);
+        --color-info-muted:     rgba(74, 108, 247, 0.1);
+        --color-badge-ldap-bg:     #e8f4e8;
+        --color-badge-ldap-text:   #2d6a2d;
+        --color-badge-oidc-bg:     #e8f0fb;
+        --color-badge-oidc-text:   #1a56a0;
+        --color-badge-effect-bg:   #f0f4e8;
+        --color-badge-effect-text: #4a6b1a;
+        --color-badge-effect-border: #4a6b1a;
+        --color-overlay:        rgba(0, 0, 0, 0.35);
+        --color-scrollbar-track: #f5f6f8;
+        --color-scrollbar-thumb: #d8dbe3;
+        --color-scrollbar-hover: #b0b5c3;
+        --shadow-toast:         0 4px 12px rgba(0, 0, 0, 0.12);
+        --shadow-modal:         0 8px 32px rgba(0, 0, 0, 0.15);
+        --shadow-dropdown:      0 4px 16px rgba(0, 0, 0, 0.1);
+    }
 }

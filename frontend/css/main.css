@@ -12,6 +12,10 @@
     padding: 0;
 }
 
+html {
+    scroll-behavior: smooth;
+}
+
 html, body {
     height: 100%;
     font-family: var(--font-family);
@@ -105,20 +109,25 @@ a:hover {
     background: var(--color-surface-secondary);
     color: var(--color-text);
     font-size: var(--font-size-sm);
-    width: 200px;
-    transition: border-color var(--transition-fast), width var(--transition-normal);
+    width: 100%;
+    max-width: 200px;
+    transition: border-color var(--transition-fast), max-width var(--transition-normal);
 }
 .global-search-input:focus {
     outline: none;
     border-color: var(--color-primary);
-    width: 280px;
+    max-width: 280px;
+}
+.global-search-input:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
 }
 @media (max-width: 480px) {
     .global-search-input {
-        width: 120px;
+        max-width: 120px;
     }
     .global-search-input:focus {
-        width: 160px;
+        max-width: 160px;
     }
 }
 
@@ -387,6 +396,7 @@ a:hover {
     overflow-x: auto;
     white-space: nowrap;
     gap: 0;
+    min-width: 0;
 }
 
 .breadcrumb-link {
@@ -519,7 +529,7 @@ a:hover {
     height: 100%;
     background: var(--color-primary);
     border-radius: 3px;
-    transition: width 0.2s ease;
+    transition: width var(--transition-normal) ease;
 }
 
 .upload-progress-pct {
@@ -574,6 +584,10 @@ a:hover {
     font-size: 10px;
     color: var(--color-text-muted);
     cursor: pointer;
+    min-height: var(--touch-target-min);
+    box-sizing: content-box;
+    padding-inline: 12px;
+    margin-inline: -12px;
 }
 
 .tree-label {
@@ -722,7 +736,7 @@ a:hover {
     margin-bottom: var(--space-2);
     font-size: var(--font-size-md);
     font-weight: 500;
-    color: var(--color-text-muted);
+    color: var(--color-text);
 }
 
 .form-group input,
@@ -744,6 +758,12 @@ a:hover {
 .form-group input:focus,
 .form-group select:focus {
     border-color: var(--color-primary);
+}
+.form-group input:focus-visible,
+.form-group select:focus-visible,
+.form-group textarea:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
 }
 
 /* === Auth form === */
@@ -1057,5 +1077,17 @@ input[type="checkbox"] {
         min-width: auto;
         margin: var(--space-3);
         max-width: calc(100vw - var(--space-6));
+    }
+}
+
+/* === Reduced motion === */
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+    html {
+        scroll-behavior: auto;
     }
 }

@@ -67,7 +67,7 @@ const App = (() => {
         const logoUrl = _themeConfig?.logo_url;
         if (logoUrl) {
             return Utils.el('a', { href: '#/files', className: 'header-brand' }, [
-                Utils.el('img', { src: logoUrl, alt: name, className: 'header-logo' }),
+                Utils.el('img', { src: logoUrl, alt: name, className: 'header-logo', loading: 'lazy' }),
             ]);
         }
         return Utils.el('a', { href: '#/files', className: 'header-brand', textContent: name });
@@ -228,6 +228,17 @@ const App = (() => {
 
         Files.stopLive();
         _closeNotifBubble();
+
+        // Update browser tab title on each navigation.
+        const _titleMap = [
+            ['#/team-folders', 'Team Folders'], ['#/teams', 'Teams'],
+            ['#/shares/received', 'Shared To Me'], ['#/shares', 'Shares'],
+            ['#/pinned', 'Favourites'], ['#/account', 'Account'],
+            ['#/admin', 'Admin'], ['#/files', 'My Files'], ['#/login', 'Login'],
+        ];
+        const _appName  = _themeConfig?.brand_name || Config.app.name;
+        const _titleHit = _titleMap.find(([prefix]) => hash.startsWith(prefix));
+        document.title  = _titleHit ? `${_titleHit[1]} — ${_appName}` : _appName;
 
         // Public / semi-public routes — no auth check at router level.
         if (hash.startsWith('#/s/') || hash.startsWith('#/l/') || hash.startsWith('#/join/')) {
@@ -724,11 +735,12 @@ const App = (() => {
         if (!user) return;
 
         const TABS = [
-            { id: 'info',      label: 'Account Info' },
-            { id: 'teams',     label: 'Team Membership' },
-            { id: 'activity',  label: 'Recent Activity' },
-            { id: 'security',  label: 'Security' },
-            { id: 'transfers', label: 'Active Transfers' },
+            { id: 'info',       label: 'Account Info' },
+            { id: 'appearance', label: 'Appearance' },
+            { id: 'teams',      label: 'Team Membership' },
+            { id: 'activity',   label: 'Recent Activity' },
+            { id: 'security',   label: 'Security' },
+            { id: 'transfers',  label: 'Active Transfers' },
         ];
         const validIds = new Set(TABS.map(t => t.id));
         let activeTab = validIds.has(initialTab) ? initialTab : 'info';
@@ -744,11 +756,12 @@ const App = (() => {
             activeTab = tabId;
             tabBar.querySelectorAll('.acct-tab').forEach(b => b.classList.toggle('active', b.dataset.tabId === tabId));
             while (contentEl.firstChild) contentEl.firstChild.remove();
-            if      (tabId === 'info')      _renderAcctInfoTab(contentEl, user);
-            else if (tabId === 'teams')     _renderAcctTeamsTab(contentEl);
-            else if (tabId === 'activity')  _renderAcctActivityTab(contentEl, tabId === initialTab ? initialFilter : null);
-            else if (tabId === 'security')  _renderAcctSecurityTab(contentEl, user);
-            else if (tabId === 'transfers') _renderAcctTransfersTab(contentEl);
+            if      (tabId === 'info')       _renderAcctInfoTab(contentEl, user);
+            else if (tabId === 'appearance') _renderAcctAppearanceTab(contentEl);
+            else if (tabId === 'teams')      _renderAcctTeamsTab(contentEl);
+            else if (tabId === 'activity')   _renderAcctActivityTab(contentEl, tabId === initialTab ? initialFilter : null);
+            else if (tabId === 'security')   _renderAcctSecurityTab(contentEl, user);
+            else if (tabId === 'transfers')  _renderAcctTransfersTab(contentEl);
         };
 
         for (const tab of TABS) {
@@ -765,6 +778,60 @@ const App = (() => {
         page.appendChild(contentEl);
         main.appendChild(page);
         _activateTab(activeTab);
+    }
+
+    function _applyAppearance(theme, textSize) {
+        document.documentElement.setAttribute('data-theme', theme);
+        if (textSize && textSize !== 'medium') {
+            document.documentElement.setAttribute('data-text-size', textSize);
+        } else {
+            document.documentElement.removeAttribute('data-text-size');
+        }
+        try {
+            localStorage.setItem('tus_theme', theme);
+            if (textSize && textSize !== 'medium') {
+                localStorage.setItem('tus_text_size', textSize);
+            } else {
+                localStorage.removeItem('tus_text_size');
+            }
+        } catch (_) { /* storage unavailable — apply in-session only */ }
+    }
+
+    function _renderAcctAppearanceTab(container) {
+        const currentTheme    = document.documentElement.getAttribute('data-theme') || 'system';
+        const currentTextSize = document.documentElement.getAttribute('data-text-size') || 'medium';
+
+        const _row = (labelText, control) => Utils.el('div', { className: 'acct-appearance-row' }, [
+            Utils.el('label', { className: 'acct-appearance-label', textContent: labelText }),
+            control,
+        ]);
+
+        const themeSelect = Utils.el('select', { className: 'input-sm' }, [
+            Utils.el('option', { value: 'system', textContent: 'System default (follow OS)' }),
+            Utils.el('option', { value: 'dark',   textContent: 'Dark' }),
+            Utils.el('option', { value: 'light',  textContent: 'Light' }),
+        ]);
+        themeSelect.value = currentTheme;
+
+        const sizeSelect = Utils.el('select', { className: 'input-sm' }, [
+            Utils.el('option', { value: 'small',  textContent: 'Small (13 px)' }),
+            Utils.el('option', { value: 'medium', textContent: 'Medium (16 px) — default' }),
+            Utils.el('option', { value: 'large',  textContent: 'Large (19 px)' }),
+        ]);
+        sizeSelect.value = currentTextSize;
+
+        const _onChange = () => _applyAppearance(themeSelect.value, sizeSelect.value);
+        themeSelect.addEventListener('change', _onChange);
+        sizeSelect.addEventListener('change', _onChange);
+
+        container.appendChild(Utils.el('section', { className: 'account-section' }, [
+            Utils.el('h4', { className: 'account-section-title', textContent: 'Appearance' }),
+            Utils.el('div', { className: 'account-section-body' }, [
+                _row('Theme', themeSelect),
+                _row('Text size', sizeSelect),
+                Utils.el('p', { className: 'text-muted', style: 'margin-top:12px;font-size:var(--font-size-sm)', textContent: 'Changes apply immediately and are saved for this browser.' }),
+            ]),
+        ]));
     }
 
     function _renderAcctInfoTab(container, user) {
@@ -1193,8 +1260,8 @@ const App = (() => {
         // Bulk action bar
         const bulkBar = Utils.el('div', { style: 'display:flex;gap:8px;padding:0 24px 12px;align-items:center' });
         const selectAllChk = Utils.el('input', { type: 'checkbox', title: 'Select all' });
-        const restoreBtn = Utils.el('button', { className: 'btn btn-sm btn-secondary', textContent: 'Restore Selected', disabled: true });
-        const deleteBtn  = Utils.el('button', { className: 'btn btn-sm btn-danger',   textContent: 'Delete Selected',  disabled: true });
+        const restoreBtn = Utils.el('button', { className: 'btn btn-sm btn-secondary', textContent: 'Restore Selected', disabled: true, title: 'Select items to enable' });
+        const deleteBtn  = Utils.el('button', { className: 'btn btn-sm btn-danger',   textContent: 'Delete Selected',  disabled: true, title: 'Select items to enable' });
         const selCount   = Utils.el('span', { className: 'text-muted', style: 'font-size:0.9em', textContent: '' });
         bulkBar.appendChild(selectAllChk);
         bulkBar.appendChild(restoreBtn);
@@ -1345,6 +1412,7 @@ const App = (() => {
         const sidebarToggle = Utils.el('button', {
             className: 'sidebar-toggle',
             title: 'Toggle sidebar',
+            'aria-label': 'Toggle sidebar',
             textContent: '\u2630',
             onClick: () => {
                 const sb = document.querySelector('.sidebar');
@@ -1378,6 +1446,7 @@ const App = (() => {
         const notifBtn = Utils.el('button', {
             className: 'btn-icon header-notif-btn',
             title: 'Notifications',
+            'aria-label': 'Notifications',
             onClick: _toggleNotifBubble,
         }, [_buildNotifIcon(), unreadDot]);
         Utils.onUnreadChange(count => {
@@ -1434,7 +1503,8 @@ const App = (() => {
                 Utils.el('button', {
                     className: 'public-device-banner-dismiss',
                     title: 'Dismiss',
-                    textContent: '\u00d7',   // ×
+                    'aria-label': 'Dismiss',
+                    textContent: '\u00d7',   //×
                     onClick: () => {
                         sessionStorage.removeItem(cfg.sessionStorageKey);
                         if (banner.parentNode) banner.remove();
@@ -1459,6 +1529,7 @@ const App = (() => {
                 Utils.el('button', {
                     className: 'admin-transparency-banner-dismiss',
                     title: 'Dismiss',
+                    'aria-label': 'Dismiss',
                     textContent: '\u00d7',   // ×
                     onClick: () => {
                         sessionStorage.setItem(_ESCROW_DISMISSED_KEY, '1');

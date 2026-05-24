@@ -139,6 +139,10 @@
     outline: none;
     border-color: var(--color-accent);
 }
+.prompt-dialog-input:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 1px;
+}
 
 /* === Drop zone === */
 .drop-zone {
@@ -167,8 +171,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: var(--touch-target-min);
+    height: var(--touch-target-min);
     background: none;
     border: 1px solid transparent;
     border-radius: var(--radius);
@@ -316,9 +320,9 @@
 }
 
 .badge-upload {
-    background: var(--color-success-muted, #d1fae5);
-    color: var(--color-success, #065f46);
-    border: 1px solid var(--color-success-border, #6ee7b7);
+    background: var(--color-success-muted);
+    color: var(--color-success);
+    border: 1px solid var(--color-success-border);
 }
 
 /* === Share dialog === */
@@ -373,7 +377,7 @@
 
 .expiry-quick-btn.active {
     background: var(--color-primary);
-    color: var(--color-primary-contrast, #fff);
+    color: var(--color-primary-contrast);
     border-color: var(--color-primary);
 }
 
@@ -590,7 +594,7 @@
 
 .share-upload-ok {
     font-size: var(--font-size-sm);
-    color: var(--color-success, #065f46);
+    color: var(--color-success);
 }
 
 /* === Public share page === */
@@ -742,7 +746,7 @@
 .admin-section-toggle::before {
     content: '▾';
     font-size: var(--font-size-sm);
-    transition: transform 0.15s;
+    transition: transform var(--transition-fast);
     display: inline-block;
     width: 1em;
 }
@@ -776,7 +780,7 @@
     font-weight: 500;
     color: var(--color-text-muted);
     cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
     white-space: nowrap;
 }
 
@@ -897,7 +901,8 @@
 }
 
 .toolbar-filter {
-    width: 360px;
+    max-width: 360px;
+    width: 100%;
 }
 
 .input-xs {
@@ -929,11 +934,11 @@
 .disk-bar-fill {
     height: 100%;
     background: var(--color-primary);
-    transition: width 0.3s;
+    transition: width var(--transition-slow);
 }
 
 .disk-bar-warn {
-    background: var(--color-warning, #e07b00);
+    background: var(--color-warning);
 }
 
 .disk-fs-summary {
@@ -996,7 +1001,7 @@
 }
 
 .btn-danger {
-    background: var(--color-danger, #c0392b);
+    background: var(--color-danger);
     color: #fff;
     border: none;
 }
@@ -1006,12 +1011,12 @@
 }
 
 .text-warn {
-    color: var(--color-warning, #e07b00);
+    color: var(--color-warning);
     font-weight: 600;
 }
 
 .text-error {
-    color: var(--color-danger, #c0392b);
+    color: var(--color-danger);
 }
 
 /* --- Invites --- */
@@ -1045,7 +1050,7 @@
 .invite-banner {
     padding: var(--space-3) var(--space-4);
     background: var(--color-surface-2);
-    border: 1px solid var(--color-warning, #e07b00);
+    border: 1px solid var(--color-warning);
     border-radius: var(--radius-md);
     margin-bottom: var(--space-3);
     display: flex;
@@ -1055,7 +1060,7 @@
 
 .invite-banner-warn {
     font-weight: 600;
-    color: var(--color-warning, #e07b00);
+    color: var(--color-warning);
     margin: 0;
 }
 
@@ -1242,7 +1247,7 @@
     height: 100%;
     background: var(--color-primary);
     border-radius: 3px;
-    transition: width 0.2s ease;
+    transition: width var(--transition-normal) ease;
 }
 
 .transfer-row-pct {
@@ -1288,7 +1293,7 @@
     font-size: 10px;
     line-height: 1;
     cursor: pointer;
-    transition: color 0.15s, background 0.15s;
+    transition: color var(--transition-fast), background var(--transition-fast);
     min-height: unset; /* override global 44px touch target for compact panel */
 }
 
@@ -1547,7 +1552,7 @@
 
 .role-card-warn-icon {
     font-size: var(--font-size-xs);
-    color: var(--color-warn, #f59e0b);
+    color: var(--color-warn);
     flex-shrink: 0;
 }
 
@@ -1748,8 +1753,8 @@
     font-size: var(--font-size-xs);
     padding: 1px var(--space-1);
     border-radius: var(--radius-sm);
-    background: var(--color-warn-muted, #fff3cd);
-    color: var(--color-warn, #856404);
+    background: var(--color-warn-muted);
+    color: var(--color-warn);
     font-weight: 600;
 }
 
@@ -1768,7 +1773,7 @@
 }
 
 .flag-row.flag-sensitive {
-    background: color-mix(in srgb, var(--color-warn, #ffc107) 5%, transparent);
+    background: color-mix(in srgb, var(--color-warn) 5%, transparent);
     border-radius: var(--radius-sm);
     padding: var(--space-1) var(--space-2);
 }
@@ -1786,18 +1791,18 @@
 
 .flag-dep-warning {
     font-size: var(--font-size-sm);
-    color: var(--color-danger, #dc3545);
-    background: color-mix(in srgb, var(--color-danger, #dc3545) 8%, transparent);
-    border-left: 3px solid var(--color-danger, #dc3545);
+    color: var(--color-danger);
+    background: color-mix(in srgb, var(--color-danger) 8%, transparent);
+    border-left: 3px solid var(--color-danger);
     padding: var(--space-1) var(--space-3);
     border-radius: var(--radius-sm);
 }
 
 .flag-dep-hint {
     font-size: var(--font-size-sm);
-    color: var(--color-info, #0dcaf0);
-    background: color-mix(in srgb, var(--color-info, #0dcaf0) 8%, transparent);
-    border-left: 3px solid var(--color-info, #0dcaf0);
+    color: var(--color-info);
+    background: color-mix(in srgb, var(--color-info) 8%, transparent);
+    border-left: 3px solid var(--color-info);
     padding: var(--space-1) var(--space-3);
     border-radius: var(--radius-sm);
 }
@@ -1968,12 +1973,12 @@
     color: var(--color-primary);
 }
 .badge-ldap {
-    background: #e8f4e8;
-    color: #2d6a2d;
+    background: var(--color-badge-ldap-bg);
+    color: var(--color-badge-ldap-text);
 }
 .badge-oidc {
-    background: #e8f0fb;
-    color: #1a56a0;
+    background: var(--color-badge-oidc-bg);
+    color: var(--color-badge-oidc-text);
 }
 .badge-org {
     background: var(--color-surface-active);
@@ -2033,7 +2038,7 @@
 }
 
 .policy-card-detached {
-    border-color: var(--color-warn, #e6a817);
+    border-color: var(--color-warn);
 }
 
 .policy-card-header {
@@ -2077,15 +2082,15 @@
 }
 
 .scope-detach-banner {
-    background: var(--color-warn-bg, #fff8e1);
-    border-top: 1px solid var(--color-warn, #e6a817);
-    color: var(--color-warn-text, #7a5800);
+    background: var(--color-warn-bg);
+    border-top: 1px solid var(--color-warn);
+    color: var(--color-warn-text);
     font-size: var(--font-size-xs);
     padding: var(--space-2) var(--space-3);
 }
 
 .cond-row-detached {
-    background: var(--color-warn-bg, #fff8e1);
+    background: var(--color-warn-bg);
 }
 
 .policy-strict-row {
@@ -2148,18 +2153,18 @@
 }
 
 .badge-effect-team {
-    background: var(--color-info-bg, #e8f4fd);
-    color: var(--color-info, #1a73b5);
-    border: 1px solid var(--color-info, #1a73b5);
+    background: var(--color-info-bg);
+    color: var(--color-info);
+    border: 1px solid var(--color-info);
     font-size: var(--font-size-xs);
     padding: 1px 6px;
     border-radius: 10px;
 }
 
 .badge-effect-folder {
-    background: #f0f4e8;
-    color: #4a6b1a;
-    border: 1px solid #4a6b1a;
+    background: var(--color-badge-effect-bg);
+    color: var(--color-badge-effect-text);
+    border: 1px solid var(--color-badge-effect-border);
     font-size: var(--font-size-xs);
     padding: 1px 6px;
     border-radius: 10px;
@@ -2341,11 +2346,11 @@
 }
 
 .team-card {
-    background: var(--color-surface, #fff);
+    background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md, 6px);
     padding: var(--space-4);
-    transition: box-shadow 0.15s;
+    transition: box-shadow var(--transition-fast);
 }
 
 .team-card:hover {
@@ -2364,7 +2369,7 @@
     font-weight: 600;
     font-size: var(--font-size-md, 1rem);
     text-decoration: none;
-    color: var(--color-primary, #2563eb);
+    color: var(--color-primary);
 }
 
 .team-card-name:hover {
@@ -2389,7 +2394,7 @@
 
 .team-rotation-warn {
     margin: var(--space-2) 0 0;
-    color: var(--color-warning, #d97706);
+    color: var(--color-warning);
     font-size: var(--font-size-sm);
 }
 
@@ -2398,13 +2403,13 @@
     padding: 2px var(--space-2);
     border-radius: 99px;
     font-size: var(--font-size-xs);
-    background: var(--color-primary-muted, #dbeafe);
-    color: var(--color-primary, #2563eb);
+    background: var(--color-primary-muted);
+    color: var(--color-primary);
     white-space: nowrap;
 }
 
 .team-role-badge-more {
-    background: var(--color-surface, #f1f5f9);
+    background: var(--color-surface);
     color: var(--color-text-muted);
 }
 
@@ -2421,8 +2426,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 22px;
-    height: 22px;
+    min-width: var(--touch-target-min);
+    min-height: var(--touch-target-min);
     padding: 0;
     border: none;
     border-radius: var(--radius-sm, 4px);
@@ -2439,8 +2444,8 @@
 }
 
 .view-toggle-btn.active {
-    background: var(--color-primary-muted, #dbeafe);
-    color: var(--color-primary, #2563eb);
+    background: var(--color-primary-muted);
+    color: var(--color-primary);
 }
 
 /* 2×2 grid icon — element is top-left square; box-shadows are the other three.
@@ -2509,7 +2514,7 @@
 }
 
 .teams-list-link {
-    color: var(--color-primary, #2563eb);
+    color: var(--color-primary);
     text-decoration: none;
     font-weight: 500;
 }
@@ -2607,8 +2612,8 @@
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-2) var(--space-4);
-    background: var(--color-info-bg, #e8f4fd);
-    border-left: 3px solid var(--color-info, #3b82f6);
+    background: var(--color-info-bg);
+    border-left: 3px solid var(--color-info);
     border-radius: var(--radius-sm, 4px);
     font-size: var(--font-size-sm);
     color: var(--color-text);
@@ -2741,6 +2746,7 @@
     padding: var(--space-2) 0;
     overflow-y: auto;
     max-height: 280px;
+    min-height: 80px;
 }
 
 .notif-popup-body .notification-list {
@@ -2848,5 +2854,19 @@
     color: var(--color-text-muted);
     width: 160px;
     white-space: nowrap;
+}
+
+.acct-appearance-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-2) 0;
+}
+
+.acct-appearance-label {
+    width: 100px;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    flex-shrink: 0;
 }
 

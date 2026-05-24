@@ -99,7 +99,12 @@ const Utils = (() => {
 
     function _ensureToastContainer() {
         if (!_toastContainer) {
-            _toastContainer = el('div', { className: 'toast-container' });
+            _toastContainer = el('div', {
+                className: 'toast-container',
+                role: 'status',
+                'aria-live': 'polite',
+                'aria-atomic': 'false',
+            });
             document.body.appendChild(_toastContainer);
         }
         return _toastContainer;
@@ -151,25 +156,61 @@ const Utils = (() => {
         _notifyUnread();
     }
 
+    let _modalIdCounter = 0;
+    const _FOCUSABLE_SEL = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    function _lockBackground()   { document.getElementById('app')?.setAttribute('inert', ''); }
+    function _unlockBackground() { document.getElementById('app')?.removeAttribute('inert'); }
+
+    function _trapFocus(dialogEl) {
+        const handler = (e) => {
+            if (e.key !== 'Tab') return;
+            const focusable = [...dialogEl.querySelectorAll(_FOCUSABLE_SEL)];
+            if (!focusable.length) { e.preventDefault(); return; }
+            const first = focusable[0];
+            const last  = focusable[focusable.length - 1];
+            if (e.shiftKey) {
+                if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+            } else {
+                if (document.activeElement === last)  { e.preventDefault(); first.focus(); }
+            }
+        };
+        dialogEl.addEventListener('keydown', handler);
+        return () => dialogEl.removeEventListener('keydown', handler);
+    }
+
     /**
      * Confirmation dialog — returns Promise<boolean>.
      */
     function showConfirm(message) {
         return new Promise((resolve) => {
+            const labelId   = `modal-label-${++_modalIdCounter}`;
+            const prevFocus = document.activeElement;
+            let releaseTrap = () => {};
             let overlay = el('div', { className: 'modal-overlay' });
             const dismiss = (result) => {
+                releaseTrap();
+                _unlockBackground();
                 if (overlay?.parentNode) overlay.remove();
-                overlay = null;  // Release DOM reference for GC
+                overlay = null;
                 resolve(result);
+                prevFocus?.focus();
             };
-            const dialog = el('div', { className: 'modal confirm-dialog' }, [
-                el('p', { textContent: message }),
+            overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') dismiss(false); });
+            const cancelBtn = el('button', {
+                className: 'btn btn-secondary',
+                textContent: 'Cancel',
+                onClick: () => dismiss(false),
+            });
+            const dialog = el('div', {
+                className: 'modal confirm-dialog',
+                role: 'dialog',
+                'aria-modal': 'true',
+                'aria-labelledby': labelId,
+            }, [
+                el('p', { id: labelId, textContent: message }),
                 el('div', { className: 'modal-actions' }, [
-                    el('button', {
-                        className: 'btn btn-secondary',
-                        textContent: 'Cancel',
-                        onClick: () => dismiss(false),
-                    }),
+                    cancelBtn,
                     el('button', {
                         className: 'btn btn-danger',
                         textContent: 'Confirm',
@@ -179,6 +220,9 @@ const Utils = (() => {
             ]);
             overlay.appendChild(dialog);
             document.body.appendChild(overlay);
+            _lockBackground();
+            releaseTrap = _trapFocus(dialog);
+            cancelBtn.focus();
         });
     }
 
@@ -187,11 +231,17 @@ const Utils = (() => {
      */
     function showPrompt(title, placeholder = '') {
         return new Promise((resolve) => {
+            const labelId   = `modal-label-${++_modalIdCounter}`;
+            const prevFocus = document.activeElement;
+            let releaseTrap = () => {};
             let overlay = el('div', { className: 'modal-overlay' });
-            const dismiss = (result) => { // NOSONAR — identical body to showConfirm.dismiss but closes over this function's overlay
+            const dismiss = (result) => { // NOSONAR — identical shape to showConfirm.dismiss but closes over this function's overlay
+                releaseTrap();
+                _unlockBackground();
                 if (overlay?.parentNode) overlay.remove();
                 overlay = null;
                 resolve(result);
+                prevFocus?.focus();
             };
             const input = el('input', {
                 className: 'prompt-dialog-input',
@@ -206,8 +256,13 @@ const Utils = (() => {
                 if (e.key === 'Enter') submit();
                 if (e.key === 'Escape') dismiss(null);
             });
-            const dialog = el('div', { className: 'modal prompt-dialog' }, [
-                el('h3', { textContent: title }),
+            const dialog = el('div', {
+                className: 'modal prompt-dialog',
+                role: 'dialog',
+                'aria-modal': 'true',
+                'aria-labelledby': labelId,
+            }, [
+                el('h3', { id: labelId, textContent: title }),
                 input,
                 el('div', { className: 'modal-actions' }, [
                     el('button', {
@@ -224,6 +279,8 @@ const Utils = (() => {
             ]);
             overlay.appendChild(dialog);
             document.body.appendChild(overlay);
+            _lockBackground();
+            releaseTrap = _trapFocus(dialog);
             input.focus();
         });
     }
@@ -237,21 +294,31 @@ const Utils = (() => {
 
     function showModal(title, contentEl) {
         closeModal();  // Dismiss any existing modal first
-
+        const labelId   = `modal-label-${++_modalIdCounter}`;
+        const prevFocus = document.activeElement;
+        let releaseTrap = () => {};
         let overlay = el('div', { className: 'modal-overlay' });
         const close = () => {
+            releaseTrap();
+            _unlockBackground();
             if (overlay?.parentNode) overlay.remove();
             overlay = null;
             _activeModal = null;
+            prevFocus?.focus();
         };
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) close();
-        });
-        const dialog = el('div', { className: 'modal content-modal' }, [
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+        const dialog = el('div', {
+            className: 'modal content-modal',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': labelId,
+        }, [
             el('div', { className: 'modal-header' }, [
-                el('h3', { textContent: title }),
+                el('h3', { id: labelId, textContent: title }),
                 el('button', {
                     className: 'modal-close-btn',
+                    'aria-label': 'Close',
                     textContent: '✕',
                     onClick: close,
                 }),
@@ -260,7 +327,10 @@ const Utils = (() => {
         ]);
         overlay.appendChild(dialog);
         document.body.appendChild(overlay);
+        _lockBackground();
+        releaseTrap = _trapFocus(dialog);
         _activeModal = close;
+        dialog.querySelector(_FOCUSABLE_SEL)?.focus();
         return close;
     }
 
