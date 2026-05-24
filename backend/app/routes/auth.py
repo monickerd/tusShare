@@ -257,6 +257,19 @@ _MAX_PINS = 100
 _PIN_STR_MAX = 255
 
 
+def _clean_pinned_folders(items: list) -> list:
+    cleaned = []
+    for item in items[:_MAX_PINS]:
+        if not isinstance(item, dict):
+            continue
+        fid = str(item.get("id", ""))[:64]
+        name = str(item.get("name", ""))[:_PIN_STR_MAX]
+        hash_ = str(item.get("hash", ""))[:_PIN_STR_MAX]
+        if fid:
+            cleaned.append({"id": fid, "name": name, "hash": hash_})
+    return cleaned
+
+
 class UpdatePrefsRequest(BaseModel):
     admin_layout: dict | None = None
     pinned_folders: list | None = None
@@ -283,25 +296,14 @@ async def update_my_prefs(
         cleaned_order = [str(x)[:64] for x in body.role_order if isinstance(x, str)]
         prefs["role_order"] = cleaned_order
 
-    if body.teams_view is not None:
-        if body.teams_view in ("tile", "list"):
-            prefs["teams_view"] = body.teams_view
+    if body.teams_view in ("tile", "list"):
+        prefs["teams_view"] = body.teams_view
 
-    if body.team_folders_view is not None:
-        if body.team_folders_view in ("tile", "list"):
-            prefs["team_folders_view"] = body.team_folders_view
+    if body.team_folders_view in ("tile", "list"):
+        prefs["team_folders_view"] = body.team_folders_view
 
     if body.pinned_folders is not None:
-        cleaned = []
-        for item in body.pinned_folders[:_MAX_PINS]:
-            if not isinstance(item, dict):
-                continue
-            fid = str(item.get("id", ""))[:64]
-            name = str(item.get("name", ""))[:_PIN_STR_MAX]
-            hash_ = str(item.get("hash", ""))[:_PIN_STR_MAX]
-            if fid:
-                cleaned.append({"id": fid, "name": name, "hash": hash_})
-        prefs["pinned_folders"] = cleaned
+        prefs["pinned_folders"] = _clean_pinned_folders(body.pinned_folders)
 
     await db.execute(
         "UPDATE users SET ui_prefs = ? WHERE id = ?",

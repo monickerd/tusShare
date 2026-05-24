@@ -1495,6 +1495,18 @@ const Admin = (() => {
         }
     }
 
+    function _collectFlagWarnings(flagInputs, requires) {
+        const warnings = [];
+        for (const [flag, deps] of Object.entries(requires)) {
+            if (!flagInputs[flag]?.checked) continue;
+            for (const dep of deps) {
+                if (flagInputs[dep] && !flagInputs[dep].checked)
+                    warnings.push(`⚠ "${flag}" requires "${dep}" to also be enabled.`);
+            }
+        }
+        return warnings;
+    }
+
     function _populateRoleCardBody(container, role, flags, flagsByCategory, adminTier, refreshFn, flagMeta) {
         // Rename / description form (always shown — system roles can be renamed)
         const fldName = Utils.el('input', {
@@ -1759,14 +1771,8 @@ const Admin = (() => {
         const _modalRequires = flagMeta?.requires ?? {};
         const _modalRelated  = flagMeta?.related  ?? {};
         function _updateModalDepWarnings() {
-            const warnings = [], hints = [];
-            for (const [flag, deps] of Object.entries(_modalRequires)) {
-                if (!flagInputs[flag]?.checked) continue;
-                for (const dep of deps) {
-                    if (flagInputs[dep] && !flagInputs[dep].checked)
-                        warnings.push(`⚠ "${flag}" requires "${dep}" to also be enabled.`);
-                }
-            }
+            const warnings = _collectFlagWarnings(flagInputs, _modalRequires);
+            const hints = [];
             for (const [flag, rels] of Object.entries(_modalRelated)) {
                 if (!flagInputs[flag]?.checked) continue;
                 const missing = rels.filter(r => flagInputs[r] && !flagInputs[r].checked);

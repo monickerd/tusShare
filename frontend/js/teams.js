@@ -386,12 +386,27 @@ const Teams = (() => {
         tileBtn.appendChild(Utils.el('span', { className: 'view-toggle-grid-icon' }));
 
         const listBtn = Utils.el('button', {
-            className: 'view-toggle-btn' + (!tileActive ? ' active' : ''),
+            className: 'view-toggle-btn' + (tileActive ? '' : ' active'),
             title: 'List view',
         });
         listBtn.appendChild(Utils.el('span', { className: 'view-toggle-list-icon' }));
 
         return { tileBtn, listBtn };
+    }
+
+    function _sortedRoleLabels(team) {
+        return [...(team.my_roles || [])].sort((a, b) => _ROLE_PRIORITY(a) - _ROLE_PRIORITY(b))
+            .map(r => _ROLE_LABEL[r] || 'Custom');
+    }
+
+    function _teamStatusSortKey(team) {
+        if (team.rotation_pending) return 'z';
+        return team.my_key_confirmed ? 'a' : 'b';
+    }
+
+    function _teamStatusLabel(team) {
+        if (team.rotation_pending) return 'Rotation pending';
+        return team.my_key_confirmed ? 'Confirmed' : 'Pending';
     }
 
     function _buildTeamsListTable(teams) {
@@ -403,12 +418,11 @@ const Teams = (() => {
             const sorted = [...teams].sort((a, b) => {
                 let av, bv;
                 if (sortKey === 'my_roles') {
-                    const roles = t => (t.my_roles || []).sort((x, y) => _ROLE_PRIORITY(x) - _ROLE_PRIORITY(y));
-                    av = roles(a).map(r => _ROLE_LABEL[r] || 'Custom').join(', ');
-                    bv = roles(b).map(r => _ROLE_LABEL[r] || 'Custom').join(', ');
+                    av = _sortedRoleLabels(a).join(', ');
+                    bv = _sortedRoleLabels(b).join(', ');
                 } else if (sortKey === 'status') {
-                    av = a.rotation_pending ? 'z' : a.my_key_confirmed ? 'a' : 'b';
-                    bv = b.rotation_pending ? 'z' : b.my_key_confirmed ? 'a' : 'b';
+                    av = _teamStatusSortKey(a);
+                    bv = _teamStatusSortKey(b);
                 } else {
                     av = a[sortKey] ?? '';
                     bv = b[sortKey] ?? '';
@@ -419,8 +433,7 @@ const Teams = (() => {
             for (const team of sorted) {
                 const sortedRoles = [...(team.my_roles || [])].sort((a, b) => _ROLE_PRIORITY(a) - _ROLE_PRIORITY(b));
                 const roleText = sortedRoles.map(r => _ROLE_LABEL[r] || 'Custom').join(', ') || '—';
-                const status = team.rotation_pending ? 'Rotation pending'
-                    : team.my_key_confirmed ? 'Confirmed' : 'Pending';
+                const status = _teamStatusLabel(team);
                 tbody.appendChild(Utils.el('tr', { dataset: { name: team.name.toLowerCase() } }, [
                     Utils.el('td', {}, [Utils.el('a', {
                         href: `#/teams/${team.id}`,
@@ -550,12 +563,18 @@ const Teams = (() => {
     }
 
     const _ROLE_LABEL = { team_admin: 'Owner', team_manager: 'Supervisor', team_member: 'Member' };
-    const _ROLE_PRIORITY = (r) => r === 'team_admin' ? 0 : r === 'team_manager' ? 1 : r === 'team_member' ? 9 : 5;
+    function _ROLE_PRIORITY(r) {
+        if (r === 'team_admin') return 0;
+        if (r === 'team_manager') return 1;
+        if (r === 'team_member') return 9;
+        return 5;
+    }
 
     function _createTeamCard(team) {
-        // my_roles is an array (aggregated server-side); fall back for legacy single my_role
-        const roles = Array.isArray(team.my_roles) ? team.my_roles
-            : team.my_role ? [team.my_role] : [];
+        let roles;
+        if (Array.isArray(team.my_roles)) roles = team.my_roles;
+        else if (team.my_role) roles = [team.my_role];
+        else roles = [];
         const sortedRoles = [...roles].sort((a, b) => _ROLE_PRIORITY(a) - _ROLE_PRIORITY(b));
 
         const card = Utils.el('a', {

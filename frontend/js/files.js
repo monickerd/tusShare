@@ -1941,6 +1941,25 @@ const Files = (() => {
         input.click();
     }
 
+    async function _createOrResolveFolder(name, parentServerId, ctx) {
+        try {
+            const r = await Api.post(`${Config.app.apiPrefix}/folders`, { name, parent_id: parentServerId || null });
+            return r.folder.id;
+        } catch (err) {
+            if (err.status === 409 && err.existingFolderId) {
+                let action = ctx.mergeState.decision;
+                if (!action) {
+                    const choice = await _showFolderMergeModal(name);
+                    if (choice.applyToAll) ctx.mergeState.decision = choice.action;
+                    action = choice.action;
+                }
+                return action === 'merge' ? err.existingFolderId : null;
+            }
+            ctx.results.failed.push(name);
+            return null;
+        }
+    }
+
     async function _uploadFolderFiles(files) {
         if (files.length > Config.upload.bulkWarnThreshold) {
             if (!await _showBulkUploadWarning(files.length)) return;
@@ -1973,23 +1992,7 @@ const Files = (() => {
             if (entry.files.length) await _uploadFiles(entry.files, parentServerId, ctx);
             for (const subPath of entry.subdirs) {
                 const name = subPath.split('/').pop();
-                let newId = null;
-                try {
-                    const r = await Api.post(`${Config.app.apiPrefix}/folders`, { name, parent_id: parentServerId || null });
-                    newId = r.folder.id;
-                } catch (err) {
-                    if (err.status === 409 && err.existingFolderId) {
-                        let action = ctx.mergeState.decision;
-                        if (!action) {
-                            const choice = await _showFolderMergeModal(name);
-                            if (choice.applyToAll) ctx.mergeState.decision = choice.action;
-                            action = choice.action;
-                        }
-                        newId = action === 'merge' ? err.existingFolderId : null;
-                    } else {
-                        ctx.results.failed.push(name);
-                    }
-                }
+                const newId = await _createOrResolveFolder(name, parentServerId, ctx);
                 if (newId) await processDir(subPath, newId);
             }
         }
