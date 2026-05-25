@@ -226,11 +226,8 @@ const App = (() => {
         const hash = globalThis.location.hash || '#/login';
         const container = _appEl();
 
-        const _mcBusy = document.getElementById('main-content');
-        if (_mcBusy) {
-            _mcBusy.setAttribute('aria-busy', 'true');
-            setTimeout(() => _mcBusy.removeAttribute('aria-busy'), 100);
-        }
+        const _mc = document.getElementById('main-content');
+        if (_mc) _mc.setAttribute('aria-busy', 'true');
 
         Files.stopLive();
         _closeNotifBubble();
@@ -270,6 +267,14 @@ const App = (() => {
         if (_guardKeyPrompt(hash, container)) return;
 
         _updateSidebarActive(hash);
+
+        // Show spinner while the route handler loads data; it will be replaced by content.
+        if (_mc) {
+            while (_mc.firstChild) _mc.firstChild.remove();
+            _mc.appendChild(Utils.el('div', { className: 'route-loading' }, [
+                Utils.el('div', { className: 'loading-spinner' }),
+            ]));
+        }
 
         for (const route of _routes) {
             const match = route.pattern.exec(hash);
@@ -1236,6 +1241,7 @@ const App = (() => {
                     statusEl,
                     Utils.el('div', { className: 'btn-row-sm' }, [submitBtn, cancelBtn]),
                 ]));
+                Utils.attachPasswordStrength(newPwInput);
                 newPwInput.focus();
             }
 

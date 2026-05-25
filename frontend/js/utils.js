@@ -438,6 +438,91 @@ const Utils = (() => {
         };
     }
 
+    // -----------------------------------------------------------------------
+    // Password strength meter
+    // Scoring: +1 each for lowercase/uppercase/digits/other chars;
+    //          +1 each at 10/12/14 chars; -2 if in top-200 weak list or
+    //          ends with [season/month][current YY or YYYY].
+    // Sources: NordVPN 2025 top-200 list (frontend/data/weak-passwords.txt).
+    // -----------------------------------------------------------------------
+
+    let _weakPwCache = null;
+
+    async function _loadWeakPasswords() {
+        if (_weakPwCache) return _weakPwCache;
+        const res  = await fetch('/data/weak-passwords.txt');
+        const text = await res.text();
+        _weakPwCache = new Set(
+            text.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean)
+        );
+        return _weakPwCache;
+    }
+
+    function _scorePassword(password, weakSet) {
+        if (!password) return { score: 0, label: 'Weak', warn: false };
+
+        const year4 = String(new Date().getFullYear());
+        const year2 = year4.slice(2);
+        const _TIMES = [
+            'winter','spring','summer','fall','autumn',
+            'january','february','march','april','may','june',
+            'july','august','september','october','november','december',
+        ];
+        const timeRx = new RegExp(`(${_TIMES.join('|')})(${year2}|${year4})$`, 'i');
+
+        let score = 0;
+        let warn  = false;
+
+        if (/[a-z]/.test(password))        score++;
+        if (/[A-Z]/.test(password))        score++;
+        if (/[0-9]/.test(password))        score++;
+        if (/[^a-zA-Z0-9]/.test(password)) score++;
+        if (password.length >= 10)         score++;
+        if (password.length >= 12)         score++;
+        if (password.length >= 14)         score++;
+
+        if (weakSet && weakSet.has(password.toLowerCase())) { score -= 2; warn = true; }
+        if (timeRx.test(password))                          { score -= 2; warn = true; }
+
+        score = Math.max(0, Math.min(7, score));
+        const label = score <= 3 ? 'Weak' : score <= 5 ? 'Medium' : 'Strong';
+        return { score, label, warn };
+    }
+
+    /**
+     * Attach a live password strength label + warning to a password input.
+     * Inserts two elements immediately after `inputEl` in the DOM.
+     * Call AFTER the form containing inputEl has been appended to the document.
+     */
+    function attachPasswordStrength(inputEl) {
+        const meterEl   = el('span', { className: 'pw-strength-label pw-strength-hidden' });
+        const warningEl = el('p',    { className: 'pw-strength-warning pw-strength-hidden' });
+        // Insert in reverse order so final order is: input → meterEl → warningEl
+        inputEl.insertAdjacentElement('afterend', warningEl);
+        inputEl.insertAdjacentElement('afterend', meterEl);
+
+        const weakSetPromise = _loadWeakPasswords();
+
+        inputEl.addEventListener('input', async () => {
+            const pw = inputEl.value;
+            if (!pw) {
+                meterEl.className   = 'pw-strength-label pw-strength-hidden';
+                warningEl.className = 'pw-strength-warning pw-strength-hidden';
+                return;
+            }
+            const weakSet = await weakSetPromise;
+            const { label, warn } = _scorePassword(pw, weakSet);
+            meterEl.textContent = label;
+            meterEl.className   = `pw-strength-label pw-strength-${label.toLowerCase()}`;
+            if (warn) {
+                warningEl.textContent = 'This is a common password pattern, please consider using another password.';
+                warningEl.className   = 'pw-strength-warning';
+            } else {
+                warningEl.className = 'pw-strength-warning pw-strength-hidden';
+            }
+        });
+    }
+
     return {
         formatBytes,
         formatDate,
@@ -458,5 +543,6 @@ const Utils = (() => {
         debounce,
         inlineFilter,
         addLongPress,
+        attachPasswordStrength,
     };
 })();

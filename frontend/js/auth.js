@@ -3,12 +3,19 @@
  * and caches it for the lifetime of the page.  Used by Auth and StepUp.
  */
 let _opaqueModule = null;
-async function _loadOpaque() {
-    if (_opaqueModule) return _opaqueModule;
+// Kick off WASM load immediately on script parse so it's warm by the time
+// the user reaches the login form. Prevents autofill confusion from a
+// visible load blip triggered on first password-field focus.
+const _opaqueReady = (async () => {
     const mod = await import('/js/lib/opaque.js'); // NOSONAR — web-root-relative URL, not a filesystem path
     await mod.ready;
     _opaqueModule = mod;
-    return _opaqueModule;
+    return mod;
+})();
+
+async function _loadOpaque() {
+    if (_opaqueModule) return _opaqueModule;
+    return _opaqueReady;
 }
 
 
@@ -877,6 +884,7 @@ const Auth = (() => {
             Utils.el('p', { id: 'reg-status', className: 'auth-status' }),
         ]);
         container.appendChild(form);
+        Utils.attachPasswordStrength(document.getElementById('reg-password'));
     }
 
     async function _handleRegister(e, token, container) {
@@ -1027,6 +1035,7 @@ const Auth = (() => {
             Utils.el('p', { id: 'bs-status', className: 'auth-status' }),
         ]);
         container.appendChild(form);
+        Utils.attachPasswordStrength(document.getElementById('bs-password'));
     }
 
     async function _handleBootstrap(e, container) {
@@ -1285,6 +1294,7 @@ const Auth = (() => {
             Utils.el('p', { id: 'recover-status', className: 'auth-status' }),
         ]);
         container.appendChild(form);
+        Utils.attachPasswordStrength(document.getElementById('recover-new-password'));
     }
 
     // Recovery key display (shown once after account creation)

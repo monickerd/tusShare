@@ -30,6 +30,9 @@ requirements-hashed.txt
 
 # Data & uploads (never commit live data)
 data/
+# Exception: bundled static assets in frontend/data are tracked
+!frontend/data/
+!frontend/data/**
 
 # Node
 node_modules/

@@ -933,6 +933,16 @@ body[data-ui-admin-transparency-banner="false"] .admin-transparency-banner {
     to { transform: rotate(360deg); }
 }
 
+.route-loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: var(--space-8, 48px) 0;
+}
+.route-loading .loading-spinner {
+    margin-bottom: 0;
+}
+
 /* === Empty states === */
 .empty-state {
     display: flex;
