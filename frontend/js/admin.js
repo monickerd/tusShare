@@ -227,14 +227,14 @@ const Admin = (() => {
         ]);
 
         // -- ribbon --
-        const ribbon = Utils.el('div', { className: 'admin-ribbon' });
+        const ribbon = Utils.el('div', { className: 'admin-ribbon', role: 'tablist' });
 
         // -- page shell --
         const page = Utils.el('div', { className: 'admin-page' }, [header, ribbon]);
 
         // -- build tabs + panes --
         liveTabs.forEach(tab => {
-            const pane = Utils.el('div', { className: 'admin-tab-pane', id: `admin-tab-${tab.id}` });
+            const pane = Utils.el('div', { className: 'admin-tab-pane', id: `admin-tab-${tab.id}`, role: 'tabpanel', 'aria-labelledby': `admin-ribbon-tab-${tab.id}` });
             pane.dataset.tabId = tab.id;
             pane.style.display = 'none';
 
@@ -249,7 +249,14 @@ const Admin = (() => {
             paneEls[tab.id] = pane;
             page.appendChild(pane);
 
-            const btn = Utils.el('button', { className: 'admin-ribbon-tab', onClick: () => !rearranging && _activateTab(tab.id) });
+            const btn = Utils.el('button', {
+                id: `admin-ribbon-tab-${tab.id}`,
+                className: 'admin-ribbon-tab',
+                role: 'tab',
+                'aria-selected': 'false',
+                'aria-controls': `admin-tab-${tab.id}`,
+                onClick: () => !rearranging && _activateTab(tab.id),
+            });
             btn.dataset.tabId = tab.id;
             btn.appendChild(Utils.el('span', { className: 'drag-handle', textContent: '⠿' }));
             btn.appendChild(Utils.el('span', { textContent: tab.label }));
@@ -263,7 +270,11 @@ const Admin = (() => {
         function _activateTab(id) {
             activeTabId = id;
             Object.entries(paneEls).forEach(([k, p]) => { p.style.display = k === id ? '' : 'none'; });
-            ribbon.querySelectorAll('.admin-ribbon-tab').forEach(b => b.classList.toggle('active', b.dataset.tabId === id));
+            ribbon.querySelectorAll('.admin-ribbon-tab').forEach(b => {
+                const isActive = b.dataset.tabId === id;
+                b.classList.toggle('active', isActive);
+                b.setAttribute('aria-selected', String(isActive));
+            });
             if (!visitedTabs.has(id)) {
                 visitedTabs.add(id);
                 const first = paneEls[id]?.querySelector(':scope > .admin-section');

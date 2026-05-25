@@ -130,7 +130,7 @@ button:focus-visible {
     border-radius: var(--radius);
     background: var(--color-surface-secondary);
     color: var(--color-text);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-base);
     width: 100%;
     max-width: 200px;
     transition: border-color var(--transition-fast), max-width var(--transition-normal);
@@ -253,6 +253,10 @@ button:focus-visible {
     min-height: 0;
     padding-top: var(--space-1);
     padding-bottom: var(--space-1);
+}
+
+.pinned-folders-sidebar {
+    min-height: 48px;
 }
 
 .pinned-folder-row {

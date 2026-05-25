@@ -987,12 +987,17 @@ const App = (() => {
         page.appendChild(Utils.el('h2', { textContent: user.username, style: 'margin-bottom:2px' }));
         page.appendChild(Utils.el('p', { className: 'text-muted', style: 'margin-bottom:20px;font-size:var(--font-size-sm)', textContent: 'My Account' }));
 
-        const tabBar   = Utils.el('div', { className: 'acct-tab-bar' });
-        const contentEl = Utils.el('div', { className: 'acct-tab-content' });
+        const tabBar   = Utils.el('div', { className: 'acct-tab-bar', role: 'tablist' });
+        const contentEl = Utils.el('div', { className: 'acct-tab-content', id: 'acct-tab-content', role: 'tabpanel' });
 
         const _activateTab = (tabId) => {
             activeTab = tabId;
-            tabBar.querySelectorAll('.acct-tab').forEach(b => b.classList.toggle('active', b.dataset.tabId === tabId));
+            tabBar.querySelectorAll('.acct-tab').forEach(b => {
+                const isActive = b.dataset.tabId === tabId;
+                b.classList.toggle('active', isActive);
+                b.setAttribute('aria-selected', String(isActive));
+            });
+            contentEl.setAttribute('aria-labelledby', `acct-tab-btn-${tabId}`);
             while (contentEl.firstChild) contentEl.firstChild.remove();
             if      (tabId === 'info')       _renderAcctInfoTab(contentEl, user);
             else if (tabId === 'appearance') _renderAcctAppearanceTab(contentEl);
@@ -1004,8 +1009,12 @@ const App = (() => {
 
         for (const tab of TABS) {
             const btn = Utils.el('button', {
+                id: `acct-tab-btn-${tab.id}`,
                 className: 'acct-tab' + (tab.id === activeTab ? ' active' : ''),
                 textContent: tab.label,
+                role: 'tab',
+                'aria-selected': String(tab.id === activeTab),
+                'aria-controls': 'acct-tab-content',
                 onClick: () => _activateTab(tab.id),
             });
             btn.dataset.tabId = tab.id;

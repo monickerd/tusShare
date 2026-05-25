@@ -903,6 +903,7 @@
 .toolbar-filter {
     max-width: 360px;
     width: 100%;
+    font-size: var(--font-size-base);
 }
 
 .input-xs {
