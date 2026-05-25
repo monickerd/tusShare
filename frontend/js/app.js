@@ -314,9 +314,10 @@ const App = (() => {
         }
     }
 
-    function _pinFolder(id, name, hash) {
+    function _pinFolder(id, name, hash, teamId, teamName, path) {
         const pins = _getPinnedFolders().filter(p => p.id !== id);
-        pins.push({ id, name, hash });
+        pins.push({ id, name, hash,
+            team_id: teamId || null, team_name: teamName || null, path: path || null });
         _savePinnedFolders(pins);
         const el = document.getElementById('pinned-folders-sidebar');
         if (el) _renderPinnedSidebar(el);
@@ -331,9 +332,15 @@ const App = (() => {
     function _renderPinnedSidebar(container) {
         container.innerHTML = '';
         const pins = _getPinnedFolders();
+
+        // "Favourites" label is always a clickable link to the full page
+        container.appendChild(Utils.el('a', {
+            href: '#/pinned',
+            className: 'sidebar-section-label sidebar-section-label--link',
+            textContent: 'Favourites',
+        }));
         if (!pins.length) return;
 
-        container.appendChild(Utils.el('div', { className: 'sidebar-section-label', textContent: 'Favourites' }));
         for (const pin of pins) {
             const row = Utils.el('div', { className: 'pinned-folder-row' });
             row.appendChild(Utils.el('a', {
@@ -359,27 +366,175 @@ const App = (() => {
     function _routePinned(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
-        const pins = _getPinnedFolders();
-        const page = Utils.el('div', { className: 'page-content' }, [
-            Utils.el('h2', { textContent: 'Favourites' }),
-        ]);
-        if (pins.length === 0) {
-            page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No favourites yet. Navigate to a folder and click the star icon in the breadcrumb trail.' }));
-        } else {
-            const ul = Utils.el('ul', { style: 'list-style:none;padding:0' });
-            for (const pin of pins) {
-                ul.appendChild(Utils.el('li', { style: 'margin:6px 0' }, [
-                    Utils.el('a', { href: pin.hash || `#/files/${pin.id}`, textContent: pin.name, className: 'folder-link' }),
-                ]));
-            }
-            page.appendChild(ul);
-        }
+        const page = Utils.el('div', { className: 'page-content' });
         main.appendChild(page);
+        _renderPinnedPage(page);
+    }
+
+    function _makePinnedViewToggle(tileActive) {
+        const tileBtn = Utils.el('button', {
+            className: 'view-toggle-btn' + (tileActive ? ' active' : ''),
+            title: 'Tile view',
+        });
+        tileBtn.appendChild(Utils.el('span', { className: 'view-toggle-grid-icon' }));
+        const listBtn = Utils.el('button', {
+            className: 'view-toggle-btn' + (tileActive ? '' : ' active'),
+            title: 'List view',
+        });
+        listBtn.appendChild(Utils.el('span', { className: 'view-toggle-list-icon' }));
+        return { tileBtn, listBtn };
+    }
+
+    function _renderPinnedPage(page) {
+        page.innerHTML = '';
+        const pins = _getPinnedFolders();
+
+        // Recent Activity section at top of Favourites page
+        page.appendChild(_makeRecentActivitySection());
+
+        const savedView = localStorage.getItem('tus_pinned_view') || 'tile';
+        let view = savedView;
+
+        const { tileBtn, listBtn } = _makePinnedViewToggle(view === 'tile');
+
+        const header = Utils.el('div', { className: 'page-header' });
+        header.appendChild(Utils.el('div', { style: 'display:flex;align-items:center;gap:16px' }, [
+            Utils.el('h2', { textContent: 'Favourites', style: 'margin:0' }),
+            Utils.el('div', { style: 'display:flex;align-items:center;gap:4px' }, [tileBtn, listBtn]),
+        ]));
+        page.appendChild(header);
+
+        if (pins.length === 0) {
+            page.appendChild(Utils.el('p', { className: 'text-muted', style: 'margin-top:16px', textContent: 'No favourites yet. Navigate to a folder and click the ☆ in the breadcrumb trail to pin it.' }));
+            return;
+        }
+
+        const filterInput = Utils.el('input', {
+            type: 'text',
+            className: 'input-sm toolbar-filter',
+            placeholder: 'Filter favourites…',
+            style: 'margin:12px 0',
+        });
+        page.appendChild(filterInput);
+
+        const contentEl = Utils.el('div');
+        page.appendChild(contentEl);
+
+        function _renderTile() {
+            contentEl.innerHTML = '';
+            const grid = Utils.el('div', { className: 'pinned-tile-grid' });
+            for (const pin of pins) {
+                const card = Utils.el('div', { className: 'pinned-card', dataset: { name: pin.name } });
+                const link = Utils.el('a', {
+                    href: pin.hash || `#/files/${pin.id}`,
+                    className: 'pinned-card-link',
+                });
+                link.appendChild(Utils.el('div', { className: 'pinned-card-name', textContent: pin.name }));
+                const label = pin.team_name ? `Team: ${pin.team_name}` : 'Personal';
+                link.appendChild(Utils.el('div', { className: 'pinned-card-meta', textContent: label }));
+                card.appendChild(link);
+                const unpinBtn = Utils.el('button', {
+                    className: 'pinned-card-unpin',
+                    title: 'Remove from Favourites',
+                    'aria-label': 'Remove from Favourites',
+                    textContent: '×',
+                });
+                unpinBtn.addEventListener('click', () => {
+                    _unpinFolder(pin.id);
+                    _renderPinnedPage(page);
+                });
+                card.appendChild(unpinBtn);
+                grid.appendChild(card);
+            }
+            contentEl.appendChild(grid);
+            filterInput.oninput = () => {
+                const q = filterInput.value.toLowerCase();
+                for (const card of grid.querySelectorAll('.pinned-card')) {
+                    card.style.display = !q || (card.dataset.name || '').toLowerCase().includes(q) ? '' : 'none';
+                }
+            };
+        }
+
+        function _renderList() {
+            contentEl.innerHTML = '';
+            const rows = [];
+            for (const pin of pins) {
+                const row = Utils.el('div', { className: 'pinned-list-row', dataset: { name: pin.name } });
+
+                const nameEl = Utils.el('a', {
+                    href: pin.hash || `#/files/${pin.id}`,
+                    className: 'pinned-list-name',
+                    textContent: pin.name,
+                });
+                row.appendChild(nameEl);
+
+                const pathStr = pin.path || (pin.team_name ? `Team Folders / ${pin.name}` : `My Files / ${pin.name}`);
+                const pathEl = Utils.el('span', {
+                    className: 'pinned-list-path',
+                    textContent: pathStr,
+                    title: pathStr,
+                });
+                // Mobile long-press → modal showing full path
+                Utils.addLongPress(pathEl, () => {
+                    const modalContent = Utils.el('div', { style: 'padding:4px 0' });
+                    modalContent.appendChild(Utils.el('p', { className: 'pinned-path-modal-label', textContent: 'Full path:' }));
+                    modalContent.appendChild(Utils.el('p', { className: 'pinned-path-modal-path', textContent: pathStr }));
+                    Utils.showModal(`Path — ${pin.name}`, modalContent);
+                });
+                row.appendChild(pathEl);
+
+                const unpinBtn = Utils.el('button', {
+                    className: 'pinned-unpin-btn',
+                    title: 'Remove from Favourites',
+                    'aria-label': 'Remove from Favourites',
+                    textContent: '×',
+                });
+                unpinBtn.addEventListener('click', () => {
+                    _unpinFolder(pin.id);
+                    _renderPinnedPage(page);
+                });
+                row.appendChild(unpinBtn);
+
+                rows.push(row);
+                contentEl.appendChild(row);
+            }
+            filterInput.oninput = () => {
+                const q = filterInput.value.toLowerCase();
+                for (const row of rows) {
+                    row.style.display = !q || (row.dataset.name || '').toLowerCase().includes(q) ? '' : 'none';
+                }
+            };
+        }
+
+        function _applyView() {
+            filterInput.value = '';
+            if (view === 'list') _renderList();
+            else _renderTile();
+        }
+
+        tileBtn.addEventListener('click', () => {
+            if (view === 'tile') return;
+            view = 'tile';
+            tileBtn.classList.add('active');
+            listBtn.classList.remove('active');
+            localStorage.setItem('tus_pinned_view', 'tile');
+            _applyView();
+        });
+        listBtn.addEventListener('click', () => {
+            if (view === 'list') return;
+            view = 'list';
+            listBtn.classList.add('active');
+            tileBtn.classList.remove('active');
+            localStorage.setItem('tus_pinned_view', 'list');
+            _applyView();
+        });
+
+        _applyView();
     }
 
     // Expose pinFolder so files.js can call it
-    function pinCurrentFolder(id, name, hash) {
-        _pinFolder(id, name, hash);
+    function pinCurrentFolder(id, name, hash, teamId, teamName, path) {
+        _pinFolder(id, name, hash, teamId, teamName, path);
     }
 
     async function _routeSearch(container) {
@@ -457,9 +612,75 @@ const App = (() => {
         if (q) _doSearch(q);
     }
 
+    // -----------------------------------------------------------------------
+    // Recent Activity — collapsible section injected at top of root-level pages
+    // -----------------------------------------------------------------------
+
+    const _RA_LS_KEY = 'tus_recent_expanded';
+
+    function _makeRecentActivitySection() {
+        const stored = localStorage.getItem(_RA_LS_KEY);
+        const expanded = stored === null ? true : stored === '1';
+
+        const section = Utils.el('div', { className: 'recent-activity-section' });
+        const header  = Utils.el('div', { className: 'recent-activity-header' });
+        const chevron = Utils.el('span', { className: 'recent-activity-chevron', textContent: expanded ? '▾' : '▸' });
+        header.appendChild(Utils.el('span', { className: 'recent-activity-title', textContent: 'Recent' }));
+        header.appendChild(chevron);
+        section.appendChild(header);
+
+        const body = Utils.el('div', {
+            className: 'recent-activity-body',
+            style: expanded ? '' : 'display:none',
+        });
+        body.appendChild(Utils.el('span', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'Loading…' }));
+        section.appendChild(body);
+
+        header.addEventListener('click', () => {
+            const isOpen = body.style.display !== 'none';
+            body.style.display = isOpen ? 'none' : '';
+            chevron.textContent = isOpen ? '▸' : '▾';
+            localStorage.setItem(_RA_LS_KEY, isOpen ? '0' : '1');
+        });
+
+        Api.get(`${Config.app.apiPrefix}/auth/me/recent-folders`).then(data => {
+            body.innerHTML = '';
+            const items = (data.recent_folders || []);
+            if (!items.length) {
+                body.appendChild(Utils.el('span', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'No recent activity yet.' }));
+                return;
+            }
+            const grid = Utils.el('div', { className: 'recent-activity-grid' });
+            for (const item of items) {
+                const card = Utils.el('a', {
+                    href: item.hash,
+                    className: 'recent-activity-card',
+                    title: item.folder_name,
+                });
+                card.appendChild(Utils.el('div', { className: 'recent-activity-card-name', textContent: item.folder_name }));
+                const meta = item.team_name ? `Team: ${item.team_name}` : 'Personal';
+                card.appendChild(Utils.el('div', { className: 'recent-activity-card-meta', textContent: meta }));
+                grid.appendChild(card);
+            }
+            body.appendChild(grid);
+        }).catch(() => {
+            body.innerHTML = '';
+        });
+
+        return section;
+    }
+
+    function _injectRecentActivity(parentEl) {
+        const section = _makeRecentActivitySection();
+        parentEl.insertBefore(section, parentEl.firstChild);
+    }
+
     function _routeFiles(container) {
         _renderShell(container);
-        Files.renderFileBrowser(document.getElementById('main-content'));
+        const main = document.getElementById('main-content');
+        Files.renderFileBrowser(main);
+        // renderFileBrowser clears main first, so inject after it returns
+        _injectRecentActivity(main);
     }
 
     function _routeFolder(container, folderId) {
@@ -500,7 +721,9 @@ const App = (() => {
 
     function _routeTeamFolders(container) {
         _renderShell(container);
-        Teams.renderTeamFoldersPage(document.getElementById('main-content'));
+        const main = document.getElementById('main-content');
+        Teams.renderTeamFoldersPage(main);
+        _injectRecentActivity(main);
     }
 
     function _routeTeams(container) {
@@ -1454,14 +1677,20 @@ const App = (() => {
         });
         const accountLink = Utils.el('a', {
             href: '#/account',
-            className: 'btn btn-sm header-account-btn',
+            className: 'btn btn-sm header-account-btn mobile-hidden',
             textContent: user ? user.username : '',
+        });
+
+        const logoutBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm mobile-hidden',
+            textContent: 'Logout',
+            onClick: () => Auth.logout(),
         });
 
         // Global file search bar
         const searchInput = Utils.el('input', {
             type: 'text',
-            className: 'global-search-input',
+            className: 'global-search-input mobile-hidden',
             placeholder: 'Search files…',
             style: 'width:40%',
         });
@@ -1471,6 +1700,87 @@ const App = (() => {
                 searchInput.value = '';
             }
         });
+
+        // --- Mobile bottom nav bar ---
+        const bnBackdrop = Utils.el('div', { className: 'bn-backdrop' });
+
+        function _closeBnSubmenus() {
+            document.querySelectorAll('.bn-item.open').forEach(el => el.classList.remove('open'));
+            bnBackdrop.classList.remove('active');
+        }
+
+        bnBackdrop.addEventListener('click', _closeBnSubmenus);
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') _closeBnSubmenus();
+        }, { once: false });
+
+        function _makeBnItem(label, href, id) {
+            const a = Utils.el('a', {
+                href,
+                className: 'bn-tab',
+                id: `bn-${id}`,
+            });
+            a.appendChild(Utils.el('span', { className: 'bn-label', textContent: label }));
+            const wrap = Utils.el('div', { className: 'bn-item' });
+            wrap.appendChild(a);
+            return wrap;
+        }
+
+        function _makeBnSubmenuItem(label, href, id) {
+            const item = Utils.el('div', { className: 'bn-item', id: `bn-wrap-${id}` });
+            const btn = Utils.el('button', {
+                className: 'bn-tab',
+                id: `bn-${id}`,
+                'aria-haspopup': 'true',
+                'aria-expanded': 'false',
+            });
+            btn.appendChild(Utils.el('span', { className: 'bn-label', textContent: label }));
+            btn.appendChild(Utils.el('span', { className: 'bn-chevron', textContent: '▲' }));
+
+            const submenu = Utils.el('div', { className: 'bn-submenu', role: 'menu' });
+            item.appendChild(btn);
+            item.appendChild(submenu);
+
+            btn.addEventListener('click', () => {
+                const isOpen = item.classList.contains('open');
+                _closeBnSubmenus();
+                if (!isOpen) {
+                    item.classList.add('open');
+                    btn.setAttribute('aria-expanded', 'true');
+                    bnBackdrop.classList.add('active');
+                }
+            });
+
+            item.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') { _closeBnSubmenus(); btn.focus(); }
+            });
+
+            return { item, submenu };
+        }
+
+        const { item: bnTeams, submenu: bnTeamsMenu } = _makeBnSubmenuItem('Teams', null, 'teams');
+        bnTeamsMenu.appendChild(Utils.el('a', { href: '#/team-folders', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Team Folders' }));
+        bnTeamsMenu.appendChild(Utils.el('a', { href: '#/teams',        className: 'bn-submenu-link', role: 'menuitem', textContent: 'Manage Teams' }));
+
+        const { item: bnShared, submenu: bnSharedMenu } = _makeBnSubmenuItem('Shared', null, 'shared');
+        bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares',          className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared By Me' }));
+        bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares/received', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared To Me' }));
+
+        // Close submenu when a submenu link is clicked
+        [bnTeamsMenu, bnSharedMenu].forEach(menu => {
+            menu.querySelectorAll('.bn-submenu-link').forEach(link => {
+                link.addEventListener('click', _closeBnSubmenus);
+            });
+        });
+
+        const bottomNav = Utils.el('nav', { className: 'mobile-bottom-nav', 'aria-label': 'Mobile navigation' }, [
+            _makeBnItem('My Files', '#/files', 'files'),
+            bnTeams,
+            bnShared,
+            _makeBnItem('Favourites', '#/pinned', 'pinned'),
+        ]);
+        bottomNav.appendChild(bnBackdrop);
 
         const shellChildren = [
             Utils.el('header', { className: 'app-header' }, [
@@ -1482,11 +1792,7 @@ const App = (() => {
                 Utils.el('div', { className: 'header-actions' }, [
                     notifBtn,
                     accountLink,
-                    Utils.el('button', {
-                        className: 'btn btn-secondary btn-sm',
-                        textContent: 'Logout',
-                        onClick: () => Auth.logout(),
-                    }),
+                    logoutBtn,
                 ]),
             ]),
         ];
@@ -1551,6 +1857,7 @@ const App = (() => {
                 ]),
                 Utils.el('div', { id: 'main-content', className: 'app-main' }),
             ]),
+            bottomNav,
         );
 
         const shell = Utils.el('div', { className: 'app-shell' }, shellChildren);
@@ -1569,6 +1876,18 @@ const App = (() => {
             { id: 'nav-admin',        test: h => h === '#/admin' },
         ];
         rules.forEach(({ id, test }) => {
+            const el = document.getElementById(id);
+            if (el) el.classList.toggle('active', test(hash));
+        });
+
+        // Bottom nav: highlight active tab
+        const bnRules = [
+            { id: 'bn-files',   test: h => /^#\/files(\/.*)?$/.test(h) },
+            { id: 'bn-pinned',  test: h => h === '#/pinned' },
+            { id: 'bn-teams',   test: h => /^#\/(team-folders|teams)(\/.*)?$/.test(h) },
+            { id: 'bn-shared',  test: h => /^#\/shares(\/.*)?$/.test(h) },
+        ];
+        bnRules.forEach(({ id, test }) => {
             const el = document.getElementById(id);
             if (el) el.classList.toggle('active', test(hash));
         });

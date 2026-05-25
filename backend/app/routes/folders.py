@@ -206,6 +206,35 @@ async def create_folder(
     # Notify the parent folder (or root) that a new subfolder appeared
     sse_broker.publish(body.parent_id or f"root:{user.id}", {"type": "change"})
 
+    # Record recent activity on the parent folder (best-effort, non-blocking)
+    if body.parent_id:
+        import asyncio as _asyncio
+        from app.routes.auth import record_folder_activity
+        from app.database import db_session
+
+        async def _record() -> None:
+            try:
+                async with db_session() as _db:
+                    _cur = await _db.execute(
+                        "SELECT f.name, tf.team_id, t.name AS team_name "
+                        "FROM folders f "
+                        "LEFT JOIN team_folders tf ON tf.folder_id = f.id "
+                        "LEFT JOIN teams t ON t.id = tf.team_id "
+                        "WHERE f.id = ?",
+                        (body.parent_id,),
+                    )
+                    _row = await _cur.fetchone()
+                    if _row:
+                        await record_folder_activity(
+                            _db, str(user.id), body.parent_id,
+                            _row["team_id"], _row["name"], _row["team_name"],
+                        )
+            except Exception:
+                pass
+
+        _t = _asyncio.create_task(_record())
+        _t.add_done_callback(lambda _: None)
+
     return {"folder": {"id": folder_id, "name": body.name, "parent_id": body.parent_id}}
 
 

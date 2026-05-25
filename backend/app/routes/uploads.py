@@ -30,6 +30,7 @@ from app.schemas.security_event import SecurityEvent
 import app.storage.manager as storage
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
+from app.database import db_session
 from typing import Annotated
 
 _bg_tasks: set = set()
@@ -436,6 +437,29 @@ async def _record_chunk_in_db(
         raise
 
 
+async def _record_upload_folder_activity(user_id: str, folder_id: str) -> None:
+    """Background task: record that user_id wrote to folder_id."""
+    try:
+        from app.routes.auth import record_folder_activity  # local import avoids circular dep at module level
+        async with db_session() as db:
+            cur = await db.execute(
+                "SELECT f.name, tf.team_id, t.name AS team_name "
+                "FROM folders f "
+                "LEFT JOIN team_folders tf ON tf.folder_id = f.id "
+                "LEFT JOIN teams t ON t.id = tf.team_id "
+                "WHERE f.id = ?",
+                (folder_id,),
+            )
+            row = await cur.fetchone()
+            if row:
+                await record_folder_activity(
+                    db, user_id, folder_id,
+                    row["team_id"], row["name"], row["team_name"],
+                )
+    except Exception:
+        pass  # best-effort; never surface to the upload response
+
+
 async def _finalize_completed_upload(
     db, upload_id: str, file_id: str, storage_key: str,
     new_offset: int, chunk_index: int, user_id: str, file_row
@@ -526,6 +550,13 @@ async def _finalize_completed_upload(
     _t = asyncio.create_task(_maybe_scan_file(file_id))
     _bg_tasks.add(_t)
     _t.add_done_callback(_bg_tasks.discard)
+
+    if file_row.get("folder_id"):
+        _t2 = asyncio.create_task(
+            _record_upload_folder_activity(user_id, file_row["folder_id"])
+        )
+        _bg_tasks.add(_t2)
+        _t2.add_done_callback(_bg_tasks.discard)
 
 
 # ---------------------------------------------------------------------------

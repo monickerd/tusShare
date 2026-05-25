@@ -390,6 +390,54 @@ const Utils = (() => {
         });
     }
 
+    /**
+     * Attach a long-press handler to a touch target.
+     * Cancels if the finger moves more than `jitterPx` pixels (treats it as a scroll).
+     * Returns a cleanup function that removes all listeners.
+     *
+     * @param {Element} elem       Target element.
+     * @param {Function} callback  Called when the long-press fires.
+     * @param {number} [ms=500]    Hold duration in ms.
+     * @param {number} [jitterPx=10] Max displacement before treating as scroll.
+     */
+    function addLongPress(elem, callback, ms = 500, jitterPx = 10) {
+        let timer = null;
+        let startX = 0;
+        let startY = 0;
+
+        function _cancel() {
+            if (timer !== null) { clearTimeout(timer); timer = null; }
+        }
+
+        function onStart(e) {
+            const touch = e.touches[0];
+            startX = touch.clientX;
+            startY = touch.clientY;
+            _cancel();
+            timer = setTimeout(() => { timer = null; callback(e); }, ms);
+        }
+
+        function onMove(e) {
+            const touch = e.touches[0];
+            const dx = touch.clientX - startX;
+            const dy = touch.clientY - startY;
+            if (Math.sqrt(dx * dx + dy * dy) > jitterPx) _cancel();
+        }
+
+        elem.addEventListener('touchstart', onStart, { passive: true });
+        elem.addEventListener('touchmove',  onMove,  { passive: true });
+        elem.addEventListener('touchend',   _cancel);
+        elem.addEventListener('touchcancel', _cancel);
+
+        return () => {
+            _cancel();
+            elem.removeEventListener('touchstart', onStart);
+            elem.removeEventListener('touchmove',  onMove);
+            elem.removeEventListener('touchend',   _cancel);
+            elem.removeEventListener('touchcancel', _cancel);
+        };
+    }
+
     return {
         formatBytes,
         formatDate,
@@ -409,5 +457,6 @@ const Utils = (() => {
         parseCookie,
         debounce,
         inlineFilter,
+        addLongPress,
     };
 })();

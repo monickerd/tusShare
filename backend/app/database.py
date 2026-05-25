@@ -601,3 +601,19 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                 ON CONFLICT (key) DO NOTHING;
         """)
 
+    # Recent folder activity — added as idempotent block so existing DBs gain the table.
+    async with conn.transaction():
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_folder_recent (
+                user_id       TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                folder_id     TEXT        NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                team_id       TEXT        REFERENCES teams(id) ON DELETE CASCADE,
+                folder_name   TEXT        NOT NULL DEFAULT '',
+                team_name     TEXT,
+                interacted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (user_id, folder_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_user_folder_recent_user
+                ON user_folder_recent(user_id, interacted_at DESC);
+        """)
+

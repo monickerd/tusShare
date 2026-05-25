@@ -266,7 +266,11 @@ def _clean_pinned_folders(items: list) -> list:
         name = str(item.get("name", ""))[:_PIN_STR_MAX]
         hash_ = str(item.get("hash", ""))[:_PIN_STR_MAX]
         if fid:
-            cleaned.append({"id": fid, "name": name, "hash": hash_})
+            team_id   = str(item.get("team_id", "") or "")[:64] or None
+            team_name = str(item.get("team_name", "") or "")[:_PIN_STR_MAX] or None
+            path      = str(item.get("path", "") or "")[:_PIN_STR_MAX] or None
+            cleaned.append({"id": fid, "name": name, "hash": hash_,
+                             "team_id": team_id, "team_name": team_name, "path": path})
     return cleaned
 
 
@@ -311,6 +315,91 @@ async def update_my_prefs(
     )
     await db.commit()
     return {"ui_prefs": prefs}
+
+
+# ---------------------------------------------------------------------------
+# Recent folder activity
+# ---------------------------------------------------------------------------
+
+_RECENT_MAX = 4
+_RECENT_STR_MAX = 255
+
+
+@router.get("/me/recent-folders")
+async def get_recent_folders(
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return up to 4 most-recently-interacted folders for the current user."""
+    cursor = await db.execute(
+        """
+        SELECT folder_id, team_id, folder_name, team_name, interacted_at
+        FROM   user_folder_recent
+        WHERE  user_id = ?
+        ORDER  BY interacted_at DESC
+        LIMIT  ?
+        """,
+        (user.id, _RECENT_MAX),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "recent_folders": [
+            {
+                "folder_id":     r["folder_id"],
+                "team_id":       r["team_id"],
+                "folder_name":   r["folder_name"],
+                "team_name":     r["team_name"],
+                "interacted_at": r["interacted_at"],
+                "hash": (
+                    f"#/team-folders/{r['folder_id']}"
+                    if r["team_id"]
+                    else f"#/files/{r['folder_id']}"
+                ),
+            }
+            for r in rows
+        ]
+    }
+
+
+async def record_folder_activity(
+    db: Database,
+    user_id: str,
+    folder_id: str,
+    team_id: str | None,
+    folder_name: str,
+    team_name: str | None,
+) -> None:
+    """Upsert a recent-folder row for user_id/folder_id; evict 5th+ oldest rows."""
+    folder_name = str(folder_name or "")[:_RECENT_STR_MAX]
+    team_name   = str(team_name or "")[:_RECENT_STR_MAX] or None
+    await db.execute(
+        """
+        INSERT INTO user_folder_recent
+               (user_id, folder_id, team_id, folder_name, team_name, interacted_at)
+        VALUES (?, ?, ?, ?, ?, NOW())
+        ON CONFLICT (user_id, folder_id) DO UPDATE
+            SET team_id       = EXCLUDED.team_id,
+                folder_name   = EXCLUDED.folder_name,
+                team_name     = EXCLUDED.team_name,
+                interacted_at = EXCLUDED.interacted_at
+        """,
+        (user_id, folder_id, team_id, folder_name, team_name),
+    )
+    # Evict rows beyond the max (keep the 4 most recent)
+    await db.execute(
+        """
+        DELETE FROM user_folder_recent
+        WHERE  user_id = ?
+          AND  folder_id NOT IN (
+              SELECT folder_id FROM user_folder_recent
+              WHERE  user_id = ?
+              ORDER  BY interacted_at DESC
+              LIMIT  ?
+          )
+        """,
+        (user_id, user_id, _RECENT_MAX),
+    )
+    await db.commit()
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ const Files = (() => {
     let _isSharedView = false;
     let _isTeamView = false;
     let _currentTeamId = null;      // non-null when browsing a team folder tree
+    let _currentTeamName = null;    // display name of current team, cached for pin metadata
     let _currentTeamPK = null;      // base64 team public key, cached alongside _currentTeamId
     let _currentTeamSKBytes = null; // Uint8Array team sk_team bytes for HKDF share key derivation
     const _pageSize = Config.ui.paginationDefaultLimit;
@@ -117,10 +118,11 @@ const Files = (() => {
      */
     function renderFileBrowser(container, opts = {}) {
         _stopLive();
-        _isSharedView  = !!opts.shared;
-        _isTeamView    = !!opts.teamView;
-        _currentTeamId = null;
-        _currentTeamPK = null;
+        _isSharedView    = !!opts.shared;
+        _isTeamView      = !!opts.teamView;
+        _currentTeamId   = null;
+        _currentTeamName = null;
+        _currentTeamPK   = null;
         _currentTeamSKBytes = null;
         _clearContainer(container);
 
@@ -194,9 +196,10 @@ const Files = (() => {
 
     async function _loadRootFolders() {
         _currentFolderId = null;
-        _currentFolder = null;
-        _currentTeamId = null;
-        _currentTeamPK = null;
+        _currentFolder   = null;
+        _currentTeamId   = null;
+        _currentTeamName = null;
+        _currentTeamPK   = null;
         const listEl = document.getElementById('file-list');
         if (!listEl) return;
         // Show root breadcrumb
@@ -276,16 +279,19 @@ const Files = (() => {
             // Cache team context so uploads and moves can use it without an extra round-trip
             if (data.team_id && data.team_id !== _currentTeamId) {
                 _currentTeamId = data.team_id;
+                _currentTeamName = null;
                 _currentTeamPK = null;
                 _currentTeamSKBytes = null;
                 try {
                     const teamData = await Api.get(`${Config.app.apiPrefix}/teams/${data.team_id}`);
-                    _currentTeamPK = teamData.team?.pre_public_key || null;
+                    _currentTeamPK   = teamData.team?.pre_public_key || null;
+                    _currentTeamName = teamData.team?.name || null;
                 } catch { /* best-effort; uploads will fall back to no team key */ }
                 // Fetch and unwrap team SK for HKDF share key derivation (best-effort)
                 _fetchTeamSKBytes(data.team_id).then(sk => { _currentTeamSKBytes = sk; }).catch(() => {});
             } else if (!data.team_id) {
                 _currentTeamId = null;
+                _currentTeamName = null;
                 _currentTeamPK = null;
                 _currentTeamSKBytes = null;
             }
@@ -387,7 +393,11 @@ const Files = (() => {
                     ? `#/team-folders/${currentFolder.id}`
                     : `#/files/${currentFolder.id}`;
                 if (typeof App !== 'undefined' && App.pinCurrentFolder) {
-                    App.pinCurrentFolder(currentFolder.id, currentFolder.name, hash);
+                    const root = _isTeamView ? 'Team Folders' : 'My Files';
+                    const pathParts = [root, ...ancestors.map(a => a.name), currentFolder.name];
+                    const path = pathParts.join(' / ');
+                    App.pinCurrentFolder(currentFolder.id, currentFolder.name, hash,
+                        _currentTeamId, _currentTeamName, path);
                     Utils.showToast(`Added "${currentFolder.name}" to Favourites`, 'success');
                 }
             });
