@@ -441,10 +441,12 @@ const Admin = (() => {
         const toggle = Utils.el('button', {
             className: 'admin-section-toggle collapsed',
             textContent: title,
+            'aria-expanded': 'false',
             onClick: () => {
                 const open = body.style.display !== 'none';
                 body.style.display = open ? 'none' : '';
                 toggle.classList.toggle('collapsed', open);
+                toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
                 if (!open && !loaded) { loaded = true; renderFn(body); }
             },
         });
@@ -461,6 +463,7 @@ const Admin = (() => {
             if (body.style.display !== 'none') return;
             body.style.display = '';
             toggle.classList.remove('collapsed');
+            toggle.setAttribute('aria-expanded', 'true');
             if (!loaded) { loaded = true; renderFn(body); }
         }
 

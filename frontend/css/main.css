@@ -33,6 +33,12 @@ a {
 a:hover {
     color: var(--color-primary-hover);
 }
+a:focus-visible,
+button:focus-visible {
+    outline: 3px solid var(--color-primary);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
 
 /* === Layout === */
 #app {
@@ -43,6 +49,22 @@ a:hover {
     display: flex;
     flex-direction: column;
     height: 100%;
+}
+
+.skip-link {
+    position: absolute;
+    top: -100%;
+    left: 8px;
+    z-index: 9999;
+    padding: 8px 16px;
+    background: var(--color-primary);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    font-weight: 600;
+    text-decoration: none;
+}
+.skip-link:focus-visible {
+    top: 8px;
 }
 
 .app-header {
@@ -119,7 +141,7 @@ a:hover {
     max-width: 280px;
 }
 .global-search-input:focus-visible {
-    outline: 2px solid var(--color-primary);
+    outline: 3px solid var(--color-primary);
     outline-offset: 2px;
 }
 @media (max-width: 480px) {
@@ -318,7 +340,7 @@ a:hover {
 
 .toolbar-divider {
     width: 1px;
-    height: 20px;
+    height: var(--space-5);
     background: var(--color-border);
     flex-shrink: 0;
     margin: 0 var(--space-1);
@@ -762,8 +784,11 @@ a:hover {
 .form-group input:focus-visible,
 .form-group select:focus-visible,
 .form-group textarea:focus-visible {
-    outline: 2px solid var(--color-primary);
-    outline-offset: 1px;
+    outline: 3px solid var(--color-primary);
+    outline-offset: 2px;
+}
+input[type="number"]:out-of-range {
+    border-color: var(--color-warning, var(--color-danger));
 }
 
 /* === Auth form === */

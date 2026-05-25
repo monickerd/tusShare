@@ -226,6 +226,12 @@ const App = (() => {
         const hash = globalThis.location.hash || '#/login';
         const container = _appEl();
 
+        const _mcBusy = document.getElementById('main-content');
+        if (_mcBusy) {
+            _mcBusy.setAttribute('aria-busy', 'true');
+            setTimeout(() => _mcBusy.removeAttribute('aria-busy'), 100);
+        }
+
         Files.stopLive();
         _closeNotifBubble();
 
@@ -864,6 +870,8 @@ const App = (() => {
         if (_notifBubbleEl?.parentNode) _notifBubbleEl.remove();
         _notifBubbleEl = null;
         _notifBubbleOpen = false;
+        const _nb = document.querySelector('.header-notif-btn');
+        if (_nb) _nb.setAttribute('aria-expanded', 'false');
     }
 
     function _toggleNotifBubble() {
@@ -874,6 +882,8 @@ const App = (() => {
         _closeNotifBubble();
         _notifBubbleOpen = true;
         Utils.markAllRead();
+        const _nb = document.querySelector('.header-notif-btn');
+        if (_nb) _nb.setAttribute('aria-expanded', 'true');
 
         const panel = Utils.el('div', { className: 'notif-popup' });
 
@@ -1205,8 +1215,8 @@ const App = (() => {
 
             function _showChangePwForm() {
                 while (changePwBody.firstChild) changePwBody.firstChild.remove();
-                const newPwInput     = Utils.el('input', { type: 'password', autocomplete: 'new-password' });
-                const confirmPwInput = Utils.el('input', { type: 'password', autocomplete: 'new-password' });
+                const newPwInput     = Utils.el('input', { type: 'password', id: 'change-pw-new',     autocomplete: 'new-password' });
+                const confirmPwInput = Utils.el('input', { type: 'password', id: 'change-pw-confirm', autocomplete: 'new-password' });
                 const statusEl       = Utils.el('p', { className: 'text-muted-sm' });
                 const submitBtn      = Utils.el('button', {
                     className: 'btn btn-primary btn-sm', textContent: 'Change Password',
@@ -1218,10 +1228,10 @@ const App = (() => {
                 });
                 changePwBody.appendChild(Utils.el('div', { className: 'change-pw-form' }, [
                     Utils.el('div', { className: 'form-group' }, [
-                        Utils.el('label', { textContent: 'New password' }), newPwInput,
+                        Utils.el('label', { 'for': 'change-pw-new',     textContent: 'New password' }), newPwInput,
                     ]),
                     Utils.el('div', { className: 'form-group' }, [
-                        Utils.el('label', { textContent: 'Confirm new password' }), confirmPwInput,
+                        Utils.el('label', { 'for': 'change-pw-confirm', textContent: 'Confirm new password' }), confirmPwInput,
                     ]),
                     statusEl,
                     Utils.el('div', { className: 'btn-row-sm' }, [submitBtn, cancelBtn]),
@@ -1670,6 +1680,8 @@ const App = (() => {
             className: 'btn-icon header-notif-btn',
             title: 'Notifications',
             'aria-label': 'Notifications',
+            'aria-haspopup': 'true',
+            'aria-expanded': 'false',
             onClick: _toggleNotifBubble,
         }, [_buildNotifIcon(), unreadDot]);
         Utils.onUnreadChange(count => {
@@ -1783,6 +1795,7 @@ const App = (() => {
         bottomNav.appendChild(bnBackdrop);
 
         const shellChildren = [
+            Utils.el('a', { href: '#main-content', className: 'skip-link', textContent: 'Skip to main content' }),
             Utils.el('header', { className: 'app-header' }, [
                 Utils.el('div', { style: 'display:flex;align-items:center;gap:8px' }, [
                     sidebarToggle,

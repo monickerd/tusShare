@@ -160,11 +160,15 @@ const Wizard = (() => {
     function _setSaving(btn, label) {
         btn.disabled = true;
         btn.textContent = label;
+        btn.classList.add('btn-loading');
+        btn._savingTimeout = setTimeout(() => _clearSaving(btn, label), 30000);
     }
 
     function _clearSaving(btn, label) {
+        clearTimeout(btn._savingTimeout);
         btn.disabled = false;
         btn.textContent = label;
+        btn.classList.remove('btn-loading');
     }
 
     async function _postThemeAsset(endpoint, file) {

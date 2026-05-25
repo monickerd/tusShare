@@ -131,6 +131,8 @@ const Files = (() => {
             className: 'btn-upload-new',
             title: 'Upload or create',
             textContent: '+',
+            'aria-haspopup': 'true',
+            'aria-expanded': 'false',
             onClick: (e) => _toggleUploadMenu(e.currentTarget),
         });
         const main = Utils.el('main', { className: 'files-main' }, [
@@ -925,12 +927,13 @@ const Files = (() => {
             _uploadMenuOutsideListener = null;
         }
         const btn = document.getElementById('upload-new-btn');
-        if (btn) btn.classList.remove('active');
+        if (btn) { btn.classList.remove('active'); btn.setAttribute('aria-expanded', 'false'); }
     }
 
     function _toggleUploadMenu(btn) {
         if (_activeUploadMenu) { _closeUploadMenu(); return; }
         btn.classList.add('active');
+        btn.setAttribute('aria-expanded', 'true');
         const menu = Utils.el('div', { className: 'upload-new-menu' }, [
             Utils.el('button', { className: 'upload-new-item', textContent: 'Upload File',   onClick: () => { _closeUploadMenu(); _triggerUpload(); } }),
             Utils.el('button', { className: 'upload-new-item', textContent: 'Upload Folder', onClick: () => { _closeUploadMenu(); _triggerFolderUpload(); } }),

@@ -623,6 +623,7 @@ const Auth = (() => {
                     autocomplete: 'off', required: 'true',
                     style: 'font-family:var(--font-family-mono)',
                 }),
+                Utils.el('p', { className: 'text-muted-sm', textContent: 'Long hex string from your recovery key file, saved when your account was created.' }),
             ]),
             Utils.el('button', { type: 'submit', className: 'btn btn-primary btn-full', textContent: 'Unlock' }),
             Utils.el('div', { style: 'text-align:center;margin-top:12px' }, [
@@ -1110,7 +1111,7 @@ const Auth = (() => {
             renderRecoveryKeyDisplay(container, recoveryKeyString, '/#/admin');
 
         } catch (err) {
-            status.textContent = err.message;
+            status.textContent = err.message || 'Setup failed. Please check your entries and try again.';
             btn.disabled = false;
         }
     }
