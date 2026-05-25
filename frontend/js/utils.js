@@ -168,11 +168,11 @@ const Utils = (() => {
             const focusable = [...dialogEl.querySelectorAll(_FOCUSABLE_SEL)];
             if (!focusable.length) { e.preventDefault(); return; }
             const first = focusable[0];
-            const last  = focusable[focusable.length - 1];
+            const last  = focusable.at(-1);
             if (e.shiftKey) {
                 if (document.activeElement === first) { e.preventDefault(); last.focus(); }
-            } else {
-                if (document.activeElement === last)  { e.preventDefault(); first.focus(); }
+            } else if (document.activeElement === last) {
+                e.preventDefault(); first.focus();
             }
         };
         dialogEl.addEventListener('keydown', handler);

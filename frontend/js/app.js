@@ -769,7 +769,7 @@ const App = (() => {
                 globalThis.location.hash = '#/setup';
                 return;
             }
-        } catch { /* fall through */ }
+        } catch (e) { console.warn('Admin settings check failed, proceeding', e); }
         _renderShell(container);
         Admin.renderAdminPage(document.getElementById('main-content'));
     }
@@ -1028,11 +1028,11 @@ const App = (() => {
     }
 
     function _applyAppearance(theme, textSize) {
-        document.documentElement.setAttribute('data-theme', theme);
+        document.documentElement.dataset.theme = theme;
         if (textSize && textSize !== 'medium') {
-            document.documentElement.setAttribute('data-text-size', textSize);
+            document.documentElement.dataset.textSize = textSize;
         } else {
-            document.documentElement.removeAttribute('data-text-size');
+            delete document.documentElement.dataset.textSize;
         }
         try {
             localStorage.setItem('tus_theme', theme);
@@ -1045,8 +1045,8 @@ const App = (() => {
     }
 
     function _renderAcctAppearanceTab(container) {
-        const currentTheme    = document.documentElement.getAttribute('data-theme') || 'system';
-        const currentTextSize = document.documentElement.getAttribute('data-text-size') || 'medium';
+        const currentTheme    = document.documentElement.dataset.theme    || 'system';
+        const currentTextSize = document.documentElement.dataset.textSize || 'medium';
 
         const _row = (labelText, control) => Utils.el('div', { className: 'acct-appearance-row' }, [
             Utils.el('label', { className: 'acct-appearance-label', textContent: labelText }),
