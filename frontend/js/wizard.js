@@ -568,12 +568,6 @@ const Wizard = (() => {
             cb.addEventListener('change', () => {
                 _adv[key] = cb.checked;
                 _adv._modified = true;
-                // Switch dropdown to Custom
-                let customOpt = profileSel.querySelector('option[value="custom"]');
-                if (customOpt) { customOpt.disabled = false; }
-                profileSel.value = 'custom';
-                _state.profileSelected = 'custom';
-                _updateDesc();
             });
             _advInputs[key] = cb;
             const lbl = Utils.el('div');
@@ -588,7 +582,7 @@ const Wizard = (() => {
             advPanel.innerHTML = '';
             advPanel.appendChild(Utils.el('p', {
                 style: 'font-size:12px;color:var(--color-text-muted);margin-bottom:12px',
-                textContent: 'Editing any value sets the profile to "Custom". Selecting a named profile from the dropdown resets these values to that profile\'s defaults.',
+                textContent: 'These override the selected profile\'s defaults and are applied when you click "Apply & Continue". Selecting a different profile from the dropdown above resets these values to that profile\'s defaults.',
             }));
 
             const esc = Utils.el('div', { style: 'margin-bottom:14px' });
@@ -700,24 +694,20 @@ const Wizard = (() => {
                             confirmation_text: 'REPLACE',
                         });
                         await Api.put(`${_api()}/admin/settings`, { settings: { first_run_completed: '1' } });
-                    } else if (sel === 'custom') {
-                        // Use 'open' as the unlocked base, then patch escrow/sharing overrides
-                        await Api.post(`${_api()}/admin/settings/apply-profile`, {
-                            profile: 'open', mode: 'replace', confirm: true,
-                            confirmation_text: 'REPLACE', mark_first_run: false,
-                        });
-                        await Api.put(`${_api()}/admin/settings`, {
-                            settings: {
-                                first_run_completed:     '1',
-                                escrow_require_coverage: _adv.escrow_require_coverage ? '1' : '0',
-                                notify_escrow_on_revocation: _adv.notify_escrow_on_revocation ? '1' : '0',
-                            },
-                        });
                     } else {
+                        // Apply the selected named profile, then patch any Advanced overrides on top.
                         await Api.post(`${_api()}/admin/settings/apply-profile`, {
                             profile: sel, mode: 'replace', confirm: true,
                             confirmation_text: 'REPLACE', mark_first_run: true,
                         });
+                        if (_adv._modified) {
+                            await Api.put(`${_api()}/admin/settings`, {
+                                settings: {
+                                    escrow_require_coverage:     _adv.escrow_require_coverage     ? '1' : '0',
+                                    notify_escrow_on_revocation: _adv.notify_escrow_on_revocation ? '1' : '0',
+                                },
+                            });
+                        }
                     }
 
                     _state.advancedValues = { ..._adv };

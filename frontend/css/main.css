@@ -81,7 +81,7 @@ button:focus-visible {
 .header-brand {
     font-size: var(--font-size-xl);
     font-weight: 700;
-    letter-spacing: -0.5px;
+    letter-spacing: var(--letter-spacing-tight);
     color: var(--color-text);
 }
 .header-brand:hover {
@@ -202,7 +202,7 @@ button:focus-visible {
 .sidebar-nav {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gap-xs);
     padding: 0 var(--space-2);
     margin-bottom: var(--space-4);
 }
@@ -362,10 +362,10 @@ button:focus-visible {
     color: var(--color-text);
     border: none;
     cursor: pointer;
-    font-size: 22px;
+    font-size: var(--font-size-3xl);
     font-weight: 400;
     line-height: 1;
-    padding-bottom: 3px;
+    padding-bottom: var(--space-px-3);
     flex-shrink: 0;
     transition: background var(--transition-fast), color var(--transition-fast);
     user-select: none;
@@ -1005,7 +1005,7 @@ body[data-ui-admin-transparency-banner="false"] .admin-transparency-banner {
     list-style: none;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--gap-xs);
 }
 
 .team-folder-item {
@@ -1175,7 +1175,7 @@ input[type="checkbox"] {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
+    gap: var(--gap-xs);
     width: 100%;
     min-height: 56px;
     padding: var(--space-2) var(--space-1);

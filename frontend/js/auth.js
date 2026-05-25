@@ -1354,7 +1354,7 @@ const Auth = (() => {
         const { pending_token, methods, reset_required } = mfaData;
         while (container.firstChild) container.firstChild.remove();
 
-        const hasTotp    = methods.includes('totp');
+        const hasTotp     = methods.includes('totp');
         const hasWebAuthn = methods.includes('webauthn');
 
         // If reset_required with no methods, redirect to enrollment
@@ -1363,51 +1363,53 @@ const Auth = (() => {
             return;
         }
 
-        const children = [
-            Utils.el('h2', { textContent: 'Two-Factor Authentication' }),
-            Utils.el('p', { className: 'text-muted', textContent: 'Verify your identity to continue.' }),
-        ];
+        const statusEl = Utils.el('p', { id: 'mfa-status', className: 'auth-status' });
 
-        if (hasWebAuthn) {
-            children.push(Utils.el('button', {
-                type: 'button', className: 'btn btn-secondary btn-full', style: 'margin-bottom:12px',
-                textContent: 'Use Security Key / Biometrics',
-                onClick: async (ev) => {
-                    ev.target.disabled = true;
-                    const statusEl = document.getElementById('mfa-status');
-                    if (statusEl) statusEl.textContent = 'Waiting for security key…';
-                    try {
-                        const beginData = await Api.post(
-                            `${Config.app.apiPrefix}/auth/webauthn/authenticate/begin`,
-                            { pending_token },
-                        );
-                        const assertion = await navigator.credentials.get({
-                            publicKey: _webAuthnOptionsFromServer(beginData.options),
-                        });
-                        await Api.post(`${Config.app.apiPrefix}/auth/webauthn/authenticate/finish`, {
-                            pending_token,
-                            challenge_id: beginData.challenge_id,
-                            assertion: _serializeAssertion(assertion),
-                        });
-                        await _completeMfaSuccess(container, exportKey, username);
-                    } catch (err) {
-                        if (statusEl) statusEl.textContent = err.message || 'Security key verification failed.';
-                        ev.target.disabled = false;
-                    }
-                },
-            }));
-        }
+        // Build tab definitions — always include Recovery Code as a fallback tab
+        const tabDefs = [];
+        if (hasWebAuthn) tabDefs.push({ id: 'webauthn', label: 'Security Key' });
+        if (hasTotp)     tabDefs.push({ id: 'totp',     label: 'Authenticator' });
+        tabDefs.push({ id: 'recovery', label: 'Recovery Code' });
 
-        if (hasTotp) {
-            children.push(Utils.el('form', {
+        // --- Panel: WebAuthn ---
+        const webAuthnBtn = Utils.el('button', {
+            type: 'button', className: 'btn btn-secondary btn-full',
+            textContent: 'Use Security Key / Biometrics',
+            onClick: async (ev) => {
+                ev.target.disabled = true;
+                statusEl.textContent = 'Waiting for security key…';
+                try {
+                    const beginData = await Api.post(
+                        `${Config.app.apiPrefix}/auth/webauthn/authenticate/begin`,
+                        { pending_token },
+                    );
+                    const assertion = await navigator.credentials.get({
+                        publicKey: _webAuthnOptionsFromServer(beginData.options),
+                    });
+                    await Api.post(`${Config.app.apiPrefix}/auth/webauthn/authenticate/finish`, {
+                        pending_token,
+                        challenge_id: beginData.challenge_id,
+                        assertion: _serializeAssertion(assertion),
+                    });
+                    await _completeMfaSuccess(container, exportKey, username);
+                } catch (err) {
+                    statusEl.textContent = err.message || 'Security key verification failed.';
+                    ev.target.disabled = false;
+                }
+            },
+        });
+        const webAuthnPanel = Utils.el('div', { id: 'mfa-panel-webauthn', role: 'tabpanel', 'aria-labelledby': 'mfa-tab-webauthn' }, [webAuthnBtn]);
+
+        // --- Panel: TOTP ---
+        const totpPanel = Utils.el('div', { id: 'mfa-panel-totp', role: 'tabpanel', 'aria-labelledby': 'mfa-tab-totp' }, [
+            Utils.el('form', {
                 className: 'mfa-totp-form',
                 onSubmit: async (e) => {
                     e.preventDefault();
                     const code = document.getElementById('mfa-totp-code').value.trim();
-                    const statusEl = document.getElementById('mfa-status');
-                    const btn = e.target.querySelector('button[type="submit"]');
+                    const btn  = e.target.querySelector('button[type="submit"]');
                     btn.disabled = true;
-                    if (statusEl) statusEl.textContent = 'Verifying…';
+                    statusEl.textContent = 'Verifying…';
                     try {
                         await Api.post(`${Config.app.apiPrefix}/auth/totp/verify`, {
                             pending_token,
@@ -1415,7 +1417,7 @@ const Auth = (() => {
                         });
                         await _completeMfaSuccess(container, exportKey, username);
                     } catch (err) {
-                        if (statusEl) statusEl.textContent = err.message || 'Invalid code. Please try again.';
+                        statusEl.textContent = err.message || 'Invalid code. Please try again.';
                         btn.disabled = false;
                         document.getElementById('mfa-totp-code').value = '';
                         document.getElementById('mfa-totp-code').focus();
@@ -1432,28 +1434,104 @@ const Auth = (() => {
                         style: 'font-family:var(--font-family-mono);letter-spacing:0.2em;font-size:1.3em',
                     }),
                 ]),
-                Utils.el('button', {
-                    type: 'submit', className: 'btn btn-primary btn-full',
-                    textContent: 'Verify Code',
-                }),
-            ]));
+                Utils.el('button', { type: 'submit', className: 'btn btn-primary btn-full', textContent: 'Verify Code' }),
+            ]),
+        ]);
+
+        // --- Panel: Recovery Code ---
+        const recoveryPanel = Utils.el('div', { id: 'mfa-panel-recovery', role: 'tabpanel', 'aria-labelledby': 'mfa-tab-recovery' }, [
+            Utils.el('form', {
+                onSubmit: async (e) => {
+                    e.preventDefault();
+                    const code = document.getElementById('mfa-recovery-code').value.trim().toUpperCase();
+                    const btn  = e.target.querySelector('button[type="submit"]');
+                    btn.disabled = true;
+                    statusEl.textContent = 'Verifying…';
+                    try {
+                        await Api.post(`${Config.app.apiPrefix}/auth/mfa/verify-recovery`, {
+                            pending_token,
+                            recovery_code: code,
+                        });
+                        await _completeMfaSuccess(container, exportKey, username);
+                    } catch (err) {
+                        statusEl.textContent = err.message || 'Invalid recovery code.';
+                        btn.disabled = false;
+                    }
+                },
+            }, [
+                Utils.el('div', { className: 'form-group' }, [
+                    Utils.el('label', { for: 'mfa-recovery-code', textContent: 'Recovery Code' }),
+                    Utils.el('input', {
+                        type: 'text', id: 'mfa-recovery-code', name: 'recovery_code',
+                        autocomplete: 'off', required: 'true',
+                        style: 'font-family:var(--font-family-mono)',
+                        placeholder: 'XXXXXXXXXXXXXXXXXXXXXXXX',
+                    }),
+                ]),
+                Utils.el('button', { type: 'submit', className: 'btn btn-primary btn-full', textContent: 'Verify' }),
+            ]),
+        ]);
+
+        const panels = { webauthn: webAuthnPanel, totp: totpPanel, recovery: recoveryPanel };
+
+        // Tab buttons
+        let activeTab = tabDefs[0].id;
+        const tabBtns = {};
+
+        function _switchTab(id) {
+            activeTab = id;
+            for (const { id: tid } of tabDefs) {
+                const isActive = tid === id;
+                tabBtns[tid].classList.toggle('active', isActive);
+                tabBtns[tid].setAttribute('aria-selected', String(isActive));
+                if (panels[tid]) panels[tid].hidden = !isActive;
+            }
+            statusEl.textContent = '';
+            // Auto-trigger WebAuthn on tab switch (same as before)
+            if (id === 'webauthn') webAuthnBtn.click();
         }
 
-        children.push(
-            Utils.el('div', { style: 'text-align:center;margin-top:12px' }, [
-                Utils.el('a', {
-                    href: '#', className: 'text-muted',
-                    textContent: 'Use a recovery code instead',
-                    onClick: (ev) => {
-                        ev.preventDefault();
-                        _renderRecoveryChallenge(container, pending_token, exportKey, username);
-                    },
-                }),
-            ]),
-            Utils.el('p', { id: 'mfa-status', className: 'auth-status' }),
-        );
+        const tabBar = Utils.el('div', { className: 'tabs mfa-tabs', role: 'tablist' });
+        for (const { id, label } of tabDefs) {
+            const btn = Utils.el('button', {
+                type: 'button',
+                className: 'tab' + (id === activeTab ? ' active' : ''),
+                role: 'tab',
+                id: `mfa-tab-${id}`,
+                'aria-selected': String(id === activeTab),
+                'aria-controls': `mfa-panel-${id}`,
+                textContent: label,
+                onClick: () => _switchTab(id),
+            });
+            tabBtns[id] = btn;
+            tabBar.appendChild(btn);
+        }
 
-        container.appendChild(Utils.el('div', { className: 'auth-form' }, children));
+        // Keyboard nav: arrow keys cycle tabs
+        tabBar.addEventListener('keydown', (e) => {
+            if (!['ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+            const ids  = tabDefs.map(t => t.id);
+            const idx  = ids.indexOf(activeTab);
+            const next = e.key === 'ArrowRight' ? (idx + 1) % ids.length : (idx - 1 + ids.length) % ids.length;
+            tabBtns[ids[next]].focus();
+            _switchTab(ids[next]);
+        });
+
+        // Hide panels not for available methods (only keep defined panels)
+        const panelChildren = tabDefs.map(({ id }) => panels[id]);
+        // All panels except first start hidden
+        panelChildren.slice(1).forEach(p => { p.hidden = true; });
+
+        container.appendChild(Utils.el('div', { className: 'auth-form' }, [
+            Utils.el('h2', { textContent: 'Two-Factor Authentication' }),
+            Utils.el('p', { className: 'text-muted', textContent: 'Verify your identity to continue.' }),
+            tabBar,
+            ...panelChildren,
+            statusEl,
+        ]));
+
+        // Auto-trigger WebAuthn if it's the default tab (avoids extra click)
+        if (activeTab === 'webauthn') webAuthnBtn.click();
     }
 
     function _renderRecoveryChallenge(container, pending_token, exportKey, username) {

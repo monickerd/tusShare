@@ -18,8 +18,11 @@
     --font-size-2xl:        20px;
     --font-size-3xl:        22px;
     --line-height-base:     1.5;
+    --letter-spacing-tight: -0.5px;
 
     /* --- Spacing scale --- */
+    --space-px-3:           3px;   /* sub-pixel nudge for icon alignment */
+    --gap-xs:               2px;   /* hairline gap between tightly-packed items */
     --space-1:              4px;
     --space-2:              8px;
     --space-3:              12px;
