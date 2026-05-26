@@ -231,6 +231,8 @@ const App = (() => {
 
         Files.stopLive();
         _closeNotifBubble();
+        const _sb = document.querySelector('.sidebar');
+        if (_sb) _sb.classList.remove('open');
 
         // Update browser tab title on each navigation.
         const _titleMap = [
@@ -377,6 +379,7 @@ const App = (() => {
     function _routePinned(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
+        while (main.firstChild) main.firstChild.remove();
         const page = Utils.el('div', { className: 'page-content' });
         main.appendChild(page);
         _renderPinnedPage(page);
@@ -730,10 +733,10 @@ const App = (() => {
         Files.renderFileBrowser(document.getElementById('main-content'), { teamView: true, initialFolderId: folderId });
     }
 
-    function _routeTeamFolders(container) {
+    async function _routeTeamFolders(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
-        Teams.renderTeamFoldersPage(main);
+        await Teams.renderTeamFoldersPage(main);
         _injectRecentActivity(main);
     }
 

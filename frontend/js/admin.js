@@ -2511,11 +2511,12 @@ const Admin = (() => {
             scopeIdWrap.style.display = scopeTypeEl.value === 'team' ? '' : 'none';
         });
         // Escrow toggle
-        const escrowEl = Utils.el('input', { type: 'checkbox' });
+        const escrowEl = Utils.el('input', { type: 'checkbox', id: 'new-policy-escrow' });
         const escrowRow = Utils.el('div', { className: 'policy-strict-row' }, [
             escrowEl,
-            Utils.el('label', { textContent: ' Enable key escrow (escrow agents receive sk_team for all covered teams)' }),
+            Utils.el('label', { htmlFor: 'new-policy-escrow', textContent: 'Enable key escrow' }),
         ]);
+        const escrowHint = Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-xs);margin:0 0 var(--space-2)', textContent: 'When enabled, designated escrow agents receive a copy of the team encryption key for all teams covered by this policy, allowing emergency access.' });
         const errorEl = Utils.el('p', { className: 'text-error', style: 'display:none' });
 
         const createBtn = Utils.el('button', {
@@ -2548,6 +2549,7 @@ const Admin = (() => {
             Utils.el('label', { textContent: 'Scope' }), scopeTypeEl,
             scopeIdWrap,
             escrowRow,
+            escrowHint,
             errorEl,
             Utils.el('div', { className: 'modal-actions' }, [
                 createBtn,
@@ -2933,7 +2935,7 @@ const Admin = (() => {
 
     function _renderIdpList(container, providers) {
         container.innerHTML = '';
-        const wrap = Utils.el('div', { style: 'padding:16px' });
+        const wrap = Utils.el('div');
         container.appendChild(wrap);
 
         wrap.appendChild(Utils.el('button', {
@@ -2967,7 +2969,7 @@ const Admin = (() => {
 
     function _buildIdpRow(prov, container) {
         const statusBadge = Utils.el('span', {
-            className: prov.is_active ? 'badge badge-success' : 'badge badge-neutral',
+            className: prov.is_active ? 'badge badge-active' : 'badge badge-custom',
             textContent: prov.is_active ? 'Active' : 'Inactive',
         });
         const actions = Utils.el('div', { className: 'row-actions' }, [
@@ -3341,7 +3343,7 @@ const Admin = (() => {
 
     function _renderAudit(container, events, destinations, settings, filterProfiles) {
         container.innerHTML = '';
-        const wrap = Utils.el('div', { style: 'padding:16px' });
+        const wrap = Utils.el('div');
         container.appendChild(wrap);
 
         // --- Retention setting ---
@@ -3772,9 +3774,9 @@ const Admin = (() => {
                     });
                     typeLink._auditEv = ev;
                     typeLink.addEventListener('click', _onAuditTypeLinkClick);
-                    let sevClass = 'badge-neutral';
-                    if (ev.severity === 'critical') sevClass = 'badge-error';
-                    else if (ev.severity === 'warning') sevClass = 'badge-warning';
+                    let sevClass = 'badge-custom';
+                    if (ev.severity === 'critical') sevClass = 'badge-expired';
+                    else if (ev.severity === 'warning') sevClass = 'badge-team';
                     tbody.appendChild(Utils.el('tr', {}, [
                         Utils.el('td', { textContent: ev.timestamp ? ev.timestamp.replace('T', ' ').slice(0, 19) : '' }),
                         Utils.el('td', {}, [typeLink]),
@@ -4030,9 +4032,9 @@ const Admin = (() => {
 
     function _buildAuditRow(ev) {
         let sevClass;
-        if (ev.severity === 'critical') sevClass = 'badge-error';
-        else if (ev.severity === 'warning') sevClass = 'badge-warning';
-        else sevClass = 'badge-neutral';
+        if (ev.severity === 'critical') sevClass = 'badge-expired';
+        else if (ev.severity === 'warning') sevClass = 'badge-team';
+        else sevClass = 'badge-custom';
 
         const displayName = ev.actor_username || ev.actor_user_id || '';
         let actorCell;
@@ -4108,7 +4110,7 @@ const Admin = (() => {
 
     function _buildSiemRow(dest, container, filterProfiles) {
         const activeBadge = Utils.el('span', {
-            className: dest.is_active ? 'badge badge-success' : 'badge badge-neutral',
+            className: dest.is_active ? 'badge badge-active' : 'badge badge-custom',
             textContent: dest.is_active ? 'Active' : 'Inactive',
         });
         const hostOrUrl = dest.type === 'syslog'
@@ -4369,7 +4371,7 @@ const Admin = (() => {
 
     function _renderStoragePanel(container, volumes, usage, tiers) {
         container.innerHTML = '';
-        const wrap = Utils.el('div', { style: 'padding:16px' });
+        const wrap = Utils.el('div');
         container.appendChild(wrap);
 
         // Usage summary bar
@@ -4526,7 +4528,7 @@ const Admin = (() => {
             usageText = `${_fmtBytes(volUsage.used_bytes)} / ${volUsage.total_bytes ? _fmtBytes(volUsage.total_bytes) : '∞'}`;
         }
         const usageWarning = volUsage?.warning
-            ? Utils.el('span', { className: 'badge badge-warning', style: 'margin-left:6px', title: volUsage.warning, textContent: '⚠ ' + volUsage.warning })
+            ? Utils.el('span', { className: 'badge badge-team', style: 'margin-left:6px', title: volUsage.warning, textContent: '⚠ ' + volUsage.warning })
             : null;
 
         const actions = Utils.el('div', { className: 'row-actions' }, [
@@ -4590,7 +4592,7 @@ const Admin = (() => {
                 usageWarning,
             ].filter(Boolean)),
             Utils.el('td', {}, [
-                vol.is_default ? Utils.el('span', { className: 'badge badge-success', textContent: 'Default' }) : Utils.el('span'),
+                vol.is_default ? Utils.el('span', { className: 'badge badge-active', textContent: 'Default' }) : Utils.el('span'),
             ]),
             Utils.el('td', {}, [actions]),
         ]);
@@ -4818,7 +4820,7 @@ const Admin = (() => {
           <td class="td-url">${Utils.escHtml(ch.endpoint_url)}</td>
           <td class="text-sm">${Utils.escHtml(filterStr)}</td>
           <td class="text-sm">${Utils.escHtml(String(batchStr))}</td>
-          <td><span class="${ch.enabled ? 'badge-success' : 'badge-muted'}">${ch.enabled ? 'enabled' : 'disabled'}</span></td>
+          <td><span class="badge ${ch.enabled ? 'badge-active' : 'badge-custom'}">${ch.enabled ? 'enabled' : 'disabled'}</span></td>
           <td></td>
         `;
         const actionsTd = tr.cells[5];
@@ -4853,10 +4855,10 @@ const Admin = (() => {
 
     function _renderNotificationsPanel(container, channels, settings) {
         container.innerHTML = '';
-        const wrap = Utils.el('div', { style: 'padding:16px' });
+        const wrap = Utils.el('div');
 
         // --- Settings card ---
-        const settingsCard = Utils.el('div', { className: 'card', style: 'margin-bottom:16px' });
+        const settingsCard = Utils.el('div', { className: 'policy-subsection' });
         settingsCard.appendChild(Utils.el('h3', { textContent: 'Notification Settings', style: 'margin-top:0' }));
 
         const fields = [
@@ -5119,7 +5121,7 @@ const Admin = (() => {
 
     function _renderApiKeysPanel(container, keys) {
         container.innerHTML = '';
-        const wrap = Utils.el('div', { style: 'padding:16px' });
+        const wrap = Utils.el('div');
 
         const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px' });
         header.appendChild(Utils.el('h3', { textContent: 'API Keys', style: 'margin:0' }));
@@ -5253,26 +5255,16 @@ const Admin = (() => {
     async function _renderAntivirusSection(container) {
         container.innerHTML = '';
 
-        // --- Always-visible OS AV documentation card ---
-        const infoCard = Utils.el('div', { className: 'card mb-3' });
-        infoCard.innerHTML = `
-            <div class="card-body">
-                <h5 class="card-title">How antivirus scanning works</h5>
-                <p><strong>Client-side (always active):</strong> All files are decrypted by the
-                client's browser at download time. The decrypted file is saved to the browser's
-                download folder via the standard browser download mechanism, where OS real-time AV
-                will scan it automatically. No additional configuration needed.</p>
-                <p><strong>OPFS partial-download window:</strong> During an interrupted or in-progress
-                download, incomplete encrypted chunks exist in OPFS (origin-private storage, sandboxed,
-                invisible to OS AV). These chunks are partial and not independently usable as malware.
-                OS AV fires on the final write when the download completes or resumes. Recommend
-                real-time AV with filesystem monitoring on endpoints.</p>
-                <p><strong>Server-side scanning (optional):</strong> When
-                <code>TUSSHARE_ESCROW_PRIVATE_KEY</code> is configured, files uploaded after that
-                point can be decrypted and scanned server-side via a configurable AV webhook.
-                The server sends plaintext to your AV endpoint; the webhook returns a verdict.</p>
-            </div>
-        `;
+        // --- Always-visible OS AV documentation ---
+        const infoCard = Utils.el('div', { className: 'policy-subsection' });
+        infoCard.appendChild(Utils.el('h4', { textContent: 'How antivirus scanning works', style: 'margin-top:0' }));
+        const _avP1 = Utils.el('p');
+        _avP1.innerHTML = '<strong>Client-side (always active):</strong> All files are decrypted by the client\'s browser at download time. The decrypted file is saved to the browser\'s download folder via the standard browser download mechanism, where OS real-time AV will scan it automatically. No additional configuration needed.';
+        const _avP2 = Utils.el('p');
+        _avP2.innerHTML = '<strong>OPFS partial-download window:</strong> During an interrupted or in-progress download, incomplete encrypted chunks exist in OPFS (origin-private storage, sandboxed, invisible to OS AV). These chunks are partial and not independently usable as malware. OS AV fires on the final write when the download completes or resumes. Recommend real-time AV with filesystem monitoring on endpoints.';
+        const _avP3 = Utils.el('p');
+        _avP3.innerHTML = '<strong>Server-side scanning (optional):</strong> When <code>TUSSHARE_ESCROW_PRIVATE_KEY</code> is configured, files uploaded after that point can be decrypted and scanned server-side via a configurable AV webhook. The server sends plaintext to your AV endpoint; the webhook returns a verdict.';
+        infoCard.append(_avP1, _avP2, _avP3);
         container.appendChild(infoCard);
 
         // Check if escrow is configured (server exposes escrow public key endpoint)
@@ -5295,52 +5287,57 @@ const Admin = (() => {
         const settingsData = await Api.get(`${Config.app.apiPrefix}/admin/settings`);
         const s = settingsData.settings || {};
 
-        const form = Utils.el('div', { className: 'card mb-3' });
-        form.innerHTML = '<div class="card-body"><h5 class="card-title">Server-side AV webhook</h5></div>';
-        const body = form.querySelector('.card-body');
+        const _mkAvLabel = (text) => Utils.el('label', {
+            textContent: text,
+            style: 'display:block;font-size:var(--font-size-sm);font-weight:600;margin-bottom:var(--space-1)',
+        });
+
+        const form = Utils.el('div', { className: 'policy-subsection' });
+        form.appendChild(Utils.el('h4', { textContent: 'Server-side AV webhook', style: 'margin-top:0' }));
 
         // Endpoint
-        body.appendChild(Utils.el('label', { textContent: 'Webhook endpoint URL', className: 'form-label' }));
+        form.appendChild(_mkAvLabel('Webhook endpoint URL'));
         const endpointInput = Utils.el('input', {
-            type: 'text', className: 'form-control mb-2',
+            type: 'text',
             placeholder: 'https://av.example.com/scan',
             value: s.av_scan_endpoint || '',
+            style: 'width:100%;max-width:420px;margin-bottom:var(--space-3)',
         });
-        body.appendChild(endpointInput);
+        form.appendChild(endpointInput);
 
         // Secret
-        body.appendChild(Utils.el('label', { textContent: 'Webhook secret (HMAC-SHA256)', className: 'form-label' }));
+        form.appendChild(_mkAvLabel('Webhook secret (HMAC-SHA256)'));
         const secretInput = Utils.el('input', {
-            type: 'password', className: 'form-control mb-2',
+            type: 'password',
             placeholder: 'Signing secret (leave blank to keep current)',
             value: '',
+            style: 'width:100%;max-width:420px;margin-bottom:var(--space-3)',
         });
-        body.appendChild(secretInput);
+        form.appendChild(secretInput);
 
         // require_clean toggle
-        const requireRow = Utils.el('div', { className: 'form-check mb-2' });
-        const requireCheck = Utils.el('input', {
-            type: 'checkbox', className: 'form-check-input', id: 'av-require-clean',
-        });
+        const requireCheck = Utils.el('input', { type: 'checkbox', id: 'av-require-clean' });
         requireCheck.checked = s.av_require_clean === 'true';
-        requireRow.appendChild(requireCheck);
-        requireRow.appendChild(Utils.el('label', {
-            htmlFor: 'av-require-clean', className: 'form-check-label',
-            textContent: 'Block download and batch-move for files not yet confirmed clean (av_require_clean)',
-        }));
-        body.appendChild(requireRow);
+        form.appendChild(Utils.el('div', { className: 'policy-strict-row', style: 'margin-bottom:var(--space-3)' }, [
+            requireCheck,
+            Utils.el('label', {
+                htmlFor: 'av-require-clean',
+                textContent: 'Block download and batch-move for files not yet confirmed clean (av_require_clean)',
+            }),
+        ]));
 
         // Retry attempts
-        body.appendChild(Utils.el('label', { textContent: 'Retry attempts on webhook failure', className: 'form-label' }));
+        form.appendChild(_mkAvLabel('Retry attempts on webhook failure'));
         const retryInput = Utils.el('input', {
-            type: 'number', className: 'form-control mb-3',
+            type: 'number',
             min: '1', max: '10',
             value: s.av_scan_retry_attempts || '3',
+            style: 'width:80px;margin-bottom:var(--space-3)',
         });
-        body.appendChild(retryInput);
+        form.appendChild(retryInput);
 
         // Save button
-        const saveBtn = Utils.el('button', { textContent: 'Save AV Settings', className: 'btn btn-primary btn-sm me-2' });
+        const saveBtn = Utils.el('button', { textContent: 'Save AV Settings', className: 'btn btn-primary btn-sm' });
         saveBtn.addEventListener('click', async () => {
             const update = {
                 av_scan_endpoint:       endpointInput.value.trim(),
@@ -5361,20 +5358,18 @@ const Admin = (() => {
                 saveBtn.disabled = false;
             }
         });
-        body.appendChild(saveBtn);
+        form.appendChild(saveBtn);
         container.appendChild(form);
 
         // --- File status summary ---
-        const statusCard = Utils.el('div', { className: 'card mb-3' });
-        const statusBody = Utils.el('div', { className: 'card-body' });
-        statusCard.appendChild(statusBody);
+        const statusCard = Utils.el('div', { className: 'policy-subsection' });
 
         async function _refreshStatus() {
-            statusBody.innerHTML = '<h5 class="card-title">File AV status</h5><p class="text-muted">Loading…</p>';
+            statusCard.innerHTML = '<h4 style="margin-top:0">File AV status</h4><p class="text-muted">Loading…</p>';
             try {
                 const counts = await Api.get(`${Config.app.apiPrefix}/admin/files/av-status`);
-                statusBody.innerHTML = '<h5 class="card-title">File AV status</h5>';
-                const table = Utils.el('table', { className: 'table table-sm table-bordered' });
+                statusCard.innerHTML = '<h4 style="margin-top:0">File AV status</h4>';
+                const table = Utils.el('table', { className: 'admin-table', style: 'width:100%;margin-bottom:var(--space-3)' });
                 const thead = Utils.el('thead');
                 thead.innerHTML = '<tr><th>Status</th><th>Count</th></tr>';
                 const tbody = Utils.el('tbody');
@@ -5385,7 +5380,7 @@ const Admin = (() => {
                 }
                 table.appendChild(thead);
                 table.appendChild(tbody);
-                statusBody.appendChild(table);
+                statusCard.appendChild(table);
 
                 const rescanBtn = Utils.el('button', {
                     textContent: 'Bulk rescan (null + error files)',
@@ -5403,13 +5398,10 @@ const Admin = (() => {
                         rescanBtn.disabled = false;
                     }
                 });
-                statusBody.appendChild(rescanBtn);
+                statusCard.appendChild(rescanBtn);
             } catch (err) {
-                statusBody.innerHTML = '';
-            statusBody.appendChild(Utils.el('h5', { className: 'card-title', textContent: 'File AV status' }));
-            const _avErrP = Utils.el('p', { className: 'text-danger' });
-            _avErrP.textContent = err.message;
-            statusBody.appendChild(_avErrP);
+                statusCard.innerHTML = '<h4 style="margin-top:0">File AV status</h4>';
+                statusCard.appendChild(Utils.el('p', { className: 'text-error', textContent: err.message }));
             }
         }
 
@@ -5421,108 +5413,217 @@ const Admin = (() => {
     // Escrow by Default
     // -----------------------------------------------------------------------
 
+    function _buildEscrowPickerTable(items, onRemove) {
+        if (!items.length) {
+            return Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-xs);margin:var(--space-2) 0 0', textContent: 'None configured.' });
+        }
+        const table = Utils.el('table', { className: 'admin-table admin-table-sm', style: 'margin-top:var(--space-2)' });
+        const tbody = Utils.el('tbody');
+        for (const item of items) {
+            const tr = Utils.el('tr');
+            tr.appendChild(Utils.el('td', { textContent: item.label }));
+            tr.appendChild(Utils.el('td', { style: 'width:1px;white-space:nowrap' }, [
+                Utils.el('button', {
+                    className: 'btn btn-xs btn-danger',
+                    textContent: 'Remove',
+                    onClick: () => { onRemove(item.id); tr.remove(); },
+                }),
+            ]));
+            tbody.appendChild(tr);
+        }
+        table.appendChild(tbody);
+        return table;
+    }
+
     async function _renderEscrowSection(container) {
         container.innerHTML = '';
-
-        // --- Org-level settings card ---
-        const settingsCard = Utils.el('div', { className: 'card mb-3' });
-        settingsCard.innerHTML = '<div class="card-body"><h5 class="card-title">Org-Level Escrow Defaults</h5></div>';
-        const sb = settingsCard.querySelector('.card-body');
-        container.appendChild(settingsCard);
 
         let esData;
         try {
             esData = await Api.get(`${Config.app.apiPrefix}/admin/escrow/settings`);
         } catch (err) {
-            sb.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Failed to load escrow settings: ' + err.message }));
-            _renderEscrowFolderPolicies(container);
-            _renderEscrowCoverageReport(container);
+            container.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load escrow settings: ' + err.message }));
+            await _renderEscrowFolderPolicies(container);
+            await _renderEscrowCoverageReport(container);
             return;
         }
 
-        // require_coverage toggle
-        const reqRow = Utils.el('div', { className: 'form-check mb-3' });
-        const reqCheck = Utils.el('input', { type: 'checkbox', className: 'form-check-input', id: 'escrow-require-coverage' });
-        reqCheck.checked = !!esData.escrow_require_coverage;
-        reqRow.appendChild(reqCheck);
-        reqRow.appendChild(Utils.el('label', {
-            htmlFor: 'escrow-require-coverage', className: 'form-check-label',
-            textContent: 'Require escrow coverage — block team creation when no escrow agents are resolved',
-        }));
-        sb.appendChild(reqRow);
+        // --- Org-Level Escrow Defaults ---
+        const settingsSec = Utils.el('div', { className: 'policy-subsection' });
+        settingsSec.appendChild(Utils.el('div', { className: 'policy-sub-header' }, [
+            Utils.el('h4', { textContent: 'Org-Level Escrow Defaults' }),
+        ]));
 
-        // Lock status badge
+        // Require coverage toggle
+        const reqCheck = Utils.el('input', { type: 'checkbox', id: 'escrow-require-coverage' });
+        reqCheck.checked = !!esData.escrow_require_coverage;
+        settingsSec.appendChild(Utils.el('div', { className: 'policy-strict-row', style: 'margin-bottom:var(--space-4)' }, [
+            reqCheck,
+            Utils.el('label', { htmlFor: 'escrow-require-coverage', textContent: 'Require escrow coverage — block team creation when no escrow agents are resolved' }),
+        ]));
+
         if (esData.is_locked) {
-            const badge = Utils.el('span', {
-                className: 'badge bg-warning text-dark mb-2',
-                textContent: `Locked (min tier ${esData.locked_min_tier})`,
-            });
-            sb.appendChild(badge);
+            settingsSec.appendChild(Utils.el('p', {
+                className: 'text-muted',
+                style: 'font-size:var(--font-size-xs);margin-bottom:var(--space-3)',
+                textContent: `Settings locked (requires tier ${esData.locked_min_tier} or higher to change).`,
+            }));
         }
 
-        // Default role IDs
-        sb.appendChild(Utils.el('label', { className: 'form-label mt-2', textContent: 'Default escrow role IDs (one per line)' }));
-        const roleIdsInput = Utils.el('textarea', {
-            className: 'form-control mb-2', rows: 3,
-            value: (esData.escrow_default_role_ids || []).join('\n'),
+        // --- Default Escrow Roles ---
+        const roleItems = (esData.escrow_default_role_ids || []).map(id => ({ id, label: id }));
+        const rolesSec = Utils.el('div', { style: 'margin-bottom:var(--space-5)' });
+        rolesSec.appendChild(Utils.el('p', { style: 'font-weight:600;font-size:var(--font-size-sm);margin-bottom:var(--space-2)', textContent: 'Default Escrow Roles' }));
+        rolesSec.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-xs);margin-bottom:var(--space-2)', textContent: 'Roles whose members automatically act as escrow agents for all teams.' }));
+        let rolesTableWrap = Utils.el('div');
+        rolesTableWrap.appendChild(_buildEscrowPickerTable(roleItems, id => {
+            const i = roleItems.findIndex(r => r.id === id);
+            if (i !== -1) roleItems.splice(i, 1);
+        }));
+        const addRoleBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: '+ Add Role',
+            style: 'margin-top:var(--space-2)',
+            onClick: async () => {
+                let roles;
+                try {
+                    const rd = await Api.get(`${_api()}/admin/roles`);
+                    roles = rd.roles || [];
+                } catch (err) {
+                    Utils.showToast('Failed to load roles: ' + err.message, 'error'); return;
+                }
+                const available = roles.filter(r => !roleItems.find(ri => ri.id === r.id));
+                if (!available.length) { Utils.showToast('All roles are already added.', 'info'); return; }
+                const modalBody = Utils.el('div', { style: 'min-width:320px' });
+                const tbl = Utils.el('table', { className: 'admin-table' });
+                const tbody = Utils.el('tbody');
+                for (const r of available) {
+                    const tr = Utils.el('tr', { style: 'cursor:pointer' });
+                    tr.appendChild(Utils.el('td', { textContent: r.name || r.id }));
+                    tr.appendChild(Utils.el('td', { className: 'text-muted', style: 'font-size:var(--font-size-xs)', textContent: r.description || '' }));
+                    tr.addEventListener('click', () => {
+                        roleItems.push({ id: r.id, label: r.name || r.id });
+                        rolesTableWrap.innerHTML = '';
+                        rolesTableWrap.appendChild(_buildEscrowPickerTable(roleItems, id => {
+                            const i = roleItems.findIndex(ri => ri.id === id);
+                            if (i !== -1) roleItems.splice(i, 1);
+                        }));
+                        Utils.closeModal();
+                    });
+                    tbody.appendChild(tr);
+                }
+                tbl.appendChild(tbody);
+                modalBody.appendChild(tbl);
+                Utils.showModal('Select Role', modalBody);
+            },
         });
-        sb.appendChild(roleIdsInput);
+        rolesSec.appendChild(rolesTableWrap);
+        rolesSec.appendChild(addRoleBtn);
+        settingsSec.appendChild(rolesSec);
 
-        // Default user IDs
-        sb.appendChild(Utils.el('label', { className: 'form-label', textContent: 'Default escrow user IDs (one per line)' }));
-        const userIdsInput = Utils.el('textarea', {
-            className: 'form-control mb-2', rows: 3,
-            value: (esData.escrow_default_user_ids || []).join('\n'),
+        // --- Default Escrow Users ---
+        const userItems = (esData.escrow_default_user_ids || []).map(id => ({ id, label: id }));
+        const usersSec = Utils.el('div', { style: 'margin-bottom:var(--space-5)' });
+        usersSec.appendChild(Utils.el('p', { style: 'font-weight:600;font-size:var(--font-size-sm);margin-bottom:var(--space-2)', textContent: 'Default Escrow Users' }));
+        usersSec.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-xs);margin-bottom:var(--space-2)', textContent: 'Specific users who automatically act as escrow agents for all teams.' }));
+        let usersTableWrap = Utils.el('div');
+        usersTableWrap.appendChild(_buildEscrowPickerTable(userItems, id => {
+            const i = userItems.findIndex(u => u.id === id);
+            if (i !== -1) userItems.splice(i, 1);
+        }));
+        const addUserBtn = Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: '+ Add User',
+            style: 'margin-top:var(--space-2)',
+            onClick: async () => {
+                let users;
+                try {
+                    const ud = await Api.get(`${_api()}/admin/users?limit=200`);
+                    users = ud.users || [];
+                } catch (err) {
+                    Utils.showToast('Failed to load users: ' + err.message, 'error'); return;
+                }
+                const available = users.filter(u => !userItems.find(ui => ui.id === u.id));
+                const modalBody = Utils.el('div', { style: 'min-width:320px' });
+                const searchIn = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Search users…', style: 'width:100%;margin-bottom:var(--space-3)' });
+                const tbl = Utils.el('table', { className: 'admin-table' });
+                const tbody = Utils.el('tbody');
+                function _populateUserRows(filter) {
+                    tbody.innerHTML = '';
+                    const filtered = filter ? available.filter(u => u.username.toLowerCase().includes(filter)) : available;
+                    for (const u of filtered) {
+                        const tr = Utils.el('tr', { style: 'cursor:pointer' });
+                        tr.appendChild(Utils.el('td', { textContent: u.username }));
+                        tr.addEventListener('click', () => {
+                            userItems.push({ id: u.id, label: u.username });
+                            usersTableWrap.innerHTML = '';
+                            usersTableWrap.appendChild(_buildEscrowPickerTable(userItems, id => {
+                                const i = userItems.findIndex(ui => ui.id === id);
+                                if (i !== -1) userItems.splice(i, 1);
+                            }));
+                            Utils.closeModal();
+                        });
+                        tbody.appendChild(tr);
+                    }
+                    if (!filtered.length) tbody.appendChild(Utils.el('tr', {}, [Utils.el('td', { className: 'text-muted', textContent: 'No users found.' })]));
+                }
+                searchIn.addEventListener('input', () => _populateUserRows(searchIn.value.toLowerCase()));
+                _populateUserRows('');
+                tbl.appendChild(tbody);
+                modalBody.appendChild(searchIn);
+                modalBody.appendChild(tbl);
+                Utils.showModal('Select User', modalBody);
+            },
         });
-        sb.appendChild(userIdsInput);
+        usersSec.appendChild(usersTableWrap);
+        usersSec.appendChild(addUserBtn);
+        settingsSec.appendChild(usersSec);
 
-        const saveBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Save Escrow Settings' });
+        // Save button at the bottom of settings section
+        const saveBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Save Escrow Settings', style: 'margin-top:var(--space-2)' });
         saveBtn.addEventListener('click', async () => {
             saveBtn.disabled = true;
-            const roleIds = roleIdsInput.value.split('\n').map(s => s.trim()).filter(Boolean);
-            const userIds = userIdsInput.value.split('\n').map(s => s.trim()).filter(Boolean);
             try {
                 await Api.put(`${Config.app.apiPrefix}/admin/escrow/settings`, {
                     escrow_require_coverage: reqCheck.checked,
-                    escrow_default_role_ids: roleIds,
-                    escrow_default_user_ids: userIds,
+                    escrow_default_role_ids: roleItems.map(r => r.id),
+                    escrow_default_user_ids: userItems.map(u => u.id),
                 });
                 Utils.showToast('Escrow settings saved', 'success');
                 _renderEscrowSection(container);
             } catch (err) {
                 Utils.showToast('Save failed: ' + err.message, 'error');
-            } finally {
                 saveBtn.disabled = false;
             }
         });
-        sb.appendChild(saveBtn);
+        settingsSec.appendChild(saveBtn);
+        container.appendChild(settingsSec);
 
         await _renderEscrowFolderPolicies(container);
         await _renderEscrowCoverageReport(container);
     }
 
     async function _renderEscrowFolderPolicies(container) {
-        const card = Utils.el('div', { className: 'card mb-3' });
-        card.innerHTML = '<div class="card-body"><h5 class="card-title">Folder Escrow Overrides</h5></div>';
-        const body = card.querySelector('.card-body');
-        container.appendChild(card);
+        const sec = Utils.el('div', { className: 'policy-subsection' });
+        sec.appendChild(Utils.el('div', { className: 'policy-sub-header' }, [
+            Utils.el('h4', { textContent: 'Folder Escrow Overrides' }),
+        ]));
+        container.appendChild(sec);
 
         let data;
         try {
             data = await Api.get(`${Config.app.apiPrefix}/admin/escrow/folder-policies`);
         } catch (err) {
-            body.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Failed to load policies: ' + err.message }));
+            sec.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load policies: ' + err.message }));
             return;
         }
 
         const policies = data.policies || [];
         if (policies.length === 0) {
-            body.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folder-level overrides configured.' }));
+            sec.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No folder-level overrides configured.' }));
         } else {
-            const table = Utils.el('table', { className: 'table table-sm' });
-            table.innerHTML = `<thead><tr>
-                <th>Folder</th><th>Mode</th><th>Agents</th><th>Locked</th><th></th>
-            </tr></thead>`;
+            const table = Utils.el('table', { className: 'admin-table' });
+            table.innerHTML = '<thead><tr><th>Folder</th><th>Mode</th><th>Agents</th><th>Locked</th><th></th></tr></thead>';
             const tbody = Utils.el('tbody');
             for (const p of policies) {
                 const tr = Utils.el('tr');
@@ -5549,46 +5650,45 @@ const Admin = (() => {
                 tbody.appendChild(tr);
             }
             table.appendChild(tbody);
-            body.appendChild(table);
+            sec.appendChild(table);
         }
     }
 
     async function _renderEscrowCoverageReport(container) {
-        const card = Utils.el('div', { className: 'card mb-3' });
-        card.innerHTML = '<div class="card-body"><h5 class="card-title">Coverage Report — Teams Without Escrow</h5></div>';
-        const body = card.querySelector('.card-body');
-        container.appendChild(card);
+        const sec = Utils.el('div', { className: 'policy-subsection' });
+        sec.appendChild(Utils.el('div', { className: 'policy-sub-header' }, [
+            Utils.el('h4', { textContent: 'Coverage Report — Teams Without Escrow' }),
+        ]));
+        container.appendChild(sec);
 
         let data;
         try {
             data = await Api.get(`${Config.app.apiPrefix}/admin/escrow/coverage-report`);
         } catch (err) {
-            body.appendChild(Utils.el('p', { className: 'text-danger', textContent: 'Failed to load coverage report: ' + err.message }));
+            sec.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load coverage report: ' + err.message }));
             return;
         }
 
         const teams = data.teams || [];
         if (teams.length === 0) {
-            body.appendChild(Utils.el('p', { className: 'text-success', textContent: 'All teams have at least one escrow agent.' }));
+            sec.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'All teams have at least one escrow agent.' }));
             return;
         }
 
-        body.appendChild(Utils.el('p', {
-            className: 'text-warning',
+        sec.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'margin-bottom:var(--space-3)',
             textContent: `${data.total} team(s) have no escrow agent key slot filled.`,
         }));
 
-        const table = Utils.el('table', { className: 'table table-sm' });
-        table.innerHTML = `<thead><tr>
-            <th>Team</th><th>Owner</th><th>Created</th><th>Action</th>
-        </tr></thead>`;
+        const table = Utils.el('table', { className: 'admin-table' });
+        table.innerHTML = '<thead><tr><th>Team</th><th>Owner</th><th>Created</th><th></th></tr></thead>';
         const tbody = Utils.el('tbody');
         for (const t of teams) {
             const tr = Utils.el('tr');
             tr.appendChild(Utils.el('td', { textContent: t.team_name }));
             tr.appendChild(Utils.el('td', { textContent: t.owner_username }));
             tr.appendChild(Utils.el('td', { textContent: new Date(t.created_at).toLocaleDateString() }));
-            // Placeholder — actual key grant request goes through the pending-grants flow
             const grantBtn = Utils.el('button', {
                 className: 'btn btn-secondary btn-xs',
                 textContent: 'View team',
@@ -5600,7 +5700,7 @@ const Admin = (() => {
             tbody.appendChild(tr);
         }
         table.appendChild(tbody);
-        body.appendChild(table);
+        sec.appendChild(table);
     }
 
     // -----------------------------------------------------------------------
@@ -5781,7 +5881,7 @@ const Admin = (() => {
         });
         const inp = Utils.el('input', {
             type: 'number',
-            className: 'form-control form-control-sm',
+            className: 'input-sm',
             style: 'width:90px',
             min: '0',
             step: '1',
@@ -5875,23 +5975,23 @@ const Admin = (() => {
         let loaded = false;
 
         const effectBadge = Utils.el('span', {
-            className: `badge ${rule.effect === 'deny' ? 'bg-danger' : 'bg-success'} me-1`,
+            className: `badge ${rule.effect === 'deny' ? 'badge-expired' : 'badge-active'}`,
             textContent: rule.effect,
         });
         const subjectBadge = Utils.el('span', {
-            className: 'badge bg-secondary me-1',
+            className: 'badge badge-custom',
             textContent: rule.subject,
         });
         const typeBadge = rule.applies_to_share_type ? Utils.el('span', {
-            className: 'badge bg-info text-dark me-1',
+            className: 'badge badge-internal',
             textContent: rule.applies_to_share_type,
         }) : null;
         const activeBadge = Utils.el('span', {
-            className: `badge ${rule.is_active ? 'bg-primary' : 'bg-light text-dark'} me-1`,
+            className: `badge ${rule.is_active ? 'badge-admin' : 'badge-custom'}`,
             textContent: rule.is_active ? 'active' : 'inactive',
         });
         const lockedBadge = rule.is_locked ? Utils.el('span', {
-            className: 'badge bg-warning text-dark me-1',
+            className: 'badge badge-team',
             textContent: `locked ≤tier${rule.locked_min_tier ?? '?'}`,
         }) : null;
         const priorityTag = Utils.el('span', {
@@ -5938,7 +6038,8 @@ const Admin = (() => {
         });
 
         const editBtn = Utils.el('button', {
-            className: 'btn btn-secondary btn-xs me-1',
+            className: 'btn btn-secondary btn-xs',
+            style: 'margin-right:var(--space-1)',
             textContent: 'Edit',
             onClick: (e) => {
                 e.stopPropagation();
@@ -5959,7 +6060,8 @@ const Admin = (() => {
 
         // Toggle active
         const activeToggle = Utils.el('button', {
-            className: `btn btn-sm ${rule.is_active ? 'btn-outline-secondary' : 'btn-outline-primary'} mb-3`,
+            className: `btn btn-sm ${rule.is_active ? 'btn-secondary' : 'btn-primary'}`,
+            style: 'margin-bottom:var(--space-4)',
             textContent: rule.is_active ? 'Deactivate rule' : 'Activate rule',
             onClick: async () => {
                 activeToggle.disabled = true;
@@ -6107,7 +6209,8 @@ const Admin = (() => {
                 condTable.appendChild(table);
             }
             const addBtn = Utils.el('button', {
-                className: 'btn btn-sm btn-secondary mt-2',
+                className: 'btn btn-sm btn-secondary',
+                style: 'margin-top:var(--space-2)',
                 textContent: '+ Add Condition',
                 type: 'button',
                 onClick: () => {
@@ -6131,7 +6234,8 @@ const Admin = (() => {
         ]);
 
         const saveBtn = Utils.el('button', {
-            className: 'btn btn-primary btn-sm mt-3',
+            className: 'btn btn-primary btn-sm',
+            style: 'margin-top:var(--space-4)',
             textContent: isEdit ? 'Save Changes' : 'Create Rule',
             type: 'button',
             onClick: async () => {
@@ -6200,7 +6304,7 @@ const Admin = (() => {
         let loaded = false;
 
         const toggle = Utils.el('button', {
-            className: 'btn btn-sm btn-outline-secondary',
+            className: 'btn btn-sm btn-secondary',
             style: 'margin-bottom:8px',
             textContent: 'Attribute Reference ▾',
             onClick: () => {
@@ -6396,7 +6500,7 @@ const Admin = (() => {
         });
         const toggleBtn = Utils.el('button', {
             textContent: sa.is_active ? 'Deactivate' : 'Activate',
-            className: 'btn btn-sm' + (sa.is_active ? ' btn-warning' : ''),
+            className: 'btn btn-sm' + (sa.is_active ? ' btn-secondary' : ' btn-primary'),
             style: 'margin-right:4px',
         });
         toggleBtn.addEventListener('click', async () => {
@@ -6429,7 +6533,7 @@ const Admin = (() => {
 
     function _renderServiceAccountsPanel(container, accounts) {
         container.innerHTML = '';
-        const wrap = Utils.el('div', { style: 'padding:16px' });
+        const wrap = Utils.el('div');
 
         const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:12px' });
         header.appendChild(Utils.el('h3', { textContent: 'Service Accounts', style: 'margin:0' }));
@@ -6717,7 +6821,7 @@ const Admin = (() => {
 
         const modeRow = Utils.el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:12px' });
         modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0;font-size:13px;white-space:nowrap' }));
-        const modeSel = Utils.el('select', { className: 'form-select form-select-sm', style: 'width:auto' }, [
+        const modeSel = Utils.el('select', { className: 'input-sm', style: 'width:auto' }, [
             Utils.el('option', { value: 'replace', textContent: 'Replace — wipe and overwrite each selected category' }),
             Utils.el('option', { value: 'merge',   textContent: 'Merge — add or update, keep existing entries not in file' }),
         ]);
@@ -6728,7 +6832,7 @@ const Admin = (() => {
         const importOkEl   = Utils.el('p', { className: 'text-success', style: 'display:none;font-size:13px;margin-bottom:8px' });
         importDiv.append(importErrEl, importOkEl);
 
-        const importBtn = Utils.el('button', { className: 'btn btn-warning btn-sm', textContent: 'Apply Import', disabled: true });
+        const importBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Apply Import', disabled: true });
         importDiv.appendChild(importBtn);
 
         const importCatChecks = {};
@@ -6827,7 +6931,7 @@ const Admin = (() => {
 
         const modeRow = Utils.el('div', { style: 'display:flex;gap:12px;margin-bottom:16px;align-items:center' });
         modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0' }));
-        const modeSelect = Utils.el('select', { className: 'form-select form-select-sm', style: 'width:auto' }, [
+        const modeSelect = Utils.el('select', { className: 'input-sm', style: 'width:auto' }, [
             Utils.el('option', { value: 'replace', textContent: 'Replace all' }),
             Utils.el('option', { value: 'merge',   textContent: 'Merge' }),
         ]);
@@ -6838,7 +6942,7 @@ const Admin = (() => {
         box.appendChild(diffArea);
 
         const confirmRow = Utils.el('div', { style: 'display:none;margin-bottom:12px' });
-        const confirmInp = Utils.el('input', { type: 'text', className: 'form-control form-control-sm', placeholder: 'Type REPLACE to confirm' });
+        const confirmInp = Utils.el('input', { type: 'text', className: 'input-sm', style: 'width:100%', placeholder: 'Type REPLACE to confirm' });
         confirmRow.appendChild(Utils.el('p', { style: 'color:var(--color-danger,#dc3545);margin-bottom:4px', textContent: 'This will replace all sharing rules and security settings. Type REPLACE to confirm.' }));
         confirmRow.appendChild(confirmInp);
         box.appendChild(confirmRow);
@@ -6846,7 +6950,7 @@ const Admin = (() => {
         const btnRow   = Utils.el('div', { style: 'display:flex;gap:8px' });
         const previewBtn = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Preview diff' });
         const applyBtn   = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Apply', disabled: true });
-        const cancelBtn  = Utils.el('button', { className: 'btn btn-light btn-sm', textContent: 'Cancel' });
+        const cancelBtn  = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel' });
         btnRow.append(previewBtn, applyBtn, cancelBtn);
         box.appendChild(btnRow);
 
@@ -6924,7 +7028,7 @@ const Admin = (() => {
             }));
         }
 
-        const table = Utils.el('table', { className: 'table table-sm', style: 'font-size:12px' });
+        const table = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;width:100%' });
         const thead = Utils.el('thead');
         thead.appendChild(Utils.el('tr', {}, [
             Utils.el('th', { textContent: 'Setting' }),
@@ -6941,7 +7045,7 @@ const Admin = (() => {
             tr.appendChild(Utils.el('td', { textContent: d.current == null ? '(not set)' : JSON.stringify(d.current), style: 'word-break:break-all' }));
             tr.appendChild(Utils.el('td', { textContent: JSON.stringify(d.proposed), style: 'word-break:break-all' }));
             if (mode === 'merge') {
-                const sel = Utils.el('select', { className: 'form-select form-select-sm', dataset: { decisionKey: d.key } }, [
+                const sel = Utils.el('select', { className: 'input-sm', style: 'width:auto', dataset: { decisionKey: d.key } }, [
                     Utils.el('option', { value: 'proposed', textContent: 'Proposed', selected: true }),
                     Utils.el('option', { value: 'current',  textContent: 'Keep current' }),
                 ]);

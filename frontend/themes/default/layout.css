@@ -35,7 +35,9 @@
     --space-16:             64px;
 
     /* --- Border radius --- */
+    --radius-sm:            4px;
     --radius:               6px;
+    --radius-md:            6px;
     --radius-lg:            10px;
     --radius-full:          9999px;
 

@@ -641,7 +641,7 @@
 }
 
 .public-share-arrow {
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     flex-shrink: 0;
 }
 
@@ -1311,9 +1311,9 @@
     padding: 0;
     background: none;
     border: none;
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
     color: var(--color-text-muted);
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     line-height: 1;
     cursor: pointer;
     transition: color var(--transition-fast), background var(--transition-fast);
@@ -2137,7 +2137,7 @@
     color: var(--color-text-muted);
 }
 
-.policy-modal-form input,
+.policy-modal-form input:not([type=checkbox]),
 .policy-modal-form select,
 .policy-modal-form textarea {
     width: 100%;

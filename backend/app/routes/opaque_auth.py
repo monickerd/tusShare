@@ -471,6 +471,27 @@ async def opaque_register_finish(
         )
     )
 
+    # Run policy evaluation in background so team-membership and other policies
+    # fire immediately on registration, without waiting for a separate login.
+    try:
+        from app.database import db_session as _db_session
+        from app.models.policy import evaluate_user_policies as _eval_policies
+
+        _reg_uid = user_id
+
+        async def _bg_reg_eval() -> None:
+            try:
+                async with _db_session() as _bg_db:
+                    await _eval_policies(_bg_db, _reg_uid)
+            except Exception:
+                pass
+
+        _t = asyncio.create_task(_bg_reg_eval())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
+    except Exception:
+        pass  # policy engine must not block registration
+
     # Tell the client if they need to enroll MFA before accessing resources.
     # New users never have credentials, so only the enforcement mode matters.
     from app.auth.mfa import load_mfa_settings as _load_mfa

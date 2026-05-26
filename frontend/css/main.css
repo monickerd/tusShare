@@ -607,7 +607,7 @@ button:focus-visible {
     justify-content: center;
     width: 20px;
     flex-shrink: 0;
-    font-size: 10px;
+    font-size: var(--font-size-xs);
     color: var(--color-text-muted);
     cursor: pointer;
     min-height: var(--touch-target-min);
@@ -1061,6 +1061,11 @@ input[type="checkbox"] {
     flex-shrink: 0;
 }
 
+/* === Mobile bottom nav === */
+.mobile-bottom-nav {
+    display: none;
+}
+
 /* === Responsive: Tablet === */
 @media (max-width: 768px) {
     .sidebar {
@@ -1142,6 +1147,14 @@ input[type="checkbox"] {
     .files-toolbar {
         padding: var(--space-2) var(--space-3);
     }
+    /* Reverse breadcrumb scroll so the deepest (current) folder is always visible */
+    .breadcrumbs {
+        direction: rtl;
+        padding-left: var(--space-4);
+    }
+    .breadcrumbs > * {
+        direction: ltr;
+    }
     .toolbar-right {
         flex-basis: 100%;
         flex-shrink: 1;
@@ -1164,11 +1177,6 @@ input[type="checkbox"] {
         margin: var(--space-3);
         max-width: calc(100vw - var(--space-6));
     }
-}
-
-/* === Mobile bottom nav === */
-.mobile-bottom-nav {
-    display: none; /* shown only on mobile via media query below */
 }
 
 .bn-backdrop {

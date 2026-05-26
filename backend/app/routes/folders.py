@@ -278,6 +278,18 @@ async def get_folder_contents(
     if folder.owner_id != user.id and not user.is_admin:
         if not await is_in_shared_tree(db, folder_id):
             if not await check_data_permission(db, "folder", folder_id, user.id, "read"):
+                team_id = await get_folder_team_id(db, folder_id)
+                if team_id:
+                    cursor = await db.execute(
+                        "SELECT 1 FROM user_roles "
+                        "WHERE scope_type = 'team' AND scope_id = ? AND user_id = ? "
+                        "AND NOT EXISTS ("
+                        "  SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id = ?"
+                        ")",
+                        (team_id, user.id, team_id, user.id),
+                    )
+                    if await cursor.fetchone():
+                        raise HTTPException(status_code=403, detail="key_pending")
                 raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     # Child folders (excluding soft-deleted)

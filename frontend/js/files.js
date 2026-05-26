@@ -161,7 +161,7 @@ const Files = (() => {
                     }),
                     Utils.el('button', {
                         className: 'btn btn-sm btn-secondary trash-nav-btn',
-                        textContent: 'Recently Deleted',
+                        textContent: 'Deleted',
                         onClick: () => {
                             globalThis.location.hash = _isTeamView && _currentTeamId
                                 ? `#/trash/teams/${_currentTeamId}`
@@ -303,7 +303,11 @@ const Files = (() => {
             _startLive(folderId);
             _loadFolderShareBanner(folderId);
         } catch (err) {
-            listEl.textContent = 'Failed to load folder: ' + err.message;
+            if (err.message === 'key_pending') {
+                listEl.textContent = 'Waiting for a team member to log in to complete your setup.';
+            } else {
+                listEl.textContent = 'Failed to load folder: ' + err.message;
+            }
         }
     }
 
