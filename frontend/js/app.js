@@ -235,6 +235,8 @@ const App = (() => {
         if (_sb) _sb.classList.remove('open');
         const _up = document.querySelector('.mobile-util-panel');
         if (_up) _up.classList.remove('open');
+        const _ub = document.querySelector('.mobile-util-backdrop');
+        if (_ub) _ub.classList.remove('open');
 
         // Update browser tab title on each navigation.
         const _titleMap = [
@@ -1748,8 +1750,15 @@ const App = (() => {
             }
         });
 
-        // --- Mobile utility panel (hamburger → search / account / logout) ---
+        // --- Mobile utility panel (hamburger → left side panel) ---
+        const mobileUtilBackdrop = Utils.el('div', { className: 'mobile-util-backdrop' });
         const mobileUtilPanel = Utils.el('div', { className: 'mobile-util-panel' });
+
+        function _closeMobileUtil() {
+            mobileUtilPanel.classList.remove('open');
+            mobileUtilBackdrop.classList.remove('open');
+        }
+        mobileUtilBackdrop.addEventListener('click', _closeMobileUtil);
 
         const utilSearch = Utils.el('input', {
             type: 'text',
@@ -1758,37 +1767,41 @@ const App = (() => {
         });
         utilSearch.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && utilSearch.value.trim()) {
-                mobileUtilPanel.classList.remove('open');
+                _closeMobileUtil();
                 globalThis.location.hash = `#/search?q=${encodeURIComponent(utilSearch.value.trim())}`;
                 utilSearch.value = '';
             }
         });
-        mobileUtilPanel.appendChild(utilSearch);
 
-        const utilActions = Utils.el('div', { className: 'mobile-util-actions' });
-        utilActions.appendChild(Utils.el('a', {
+        const utilAccountLink = Utils.el('a', {
             href: '#/account',
-            className: 'btn btn-secondary btn-sm',
-            textContent: user ? user.username : 'Account',
-            onClick: () => mobileUtilPanel.classList.remove('open'),
-        }));
-        utilActions.appendChild(Utils.el('button', {
-            className: 'btn btn-secondary btn-sm',
+            className: 'mobile-util-account-link',
+            textContent: user ? user.username : 'My Account',
+            onClick: _closeMobileUtil,
+        });
+
+        const utilLogoutBtn = Utils.el('button', {
+            className: 'mobile-util-logout-btn',
             textContent: 'Logout',
-            onClick: () => { mobileUtilPanel.classList.remove('open'); Auth.logout(); },
-        }));
+            onClick: () => { _closeMobileUtil(); Auth.logout(); },
+        });
+
+        mobileUtilPanel.appendChild(utilSearch);
+        mobileUtilPanel.appendChild(utilAccountLink);
+        mobileUtilPanel.appendChild(utilLogoutBtn);
+
         if (user?.is_admin) {
-            utilActions.appendChild(Utils.el('a', {
+            mobileUtilPanel.appendChild(Utils.el('a', {
                 href: '#/admin',
-                className: 'btn btn-secondary btn-sm',
+                className: 'mobile-util-account-link',
                 textContent: 'Admin',
-                onClick: () => mobileUtilPanel.classList.remove('open'),
+                onClick: _closeMobileUtil,
             }));
         }
-        mobileUtilPanel.appendChild(utilActions);
 
         sidebarToggle.addEventListener('click', () => {
-            mobileUtilPanel.classList.toggle('open');
+            mobileUtilPanel.classList.add('open');
+            mobileUtilBackdrop.classList.add('open');
         });
 
         // --- Mobile bottom nav bar ---
@@ -1805,28 +1818,37 @@ const App = (() => {
             if (e.key === 'Escape') _closeBnSubmenus();
         }, { once: false });
 
-        function _makeBnItem(label, href, id) {
+        function _makeBnItem(iconOrEl, href, id, ariaLabel) {
             const a = Utils.el('a', {
                 href,
                 className: 'bn-tab',
                 id: `bn-${id}`,
+                'aria-label': ariaLabel,
             });
-            a.appendChild(Utils.el('span', { className: 'bn-label', textContent: label }));
+            if (typeof iconOrEl === 'string') {
+                a.appendChild(Utils.el('span', { className: 'bn-icon', textContent: iconOrEl }));
+            } else {
+                a.appendChild(iconOrEl);
+            }
             const wrap = Utils.el('div', { className: 'bn-item' });
             wrap.appendChild(a);
             return wrap;
         }
 
-        function _makeBnSubmenuItem(label, href, id) {
+        function _makeBnSubmenuItem(iconOrEl, id, ariaLabel) {
             const item = Utils.el('div', { className: 'bn-item', id: `bn-wrap-${id}` });
             const btn = Utils.el('button', {
                 className: 'bn-tab',
                 id: `bn-${id}`,
                 'aria-haspopup': 'true',
                 'aria-expanded': 'false',
+                'aria-label': ariaLabel,
             });
-            btn.appendChild(Utils.el('span', { className: 'bn-label', textContent: label }));
-            btn.appendChild(Utils.el('span', { className: 'bn-chevron', textContent: '▲' }));
+            if (typeof iconOrEl === 'string') {
+                btn.appendChild(Utils.el('span', { className: 'bn-icon', textContent: iconOrEl }));
+            } else {
+                btn.appendChild(iconOrEl);
+            }
 
             const submenu = Utils.el('div', { className: 'bn-submenu', role: 'menu' });
             item.appendChild(btn);
@@ -1849,11 +1871,18 @@ const App = (() => {
             return { item, submenu };
         }
 
-        const { item: bnTeams, submenu: bnTeamsMenu } = _makeBnSubmenuItem('Teams', null, 'teams');
+        function _mkPersonIcon() {
+            return Utils.el('span', { className: 'bn-icon bn-icon-person' }, [
+                Utils.el('span', { className: 'bn-icon-person-head', textContent: 'ᵒ' }),
+                Utils.el('span', { className: 'bn-icon-person-body', textContent: '◠' }),
+            ]);
+        }
+
+        const { item: bnTeams, submenu: bnTeamsMenu } = _makeBnSubmenuItem(_mkPersonIcon(), 'teams', 'Teams');
         bnTeamsMenu.appendChild(Utils.el('a', { href: '#/team-folders', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Team Folders' }));
         bnTeamsMenu.appendChild(Utils.el('a', { href: '#/teams',        className: 'bn-submenu-link', role: 'menuitem', textContent: 'Manage Teams' }));
 
-        const { item: bnShared, submenu: bnSharedMenu } = _makeBnSubmenuItem('Shared', null, 'shared');
+        const { item: bnShared, submenu: bnSharedMenu } = _makeBnSubmenuItem('⇄', 'shared', 'Shared');
         bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares',          className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared By Me' }));
         bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares/received', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared To Me' }));
 
@@ -1874,16 +1903,15 @@ const App = (() => {
         bnTransferArrows.appendChild(Utils.el('span', { className: 'bn-transfer-down', textContent: '↓' }));
         bnTransferArrows.appendChild(Utils.el('span', { className: 'bn-transfer-flash' }));
         bnTransferBtn.appendChild(bnTransferArrows);
-        bnTransferBtn.appendChild(Utils.el('span', { className: 'bn-label', textContent: 'Transfers' }));
         const bnTransferItem = Utils.el('div', { className: 'bn-item' });
         bnTransferItem.appendChild(bnTransferBtn);
         TransferManager.setMobileBtn(bnTransferBtn);
 
         const bottomNav = Utils.el('nav', { className: 'mobile-bottom-nav', 'aria-label': 'Mobile navigation' }, [
-            _makeBnItem('My Files', '#/files', 'files'),
+            _makeBnItem('⌂', '#/files', 'files', 'My Files'),
             bnTeams,
             bnShared,
-            _makeBnItem('Favourites', '#/pinned', 'pinned'),
+            _makeBnItem('★', '#/pinned', 'pinned', 'Favourites'),
             bnTransferItem,
         ]);
         bottomNav.appendChild(bnBackdrop);
@@ -1902,6 +1930,7 @@ const App = (() => {
                     logoutBtn,
                 ]),
             ]),
+            mobileUtilBackdrop,
             mobileUtilPanel,
         ];
 
