@@ -101,10 +101,11 @@ services:
       - tusshare_data:/data
       # SRI injection rewrites frontend/index.html at every startup, so the
       # frontend directory must be writable despite read_only: true below.
-      # Docker populates this named volume from the image on first creation.
-      # IMPORTANT: after a docker image rebuild, remove this volume so Docker
-      # repopulates it with the new frontend files:
-      #   docker compose down && docker volume rm filexfer_tusshare_frontend && docker compose up
+      # Docker populates this named volume from the image on first creation
+      # but will NOT overwrite it on subsequent rebuilds — use update.sh
+      # (in the project root) to rebuild, which removes the stale volume so
+      # Docker repopulates it from the new image before restarting the stack.
+      # Do NOT use "docker compose down -v" — that also removes tusshare_data.
       - tusshare_frontend:/app/frontend
     tmpfs:
       # Read-only root filesystem (below) still needs writable scratch space.
