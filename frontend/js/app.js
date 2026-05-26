@@ -233,6 +233,8 @@ const App = (() => {
         _closeNotifBubble();
         const _sb = document.querySelector('.sidebar');
         if (_sb) _sb.classList.remove('open');
+        const _up = document.querySelector('.mobile-util-panel');
+        if (_up) _up.classList.remove('open');
 
         // Update browser tab title on each navigation.
         const _titleMap = [
@@ -439,6 +441,8 @@ const App = (() => {
             const grid = Utils.el('div', { className: 'pinned-tile-grid' });
             for (const pin of pins) {
                 const card = Utils.el('div', { className: 'pinned-card', dataset: { name: pin.name } });
+                const cardInner = Utils.el('div', { className: 'pinned-card-inner' });
+
                 const link = Utils.el('a', {
                     href: pin.hash || `#/files/${pin.id}`,
                     className: 'pinned-card-link',
@@ -446,18 +450,35 @@ const App = (() => {
                 link.appendChild(Utils.el('div', { className: 'pinned-card-name', textContent: pin.name }));
                 const label = pin.team_name ? `Team: ${pin.team_name}` : 'Personal';
                 link.appendChild(Utils.el('div', { className: 'pinned-card-meta', textContent: label }));
-                card.appendChild(link);
-                const unpinBtn = Utils.el('button', {
-                    className: 'pinned-card-unpin',
-                    title: 'Remove from Favourites',
-                    'aria-label': 'Remove from Favourites',
-                    textContent: '×',
+                cardInner.appendChild(link);
+
+                const infoBtn = Utils.el('button', {
+                    className: 'pinned-card-info',
+                    title: 'Folder info',
+                    'aria-label': 'Folder info',
+                    textContent: '?',
                 });
-                unpinBtn.addEventListener('click', () => {
-                    _unpinFolder(pin.id);
-                    _renderPinnedPage(page);
+                infoBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const pathStr = pin.path || (pin.team_name ? `Team Folders / ${pin.name}` : `My Files / ${pin.name}`);
+                    const modalContent = Utils.el('div', { style: 'padding:4px 0' });
+                    modalContent.appendChild(Utils.el('p', { className: 'pinned-path-modal-label', textContent: 'Path:' }));
+                    modalContent.appendChild(Utils.el('p', { className: 'pinned-path-modal-path', textContent: pathStr }));
+                    const rmBtn = Utils.el('button', {
+                        className: 'btn btn-danger btn-sm',
+                        style: 'margin-top:12px',
+                        textContent: 'Remove from Favourites',
+                    });
+                    modalContent.appendChild(rmBtn);
+                    const close = Utils.showModal(pin.name, modalContent);
+                    rmBtn.addEventListener('click', () => {
+                        close();
+                        _unpinFolder(pin.id);
+                        _renderPinnedPage(page);
+                    });
                 });
-                card.appendChild(unpinBtn);
+                cardInner.appendChild(infoBtn);
+                card.appendChild(cardInner);
                 grid.appendChild(card);
             }
             contentEl.appendChild(grid);
@@ -838,7 +859,7 @@ const App = (() => {
             if (value === null || value === undefined || value === '') return null;
             return Utils.el('tr', {}, [
                 Utils.el('td', { style: 'font-weight:600;padding:3px 14px 3px 0;white-space:nowrap;vertical-align:top;color:var(--color-text-muted)', textContent: label }),
-                Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:12px', textContent: String(value) }),
+                Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:var(--font-size-sm)', textContent: String(value) }),
             ]);
         }
         const wrap = Utils.el('div');
@@ -859,7 +880,7 @@ const App = (() => {
             const rest = Object.fromEntries(Object.entries(ev.detail).filter(([k]) => k !== 'path'));
             if (Object.keys(rest).length) {
                 wrap.appendChild(Utils.el('pre', {
-                    style: 'margin-top:12px;padding:8px;background:var(--color-bg);border-radius:var(--radius);font-size:11px;overflow-x:auto',
+                    style: 'margin-top:12px;padding:8px;background:var(--color-bg);border-radius:var(--radius);font-size:var(--font-size-xs);overflow-x:auto',
                     textContent: JSON.stringify(rest, null, 2),
                 }));
             }
@@ -1662,13 +1683,9 @@ const App = (() => {
 
         const sidebarToggle = Utils.el('button', {
             className: 'sidebar-toggle',
-            title: 'Toggle sidebar',
-            'aria-label': 'Toggle sidebar',
+            title: 'Menu',
+            'aria-label': 'Menu',
             textContent: '\u2630',
-            onClick: () => {
-                const sb = document.querySelector('.sidebar');
-                if (sb) sb.classList.toggle('open');
-            },
         });
 
         const nav = Utils.el('nav', { className: 'sidebar-nav' }, [
@@ -1729,6 +1746,49 @@ const App = (() => {
                 globalThis.location.hash = `#/search?q=${encodeURIComponent(searchInput.value.trim())}`;
                 searchInput.value = '';
             }
+        });
+
+        // --- Mobile utility panel (hamburger → search / account / logout) ---
+        const mobileUtilPanel = Utils.el('div', { className: 'mobile-util-panel' });
+
+        const utilSearch = Utils.el('input', {
+            type: 'text',
+            className: 'mobile-util-search',
+            placeholder: 'Search files…',
+        });
+        utilSearch.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && utilSearch.value.trim()) {
+                mobileUtilPanel.classList.remove('open');
+                globalThis.location.hash = `#/search?q=${encodeURIComponent(utilSearch.value.trim())}`;
+                utilSearch.value = '';
+            }
+        });
+        mobileUtilPanel.appendChild(utilSearch);
+
+        const utilActions = Utils.el('div', { className: 'mobile-util-actions' });
+        utilActions.appendChild(Utils.el('a', {
+            href: '#/account',
+            className: 'btn btn-secondary btn-sm',
+            textContent: user ? user.username : 'Account',
+            onClick: () => mobileUtilPanel.classList.remove('open'),
+        }));
+        utilActions.appendChild(Utils.el('button', {
+            className: 'btn btn-secondary btn-sm',
+            textContent: 'Logout',
+            onClick: () => { mobileUtilPanel.classList.remove('open'); Auth.logout(); },
+        }));
+        if (user?.is_admin) {
+            utilActions.appendChild(Utils.el('a', {
+                href: '#/admin',
+                className: 'btn btn-secondary btn-sm',
+                textContent: 'Admin',
+                onClick: () => mobileUtilPanel.classList.remove('open'),
+            }));
+        }
+        mobileUtilPanel.appendChild(utilActions);
+
+        sidebarToggle.addEventListener('click', () => {
+            mobileUtilPanel.classList.toggle('open');
         });
 
         // --- Mobile bottom nav bar ---
@@ -1838,6 +1898,7 @@ const App = (() => {
                     logoutBtn,
                 ]),
             ]),
+            mobileUtilPanel,
         ];
 
         // Public device banner — shown when the user checked "Public Device" at login.

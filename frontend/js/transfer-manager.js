@@ -45,7 +45,10 @@ const TransferManager = (() => {
     }
 
     function _toggleMobileSheet() {
-        if (_transfers.size === 0) return;
+        if (_transfers.size === 0) {
+            Utils.showToast('No transfers at this time', 'info');
+            return;
+        }
         _ensurePanel();
         _ensureMobileBackdrop();
         const isOpen = _panel.classList.toggle('transfer-panel--mobile-open');

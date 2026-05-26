@@ -434,9 +434,9 @@ const Admin = (() => {
 
     const _mkField = (label, inp, hint) => {
         const row = Utils.el('div', { style: 'margin-bottom:10px' });
-        row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:13px;margin-bottom:4px' }));
+        row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' }));
         row.appendChild(inp);
-        if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:11px;color:var(--color-muted,#888);margin:2px 0 0' }));
+        if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:var(--font-size-sm);color:var(--color-muted,#888);margin:2px 0 0' }));
         return row;
     };
 
@@ -628,7 +628,7 @@ const Admin = (() => {
                     }
                     hwResultWrap.appendChild(list);
                 }
-                const summary = Utils.el('pre', { style: 'font-size:11px;background:var(--color-surface-secondary);padding:8px;border-radius:4px;overflow-x:auto;margin-top:8px;white-space:pre-wrap' });
+                const summary = Utils.el('pre', { style: 'font-size:var(--font-size-xs);background:var(--color-surface-secondary);padding:8px;border-radius:4px;overflow-x:auto;margin-top:8px;white-space:pre-wrap' });
                 summary.textContent = JSON.stringify(result, null, 2);
                 hwResultWrap.appendChild(summary);
             } catch (err) {
@@ -932,7 +932,7 @@ const Admin = (() => {
 
         wrap.innerHTML = '';
 
-        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:14px;font-size:13px' });
+        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:14px;font-size:var(--font-size-sm)' });
         const _row = (label, value) => {
             grid.appendChild(Utils.el('span', { textContent: label + ':', style: 'font-weight:600;color:var(--color-text-muted)' }));
             grid.appendChild(Utils.el('span', { textContent: value || '—', style: 'word-break:break-all' }));
@@ -945,7 +945,7 @@ const Admin = (() => {
         if (team.description) _row('Description', team.description);
         wrap.appendChild(grid);
 
-        wrap.appendChild(Utils.el('h6', { textContent: 'Members', style: 'margin:12px 0 6px;font-size:13px;font-weight:600' }));
+        wrap.appendChild(Utils.el('h6', { textContent: 'Members', style: 'margin:12px 0 6px;font-size:var(--font-size-sm);font-weight:600' }));
 
         const membersArr = members.slice();
 
@@ -987,7 +987,7 @@ const Admin = (() => {
             const section = Utils.el('div', { className: 'team-member-section' });
 
             if (membersArr.length === 0) {
-                section.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px', textContent: 'No members.' }));
+                section.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'No members.' }));
             } else {
                 const memberWidget = _makeSortablePagedTable({
                     columns: [
@@ -2505,7 +2505,7 @@ const Admin = (() => {
         const scopeIdWrap = Utils.el('div', { style: 'display:none' }, [
             Utils.el('label', { textContent: 'Team ID or Name' }),
             Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Team UUID or name', id: 'new-policy-scope-id' }),
-            Utils.el('p', { className: 'text-muted', style: 'font-size:12px;margin:2px 0 0', textContent: 'Enter the team\'s UUID or name. If multiple teams share a name, use the UUID.' }),
+            Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm);margin:2px 0 0', textContent: 'Enter the team\'s UUID or name. If multiple teams share a name, use the UUID.' }),
         ]);
         scopeTypeEl.addEventListener('change', () => {
             scopeIdWrap.style.display = scopeTypeEl.value === 'team' ? '' : 'none';
@@ -2835,7 +2835,7 @@ const Admin = (() => {
         const tbody = Utils.el('tbody');
         const table = Utils.el('table', { className: 'admin-table' }, [thead, tbody]);
 
-        const countMsg    = Utils.el('span', { style: 'font-size:12px;color:var(--color-text-muted)' });
+        const countMsg    = Utils.el('span', { style: 'font-size:var(--font-size-sm);color:var(--color-text-muted)' });
         const loadMoreBtn = Utils.el('button', {
             className: 'btn btn-sm btn-secondary',
             textContent: 'Load More',
@@ -3478,10 +3478,10 @@ const Admin = (() => {
         const data = await Api.get(`${_api()}/admin/users/${userId}/transfer-locks`);
         locksWrap.innerHTML = '';
         if (!data.files?.length) {
-            locksWrap.appendChild(Utils.el('p', { textContent: 'No transfer locks on record.', className: 'text-muted', style: 'font-size:12px;margin:4px 0' }));
+            locksWrap.appendChild(Utils.el('p', { textContent: 'No transfer locks on record.', className: 'text-muted', style: 'font-size:var(--font-size-sm);margin:4px 0' }));
             return;
         }
-        const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;margin-top:4px' });
+        const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:var(--font-size-sm);margin-top:4px' });
         tbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
             Utils.el('th', { textContent: 'File' }),
             Utils.el('th', { textContent: 'Locked at' }),
@@ -3549,7 +3549,7 @@ const Admin = (() => {
         wrap.innerHTML = '';
 
         // ---- Identity card ----
-        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:14px;font-size:13px' });
+        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;margin-bottom:14px;font-size:var(--font-size-sm)' });
         const _row = (label, value) => {
             grid.appendChild(Utils.el('span', { textContent: label + ':', style: 'font-weight:600;color:var(--color-text-muted)' }));
             grid.appendChild(Utils.el('span', { textContent: value || '—', style: 'word-break:break-all' }));
@@ -3590,11 +3590,11 @@ const Admin = (() => {
         function _renderRolesInner(rolesWrap, currentRoles) {
             rolesWrap.innerHTML = '';
             if (!currentRoles.length) {
-                rolesWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:12px', textContent: 'No roles assigned.' }));
+                rolesWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'No roles assigned.' }));
             }
             for (const r of currentRoles) {
                 const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
-                row.appendChild(Utils.el('span', { textContent: r.name || r.id, style: 'font-size:13px;flex:1' }));
+                row.appendChild(Utils.el('span', { textContent: r.name || r.id, style: 'font-size:var(--font-size-sm);flex:1' }));
                 const remBtn = Utils.el('button', { className: 'btn btn-xs btn-danger', textContent: 'Remove' });
                 remBtn.addEventListener('click', async () => {
                     remBtn.disabled = true;
@@ -3685,7 +3685,7 @@ const Admin = (() => {
         _makePaneTab('Team Membership', (pane) => {
             const teamsArr = (user.teams || []).slice();
             if (!teamsArr.length) {
-                pane.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px', textContent: 'Not a member of any teams.' }));
+                pane.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'Not a member of any teams.' }));
                 return;
             }
 
@@ -3732,7 +3732,7 @@ const Admin = (() => {
                 ]),
             ]);
             const tbody = Utils.el('tbody');
-            const table = Utils.el('table', { className: 'admin-table', style: 'font-size:12px' }, [thead, tbody]);
+            const table = Utils.el('table', { className: 'admin-table', style: 'font-size:var(--font-size-sm)' }, [thead, tbody]);
             pane.appendChild(table);
 
             const footer = Utils.el('div', { style: 'display:flex;align-items:center;gap:10px;margin-top:6px' });
@@ -3741,7 +3741,7 @@ const Admin = (() => {
                 style: 'display:none',
                 textContent: 'Load More',
             });
-            const countMsg = Utils.el('span', { style: 'font-size:12px;color:var(--color-text-muted)' });
+            const countMsg = Utils.el('span', { style: 'font-size:var(--font-size-sm);color:var(--color-text-muted)' });
             footer.append(loadMoreBtn, countMsg);
             pane.appendChild(footer);
 
@@ -3823,7 +3823,7 @@ const Admin = (() => {
 
         // ---- Tab: Management ----
         _makePaneTab('Management', (pane) => {
-            const errEl = Utils.el('p', { className: 'text-error', style: 'display:none;margin:4px 0 8px;font-size:12px' });
+            const errEl = Utils.el('p', { className: 'text-error', style: 'display:none;margin:4px 0 8px;font-size:var(--font-size-sm)' });
             pane.appendChild(errEl);
 
             const _mgmtBtn = (label, cls, desc, onClick) => {
@@ -3831,7 +3831,7 @@ const Admin = (() => {
                 btn.addEventListener('click', _runMgmtAction.bind(null, btn, errEl, onClick));
                 return Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:10px' }, [
                     Utils.el('div', { style: 'flex:1' }, [
-                        Utils.el('p', { style: 'margin:0 0 3px;font-size:13px;color:var(--color-text-muted)', textContent: desc }),
+                        Utils.el('p', { style: 'margin:0 0 3px;font-size:var(--font-size-sm);color:var(--color-text-muted)', textContent: desc }),
                     ]),
                     btn,
                 ]);
@@ -3839,7 +3839,7 @@ const Admin = (() => {
 
             const _section = (title, isDanger, items) => {
                 const border = isDanger ? '1px solid var(--color-danger,#dc2626)' : '1px solid var(--color-border)';
-                const header = isDanger ? Utils.el('h6', { textContent: title, style: 'color:var(--color-danger,#dc2626);margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em' }) : Utils.el('h6', { textContent: title, style: 'margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-muted)' });
+                const header = isDanger ? Utils.el('h6', { textContent: title, style: 'color:var(--color-danger,#dc2626);margin:0 0 10px;font-size:var(--font-size-sm);text-transform:uppercase;letter-spacing:.05em' }) : Utils.el('h6', { textContent: title, style: 'margin:0 0 10px;font-size:var(--font-size-sm);text-transform:uppercase;letter-spacing:.05em;color:var(--color-text-muted)' });
                 return Utils.el('div', { style: `border:${border};border-radius:6px;padding:12px;margin-bottom:12px` }, [header, ...items]);
             };
 
@@ -3884,7 +3884,7 @@ const Admin = (() => {
             const notifyCheckId = `emergency-notify-${user.id}`;
             const notifyCheck   = Utils.el('input', { type: 'checkbox', id: notifyCheckId });
             const notifyRow     = Utils.el('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px' }, [
-                notifyCheck, Utils.el('label', { htmlFor: notifyCheckId, textContent: 'Notify escrow agents', style: 'font-size:12px;cursor:pointer' }),
+                notifyCheck, Utils.el('label', { htmlFor: notifyCheckId, textContent: 'Notify escrow agents', style: 'font-size:var(--font-size-sm);cursor:pointer' }),
             ]);
             const confirmRevokeBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Confirm Emergency Revoke' });
             const cancelRevokeBtn  = Utils.el('button', { className: 'btn btn-secondary btn-sm', textContent: 'Cancel', style: 'margin-left:6px' });
@@ -3910,7 +3910,7 @@ const Admin = (() => {
             const emergencyItem = Utils.el('div', { style: 'margin-bottom:10px' }, [
                 Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px' }, [
                     Utils.el('div', { style: 'flex:1' }, [
-                        Utils.el('p', { style: 'margin:0 0 3px;font-size:13px;color:var(--color-text-muted)', textContent: 'For incident response: deactivates account, revokes all sessions and shares, and transfer-locks files.' }),
+                        Utils.el('p', { style: 'margin:0 0 3px;font-size:var(--font-size-sm);color:var(--color-text-muted)', textContent: 'For incident response: deactivates account, revokes all sessions and shares, and transfer-locks files.' }),
                     ]),
                     Utils.el('button', {
                         className: 'btn btn-sm btn-danger',
@@ -3936,7 +3936,7 @@ const Admin = (() => {
             const locksWrap = Utils.el('div', { style: 'margin-top:8px' });
             const locksItem = Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:10px' }, [
                 Utils.el('div', { style: 'flex:1' }, [
-                    Utils.el('p', { style: 'margin:0 0 3px;font-size:13px;color:var(--color-text-muted)', textContent: 'Shows all files with transfer restrictions applied to this user.' }),
+                    Utils.el('p', { style: 'margin:0 0 3px;font-size:var(--font-size-sm);color:var(--color-text-muted)', textContent: 'Shows all files with transfer restrictions applied to this user.' }),
                     locksWrap,
                 ]),
                 Utils.el('button', {
@@ -3990,7 +3990,7 @@ const Admin = (() => {
             if (value === null || value === undefined || value === '') return null;
             return Utils.el('tr', {}, [
                 Utils.el('td', { style: 'font-weight:600;padding:3px 14px 3px 0;white-space:nowrap;vertical-align:top;color:var(--color-text-muted)', textContent: label }),
-                Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:12px', textContent: String(value) }),
+                Utils.el('td', { style: 'padding:3px 0;word-break:break-all;font-family:monospace;font-size:var(--font-size-sm)', textContent: String(value) }),
             ]);
         }
         const detail = (ev.detail && typeof ev.detail === 'object') ? ev.detail : {};
@@ -4023,7 +4023,7 @@ const Admin = (() => {
         if (Object.keys(remainingDetail).length) {
             wrap.appendChild(Utils.el('h5', { textContent: 'Detail', style: 'margin:14px 0 6px' }));
             wrap.appendChild(Utils.el('pre', {
-                style: 'background:var(--color-surface-active);color:var(--color-text);border:1px solid var(--color-border);padding:10px;border-radius:4px;overflow:auto;font-size:12px;max-height:220px;margin:0',
+                style: 'background:var(--color-surface-active);color:var(--color-text);border:1px solid var(--color-border);padding:10px;border-radius:4px;overflow:auto;font-size:var(--font-size-sm);max-height:220px;margin:0',
                 textContent: JSON.stringify(remainingDetail, null, 2),
             }));
         }
@@ -4067,7 +4067,7 @@ const Admin = (() => {
             Utils.el('td', {}, [typeLink]),
             Utils.el('td', {}, [Utils.el('span', { className: `badge ${sevClass}`, textContent: ev.severity || 'info' })]),
             Utils.el('td', { textContent: ev.outcome || '' }),
-            Utils.el('td', { textContent: pathText, title: pathText, style: 'max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:11px' }),
+            Utils.el('td', { textContent: pathText, title: pathText, style: 'max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:monospace; font-size:var(--font-size-xs)' }),
             actorCell,
             Utils.el('td', { textContent: ev.target_name || ev.target_id || '' }),
         ]);
@@ -4248,13 +4248,13 @@ const Admin = (() => {
             profileSel.appendChild(o);
         });
 
-        const profileDesc = Utils.el('p', { className: 'text-muted', style: 'font-size:12px; margin:0 0 8px' });
+        const profileDesc = Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm); margin:0 0 8px' });
         const customWrap  = Utils.el('div', { style: 'display:none' });
 
         const customGlobsIn = Utils.el('textarea', {
             className: 'input-sm',
             placeholder: 'One glob pattern per line, e.g.:\nauth.*\nadmin.*\nfile.delete',
-            style: 'width:100%; height:80px; margin-bottom:6px; font-family:monospace; font-size:12px',
+            style: 'width:100%; height:80px; margin-bottom:6px; font-family:monospace; font-size:var(--font-size-sm)',
         });
         const customSevSel = Utils.el('select', { className: 'input-sm', style: 'width:120px; margin-bottom:8px' });
         ['info', 'warning', 'critical'].forEach(s => {
@@ -4871,7 +4871,7 @@ const Admin = (() => {
         const inputs = {};
         for (const f of fields) {
             const row = Utils.el('div', { style: 'margin-bottom:10px' });
-            const lbl = Utils.el('label', { textContent: f.label, style: 'display:block;font-size:13px;margin-bottom:4px' });
+            const lbl = Utils.el('label', { textContent: f.label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' });
             const inp = Utils.el('input', { type: f.type, value: settings[f.key] ?? '', style: 'width:240px' });
             if (f.placeholder) inp.placeholder = f.placeholder;
             if (f.min != null) inp.min = f.min;
@@ -4945,7 +4945,7 @@ const Admin = (() => {
                 container.innerHTML = '<p class="text-muted">No events recorded.</p>';
                 return;
             }
-            const table = Utils.el('table', { className: 'admin-table', style: 'width:100%;font-size:12px' });
+            const table = Utils.el('table', { className: 'admin-table', style: 'width:100%;font-size:var(--font-size-sm)' });
             table.innerHTML = '<thead><tr><th>Timestamp</th><th>Type</th><th>Severity</th><th>Source</th><th>Data</th></tr></thead>';
             const tbody = Utils.el('tbody');
             for (const ev of events) {
@@ -4980,7 +4980,7 @@ const Admin = (() => {
 
         const mkField = (label, inp) => {
             const row = Utils.el('div', { style: 'margin-bottom:10px' });
-            row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:13px;margin-bottom:4px' }));
+            row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' }));
             row.appendChild(inp);
             return row;
         };
@@ -4988,7 +4988,7 @@ const Admin = (() => {
         const nameInp    = Utils.el('input', { type: 'text', value: channel?.name || '', style: 'width:100%', placeholder: 'e.g. Slack alerts' });
         const urlInp     = Utils.el('input', { type: 'text', value: channel?.endpoint_url || '', style: 'width:100%', placeholder: 'https://...' });
         const secretInp  = Utils.el('input', { type: 'password', style: 'width:100%', placeholder: isEdit ? '(unchanged)' : '(leave blank for unsigned)' });
-        const filterInp  = Utils.el('textarea', { style: 'width:100%;height:80px;font-size:12px', placeholder: 'One prefix per line. Blank = all operational events.\nPrefix with security: for security events.' });
+        const filterInp  = Utils.el('textarea', { style: 'width:100%;height:80px;font-size:var(--font-size-sm)', placeholder: 'One prefix per line. Blank = all operational events.\nPrefix with security: for security events.' });
         if (channel?.event_filter) {
             try {
                 filterInp.value = JSON.parse(channel.event_filter).join('\n');
@@ -4999,7 +4999,7 @@ const Admin = (() => {
         const enabledChk   = Utils.el('input', { type: 'checkbox', checked: channel ? !!channel.enabled : true });
 
         if (!secretInp.value && !isEdit) {
-            const warn = Utils.el('p', { style: 'font-size:12px;color:var(--color-warning,#d97706);margin:4px 0 0' });
+            const warn = Utils.el('p', { style: 'font-size:var(--font-size-sm);color:var(--color-warning,#d97706);margin:4px 0 0' });
             warn.textContent = 'No signing secret — deliveries will be unsigned JSON. Recommended: set a secret.';
             secretInp.addEventListener('input', () => { warn.style.display = secretInp.value ? 'none' : ''; });
             // append after building
@@ -5131,7 +5131,7 @@ const Admin = (() => {
         wrap.appendChild(header);
         wrap.appendChild(Utils.el('p', {
             className: 'text-muted',
-            style: 'font-size:13px;margin-bottom:16px',
+            style: 'font-size:var(--font-size-sm);margin-bottom:16px',
             textContent: 'API keys authenticate machine-to-machine access — for example, SIEM log ingestion or custom monitoring integrations. '
                 + 'Browser sessions use JWT cookies and do not need API keys. '
                 + 'Scope each key to the minimum required access.',
@@ -5170,7 +5170,7 @@ const Admin = (() => {
         const mkField = _mkField;
 
         // Scope checkboxes
-        const scopeLabel = Utils.el('label', { textContent: 'Scopes', style: 'display:block;font-size:13px;margin-bottom:4px' });
+        const scopeLabel = Utils.el('label', { textContent: 'Scopes', style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' });
         const scopeChecks = {};
         const scopeWrap = Utils.el('div', { style: 'margin-bottom:10px' });
         scopeWrap.appendChild(scopeLabel);
@@ -5230,7 +5230,7 @@ const Admin = (() => {
         box.appendChild(Utils.el('p', { textContent: keyName, style: 'font-weight:600;margin-bottom:6px' }));
 
         const codeWrap = Utils.el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:16px' });
-        const code = Utils.el('code', { textContent: rawKey, style: 'word-break:break-all;background:var(--color-surface,#f5f5f5);padding:8px;border-radius:4px;flex:1;font-size:13px' });
+        const code = Utils.el('code', { textContent: rawKey, style: 'word-break:break-all;background:var(--color-surface,#f5f5f5);padding:8px;border-radius:4px;flex:1;font-size:var(--font-size-sm)' });
         const copyBtn = Utils.el('button', { textContent: 'Copy', className: 'btn btn-sm' });
         copyBtn.addEventListener('click', () => {
             navigator.clipboard.writeText(rawKey).then(() => { copyBtn.textContent = 'Copied!'; });
@@ -6544,7 +6544,7 @@ const Admin = (() => {
 
         wrap.appendChild(Utils.el('p', {
             className: 'text-muted',
-            style: 'font-size:13px;margin-bottom:12px',
+            style: 'font-size:var(--font-size-sm);margin-bottom:12px',
             textContent: 'Service accounts are machine identities that authenticate via bearer token. They receive no permissions by default — assign roles after creation.',
         }));
 
@@ -6582,7 +6582,7 @@ const Admin = (() => {
         );
 
         box.appendChild(Utils.el('p', {
-            style: 'font-size:12px;color:var(--color-muted,#888);margin-bottom:8px',
+            style: 'font-size:var(--font-size-sm);color:var(--color-muted,#888);margin-bottom:8px',
             textContent: 'The service account will be created with no roles. Assign roles via the Roles & Permissions section after creation.',
         }));
 
@@ -6633,7 +6633,7 @@ const Admin = (() => {
         box.appendChild(Utils.el('p', { textContent: username, style: 'font-weight:600;margin-bottom:6px' }));
 
         const codeWrap = Utils.el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:8px' });
-        const code = Utils.el('code', { textContent: rawKey, style: 'word-break:break-all;background:var(--color-surface,#f5f5f5);padding:8px;border-radius:4px;flex:1;font-size:13px' });
+        const code = Utils.el('code', { textContent: rawKey, style: 'word-break:break-all;background:var(--color-surface,#f5f5f5);padding:8px;border-radius:4px;flex:1;font-size:var(--font-size-sm)' });
         const copyBtn = Utils.el('button', { textContent: 'Copy', className: 'btn btn-sm' });
         copyBtn.addEventListener('click', () => {
             navigator.clipboard.writeText(rawKey).then(() => { copyBtn.textContent = 'Copied!'; });
@@ -6642,7 +6642,7 @@ const Admin = (() => {
         box.appendChild(codeWrap);
 
         box.appendChild(Utils.el('p', {
-            style: 'font-size:12px;color:var(--color-muted,#888);margin-bottom:16px',
+            style: 'font-size:var(--font-size-sm);color:var(--color-muted,#888);margin-bottom:16px',
             textContent: 'Pass this as a Bearer token: Authorization: Bearer <key>',
         }));
 
@@ -6695,7 +6695,7 @@ const Admin = (() => {
                 dataset: { profileId: p.id },
             });
             card.appendChild(Utils.el('div', { textContent: p.name, style: 'font-weight:600;margin-bottom:4px' }));
-            card.appendChild(Utils.el('div', { textContent: p.description, className: 'text-muted', style: 'font-size:12px' }));
+            card.appendChild(Utils.el('div', { textContent: p.description, className: 'text-muted', style: 'font-size:var(--font-size-sm)' }));
             card.addEventListener('click', () => {
                 selectedProfile = p.id;
                 profileCards.querySelectorAll('[data-profile-id]').forEach(c => {
@@ -6716,7 +6716,7 @@ const Admin = (() => {
 
         container.appendChild(Utils.el('p', {
             className: 'text-muted',
-            style: 'font-size:12px;margin-top:8px',
+            style: 'font-size:var(--font-size-sm);margin-top:8px',
             textContent: 'To export or import full configuration (roles, policies, integrations, etc.) use the Import / Export tab.',
         }));
     }
@@ -6755,8 +6755,8 @@ const Admin = (() => {
             const row = Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:8px' });
             const cb  = Utils.el('input', { type: 'checkbox', checked: true, style: 'margin-top:2px;width:15px;height:15px;flex-shrink:0;cursor:pointer' });
             const lbl = Utils.el('div', { style: 'cursor:pointer' });
-            lbl.appendChild(Utils.el('span', { textContent: cat.label, style: 'font-weight:600;font-size:13px;display:block' }));
-            lbl.appendChild(Utils.el('span', { textContent: cat.desc, className: 'text-muted', style: 'font-size:12px' }));
+            lbl.appendChild(Utils.el('span', { textContent: cat.label, style: 'font-weight:600;font-size:var(--font-size-sm);display:block' }));
+            lbl.appendChild(Utils.el('span', { textContent: cat.desc, className: 'text-muted', style: 'font-size:var(--font-size-sm)' }));
             lbl.addEventListener('click', () => { cb.checked = !cb.checked; });
             checks[cat.id] = cb;
             row.append(cb, lbl);
@@ -6764,7 +6764,7 @@ const Admin = (() => {
         }
         exportDiv.appendChild(checkList);
 
-        const exportErrEl = Utils.el('p', { className: 'text-danger', style: 'display:none;font-size:13px;margin-bottom:8px' });
+        const exportErrEl = Utils.el('p', { className: 'text-danger', style: 'display:none;font-size:var(--font-size-sm);margin-bottom:8px' });
         exportDiv.appendChild(exportErrEl);
 
         const exportBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Export Selected →' });
@@ -6810,17 +6810,17 @@ const Admin = (() => {
         let _importCategories = [];
 
         const fileInp = Utils.el('input', { type: 'file', accept: '.json', style: 'display:block;margin-bottom:8px' });
-        const fileStatus = Utils.el('p', { style: 'font-size:12px;margin:0 0 10px' });
+        const fileStatus = Utils.el('p', { style: 'font-size:var(--font-size-sm);margin:0 0 10px' });
         importDiv.append(fileInp, fileStatus);
 
         const importCatWrap = Utils.el('div', { style: 'display:none;margin-bottom:12px' });
         const importCatList = Utils.el('div', { style: 'margin-bottom:10px' });
-        importCatWrap.appendChild(Utils.el('p', { textContent: 'Categories in file:', style: 'font-weight:600;font-size:13px;margin-bottom:6px' }));
+        importCatWrap.appendChild(Utils.el('p', { textContent: 'Categories in file:', style: 'font-weight:600;font-size:var(--font-size-sm);margin-bottom:6px' }));
         importCatWrap.appendChild(importCatList);
         importDiv.appendChild(importCatWrap);
 
         const modeRow = Utils.el('div', { style: 'display:flex;align-items:center;gap:10px;margin-bottom:12px' });
-        modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0;font-size:13px;white-space:nowrap' }));
+        modeRow.appendChild(Utils.el('label', { textContent: 'Mode:', style: 'font-weight:600;margin:0;font-size:var(--font-size-sm);white-space:nowrap' }));
         const modeSel = Utils.el('select', { className: 'input-sm', style: 'width:auto' }, [
             Utils.el('option', { value: 'replace', textContent: 'Replace — wipe and overwrite each selected category' }),
             Utils.el('option', { value: 'merge',   textContent: 'Merge — add or update, keep existing entries not in file' }),
@@ -6828,8 +6828,8 @@ const Admin = (() => {
         modeRow.appendChild(modeSel);
         importDiv.appendChild(modeRow);
 
-        const importErrEl  = Utils.el('p', { className: 'text-danger',  style: 'display:none;font-size:13px;margin-bottom:8px' });
-        const importOkEl   = Utils.el('p', { className: 'text-success', style: 'display:none;font-size:13px;margin-bottom:8px' });
+        const importErrEl  = Utils.el('p', { className: 'text-danger',  style: 'display:none;font-size:var(--font-size-sm);margin-bottom:8px' });
+        const importOkEl   = Utils.el('p', { className: 'text-success', style: 'display:none;font-size:var(--font-size-sm);margin-bottom:8px' });
         importDiv.append(importErrEl, importOkEl);
 
         const importBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Apply Import', disabled: true });
@@ -6863,7 +6863,7 @@ const Admin = (() => {
                     const catMeta = _EXPORT_CATEGORIES.find(c => c.id === catId);
                     const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:6px' });
                     const cb  = Utils.el('input', { type: 'checkbox', checked: true, style: 'width:15px;height:15px;cursor:pointer' });
-                    const lbl = Utils.el('span', { textContent: catMeta ? catMeta.label : catId, style: 'font-size:13px;cursor:pointer' });
+                    const lbl = Utils.el('span', { textContent: catMeta ? catMeta.label : catId, style: 'font-size:var(--font-size-sm);cursor:pointer' });
                     lbl.addEventListener('click', () => { cb.checked = !cb.checked; });
                     importCatChecks[catId] = cb;
                     row.append(cb, lbl);
@@ -6873,7 +6873,7 @@ const Admin = (() => {
                 if (_parsedImport._warnings?.length) {
                     const warnBox = Utils.el('div', { style: 'background:var(--color-warning-muted,#fff3cd);border:1px solid var(--color-warning,#ffc107);border-radius:4px;padding:8px;margin-top:8px' });
                     for (const w of _parsedImport._warnings) {
-                        warnBox.appendChild(Utils.el('p', { textContent: w, style: 'font-size:12px;margin:2px 0' }));
+                        warnBox.appendChild(Utils.el('p', { textContent: w, style: 'font-size:var(--font-size-sm);margin:2px 0' }));
                     }
                     importCatList.appendChild(warnBox);
                 }
@@ -7023,12 +7023,12 @@ const Admin = (() => {
         if (same.length) {
             container.appendChild(Utils.el('p', {
                 className: 'text-muted',
-                style: 'font-size:12px',
+                style: 'font-size:var(--font-size-sm)',
                 textContent: `${same.length} setting(s) already match — shown below.`,
             }));
         }
 
-        const table = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;width:100%' });
+        const table = Utils.el('table', { className: 'admin-table', style: 'font-size:var(--font-size-sm);width:100%' });
         const thead = Utils.el('thead');
         thead.appendChild(Utils.el('tr', {}, [
             Utils.el('th', { textContent: 'Setting' }),

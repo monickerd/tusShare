@@ -102,7 +102,7 @@ const Wizard = (() => {
             });
             bar.appendChild(dot);
             const lbl = Utils.el('span', {
-                style: `font-size:11px;margin:0 6px;white-space:nowrap;color:${active ? 'var(--color-text)' : 'var(--color-text-muted)'}`,
+                style: `font-size:var(--font-size-xs);margin:0 6px;white-space:nowrap;color:${active ? 'var(--color-text)' : 'var(--color-text-muted)'}`,
                 textContent: labels[i],
             });
             bar.appendChild(lbl);
@@ -145,7 +145,7 @@ const Wizard = (() => {
     }
 
     function _errEl() {
-        return Utils.el('div', { style: 'color:var(--color-danger);font-size:13px;margin-top:8px;display:none' });
+        return Utils.el('div', { style: 'color:var(--color-danger);font-size:var(--font-size-sm);margin-top:8px;display:none' });
     }
 
     function _showErr(el, msg) {
@@ -367,7 +367,7 @@ const Wizard = (() => {
             const grp = Utils.el('div', { style: 'margin-bottom:14px' });
             grp.appendChild(Utils.el('label', {
                 textContent: label,
-                style: 'display:block;font-weight:600;margin-bottom:4px;font-size:13px',
+                style: 'display:block;font-weight:600;margin-bottom:4px;font-size:var(--font-size-sm)',
             }));
             const inp = Utils.el('input', {
                 type: 'number',
@@ -402,7 +402,7 @@ const Wizard = (() => {
 
                 const _gb = bytes => bytes ? (bytes / 1073741824).toFixed(1) + ' GB' : '?';
 
-                const tbl = Utils.el('table', { style: 'border-collapse:collapse;width:100%;font-size:13px;margin-top:4px' });
+                const tbl = Utils.el('table', { style: 'border-collapse:collapse;width:100%;font-size:var(--font-size-sm);margin-top:4px' });
 
                 function _row(label, value, note) {
                     const tr = Utils.el('tr');
@@ -425,7 +425,7 @@ const Wizard = (() => {
 
                 scanResults.innerHTML = '';
                 scanResults.appendChild(Utils.el('p', {
-                    style: 'font-weight:600;color:var(--color-success);font-size:13px;margin-bottom:8px',
+                    style: 'font-weight:600;color:var(--color-success);font-size:var(--font-size-sm);margin-bottom:8px',
                     textContent: '✓ Scan complete — results are informational. Adjust Manual Configuration below if needed.',
                 }));
                 scanResults.appendChild(tbl);
@@ -436,7 +436,7 @@ const Wizard = (() => {
             } catch (e) {
                 scanResults.innerHTML = '';
                 scanResults.appendChild(Utils.el('p', {
-                    style: 'color:var(--color-danger);font-size:13px',
+                    style: 'color:var(--color-danger);font-size:var(--font-size-sm)',
                     textContent: 'Scan failed: ' + e.message,
                 }));
             } finally {
@@ -514,7 +514,7 @@ const Wizard = (() => {
         selRow.appendChild(profileSel);
         wrapper.appendChild(selRow);
 
-        const descEl = Utils.el('p', { className: 'text-muted', style: 'font-size:13px;margin-bottom:14px;min-height:1.4em' });
+        const descEl = Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm);margin-bottom:14px;min-height:1.4em' });
         wrapper.appendChild(descEl);
 
         function _updateDesc() {
@@ -532,7 +532,7 @@ const Wizard = (() => {
         });
         const importStatusEl = Utils.el('p', { style: 'font-size:12px;margin:0' });
         importArea.append(
-            Utils.el('label', { textContent: 'Profile JSON file:', style: 'display:block;font-weight:600;margin-bottom:6px;font-size:13px' }),
+            Utils.el('label', { textContent: 'Profile JSON file:', style: 'display:block;font-weight:600;margin-bottom:6px;font-size:var(--font-size-sm)' }),
             importFileInp,
             importStatusEl,
         );
@@ -571,7 +571,7 @@ const Wizard = (() => {
             });
             _advInputs[key] = cb;
             const lbl = Utils.el('div');
-            lbl.appendChild(Utils.el('span', { textContent: label, style: 'font-weight:600;font-size:13px' }));
+            lbl.appendChild(Utils.el('span', { textContent: label, style: 'font-weight:600;font-size:var(--font-size-sm)' }));
             if (hint) lbl.appendChild(Utils.el('div', { textContent: hint, style: 'color:var(--color-text-muted);font-size:12px' }));
             lbl.addEventListener('click', () => cb.click());
             r.append(cb, lbl);
@@ -586,7 +586,7 @@ const Wizard = (() => {
             }));
 
             const esc = Utils.el('div', { style: 'margin-bottom:14px' });
-            esc.appendChild(Utils.el('strong', { textContent: 'Escrow', style: 'display:block;margin-bottom:8px;font-size:13px' }));
+            esc.appendChild(Utils.el('strong', { textContent: 'Escrow', style: 'display:block;margin-bottom:8px;font-size:var(--font-size-sm)' }));
             esc.appendChild(_buildToggle('Require escrow coverage', 'escrow_require_coverage',
                 'Teams cannot be created without an assigned escrow agent'));
             esc.appendChild(_buildToggle('Notify escrow agent on emergency revocation', 'notify_escrow_on_revocation', ''));
@@ -595,7 +595,7 @@ const Wizard = (() => {
             advPanel.appendChild(Utils.el('hr', { style: 'margin:8px 0 12px;border-color:var(--color-border)' }));
 
             const sh = Utils.el('div');
-            sh.appendChild(Utils.el('strong', { textContent: 'Sharing (role_user defaults)', style: 'display:block;margin-bottom:8px;font-size:13px' }));
+            sh.appendChild(Utils.el('strong', { textContent: 'Sharing (role_user defaults)', style: 'display:block;margin-bottom:8px;font-size:var(--font-size-sm)' }));
             sh.appendChild(_buildToggle('Allow link shares',   'shares_link_create',         'Publicly accessible share links'));
             sh.appendChild(_buildToggle('Allow user shares',   'shares_user_create',         'Direct file shares to specific users'));
             sh.appendChild(_buildToggle('Allow upload grants', 'shares_upload_grant_create', 'Let others upload into a user\'s folder'));
@@ -785,7 +785,7 @@ const Wizard = (() => {
             const me = Auth.getCurrentUser();
             const eligible = (users || []).filter(u => u.auth_method !== 'service');
             if (!eligible.length) {
-                listArea.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:13px', textContent: 'No users found.' }));
+                listArea.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'No users found.' }));
                 return;
             }
             for (const u of eligible) {
@@ -809,7 +809,7 @@ const Wizard = (() => {
         } catch (e) {
             listArea.innerHTML = '';
             listArea.appendChild(Utils.el('p', {
-                style: 'color:var(--color-danger);font-size:13px',
+                style: 'color:var(--color-danger);font-size:var(--font-size-sm)',
                 textContent: 'Failed to load users: ' + e.message,
             }));
         }

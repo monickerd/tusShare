@@ -392,7 +392,7 @@ const Files = (() => {
             const pinBtn = Utils.el('button', {
                 className: 'breadcrumb-pin-btn',
                 title: 'Add to Favourites',
-                textContent: '☆',
+                textContent: '★',
             });
             pinBtn.addEventListener('click', () => {
                 const hash = _isTeamView
@@ -409,6 +409,9 @@ const Files = (() => {
             });
             el.appendChild(pinBtn);
         }
+
+        // Scroll to reveal the rightmost item (current folder name + star icon).
+        requestAnimationFrame(() => { el.scrollLeft = el.scrollWidth; });
     }
 
     function _renderFolderContents(container, folders, files, pendingUploads = []) {
@@ -682,7 +685,7 @@ const Files = (() => {
         };
 
         const wrap = Utils.el('div', { style: 'min-width:400px' });
-        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;margin-bottom:14px' });
+        const grid = Utils.el('div', { style: 'display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:var(--font-size-sm);margin-bottom:14px' });
         const _row = (label, val) => {
             grid.appendChild(Utils.el('span', { textContent: label + ':', style: 'font-weight:600;color:var(--color-text-muted)' }));
             grid.appendChild(Utils.el('span', { textContent: _esc(val) }));
@@ -696,7 +699,7 @@ const Files = (() => {
 
         if (info.audit?.length) {
             wrap.appendChild(Utils.el('h5', { textContent: 'Recent Access', style: 'margin:0 0 6px' }));
-            const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:12px;width:100%' });
+            const tbl = Utils.el('table', { className: 'admin-table', style: 'font-size:var(--font-size-sm);width:100%' });
             tbl.appendChild(Utils.el('thead', {}, [Utils.el('tr', {}, [
                 Utils.el('th', { textContent: 'Time' }),
                 Utils.el('th', { textContent: 'User' }),
