@@ -3,10 +3,10 @@
 # update.sh — rebuild and redeploy the tusShare production stack
 #
 # Use this instead of a plain "docker compose up --build" after pulling new
-# code.  The extra step is needed because the frontend volume
-# (tusshare_frontend) is populated from the image only on first creation —
-# Docker will not overwrite an existing volume on rebuild.  Removing it here
-# forces Docker to repopulate it from the new image on the next "up".
+# code.  The extra step is needed because the frontend volume is populated
+# from the image only on first creation — Docker will not overwrite an
+# existing volume on rebuild.  Removing it here forces Docker to repopulate
+# it from the new image on the next "up".
 #
 # Usage:
 #   ./update.sh              # rebuild image, refresh frontend volume, restart
@@ -35,8 +35,13 @@ info "Building application image..."
 docker compose build "${BUILD_ARGS[@]}"
 
 # ---- Remove the frontend volume so Docker repopulates it from the new image ----
-FRONTEND_VOL="filexfer_tusshare_frontend"
-if docker volume inspect "$FRONTEND_VOL" &>/dev/null; then
+# Locate by Compose label rather than a hardcoded name — works regardless of
+# what folder the project lives in (Docker prefixes the volume with the project
+# name, which defaults to the directory basename).
+FRONTEND_VOL=$(docker volume ls \
+    --filter "label=com.docker.compose.volume=tusshare_frontend" \
+    --format "{{.Name}}" | head -1)
+if [[ -n "$FRONTEND_VOL" ]]; then
     info "Removing stale frontend volume ($FRONTEND_VOL)..."
     docker volume rm "$FRONTEND_VOL"
 else
@@ -48,17 +53,28 @@ info "Starting stack..."
 docker compose up -d
 
 # ---- Wait for the app to report healthy ----
+# Poll every 2 s so we catch readiness quickly.  Exact-string match on
+# "healthy" avoids a false-positive match on "unhealthy".
 info "Waiting for app to be healthy..."
 MAX_WAIT=120
 ELAPSED=0
-until docker inspect --format='{{.State.Health.Status}}' tusshare 2>/dev/null | grep -q "healthy"; do
-    if [[ $ELAPSED -ge $MAX_WAIT ]]; then
-        error "App did not become healthy within ${MAX_WAIT}s — check logs:"
+while true; do
+    STATUS=$(docker inspect --format='{{.State.Health.Status}}' tusshare 2>/dev/null || echo "missing")
+    if [[ "$STATUS" == "healthy" ]]; then
+        break
+    fi
+    if [[ "$STATUS" == "unhealthy" ]]; then
+        error "App is unhealthy — check logs:"
         docker compose logs tusshare --tail=50
         exit 1
     fi
-    sleep 5
-    ELAPSED=$((ELAPSED + 5))
+    if [[ $ELAPSED -ge $MAX_WAIT ]]; then
+        error "App did not become healthy within ${MAX_WAIT}s (status: ${STATUS}) — check logs:"
+        docker compose logs tusshare --tail=50
+        exit 1
+    fi
+    sleep 2
+    ELAPSED=$((ELAPSED + 2))
 done
 
 info "Stack is healthy."
