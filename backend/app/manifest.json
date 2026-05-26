@@ -1,5 +1,5 @@
 {
-  "generated": "2026-05-26T08:01:48.479043+00:00",
+  "generated": "2026-05-26T08:05:01.180187+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-UJ63WcVg2yntKE2pJ7VPTSJpEmo27LCz8LyqFCw3UX0=",
     "frontend/js/admin.js": "sha256-FAOaRThyAZqCWCDGewffdZ+f95hByR93e+7hpQV6Is4=",
@@ -22,7 +22,7 @@
     "frontend/js/lib/noble-post-quantum.js": "sha256-oWLsvM4qDDCrCO13dvYfpW5vQ2I1IEikjDCZ39TKp/E=",
     "frontend/js/lib/opaque.js": "sha256-Ho1WODp3lI5FMIW21PUty5ZF+L//MjlXOLY9Oi4vy1I=",
     "frontend/css/components.css": "sha256-2Y5UpT2iB2wsGogUEujcsKSAUQDh/eRQCDveaVA9KpU=",
-    "frontend/css/main.css": "sha256-xjo/pvw3mCaoAkr4AyqTGwEPN1hrKNy8tll+gybH6O4=",
+    "frontend/css/main.css": "sha256-/UCCf1pU8hcb01V+3P8rPisgQZAcvEUQwdA/cgVDr18=",
     "frontend/themes/default/colors.css": "sha256-eCvo58pIXt8I3csYqdjAfxI4Nkl/T5I1U6Q95388Ffc=",
     "frontend/themes/default/layout.css": "sha256-3A2m6BBActM399wC3VHm9U/IYfpWg7UIkOFpXapt9VQ=",
     "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",
