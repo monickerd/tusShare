@@ -24,6 +24,19 @@ const Files = (() => {
     // stays visible while a TransferManager row shows real-time progress.
     const _activeUploads = new Map();
 
+    function _mkBreadcrumbStar() {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('width', '18');
+        svg.setAttribute('height', '18');
+        svg.setAttribute('aria-hidden', 'true');
+        const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+        poly.setAttribute('class', 'star-shape');
+        poly.setAttribute('points', '12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26');
+        svg.appendChild(poly);
+        return svg;
+    }
+
     // Concurrency gate for all upload paths.  When release() is called with a
     // waiter in the queue the slot is passed directly (no decrement+increment)
     // to avoid a window where a racing acquire() could exceed the cap.
@@ -393,8 +406,8 @@ const Files = (() => {
             const pinBtn = Utils.el('button', {
                 className: 'breadcrumb-pin-btn' + (_folderPinned ? ' breadcrumb-pin-btn--active' : ''),
                 title: _folderPinned ? 'Remove from Favourites' : 'Add to Favourites',
-                textContent: _folderPinned ? '★' : '☆',
             });
+            pinBtn.appendChild(_mkBreadcrumbStar());
             pinBtn.addEventListener('click', () => {
                 const hash = _isTeamView
                     ? `#/team-folders/${currentFolder.id}`

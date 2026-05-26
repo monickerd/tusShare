@@ -1878,18 +1878,28 @@ const App = (() => {
             return { item, submenu };
         }
 
-        function _mkPersonIcon() {
-            return Utils.el('span', { className: 'bn-icon bn-icon-person' }, [
-                Utils.el('span', { className: 'bn-icon-person-head', textContent: 'ᵒ' }),
-                Utils.el('span', { className: 'bn-icon-person-body', textContent: '◠' }),
-            ]);
+        function _mkSvg(innerHTML) {
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('width', '22');
+            svg.setAttribute('height', '22');
+            svg.setAttribute('aria-hidden', 'true');
+            svg.innerHTML = innerHTML;
+            return svg;
         }
+        const _iconHome   = () => _mkSvg('<path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>');
+        const _iconShare  = () => _mkSvg('<path fill="currentColor" d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/>');
+        const _iconStar   = () => _mkSvg('<polygon fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>');
+        const _iconPerson = () => _mkSvg(
+            '<circle cx="12" cy="8" r="4" fill="currentColor"/>' +
+            '<path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M4 20c0-4.4 3.6-8 8-8s8 3.6 8 8"/>'
+        );
 
-        const { item: bnTeams, submenu: bnTeamsMenu } = _makeBnSubmenuItem(_mkPersonIcon(), 'teams', 'Teams');
+        const { item: bnTeams, submenu: bnTeamsMenu } = _makeBnSubmenuItem(_iconPerson(), 'teams', 'Teams');
         bnTeamsMenu.appendChild(Utils.el('a', { href: '#/team-folders', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Team Folders' }));
         bnTeamsMenu.appendChild(Utils.el('a', { href: '#/teams',        className: 'bn-submenu-link', role: 'menuitem', textContent: 'Manage Teams' }));
 
-        const { item: bnShared, submenu: bnSharedMenu } = _makeBnSubmenuItem('⇄', 'shared', 'Shared');
+        const { item: bnShared, submenu: bnSharedMenu } = _makeBnSubmenuItem(_iconShare(), 'shared', 'Shared');
         bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares',          className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared By Me' }));
         bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares/received', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared To Me' }));
 
@@ -1915,10 +1925,10 @@ const App = (() => {
         TransferManager.setMobileBtn(bnTransferBtn);
 
         const bottomNav = Utils.el('nav', { className: 'mobile-bottom-nav', 'aria-label': 'Mobile navigation' }, [
-            _makeBnItem('⌂', '#/files', 'files', 'My Files'),
+            _makeBnItem(_iconHome(), '#/files', 'files', 'My Files'),
             bnTeams,
             bnShared,
-            _makeBnItem('★', '#/pinned', 'pinned', 'Favourites'),
+            _makeBnItem(_iconStar(), '#/pinned', 'pinned', 'Favourites'),
             bnTransferItem,
         ]);
         bottomNav.appendChild(bnBackdrop);

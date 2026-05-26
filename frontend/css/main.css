@@ -513,24 +513,30 @@ button:focus-visible {
     border-radius: var(--radius);
     background: none;
     border: none;
-    color: var(--color-text);
-    font-size: var(--font-size-xl);
-    -webkit-text-stroke: 0.6px currentColor;
+    color: var(--color-text-muted);
     cursor: pointer;
     transition: color var(--transition-fast), background var(--transition-fast);
 }
 .breadcrumb-pin-btn:hover {
     color: #f5c518;
-    -webkit-text-stroke: 0.6px #f5c518;
     background: var(--color-surface-hover);
 }
 .breadcrumb-pin-btn--active {
     color: #f5c518;
-    -webkit-text-stroke: 0px;
 }
 .breadcrumb-pin-btn--active:hover {
     color: #d4aa0f;
     background: var(--color-surface-hover);
+}
+.breadcrumb-pin-btn .star-shape {
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+}
+.breadcrumb-pin-btn--active .star-shape {
+    fill: currentColor;
+    stroke: none;
 }
 
 /* === Upload progress bar === */
@@ -1406,29 +1412,9 @@ input[type="checkbox"] {
     color: var(--color-primary);
 }
 
-.bn-icon {
-    font-size: 22px;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.bn-icon-person {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    line-height: 1;
-    gap: 0;
-}
-.bn-icon-person-head {
-    font-size: 23px;
-    line-height: 1;
-    margin-bottom: -27px;
-}
-.bn-icon-person-body {
-    font-size: 44px;
-    line-height: 1;
+.bn-tab svg {
+    display: block;
+    flex-shrink: 0;
 }
 
 /* === Reduced motion === */
