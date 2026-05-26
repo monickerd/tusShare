@@ -1,6 +1,6 @@
 """User model."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -53,7 +53,9 @@ class User:
             x25519_public_key=row["x25519_public_key"] if "x25519_public_key" in row.keys() else None,
             mlkem768_public_key=row["mlkem768_public_key"] if "mlkem768_public_key" in row.keys() else None,
             x25519_private_wrapped=row["x25519_private_wrapped"] if "x25519_private_wrapped" in row.keys() else None,
-            mlkem768_private_wrapped=row["mlkem768_private_wrapped"] if "mlkem768_private_wrapped" in row.keys() else None,
+            mlkem768_private_wrapped=row["mlkem768_private_wrapped"]
+            if "mlkem768_private_wrapped" in row.keys()
+            else None,
             asymmetric_key_iv=row["asymmetric_key_iv"] if "asymmetric_key_iv" in row.keys() else None,
             identity_provider_id=row["identity_provider_id"] if "identity_provider_id" in row.keys() else None,
         )

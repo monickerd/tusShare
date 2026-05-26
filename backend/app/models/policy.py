@@ -22,9 +22,13 @@ conditions as non-matching (conservative default).
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
+import urllib.parse
+import urllib.request
 import uuid as _uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -43,15 +47,16 @@ _SQL_HAS_TEAM_KEY = "SELECT 1 FROM user_team_keys WHERE team_id = ? AND user_id 
 # Dataclasses
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class PolicyFieldDef:
-    name:          str
+    name: str
     display_label: str
-    source:        str          # 'internal' | 'ldap' | 'oidc'
-    data_type:     str          # 'string' | 'boolean'
-    claim_path:    str | None   # LDAP attribute or OIDC claim key; None for internal
-    created_by:    str | None
-    created_at:    str
+    source: str  # 'internal' | 'ldap' | 'oidc'
+    data_type: str  # 'string' | 'boolean'
+    claim_path: str | None  # LDAP attribute or OIDC claim key; None for internal
+    created_by: str | None
+    created_at: str
 
     @classmethod
     def from_row(cls, row) -> "PolicyFieldDef":
@@ -67,24 +72,24 @@ class PolicyFieldDef:
 
     def to_dict(self) -> dict:
         return {
-            "name":          self.name,
+            "name": self.name,
             "display_label": self.display_label,
-            "source":        self.source,
-            "data_type":     self.data_type,
-            "claim_path":    self.claim_path,
-            "created_by":    self.created_by,
-            "created_at":    self.created_at,
+            "source": self.source,
+            "data_type": self.data_type,
+            "claim_path": self.claim_path,
+            "created_by": self.created_by,
+            "created_at": self.created_at,
         }
 
 
 @dataclass
 class AdminScopeCondition:
-    id:          str
-    holder_type: str   # 'user' | 'role'
-    holder_id:   str   # user_id or role name
-    field:       str
-    operator:    str
-    value:       str
+    id: str
+    holder_type: str  # 'user' | 'role'
+    holder_id: str  # user_id or role name
+    field: str
+    operator: str
+    value: str
 
     @classmethod
     def from_row(cls, row) -> "AdminScopeCondition":
@@ -99,24 +104,24 @@ class AdminScopeCondition:
 
     def to_dict(self) -> dict:
         return {
-            "id":          self.id,
+            "id": self.id,
             "holder_type": self.holder_type,
-            "holder_id":   self.holder_id,
-            "field":       self.field,
-            "operator":    self.operator,
-            "value":       self.value,
+            "holder_id": self.holder_id,
+            "field": self.field,
+            "operator": self.operator,
+            "value": self.value,
         }
 
 
 @dataclass
 class Policy:
-    id:             str
-    name:           str
-    scope_type:     str          # 'org' | 'team'
-    scope_id:       str | None   # team_id or None
-    escrow_enabled: bool         # whether escrow grants are written for covered teams
-    created_by:     str | None
-    created_at:     str
+    id: str
+    name: str
+    scope_type: str  # 'org' | 'team'
+    scope_id: str | None  # team_id or None
+    escrow_enabled: bool  # whether escrow grants are written for covered teams
+    created_by: str | None
+    created_at: str
 
     @classmethod
     def from_row(cls, row) -> "Policy":
@@ -132,26 +137,26 @@ class Policy:
 
     def to_dict(self) -> dict:
         return {
-            "id":             self.id,
-            "name":           self.name,
-            "scope_type":     self.scope_type,
-            "scope_id":       self.scope_id,
+            "id": self.id,
+            "name": self.name,
+            "scope_type": self.scope_type,
+            "scope_id": self.scope_id,
             "escrow_enabled": self.escrow_enabled,
-            "created_by":     self.created_by,
-            "created_at":     self.created_at,
+            "created_by": self.created_by,
+            "created_at": self.created_at,
         }
 
 
 @dataclass
 class PolicyCondition:
-    id:                 str
-    policy_id:          str
-    field:              str
-    operator:           str
-    value:              str
+    id: str
+    policy_id: str
+    field: str
+    operator: str
+    value: str
     inherited_scope_id: str | None
-    scope_detached:     bool
-    strict:             bool
+    scope_detached: bool
+    strict: bool
 
     @classmethod
     def from_row(cls, row) -> "PolicyCondition":
@@ -168,28 +173,28 @@ class PolicyCondition:
 
     def to_dict(self) -> dict:
         return {
-            "id":                 self.id,
-            "policy_id":          self.policy_id,
-            "field":              self.field,
-            "operator":           self.operator,
-            "value":              self.value,
+            "id": self.id,
+            "policy_id": self.policy_id,
+            "field": self.field,
+            "operator": self.operator,
+            "value": self.value,
             "inherited_scope_id": self.inherited_scope_id,
-            "scope_detached":     self.scope_detached,
-            "strict":             self.strict,
+            "scope_detached": self.scope_detached,
+            "strict": self.strict,
         }
 
 
 @dataclass
 class PolicyEffect:
-    id:              str
-    policy_id:       str
-    effect_type:     str                # 'team_member' | 'folder_acl' | 'team_escrow'
-    target_id:       str                # team_id or folder_id
-    role_level:      str | None         # roles.id for team_member; None otherwise
-    permission:      str | None         # 'read'|'write'|'admin' for folder_acl; None otherwise
-    recursive:       bool
+    id: str
+    policy_id: str
+    effect_type: str  # 'team_member' | 'folder_acl' | 'team_escrow'
+    target_id: str  # team_id or folder_id
+    role_level: str | None  # roles.id for team_member; None otherwise
+    permission: str | None  # 'read'|'write'|'admin' for folder_acl; None otherwise
+    recursive: bool
     escrow_override: int | None = None  # None=use policy default, 1=force-on, 0=force-off
-    created_at:      str = ""
+    created_at: str = ""
 
     @classmethod
     def from_row(cls, row) -> "PolicyEffect":
@@ -207,25 +212,25 @@ class PolicyEffect:
 
     def to_dict(self) -> dict:
         return {
-            "id":              self.id,
-            "policy_id":       self.policy_id,
-            "effect_type":     self.effect_type,
-            "target_id":       self.target_id,
-            "role_level":      self.role_level,
-            "permission":      self.permission,
-            "recursive":       self.recursive,
+            "id": self.id,
+            "policy_id": self.policy_id,
+            "effect_type": self.effect_type,
+            "target_id": self.target_id,
+            "role_level": self.role_level,
+            "permission": self.permission,
+            "recursive": self.recursive,
             "escrow_override": self.escrow_override,
-            "created_at":      self.created_at,
+            "created_at": self.created_at,
         }
 
 
 @dataclass
 class PolicyTeamGrant:
-    id:          str
-    effect_id:   str
-    user_id:     str
+    id: str
+    effect_id: str
+    user_id: str
     key_wrapped: bool
-    granted_at:  str
+    granted_at: str
 
     @classmethod
     def from_row(cls, row) -> "PolicyTeamGrant":
@@ -240,13 +245,13 @@ class PolicyTeamGrant:
 
 @dataclass
 class PolicyFolderGrant:
-    id:          str
-    effect_id:   str
-    user_id:     str
-    folder_id:   str
+    id: str
+    effect_id: str
+    user_id: str
+    folder_id: str
     acl_written: bool
     key_wrapped: bool
-    granted_at:  str
+    granted_at: str
 
     @classmethod
     def from_row(cls, row) -> "PolicyFolderGrant":
@@ -264,6 +269,7 @@ class PolicyFolderGrant:
 # ---------------------------------------------------------------------------
 # Internal field resolver
 # ---------------------------------------------------------------------------
+
 
 async def _resolve_totp_field(db, user_id: str) -> str:
     try:
@@ -296,6 +302,7 @@ async def _resolve_role_field(db, user_id: str) -> str:
     Returns '' if the user has no global role assignments at all.
     """
     from app.models.role import ROLE_TIER
+
     try:
         cursor = await db.execute(
             "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type IS NULL",
@@ -332,8 +339,7 @@ async def _resolve_users_nullable_field(db, user_id: str, column: str) -> str:
 async def _resolve_webauthn_enabled_field(db, user_id: str) -> str:
     try:
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM user_mfa_credentials "
-            "WHERE user_id = ? AND is_active = true AND method = 'webauthn'",
+            "SELECT COUNT(*) FROM user_mfa_credentials WHERE user_id = ? AND is_active = true AND method = 'webauthn'",
             (user_id,),
         )
         row = await cursor.fetchone()
@@ -441,6 +447,7 @@ async def resolve_internal_fields(db, user_id: str, fields: set[str]) -> dict[st
 # LDAP filter builder
 # ---------------------------------------------------------------------------
 
+
 def _ldap_condition_to_filter(attr: str, val: str, op: str) -> str | None:
     """Translate a single operator into an LDAP filter fragment.  Returns None to skip."""
     if op == "=":
@@ -496,15 +503,16 @@ def build_ldap_filter(conditions: list[PolicyCondition], field_defs: dict[str, P
 # Condition evaluator (local values only — for internal + oidc-cache resolution)
 # ---------------------------------------------------------------------------
 
+
 def _evaluate_condition(cond: PolicyCondition, actual_value: str) -> bool:
     """Evaluate a single condition against a resolved string value.
 
     case_sensitive is used for 'strict' conditions; default is case-insensitive.
     'in' operator treats cond.value as a comma-separated list.
     """
-    op    = cond.operator
-    cv    = cond.value
-    av    = actual_value
+    op = cond.operator
+    cv = cond.value
+    av = actual_value
 
     if not cond.strict:
         cv = cv.lower()
@@ -521,8 +529,7 @@ def _evaluate_condition(cond: PolicyCondition, actual_value: str) -> bool:
     elif op == "ends_with":
         return av.endswith(cv)
     elif op == "in":
-        members = {m.strip().lower() if not cond.strict else m.strip()
-                   for m in cv.split(",") if m.strip()}
+        members = {m.strip().lower() if not cond.strict else m.strip() for m in cv.split(",") if m.strip()}
         return av in members
     return False
 
@@ -530,6 +537,7 @@ def _evaluate_condition(cond: PolicyCondition, actual_value: str) -> bool:
 # ---------------------------------------------------------------------------
 # Admin scope: resolve the effective scope for an admin user
 # ---------------------------------------------------------------------------
+
 
 async def get_user_effective_scope(db, user_id: str) -> list[AdminScopeCondition]:
     """Return the list of ALL scope conditions applicable to a user.
@@ -560,23 +568,16 @@ async def _resolve_all_policy_fields(
     field_defs: dict,
 ) -> dict[str, str]:
     internal_fields_needed = {
-        c.field for c in all_conditions
-        if field_defs.get(c.field) and field_defs[c.field].source == "internal"
+        c.field for c in all_conditions if field_defs.get(c.field) and field_defs[c.field].source == "internal"
     }
     internal_values = await resolve_internal_fields(db, user_id, internal_fields_needed)
 
-    ldap_conditions = [
-        c for c in all_conditions
-        if field_defs.get(c.field) and field_defs[c.field].source == "ldap"
-    ]
+    ldap_conditions = [c for c in all_conditions if field_defs.get(c.field) and field_defs[c.field].source == "ldap"]
     ldap_values: dict[str, str] = {}
     if ldap_conditions:
         ldap_values = await _resolve_ldap_fields(db, user_id, ldap_conditions, field_defs)
 
-    oidc_conditions = [
-        c for c in all_conditions
-        if field_defs.get(c.field) and field_defs[c.field].source == "oidc"
-    ]
+    oidc_conditions = [c for c in all_conditions if field_defs.get(c.field) and field_defs[c.field].source == "oidc"]
     oidc_values: dict[str, str] = {}
     if oidc_conditions:
         oidc_values = await _resolve_oidc_fields(db, user_id, oidc_conditions, field_defs)
@@ -647,8 +648,7 @@ async def _apply_team_member_effect(
         )
         if ea_has_key:
             await db.execute(
-                "UPDATE policy_team_grants SET key_wrapped = 1 "
-                "WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
+                "UPDATE policy_team_grants SET key_wrapped = 1 WHERE effect_id = ? AND user_id = ? AND key_wrapped = 0",
                 (effect_id, ea_id),
             )
 
@@ -675,8 +675,7 @@ async def _apply_folder_acl_effect(
         (perm_id, target_id, user_id, permission, recursive, effect_id),
     )
     cursor = await db.execute(
-        "SELECT policy_effect_id FROM permissions "
-        "WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
+        "SELECT policy_effect_id FROM permissions WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
         (target_id, user_id),
     )
     perm_row = await cursor.fetchone()
@@ -705,15 +704,13 @@ async def _check_policy_debounce(db, user_id: str, force: bool) -> bool:
     """Return True if the user was recently evaluated and evaluation should be skipped."""
     if force:
         return False
-    cursor = await db.execute(
-        "SELECT policy_last_evaluated_at FROM users WHERE id = ?", (user_id,)
-    )
+    cursor = await db.execute("SELECT policy_last_evaluated_at FROM users WHERE id = ?", (user_id,))
     row = await cursor.fetchone()
     if not (row and row["policy_last_evaluated_at"]):
         return False
     try:
         last = datetime.fromisoformat(row["policy_last_evaluated_at"])
-        now  = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
         if last.tzinfo is None:
             last = last.replace(tzinfo=timezone.utc)
         return (now - last).total_seconds() < _DEBOUNCE_SECONDS
@@ -721,9 +718,7 @@ async def _check_policy_debounce(db, user_id: str, force: bool) -> bool:
         return False  # malformed timestamp — proceed with evaluation
 
 
-def _collect_matching_policy_ids(
-    policies: list, conditions_by_policy: dict, all_resolved: dict
-) -> "set[str]":
+def _collect_matching_policy_ids(policies: list, conditions_by_policy: dict, all_resolved: dict) -> "set[str]":
     """Evaluate each policy's conditions against resolved field values (AND semantics)."""
     matching: set[str] = set()
     for policy in policies:
@@ -744,9 +739,7 @@ def _collect_matching_policy_ids(
     return matching
 
 
-async def _write_matching_policy_grants(
-    db, user_id: str, policies: list, matching_policy_ids: "set[str]"
-) -> None:
+async def _write_matching_policy_grants(db, user_id: str, policies: list, matching_policy_ids: "set[str]") -> None:
     """Write policy_folder_grants for all matching policies (step 8)."""
     match_ph = ",".join("?" * len(matching_policy_ids))
     cursor = await db.execute(
@@ -755,9 +748,7 @@ async def _write_matching_policy_grants(
     )
     effects = await cursor.fetchall()
 
-    policy_escrow_map: dict[str, bool] = {
-        p.id: p.escrow_enabled for p in policies if p.id in matching_policy_ids
-    }
+    policy_escrow_map: dict[str, bool] = {p.id: p.escrow_enabled for p in policies if p.id in matching_policy_ids}
     escrow_overrides: dict[str, dict] = {}
     for eff in effects:
         if eff["effect_type"] == "team_escrow":
@@ -767,8 +758,7 @@ async def _write_matching_policy_grants(
             escrow_overrides[pid][eff["target_id"]] = eff["escrow_override"]
 
     cursor2 = await db.execute(
-        "SELECT DISTINCT ur.user_id FROM user_roles ur "
-        "WHERE ur.role_id = 'escrow_agent' AND ur.scope_type IS NULL",
+        "SELECT DISTINCT ur.user_id FROM user_roles ur WHERE ur.role_id = 'escrow_agent' AND ur.scope_type IS NULL",
     )
     escrow_agent_ids: list[str] = [r["user_id"] for r in await cursor2.fetchall()]
 
@@ -778,18 +768,28 @@ async def _write_matching_policy_grants(
             continue
         if effect_type == "team_member":
             await _apply_team_member_effect(
-                db, user_id, eff["id"], eff["target_id"], eff["role_level"], eff["policy_id"],
-                policy_escrow_map, escrow_overrides, escrow_agent_ids,
+                db,
+                user_id,
+                eff["id"],
+                eff["target_id"],
+                eff["role_level"],
+                eff["policy_id"],
+                policy_escrow_map,
+                escrow_overrides,
+                escrow_agent_ids,
             )
         elif effect_type == "folder_acl":
             await _apply_folder_acl_effect(
-                db, user_id, eff["id"], eff["target_id"], eff["permission"], eff["recursive"],
+                db,
+                user_id,
+                eff["id"],
+                eff["target_id"],
+                eff["permission"],
+                eff["recursive"],
             )
 
 
-async def _revoke_non_matching_policy_grants(
-    db, user_id: str, policies: list, matching_policy_ids: "set[str]"
-) -> None:
+async def _revoke_non_matching_policy_grants(db, user_id: str, policies: list, matching_policy_ids: "set[str]") -> None:
     """Delete policy-sourced grants for policies that no longer match (step 9)."""
     non_matching_ids = [p.id for p in policies if p.id not in matching_policy_ids]
     if not non_matching_ids:
@@ -805,25 +805,31 @@ async def _revoke_non_matching_policy_grants(
     rev_ph = ",".join("?" * len(revoke_effect_ids))
     rev_args = [user_id] + revoke_effect_ids
     await db.execute(
-        f"DELETE FROM user_roles WHERE user_id = ? AND policy_effect_id IN ({rev_ph})", rev_args,
+        f"DELETE FROM user_roles WHERE user_id = ? AND policy_effect_id IN ({rev_ph})",
+        rev_args,
     )
     await db.execute(
-        f"DELETE FROM user_team_keys WHERE user_id = ? AND policy_effect_id IN ({rev_ph})", rev_args,
+        f"DELETE FROM user_team_keys WHERE user_id = ? AND policy_effect_id IN ({rev_ph})",
+        rev_args,
     )
     await db.execute(
-        f"DELETE FROM permissions WHERE user_id = ? AND policy_effect_id IN ({rev_ph})", rev_args,
+        f"DELETE FROM permissions WHERE user_id = ? AND policy_effect_id IN ({rev_ph})",
+        rev_args,
     )
     await db.execute(
-        f"DELETE FROM policy_team_grants WHERE user_id = ? AND effect_id IN ({rev_ph})", rev_args,
+        f"DELETE FROM policy_team_grants WHERE user_id = ? AND effect_id IN ({rev_ph})",
+        rev_args,
     )
     await db.execute(
-        f"DELETE FROM policy_folder_grants WHERE user_id = ? AND effect_id IN ({rev_ph})", rev_args,
+        f"DELETE FROM policy_folder_grants WHERE user_id = ? AND effect_id IN ({rev_ph})",
+        rev_args,
     )
 
 
 # ---------------------------------------------------------------------------
 # Main evaluation function
 # ---------------------------------------------------------------------------
+
 
 async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> None:
     """Evaluate all policies that apply to a user and write policy_folder_grants.
@@ -902,9 +908,7 @@ async def evaluate_user_policies(db, user_id: str, *, force: bool = False) -> No
             f"SELECT * FROM policy_field_definitions WHERE name IN ({field_placeholders})",
             list(needed_fields),
         )
-        field_defs: dict[str, PolicyFieldDef] = {
-            r["name"]: PolicyFieldDef.from_row(r) for r in await cursor.fetchall()
-        }
+        field_defs: dict[str, PolicyFieldDef] = {r["name"]: PolicyFieldDef.from_row(r) for r in await cursor.fetchall()}
     else:
         field_defs = {}
 
@@ -945,15 +949,11 @@ async def _get_folder_team_id(db, folder_id: str) -> str | None:
     current_id = folder_id
     while current_id and current_id not in visited:
         visited.add(current_id)
-        cursor = await db.execute(
-            "SELECT team_id FROM team_folders WHERE folder_id = ?", (current_id,)
-        )
+        cursor = await db.execute("SELECT team_id FROM team_folders WHERE folder_id = ?", (current_id,))
         tf_row = await cursor.fetchone()
         if tf_row:
             return tf_row["team_id"]
-        cursor = await db.execute(
-            "SELECT parent_id FROM folders WHERE id = ?", (current_id,)
-        )
+        cursor = await db.execute("SELECT parent_id FROM folders WHERE id = ?", (current_id,))
         row = await cursor.fetchone()
         if not row:
             return None
@@ -1001,6 +1001,7 @@ async def _resolve_ldap_fields(
 
     try:
         from app.auth.ldap_provider import ldap_fetch_attributes
+
         raw = await ldap_fetch_attributes(row["config_enc"], row["external_id"])
         if raw is None:
             return {}
@@ -1079,16 +1080,12 @@ async def _fetch_oidc_userinfo(row) -> dict:
     then calls the UserInfo endpoint.  Returns {} on any error.
     """
     try:
-        import asyncio
-        import urllib.request
-        import urllib.parse
-        import json
-
         refresh_token_enc = row["oidc_refresh_token_enc"]
         if not refresh_token_enc:
             return {}
 
         from app.auth.idp_crypto import decrypt_idp_config, decrypt_token
+
         cfg = decrypt_idp_config(row["config_enc"])
         refresh_token = decrypt_token(refresh_token_enc)
         issuer_url = cfg["issuer_url"].rstrip("/")
@@ -1097,12 +1094,14 @@ async def _fetch_oidc_userinfo(row) -> dict:
 
         def _exchange_and_fetch():
             # Exchange refresh token for access token
-            token_data = urllib.parse.urlencode({
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-                "client_id": client_id,
-                "client_secret": client_secret,
-            }).encode()
+            token_data = urllib.parse.urlencode(
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                }
+            ).encode()
             req = urllib.request.Request(
                 f"{issuer_url}/token",
                 data=token_data,
@@ -1131,6 +1130,7 @@ async def _fetch_oidc_userinfo(row) -> dict:
 # Policy enforcement helpers (used by route guards)
 # ---------------------------------------------------------------------------
 
+
 async def get_blocking_policies(db, user_id: str, team_id: str) -> list[dict]:
     """Return policies currently enforcing a user's team membership.
 
@@ -1156,6 +1156,7 @@ async def get_blocking_policies(db, user_id: str, team_id: str) -> list[dict]:
 # Policy-change sweep (Trigger 2)
 # ---------------------------------------------------------------------------
 
+
 async def sweep_policy_for_all_users(db, policy_id: str) -> None:
     """Re-evaluate a single policy against all active users.
 
@@ -1173,7 +1174,7 @@ async def sweep_policy_for_all_users(db, policy_id: str) -> None:
         return
 
     scope_type = policy_row["scope_type"]
-    scope_id   = policy_row["scope_id"]
+    scope_id = policy_row["scope_id"]
 
     if scope_type == "org":
         # All users
@@ -1181,8 +1182,7 @@ async def sweep_policy_for_all_users(db, policy_id: str) -> None:
     else:
         # Only users in the scoped team
         cursor = await db.execute(
-            "SELECT DISTINCT user_id AS id FROM user_roles "
-            "WHERE scope_type = 'team' AND scope_id = ?",
+            "SELECT DISTINCT user_id AS id FROM user_roles WHERE scope_type = 'team' AND scope_id = ?",
             (scope_id,),
         )
 
@@ -1192,4 +1192,6 @@ async def sweep_policy_for_all_users(db, policy_id: str) -> None:
         try:
             await evaluate_user_policies(db, uid, force=True)
         except Exception:
-            logger.exception("policy sweep: error evaluating user %s for policy %s", uid, policy_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+            logger.exception(
+                "policy sweep: error evaluating user %s for policy %s", uid, policy_id
+            )  # NOSONAR — server-side audit log; values are Pydantic-validated

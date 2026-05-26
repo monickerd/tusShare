@@ -39,12 +39,11 @@ class AzureBlobProvider(StorageProvider):
 
     def _service_client(self):
         from azure.storage.blob.aio import BlobServiceClient  # type: ignore[import]
+
         return BlobServiceClient.from_connection_string(self._connection_string)
 
     def _blob_client(self, service_client, blob_name: str):
-        return service_client.get_blob_client(
-            container=self._container_name, blob=blob_name
-        )
+        return service_client.get_blob_client(container=self._container_name, blob=blob_name)
 
     # ------------------------------------------------------------------
     # Redis-aware block-list helpers
@@ -52,6 +51,7 @@ class AzureBlobProvider(StorageProvider):
 
     async def _store_blocks(self, upload_id: str, block_ids: list[str]) -> None:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             await r.set(f"azure:blocks:{upload_id}", json.dumps(block_ids), ex=3600)
@@ -60,6 +60,7 @@ class AzureBlobProvider(StorageProvider):
 
     async def _get_blocks(self, upload_id: str) -> list[str]:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             raw = await r.get(f"azure:blocks:{upload_id}")
@@ -68,6 +69,7 @@ class AzureBlobProvider(StorageProvider):
 
     async def _del_blocks(self, upload_id: str) -> None:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             await r.delete(f"azure:blocks:{upload_id}")
@@ -163,6 +165,7 @@ class AzureBlobProvider(StorageProvider):
                 await blob.delete_blob()
         except Exception as exc:
             from azure.core.exceptions import ResourceNotFoundError  # type: ignore[import]
+
             if not isinstance(exc, ResourceNotFoundError):
                 logger.warning("Azure delete failed for %s: %s", storage_key, exc)
 

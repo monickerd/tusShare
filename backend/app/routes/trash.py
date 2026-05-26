@@ -1,21 +1,19 @@
 """Trash routes: list, restore, and permanently delete soft-deleted items."""
 
-import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.database import Database, db_session, get_db
+from app.database import Database, get_db
 from app.models.role import FLAG_FILES_ACCESS_ALL_WRITE
-from app.services import event_bus, sse_broker
 from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus, sse_broker
 from app.services.trash import get_trash_settings, purge_file
-import app.storage.manager as storage
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
 
 router = APIRouter()
 
@@ -25,6 +23,7 @@ _ERR_ACCESS_DENIED = "Access denied"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _permanent_delete_at(deleted_at: str | None, retention_days: int) -> str | None:
     if not deleted_at:
@@ -58,6 +57,7 @@ class BulkItemsRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # List trash (personal)
 # ---------------------------------------------------------------------------
+
 
 @router.get("")
 async def list_trash(
@@ -103,6 +103,7 @@ async def list_trash(
 # ---------------------------------------------------------------------------
 # Team trash
 # ---------------------------------------------------------------------------
+
 
 @router.get("/teams/{team_id}", responses={403: {"description": "Forbidden"}})
 async def list_team_trash(
@@ -173,7 +174,10 @@ async def list_team_trash(
 # Restore (single item)
 # ---------------------------------------------------------------------------
 
-@router.post("/files/{file_id}/restore", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+
+@router.post(
+    "/files/{file_id}/restore", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}}
+)
 async def restore_file(
     file_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -185,7 +189,9 @@ async def restore_file(
     return {"message": "File restored"}
 
 
-@router.post("/folders/{folder_id}/restore", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.post(
+    "/folders/{folder_id}/restore", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}}
+)
 async def restore_folder(
     folder_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -200,6 +206,7 @@ async def restore_folder(
 # ---------------------------------------------------------------------------
 # Bulk restore
 # ---------------------------------------------------------------------------
+
 
 @router.post("/recover-bulk")
 async def recover_bulk(
@@ -237,6 +244,7 @@ async def recover_bulk(
 # Permanent delete (single item)
 # ---------------------------------------------------------------------------
 
+
 @router.delete("/files/{file_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
 async def permanently_delete_file(
     file_id: str,
@@ -264,6 +272,7 @@ async def permanently_delete_folder(
 # ---------------------------------------------------------------------------
 # Bulk permanent delete
 # ---------------------------------------------------------------------------
+
 
 @router.post("/bulk-delete")
 async def permanently_delete_bulk(
@@ -303,8 +312,7 @@ async def empty_trash(
 ):
     """Permanently delete all items in the current user's trash."""
     cursor = await db.execute(
-        "SELECT id, storage_key, encrypted_size, owner_id FROM files "
-        "WHERE owner_id = ? AND deleted_at IS NOT NULL",
+        "SELECT id, storage_key, encrypted_size, owner_id FROM files WHERE owner_id = ? AND deleted_at IS NOT NULL",
         (user.id,),
     )
     file_rows = await cursor.fetchall()
@@ -327,6 +335,7 @@ async def empty_trash(
 # Inner helpers (shared by single and bulk endpoints)
 # ---------------------------------------------------------------------------
 
+
 async def _restore_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None:
     cursor = await db.execute(
         "SELECT id, owner_id, folder_id FROM files WHERE id = ? AND deleted_at IS NOT NULL",
@@ -334,7 +343,9 @@ async def _restore_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found in trash")  # NOSONAR — documented in calling route handler
+        raise HTTPException(
+            status_code=404, detail="File not found in trash"
+        )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE):
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
@@ -351,13 +362,15 @@ async def _restore_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None
     )
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="file.restored",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"file_id": file_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.restored",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"file_id": file_id},
+        )
+    )
     sse_broker.publish(new_folder_id or f"root:{row['owner_id']}", {"type": "change"})
 
 
@@ -368,7 +381,9 @@ async def _restore_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> 
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Folder not found in trash")  # NOSONAR — documented in calling route handler
+        raise HTTPException(
+            status_code=404, detail="Folder not found in trash"
+        )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
@@ -415,25 +430,28 @@ async def _restore_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> 
         await db.rollback()
         raise
 
-    event_bus.emit(SecurityEvent(
-        event_type="file.restored",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"folder_id": folder_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.restored",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"folder_id": folder_id},
+        )
+    )
     sse_broker.publish(new_parent_id or f"root:{row['owner_id']}", {"type": "change"})
 
 
 async def _purge_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None:
     cursor = await db.execute(
-        "SELECT id, owner_id, storage_key, encrypted_size FROM files "
-        "WHERE id = ? AND deleted_at IS NOT NULL",
+        "SELECT id, owner_id, storage_key, encrypted_size FROM files WHERE id = ? AND deleted_at IS NOT NULL",
         (file_id,),
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="File not found in trash")  # NOSONAR — documented in calling route handler
+        raise HTTPException(
+            status_code=404, detail="File not found in trash"
+        )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE):
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
     await purge_file(db, row["id"], row["storage_key"], row["encrypted_size"], row["owner_id"])
@@ -446,7 +464,9 @@ async def _purge_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> No
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Folder not found in trash")  # NOSONAR — documented in calling route handler
+        raise HTTPException(
+            status_code=404, detail="Folder not found in trash"
+        )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 

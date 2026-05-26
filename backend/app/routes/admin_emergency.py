@@ -12,6 +12,7 @@ GET  /admin/users/{user_id}/transfer-locks
 DELETE /admin/files/{file_id}/transfer-lock
     Admin explicitly clears a transfer lock on a single file.
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,10 +25,10 @@ from pydantic import BaseModel
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
+from app.middleware.rate_limit import _get_client_ip
 from app.models.role import FLAG_USERS_MANAGE
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
-from app.middleware.rate_limit import _get_client_ip
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.validation.validators import validate_pagination
@@ -39,6 +40,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
+
 
 class EmergencyRevokeRequest(BaseModel):
     reason: str
@@ -53,7 +55,15 @@ class EmergencyRevokeRequest(BaseModel):
 # POST /admin/users/{user_id}/emergency-revoke
 # ---------------------------------------------------------------------------
 
-@router.post("/users/{user_id}/emergency-revoke", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+
+@router.post(
+    "/users/{user_id}/emergency-revoke",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def emergency_revoke(
     request: Request,
     user_id: str,
@@ -227,31 +237,36 @@ async def emergency_revoke(
     # ------------------------------------------------------------------
     # 7. Emit to event bus (after commit so the action is durable first)
     # ------------------------------------------------------------------
-    event_bus.emit(SecurityEvent(
-        event_type="admin.emergency_revocation",
-        severity="critical",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="user", id=user_id, name=target["username"]),
-        admin_actor_id=admin.id,
-        detail={
-            "reason": body.reason,
-            "scope": body.scope,
-            "tokens_revoked": result["tokens_revoked"],
-            "shares_revoked": result["shares_revoked"],
-            "files_locked": result["files_locked"],
-            "teams_flagged": result["teams_flagged"],
-            "team_admin_roles_stripped": result["team_admin_roles_stripped"],
-            "escrow_agents_notified": result["escrow_agents_notified"],
-        },
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.emergency_revocation",
+            severity="critical",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user_id, name=target["username"]),
+            admin_actor_id=admin.id,
+            detail={
+                "reason": body.reason,
+                "scope": body.scope,
+                "tokens_revoked": result["tokens_revoked"],
+                "shares_revoked": result["shares_revoked"],
+                "files_locked": result["files_locked"],
+                "teams_flagged": result["teams_flagged"],
+                "team_admin_roles_stripped": result["team_admin_roles_stripped"],
+                "escrow_agents_notified": result["escrow_agents_notified"],
+            },
+        )
+    )
 
     logger.warning(
-        "Emergency revocation: admin=%s revoked user=%s scope=%s "
-        "tokens=%d shares=%d files_locked=%d teams=%d",
-        admin.username, target["username"], body.scope,
-        result["tokens_revoked"], result["shares_revoked"],
-        result["files_locked"], result["teams_flagged"],
+        "Emergency revocation: admin=%s revoked user=%s scope=%s tokens=%d shares=%d files_locked=%d teams=%d",
+        admin.username,
+        target["username"],
+        body.scope,
+        result["tokens_revoked"],
+        result["shares_revoked"],
+        result["files_locked"],
+        result["teams_flagged"],
     )
 
     return {"ok": True, "result": result}
@@ -260,6 +275,7 @@ async def emergency_revoke(
 # ---------------------------------------------------------------------------
 # GET /admin/users/{user_id}/transfer-locks
 # ---------------------------------------------------------------------------
+
 
 @router.get("/users/{user_id}/transfer-locks")
 async def list_transfer_locks(
@@ -313,7 +329,11 @@ async def list_transfer_locks(
 # DELETE /admin/files/{file_id}/transfer-lock
 # ---------------------------------------------------------------------------
 
-@router.delete("/files/{file_id}/transfer-lock", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
+
+@router.delete(
+    "/files/{file_id}/transfer-lock",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}},
+)
 async def clear_transfer_lock(
     request: Request,
     file_id: str,
@@ -331,8 +351,7 @@ async def clear_transfer_lock(
         raise HTTPException(status_code=403, detail="Insufficient permissions")
 
     cursor = await db.execute(
-        "SELECT id, sanitized_name, owner_id, transfer_locked_at "
-        "FROM files WHERE id = ?",
+        "SELECT id, sanitized_name, owner_id, transfer_locked_at FROM files WHERE id = ?",
         (file_id,),
     )
     row = await cursor.fetchone()
@@ -348,14 +367,16 @@ async def clear_transfer_lock(
     )
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="file.lock.cleared",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="file", id=file_id, name=row["sanitized_name"]),
-        admin_actor_id=admin.id,
-        detail={"file_owner_id": row["owner_id"]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.lock.cleared",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="file", id=file_id, name=row["sanitized_name"]),
+            admin_actor_id=admin.id,
+            detail={"file_owner_id": row["owner_id"]},
+        )
+    )
 
     return {"ok": True, "file_id": file_id}

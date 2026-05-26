@@ -34,9 +34,10 @@ _PRE_BATCH_TARGET_MS = 500
 # Individual probes
 # ---------------------------------------------------------------------------
 
+
 def _probe_pbkdf2() -> dict:
     """Time PBKDF2-HMAC-SHA256 and extrapolate recommended iteration count."""
-    key  = os.urandom(32)
+    key = os.urandom(32)
     salt = os.urandom(16)
 
     t0 = time.perf_counter()
@@ -44,7 +45,7 @@ def _probe_pbkdf2() -> dict:
     calib_ms = (time.perf_counter() - t0) * 1000.0
 
     ms_per_iter = calib_ms / _CALIB_ITERS
-    raw         = int(_KDF_TARGET_MS / ms_per_iter)
+    raw = int(_KDF_TARGET_MS / ms_per_iter)
     recommended = max(_MIN_PBKDF2_ITERS, raw)
 
     # Verify the recommended count so the caller sees a real measured time.
@@ -54,12 +55,12 @@ def _probe_pbkdf2() -> dict:
 
     return {
         "calibration_iterations": _CALIB_ITERS,
-        "calibration_ms":         round(calib_ms, 2),
+        "calibration_ms": round(calib_ms, 2),
         "recommended_iterations": recommended,
-        "expected_ms":            round(verify_ms, 1),
-        "target_ms":              _KDF_TARGET_MS,
-        "min_floor":              _MIN_PBKDF2_ITERS,
-        "floored":                recommended == _MIN_PBKDF2_ITERS,
+        "expected_ms": round(verify_ms, 1),
+        "target_ms": _KDF_TARGET_MS,
+        "min_floor": _MIN_PBKDF2_ITERS,
+        "floored": recommended == _MIN_PBKDF2_ITERS,
     }
 
 
@@ -72,7 +73,7 @@ def _probe_cpu() -> dict:
     recommended_pool = max(4, logical)
 
     return {
-        "logical_cores":          logical,
+        "logical_cores": logical,
         "recommended_thread_pool": recommended_pool,
     }
 
@@ -82,11 +83,12 @@ def _probe_ram() -> dict:
     # Try psutil first (cross-platform).
     try:
         import psutil  # type: ignore[import]
+
         vm = psutil.virtual_memory()
         return {
-            "total_bytes":     vm.total,
+            "total_bytes": vm.total,
             "available_bytes": vm.available,
-            "used_pct":        round(vm.percent, 1),
+            "used_pct": round(vm.percent, 1),
         }
     except ImportError:
         pass
@@ -101,9 +103,9 @@ def _probe_ram() -> dict:
         total = mem.get("MemTotal", 0)
         avail = mem.get("MemAvailable", 0)
         return {
-            "total_bytes":     total,
+            "total_bytes": total,
             "available_bytes": avail,
-            "used_pct":        round(100.0 * (1 - avail / max(total, 1)), 1),
+            "used_pct": round(100.0 * (1 - avail / max(total, 1)), 1),
         }
     except Exception:
         pass
@@ -118,29 +120,35 @@ def _probe_disk(local_volumes: list) -> list[dict]:
         # LocalProvider stores files under 'files_dir'; fall back to nothing.
         path = vol.config.get("files_dir") or vol.config.get("path") or ""
         if not path:
-            results.append({
-                "volume_id":   vol.id,
-                "volume_name": vol.name,
-                "error":       "no path configured",
-            })
+            results.append(
+                {
+                    "volume_id": vol.id,
+                    "volume_name": vol.name,
+                    "error": "no path configured",
+                }
+            )
             continue
         try:
             usage = shutil.disk_usage(path)
-            results.append({
-                "volume_id":   vol.id,
-                "volume_name": vol.name,
-                "path":        path,
-                "total_bytes": usage.total,
-                "used_bytes":  usage.used,
-                "free_bytes":  usage.free,
-                "used_pct":    round(100.0 * usage.used / usage.total, 1) if usage.total else 0,
-            })
+            results.append(
+                {
+                    "volume_id": vol.id,
+                    "volume_name": vol.name,
+                    "path": path,
+                    "total_bytes": usage.total,
+                    "used_bytes": usage.used,
+                    "free_bytes": usage.free,
+                    "used_pct": round(100.0 * usage.used / usage.total, 1) if usage.total else 0,
+                }
+            )
         except Exception as exc:
-            results.append({
-                "volume_id":   vol.id,
-                "volume_name": vol.name,
-                "error":       str(exc),
-            })
+            results.append(
+                {
+                    "volume_id": vol.id,
+                    "volume_name": vol.name,
+                    "error": str(exc),
+                }
+            )
     return results
 
 
@@ -151,7 +159,7 @@ def _probe_pre_batch(_cpu: dict) -> dict:
     We proxy DB insert overhead with SHA-256 throughput (order-of-magnitude
     estimate only) and target _PRE_BATCH_TARGET_MS per transaction.
     """
-    n    = 1_000
+    n = 1_000
     data = os.urandom(64)
 
     t0 = time.perf_counter()
@@ -159,20 +167,19 @@ def _probe_pre_batch(_cpu: dict) -> dict:
         hashlib.sha256(data).digest()
     probe_ms = (time.perf_counter() - t0) * 1000.0
 
-    ms_per_op   = probe_ms / n
+    ms_per_op = probe_ms / n
     # Each PRE key insert ≈ 10× a raw hash (JSON parsing + DB row overhead).
     ops_in_budget = int(_PRE_BATCH_TARGET_MS / (ms_per_op * 10))
-    recommended   = max(50, min(ops_in_budget, 5_000))
+    recommended = max(50, min(ops_in_budget, 5_000))
 
     return {
-        "probe_n":              n,
-        "probe_ms":             round(probe_ms, 2),
-        "ms_per_op_estimate":   round(ms_per_op * 10, 3),
+        "probe_n": n,
+        "probe_ms": round(probe_ms, 2),
+        "ms_per_op_estimate": round(ms_per_op * 10, 3),
         "recommended_batch_size": recommended,
-        "target_ms":            _PRE_BATCH_TARGET_MS,
+        "target_ms": _PRE_BATCH_TARGET_MS,
         "note": (
-            "PRE re-encryption is client-side (BLS12-381). "
-            "This estimate bounds DB write throughput per transaction."
+            "PRE re-encryption is client-side (BLS12-381). This estimate bounds DB write throughput per transaction."
         ),
     }
 
@@ -181,27 +188,28 @@ def _probe_pre_batch(_cpu: dict) -> dict:
 # Public entry point
 # ---------------------------------------------------------------------------
 
+
 def run_scan(local_volumes: list) -> dict:
     """Run all hardware probes and return a combined result dict.
 
     Must be called via asyncio.to_thread — probes are synchronous and may
     take 1–3 seconds depending on PBKDF2 calibration.
     """
-    cpu    = _probe_cpu()
-    ram    = _probe_ram()
+    cpu = _probe_cpu()
+    ram = _probe_ram()
     pbkdf2 = _probe_pbkdf2()
-    pre    = _probe_pre_batch(cpu)
-    disk   = _probe_disk(local_volumes)
+    pre = _probe_pre_batch(cpu)
+    disk = _probe_disk(local_volumes)
 
     return {
-        "cpu":      cpu,
-        "ram":      ram,
-        "pbkdf2":   pbkdf2,
+        "cpu": cpu,
+        "ram": ram,
+        "pbkdf2": pbkdf2,
         "pre_batch": pre,
-        "disk":     disk,
+        "disk": disk,
         "recommendations": {
-            "pbkdf2_iterations":  pbkdf2["recommended_iterations"],
-            "thread_pool_size":   cpu["recommended_thread_pool"],
-            "pre_batch_size":     pre["recommended_batch_size"],
+            "pbkdf2_iterations": pbkdf2["recommended_iterations"],
+            "thread_pool_size": cpu["recommended_thread_pool"],
+            "pre_batch_size": pre["recommended_batch_size"],
         },
     }

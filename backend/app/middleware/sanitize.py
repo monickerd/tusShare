@@ -27,9 +27,7 @@ class InputSanitizationMiddleware(BaseHTTPMiddleware):
         for header_name, max_len in HEADER_MAX_LENGTHS.items():
             value = request.headers.get(header_name, "")
             if len(value) > max_len:
-                logger.warning(
-                    "Header too long: %s (%d > %d)", header_name, len(value), max_len
-                )
+                logger.warning("Header too long: %s (%d > %d)", header_name, len(value), max_len)
                 return JSONResponse(
                     status_code=400,
                     content={
@@ -75,9 +73,7 @@ class InputSanitizationMiddleware(BaseHTTPMiddleware):
         # chars that survive the raw-path check above are caught here.
         for param, value in request.query_params.items():
             if len(value) > QUERY_PARAM_MAX_LENGTH:
-                logger.warning(
-                    "Query param too long: %s (%d chars)", param, len(value)
-                )
+                logger.warning("Query param too long: %s (%d chars)", param, len(value))
                 return JSONResponse(
                     status_code=400,
                     content={

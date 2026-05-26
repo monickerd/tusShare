@@ -26,16 +26,19 @@ FILENAME_MAX_LENGTH = 255
 FILENAME_BLACKLIST_CHARS = set('<>:"/\\|?*')
 
 # Windows reserved device names — cannot be used as filenames (with or without extension).
-FILENAME_RESERVED_NAMES = frozenset({
-    "CON", "PRN", "AUX", "NUL",
-    *(f"COM{i}" for i in range(1, 10)),
-    *(f"LPT{i}" for i in range(1, 10)),
-})
+FILENAME_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+)
 
 # --- UUIDs ---
-UUID_PATTERN = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+UUID_PATTERN = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 # --- Share tokens ---
 SHARE_TOKEN_LENGTH = 43  # base64url of 32 bytes
@@ -43,9 +46,7 @@ SHARE_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 # --- Short link slugs ---
 # Each word: 1 uppercase + 2–11 lowercase (accommodates "Genderfluid" = 11 chars)
-SHORT_SLUG_PATTERN = re.compile(
-    r"^[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}$"
-)
+SHORT_SLUG_PATTERN = re.compile(r"^[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}$")
 
 # --- Base64 ---
 BASE64_MAX_LENGTH = 4096

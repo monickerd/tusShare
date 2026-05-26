@@ -25,6 +25,7 @@ Access control:
 
 import asyncio
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -33,10 +34,10 @@ from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, db_session, get_db
 from app.models.policy import (
+    VALID_OPERATORS,
     Policy,
     PolicyCondition,
     PolicyEffect,
-    VALID_OPERATORS,
     evaluate_user_policies,
     sweep_policy_for_all_users,
 )
@@ -45,23 +46,21 @@ from app.routes._access import require_flag
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
 
 _bg_tasks: set = set()
 
 router = APIRouter()
 
-_MAX_POLICY_NAME_LEN  = 80
-_MAX_VALUE_LEN        = 500
-_ERR_PERM_POLICIES    = "policies_manage required"
-_SQL_TEAM_EXISTS      = "SELECT 1 FROM teams WHERE id = ?"
-_ERR_TEAM_NOT_FOUND   = "Team not found"
+_MAX_POLICY_NAME_LEN = 80
+_MAX_VALUE_LEN = 500
+_ERR_PERM_POLICIES = "policies_manage required"
+_SQL_TEAM_EXISTS = "SELECT 1 FROM teams WHERE id = ?"
+_ERR_TEAM_NOT_FOUND = "Team not found"
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 
 async def _resolve_team_scope_id(db, scope_id_input: str) -> str:
@@ -109,9 +108,7 @@ async def _load_policy(db, policy_id: str) -> Policy:
 
 
 async def _field_exists(db, field_name: str) -> bool:
-    cursor = await db.execute(
-        "SELECT 1 FROM policy_field_definitions WHERE name = ?", (field_name,)
-    )
+    cursor = await db.execute("SELECT 1 FROM policy_field_definitions WHERE name = ?", (field_name,))
     return await cursor.fetchone() is not None
 
 
@@ -130,10 +127,10 @@ async def _load_condition(db, policy_id: str, cond_id: str) -> PolicyCondition:
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Policy condition not found")  # NOSONAR — helper; 404 documented in callers
+        raise HTTPException(
+            status_code=404, detail="Policy condition not found"
+        )  # NOSONAR — helper; 404 documented in callers
     return PolicyCondition.from_row(row)
-
-
 
 
 def _policy_with_conditions(policy: Policy, conditions: list[PolicyCondition]) -> dict:
@@ -146,23 +143,24 @@ def _policy_with_conditions(policy: Policy, conditions: list[PolicyCondition]) -
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class CreatePolicyRequest(BaseModel):
-    name:           str
-    scope_type:     str = "org"      # 'org' | 'team'
-    scope_id:       str | None = None  # team_id for team-scoped
-    escrow_enabled: bool = False     # E4b: write escrow grants for covered teams
+    name: str
+    scope_type: str = "org"  # 'org' | 'team'
+    scope_id: str | None = None  # team_id for team-scoped
+    escrow_enabled: bool = False  # E4b: write escrow grants for covered teams
 
 
 class UpdatePolicyRequest(BaseModel):
-    name:           str | None = None
-    escrow_enabled: bool | None = None   # E4b
+    name: str | None = None
+    escrow_enabled: bool | None = None  # E4b
 
 
 class CreateConditionRequest(BaseModel):
-    field:    str
+    field: str
     operator: str
-    value:    str
-    strict:   bool = False
+    value: str
+    strict: bool = False
     # If this condition mirrors an admin scope condition, pass its ID here.
     # The backend will link them (inherited_scope_id) and lock the condition.
     inherited_scope_id: str | None = None
@@ -170,13 +168,14 @@ class CreateConditionRequest(BaseModel):
 
 class UpdateConditionRequest(BaseModel):
     operator: str | None = None
-    value:    str | None = None
-    strict:   bool | None = None
+    value: str | None = None
+    strict: bool | None = None
 
 
 # ---------------------------------------------------------------------------
 # GET /admin/policies — list all policies
 # ---------------------------------------------------------------------------
+
 
 @router.get("")
 async def list_policies(
@@ -203,10 +202,7 @@ async def list_policies(
         cond = PolicyCondition.from_row(r)
         cond_by_policy[cond.policy_id].append(cond)
 
-    policies = [
-        _policy_with_conditions(Policy.from_row(r), cond_by_policy[r["id"]])
-        for r in policy_rows
-    ]
+    policies = [_policy_with_conditions(Policy.from_row(r), cond_by_policy[r["id"]]) for r in policy_rows]
     return {"policies": policies}
 
 
@@ -214,7 +210,15 @@ async def list_policies(
 # POST /admin/policies — create a policy
 # ---------------------------------------------------------------------------
 
-@router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
+
+@router.post(
+    "",
+    responses={
+        400: {"description": "Bad Request"},
+        404: {"description": "Not Found"},
+        422: {"description": "Unprocessable Entity"},
+    },
+)
 async def create_policy(
     body: CreatePolicyRequest,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -245,25 +249,26 @@ async def create_policy(
 
     policy_id = str(uuid.uuid4())
     await db.execute(
-        "INSERT INTO policies (id, name, scope_type, scope_id, escrow_enabled, created_by) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (policy_id, body.name, body.scope_type, scope_id,
-         1 if body.escrow_enabled else 0, user.id),
+        "INSERT INTO policies (id, name, scope_type, scope_id, escrow_enabled, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+        (policy_id, body.name, body.scope_type, scope_id, 1 if body.escrow_enabled else 0, user.id),
     )
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.policy.created",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"policy_id": policy_id, "name": body.name, "scope_type": body.scope_type},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.policy.created",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"policy_id": policy_id, "name": body.name, "scope_type": body.scope_type},
+        )
+    )
     return {"message": "Policy created", "id": policy_id}
 
 
 # ---------------------------------------------------------------------------
 # GET /admin/policies/{policy_id}
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{policy_id}")
 async def get_policy(
@@ -274,7 +279,7 @@ async def get_policy(
     """Get a single policy with its conditions."""
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
-    policy    = await _load_policy(db, policy_id)
+    policy = await _load_policy(db, policy_id)
     conditions = await _load_conditions(db, policy_id)
     return {"policy": _policy_with_conditions(policy, conditions)}
 
@@ -282,6 +287,7 @@ async def get_policy(
 # ---------------------------------------------------------------------------
 # PATCH /admin/policies/{policy_id} — rename a policy
 # ---------------------------------------------------------------------------
+
 
 @router.patch("/{policy_id}", responses={400: {"description": "Bad Request"}})
 async def update_policy(
@@ -299,7 +305,7 @@ async def update_policy(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     updates = []
-    params  = []
+    params = []
 
     if body.name is not None:
         if len(body.name) < 1 or len(body.name) > _MAX_POLICY_NAME_LEN:
@@ -314,13 +320,15 @@ async def update_policy(
     params.append(policy_id)
     await db.execute(f"UPDATE policies SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.policy.updated",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"policy_id": policy_id, "fields_changed": [u.split(" =")[0] for u in updates]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.policy.updated",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"policy_id": policy_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+        )
+    )
 
     # If escrow_enabled changed, re-sweep so escrow grants are written / cleared
     if body.escrow_enabled is not None:
@@ -335,6 +343,7 @@ async def update_policy(
 # DELETE /admin/policies/{policy_id}
 # ---------------------------------------------------------------------------
 
+
 @router.delete("/{policy_id}")
 async def delete_policy(
     policy_id: str,
@@ -347,13 +356,15 @@ async def delete_policy(
     policy = await _load_policy(db, policy_id)
     await db.execute("DELETE FROM policies WHERE id = ?", (policy_id,))
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.policy.deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"policy_id": policy_id, "name": policy.name},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.policy.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"policy_id": policy_id, "name": policy.name},
+        )
+    )
     return {"message": "Policy deleted"}
 
 
@@ -361,7 +372,10 @@ async def delete_policy(
 # POST /admin/policies/{policy_id}/conditions — add a condition
 # ---------------------------------------------------------------------------
 
-@router.post("/{policy_id}/conditions", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+
+@router.post(
+    "/{policy_id}/conditions", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}}
+)
 async def create_condition(
     policy_id: str,
     body: CreateConditionRequest,
@@ -394,16 +408,16 @@ async def create_condition(
     inherited_scope_id = None
     if body.inherited_scope_id:
         inherited_scope_id = validate_uuid(body.inherited_scope_id)
-        cursor = await db.execute(
-            "SELECT * FROM admin_scope_conditions WHERE id = ?", (inherited_scope_id,)
-        )
+        cursor = await db.execute("SELECT * FROM admin_scope_conditions WHERE id = ?", (inherited_scope_id,))
         scope_row = await cursor.fetchone()
         if scope_row is None:
             raise HTTPException(status_code=404, detail="Admin scope condition not found")
         # Enforce that the condition mirrors the scope exactly
-        if (scope_row["field"] != body.field or
-                scope_row["operator"] != body.operator or
-                scope_row["value"] != body.value):
+        if (
+            scope_row["field"] != body.field
+            or scope_row["operator"] != body.operator
+            or scope_row["value"] != body.value
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Inherited condition field/operator/value must match the referenced scope condition",
@@ -414,8 +428,7 @@ async def create_condition(
         "INSERT INTO policy_conditions "
         "(id, policy_id, field, operator, value, inherited_scope_id, scope_detached, strict) "
         "VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
-        (cond_id, policy_id, body.field, body.operator, body.value,
-         inherited_scope_id, 1 if body.strict else 0),
+        (cond_id, policy_id, body.field, body.operator, body.value, inherited_scope_id, 1 if body.strict else 0),
     )
     await db.commit()
 
@@ -432,6 +445,7 @@ async def create_condition(
 # GET /admin/policies/{policy_id}/conditions — list conditions
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{policy_id}/conditions")
 async def list_conditions(
     policy_id: str,
@@ -440,7 +454,7 @@ async def list_conditions(
 ):
     """List all conditions on a policy."""
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
-    policy_id  = validate_uuid(policy_id)
+    policy_id = validate_uuid(policy_id)
     await _load_policy(db, policy_id)  # 404 guard
     conditions = await _load_conditions(db, policy_id)
     return {"conditions": [c.to_dict() for c in conditions]}
@@ -450,10 +464,11 @@ async def list_conditions(
 # PATCH /admin/policies/{policy_id}/conditions/{cond_id} — update a condition
 # ---------------------------------------------------------------------------
 
+
 @router.patch("/{policy_id}/conditions/{cond_id}", responses={400: {"description": "Bad Request"}})
 async def update_condition(
     policy_id: str,
-    cond_id:   str,
+    cond_id: str,
     body: UpdateConditionRequest,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
@@ -467,7 +482,7 @@ async def update_condition(
     """
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
-    cond_id   = validate_uuid(cond_id)
+    cond_id = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
 
     cond = await _load_condition(db, policy_id, cond_id)
@@ -478,7 +493,7 @@ async def update_condition(
         )
 
     updates = []
-    params  = []
+    params = []
 
     if body.operator is not None:
         if body.operator not in VALID_OPERATORS:
@@ -503,9 +518,7 @@ async def update_condition(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     params.append(cond_id)
-    await db.execute(
-        f"UPDATE policy_conditions SET {', '.join(updates)} WHERE id = ?", params
-    )
+    await db.execute(f"UPDATE policy_conditions SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
 
     # Trigger 2
@@ -521,10 +534,14 @@ async def update_condition(
 # DELETE /admin/policies/{policy_id}/conditions/{cond_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{policy_id}/conditions/{cond_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+
+@router.delete(
+    "/{policy_id}/conditions/{cond_id}",
+    responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}},
+)
 async def delete_condition(
     policy_id: str,
-    cond_id:   str,
+    cond_id: str,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -537,7 +554,7 @@ async def delete_condition(
     """
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
-    cond_id   = validate_uuid(cond_id)
+    cond_id = validate_uuid(cond_id)
     await _load_policy(db, policy_id)  # 404 guard
 
     cond = await _load_condition(db, policy_id, cond_id)
@@ -562,19 +579,24 @@ async def delete_condition(
 # Policy effects — what a matching policy grants
 # ---------------------------------------------------------------------------
 
-_TEAM_ROLES = frozenset({
-    "team_member", "team_manager", "team_admin",
-    "team_owner", "team_supervisor",  # legacy compat
-})
+_TEAM_ROLES = frozenset(
+    {
+        "team_member",
+        "team_manager",
+        "team_admin",
+        "team_owner",
+        "team_supervisor",  # legacy compat
+    }
+)
 
 
 class CreateEffectRequest(BaseModel):
-    effect_type:     str                   # 'team_member' | 'folder_acl' | 'team_escrow'
-    target_id:       str                   # team_id or folder_id
-    role_level:      str | None = None     # required for team_member
-    permission:      str | None = None     # required for folder_acl
-    recursive:       bool = True           # folder_acl only
-    escrow_override: int | None = None     # team_escrow only: 0=force-off, 1=force-on
+    effect_type: str  # 'team_member' | 'folder_acl' | 'team_escrow'
+    target_id: str  # team_id or folder_id
+    role_level: str | None = None  # required for team_member
+    permission: str | None = None  # required for folder_acl
+    recursive: bool = True  # folder_acl only
+    escrow_override: int | None = None  # team_escrow only: 0=force-off, 1=force-on
 
 
 async def _load_effect(db, policy_id: str, effect_id: str) -> PolicyEffect:
@@ -584,7 +606,9 @@ async def _load_effect(db, policy_id: str, effect_id: str) -> PolicyEffect:
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Policy effect not found")  # NOSONAR — helper; 404 documented in callers
+        raise HTTPException(
+            status_code=404, detail="Policy effect not found"
+        )  # NOSONAR — helper; 404 documented in callers
     return PolicyEffect.from_row(row)
 
 
@@ -642,8 +666,7 @@ async def _validate_team_escrow_effect(db, policy_id: str, target_id: str, body)
             detail="escrow_override must be 0 (force-off) or 1 (force-on) for team_escrow effects",
         )
     cursor = await db.execute(
-        "SELECT 1 FROM policy_effects "
-        "WHERE policy_id = ? AND effect_type = 'team_escrow' AND target_id = ?",
+        "SELECT 1 FROM policy_effects WHERE policy_id = ? AND effect_type = 'team_escrow' AND target_id = ?",
         (policy_id, target_id),
     )
     if await cursor.fetchone() is not None:
@@ -664,7 +687,14 @@ async def _resolve_effect_fields(db, policy_id: str, target_id: str, body) -> tu
 
 
 # POST /admin/policies/{policy_id}/effects — create an effect
-@router.post("/{policy_id}/effects", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
+@router.post(
+    "/{policy_id}/effects",
+    responses={
+        400: {"description": "Bad Request"},
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+    },
+)
 async def create_effect(
     policy_id: str,
     body: CreateEffectRequest,
@@ -700,9 +730,16 @@ async def create_effect(
         "INSERT INTO policy_effects "
         "(id, policy_id, effect_type, target_id, role_level, permission, recursive, escrow_override) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (effect_id, policy_id, body.effect_type, target_id,
-         body.role_level if body.effect_type == "team_member" else None,
-         permission, recursive, escrow_override),
+        (
+            effect_id,
+            policy_id,
+            body.effect_type,
+            target_id,
+            body.role_level if body.effect_type == "team_member" else None,
+            permission,
+            recursive,
+            escrow_override,
+        ),
     )
     await db.commit()
 
@@ -718,8 +755,8 @@ async def create_effect(
 # DELETE /admin/policies/{policy_id}/effects/{effect_id}
 @router.delete("/{policy_id}/effects/{effect_id}")
 async def delete_effect(
-    policy_id:  str,
-    effect_id:  str,
+    policy_id: str,
+    effect_id: str,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -735,7 +772,7 @@ async def delete_effect(
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     effect_id = validate_uuid(effect_id)
-    await _load_policy(db, policy_id)   # 404 guard
+    await _load_policy(db, policy_id)  # 404 guard
     await _load_effect(db, policy_id, effect_id)  # 404 guard
 
     await db.execute("DELETE FROM policy_effects WHERE id = ?", (effect_id,))
@@ -746,6 +783,7 @@ async def delete_effect(
 # ---------------------------------------------------------------------------
 # Background per-user re-evaluation (used by exemption endpoints)
 # ---------------------------------------------------------------------------
+
 
 async def _bg_evaluate_user(user_id: str) -> None:
     """Re-evaluate policies for a single user in a background task with its own DB connection."""
@@ -763,9 +801,10 @@ async def _bg_evaluate_user(user_id: str) -> None:
 # DELETE /admin/policies/{policy_id}/exemptions/{user_id}
 # ---------------------------------------------------------------------------
 
+
 class CreateExemptionRequest(BaseModel):
     user_id: str
-    reason:  str | None = None
+    reason: str | None = None
 
 
 @router.get("/{policy_id}/exemptions", responses={404: {"description": "Not Found"}})
@@ -800,7 +839,11 @@ async def list_exemptions(
 
 @router.post(
     "/{policy_id}/exemptions",
-    responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Already exempted"}},
+    responses={
+        400: {"description": "Bad Request"},
+        404: {"description": "Not Found"},
+        409: {"description": "Already exempted"},
+    },
 )
 async def create_exemption(
     policy_id: str,
@@ -826,21 +869,22 @@ async def create_exemption(
     exemption_id = str(uuid.uuid4())
     try:
         await db.execute(
-            "INSERT INTO policy_exemptions (id, policy_id, user_id, exempted_by, reason) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO policy_exemptions (id, policy_id, user_id, exempted_by, reason) VALUES (?, ?, ?, ?, ?)",
             (exemption_id, policy_id, target_user_id, user.id, body.reason),
         )
         await db.commit()
     except Exception:
         raise HTTPException(status_code=409, detail="User is already exempted from this policy")
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.policy.exemption_created",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"policy_id": policy_id, "target_user_id": target_user_id, "reason": body.reason},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.policy.exemption_created",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"policy_id": policy_id, "target_user_id": target_user_id, "reason": body.reason},
+        )
+    )
 
     _t = asyncio.create_task(_bg_evaluate_user(target_user_id))
     _bg_tasks.add(_t)
@@ -880,13 +924,15 @@ async def delete_exemption(
         raise HTTPException(status_code=404, detail="Exemption not found")
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.policy.exemption_deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"policy_id": policy_id, "target_user_id": target_user_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.policy.exemption_deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"policy_id": policy_id, "target_user_id": target_user_id},
+        )
+    )
 
     _t = asyncio.create_task(_bg_evaluate_user(target_user_id))
     _bg_tasks.add(_t)

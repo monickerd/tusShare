@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # HKDF-SHA256 (RFC 5869) — stdlib only, no cryptography package needed
 # ---------------------------------------------------------------------------
 
+
 def _hkdf_extract(salt: bytes, ikm: bytes) -> bytes:
     return _hmac.new(salt, ikm, hashlib.sha256).digest()
 
@@ -64,6 +65,7 @@ def hkdf_sha256(ikm: bytes, length: int, salt: bytes, info: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 # Step-up token (JWT)
 # ---------------------------------------------------------------------------
+
 
 def create_step_up_token(user_id: str, action_key: str, payload_hash: str, session_id: str | None = None) -> str:
     """Issue a step-up JWT.
@@ -122,9 +124,7 @@ def verify_step_up_token(
     Tokens without a sid claim pass this check unconditionally (backward compat).
     """
     try:
-        payload = jwt.decode(
-            token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
-        )
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     except jwt.PyJWTError:
         return False
 
@@ -158,12 +158,13 @@ def verify_step_up_token(
 # StepUpVerifier — pluggable challenge verification
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class StepUpContext:
     action_key: str
     payload_hash: str
-    timestamp: int       # unix seconds provided by client
-    hmac_hex: str        # hex HMAC from client
+    timestamp: int  # unix seconds provided by client
+    hmac_hex: str  # hex HMAC from client
 
 
 class StepUpVerifier(ABC):
@@ -213,6 +214,7 @@ class OPAQUEStepUpVerifier(StepUpVerifier):
 
         # 1. Consume the login session atomically
         from app.auth.opaque_provider import OPAQUEAuthProvider
+
         provider = OPAQUEAuthProvider(db)
         session = await provider.consume_login_session(session_id)
         if session is None:
@@ -225,13 +227,15 @@ class OPAQUEStepUpVerifier(StepUpVerifier):
         if stored_username.lower() != user.username.lower():
             logger.warning(
                 "OPAQUE step-up: session username mismatch (session=%s user=%s)",
-                stored_username, user.username,
+                stored_username,
+                user.username,
             )
             return False
 
         # 2. Finish OPAQUE login — returns session_key bytes or None
         try:
             import base64
+
             padded = client_login_finish_b64 + "=" * (-len(client_login_finish_b64) % 4)
             login_finish_bytes = base64.urlsafe_b64decode(padded)
         except Exception:
@@ -239,6 +243,7 @@ class OPAQUEStepUpVerifier(StepUpVerifier):
 
         try:
             import tusshare_opaque
+
             session_key: bytes | None = await asyncio.to_thread(
                 tusshare_opaque.server_finish_login,
                 server_state_bytes,
@@ -257,7 +262,9 @@ class OPAQUEStepUpVerifier(StepUpVerifier):
         if abs(server_now - context.timestamp) > STEP_UP_TIMESTAMP_TOLERANCE:
             logger.warning(
                 "OPAQUE step-up timestamp outside tolerance: client=%d server=%d diff=%d",
-                context.timestamp, server_now, abs(server_now - context.timestamp),
+                context.timestamp,
+                server_now,
+                abs(server_now - context.timestamp),
             )
             return False
 
@@ -272,7 +279,8 @@ class OPAQUEStepUpVerifier(StepUpVerifier):
         if not _hmac.compare_digest(expected_hmac, context.hmac_hex.lower()):
             logger.warning(
                 "OPAQUE step-up HMAC mismatch for user=%s action=%s",
-                user.id, context.action_key,
+                user.id,
+                context.action_key,
             )
             return False
 
@@ -299,22 +307,22 @@ def get_verifier(challenge_type: str) -> StepUpVerifier:
 # Maps legacy flat event_type strings to (dot_namespaced_type, severity, outcome, extra_detail).
 # extra_detail is merged under caller-supplied detail (caller values win).
 _EVENT_MAP: dict[str, tuple[str, str, str, dict]] = {
-    "step_up_failed":                  ("auth.stepup.failure",          "warning", "failure", {}),
-    "step_up_lockout":                 ("auth.stepup.blocked",          "warning", "blocked", {}),
-    "step_up_granted":                 ("auth.stepup.success",          "info",    "success", {}),
-    "mfa_admin_removed":               ("admin.mfa.credential_removed", "warning", "success", {}),
-    "mfa_admin_reset":                 ("admin.mfa.credential_reset",   "warning", "success", {}),
-    "opaque_login_success":            ("auth.opaque.login",            "info",    "success", {}),
-    "ldap_login_failed":               ("auth.ldap.login",              "warning", "failure", {}),
-    "ldap_login_success":              ("auth.ldap.login",              "info",    "success", {}),
-    "oidc_login_failed":               ("auth.oidc.login",              "warning", "failure", {}),
-    "oidc_login_success":              ("auth.oidc.login",              "info",    "success", {}),
-    "mfa_totp_verified":               ("auth.mfa.challenged",          "info",    "success", {"method": "totp"}),
-    "mfa_webauthn_verified":           ("auth.mfa.challenged",          "info",    "success", {"method": "webauthn"}),
-    "mfa_recovery_code_used":          ("auth.recovery.used",           "warning", "success", {"method": "recovery_code"}),
-    "session_unlock_webauthn":         ("auth.session.unlocked",        "info",    "success", {"method": "webauthn"}),
-    "mfa_credential_removed":          ("auth.mfa.credential_removed",  "info",    "success", {}),
-    "password_reset_via_recovery_key": ("auth.recovery.used",           "warning", "success", {}),
+    "step_up_failed": ("auth.stepup.failure", "warning", "failure", {}),
+    "step_up_lockout": ("auth.stepup.blocked", "warning", "blocked", {}),
+    "step_up_granted": ("auth.stepup.success", "info", "success", {}),
+    "mfa_admin_removed": ("admin.mfa.credential_removed", "warning", "success", {}),
+    "mfa_admin_reset": ("admin.mfa.credential_reset", "warning", "success", {}),
+    "opaque_login_success": ("auth.opaque.login", "info", "success", {}),
+    "ldap_login_failed": ("auth.ldap.login", "warning", "failure", {}),
+    "ldap_login_success": ("auth.ldap.login", "info", "success", {}),
+    "oidc_login_failed": ("auth.oidc.login", "warning", "failure", {}),
+    "oidc_login_success": ("auth.oidc.login", "info", "success", {}),
+    "mfa_totp_verified": ("auth.mfa.challenged", "info", "success", {"method": "totp"}),
+    "mfa_webauthn_verified": ("auth.mfa.challenged", "info", "success", {"method": "webauthn"}),
+    "mfa_recovery_code_used": ("auth.recovery.used", "warning", "success", {"method": "recovery_code"}),
+    "session_unlock_webauthn": ("auth.session.unlocked", "info", "success", {"method": "webauthn"}),
+    "mfa_credential_removed": ("auth.mfa.credential_removed", "info", "success", {}),
+    "password_reset_via_recovery_key": ("auth.recovery.used", "warning", "success", {}),
 }
 
 
@@ -364,18 +372,18 @@ async def log_security_event(
         logger.exception("Failed to log security event: %s", event_type)
 
     try:
-        mapped_type, severity, outcome, extra = _EVENT_MAP.get(
-            event_type, (event_type, "info", None, {})
-        )
+        mapped_type, severity, outcome, extra = _EVENT_MAP.get(event_type, (event_type, "info", None, {}))
         merged: dict = {**extra, **(detail or {})}
         if action_key:
             merged.setdefault("action_key", action_key)
-        event_bus.emit_fanout_only(SecurityEvent(
-            event_type=mapped_type,
-            severity=severity,
-            outcome=outcome,
-            actor=EventActor(user_id=user_id, username=username, ip=ip_address),
-            detail=merged,
-        ))
+        event_bus.emit_fanout_only(
+            SecurityEvent(
+                event_type=mapped_type,
+                severity=severity,
+                outcome=outcome,
+                actor=EventActor(user_id=user_id, username=username, ip=ip_address),
+                detail=merged,
+            )
+        )
     except Exception:
         logger.exception("Failed to fan out security event to bus: %s", event_type)

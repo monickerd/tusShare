@@ -2,27 +2,26 @@
 
 import asyncio
 import hashlib
+import json as _json
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-
-import json as _json
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
+import app.storage.manager as storage
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
-from app.models.role import FLAG_USERS_INVITE_MANAGE, FLAG_ORG_SETTINGS_MANAGE, ROLE_TIER, admin_best_tier
 from app.database import Database, get_db
-import app.storage.manager as storage
-from app.services import live_settings, sse_broker, event_bus
+from app.models.role import FLAG_ORG_SETTINGS_MANAGE, FLAG_USERS_INVITE_MANAGE, admin_best_tier
 from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus, live_settings, sse_broker
 from app.util.db import check_admin_setting_lock, get_admin_setting
 from app.validation.sanitizers import validate_uuid
 from app.wordlist import insert_invite_short_link_with_unique_slug
-from typing import Annotated
 
 _bg_tasks: set = set()
 
@@ -35,10 +34,12 @@ _THEME_JSON_TMP = ".json.tmp"
 # Settings
 # ---------------------------------------------------------------------------
 
+
 # Allowed admin setting keys and their validators
 def _valid_mfa_allowed_methods(v: str) -> bool:
     """Validate mfa_allowed_methods — must be a JSON array of known method strings."""
     import json as _json
+
     try:
         methods = _json.loads(v)
         if not isinstance(methods, list):
@@ -50,65 +51,65 @@ def _valid_mfa_allowed_methods(v: str) -> bool:
 
 
 _SETTINGS_VALIDATORS = {
-    "open_registration":      lambda v: v in ("true", "false"),
-    "global_max_file_size":   lambda v: v.isdigit() and int(v) >= 0,
+    "open_registration": lambda v: v in ("true", "false"),
+    "global_max_file_size": lambda v: v.isdigit() and int(v) >= 0,
     "global_bandwidth_limit": lambda v: v.isdigit() and int(v) >= 0,
     "disk_warning_threshold": lambda v: v.isdigit() and 0 <= int(v) <= 100,
-    "default_chunk_size":     lambda v: v.isdigit() and int(v) >= 65536,
+    "default_chunk_size": lambda v: v.isdigit() and int(v) >= 65536,
     # MFA enforcement policy
-    "mfa_enforcement":        lambda v: v in ("off", "optional", "required"),
-    "mfa_allowed_methods":    _valid_mfa_allowed_methods,
-    "mfa_oidc_exempt":        lambda v: v in ("0", "1"),
+    "mfa_enforcement": lambda v: v in ("off", "optional", "required"),
+    "mfa_allowed_methods": _valid_mfa_allowed_methods,
+    "mfa_oidc_exempt": lambda v: v in ("0", "1"),
     # Emergency revocation
     "notify_escrow_on_revocation": lambda v: v in ("0", "1"),
     # Escrow coverage enforcement
-    "escrow_require_coverage":     lambda v: v in ("0", "1"),
+    "escrow_require_coverage": lambda v: v in ("0", "1"),
     # Self-service account deletion
     "allow_user_delete_own_account": lambda v: v in ("true", "false"),
-    "can_delete_owned_shared":       lambda v: v in ("true", "false"),
+    "can_delete_owned_shared": lambda v: v in ("true", "false"),
     # Multi-owner teams
-    "allow_multi_team_owner":        lambda v: v in ("true", "false"),
+    "allow_multi_team_owner": lambda v: v in ("true", "false"),
     # File copy policy
-    "copy_boundary":                 lambda v: v in ("any", "same_team", "disabled"),
+    "copy_boundary": lambda v: v in ("any", "same_team", "disabled"),
     # Audit retention
-    "audit_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
+    "audit_retention_days": lambda v: v.isdigit() and 1 <= int(v) <= 3650,
     # Antivirus / server-side scanning
     # av_scan_endpoint and av_scan_secret: allow any non-empty or empty string
-    "av_scan_endpoint":       lambda v: len(v) <= 2048,
-    "av_scan_secret":         lambda v: len(v) <= 512,
-    "av_require_clean":       lambda v: v in ("true", "false"),
+    "av_scan_endpoint": lambda v: len(v) <= 2048,
+    "av_scan_secret": lambda v: len(v) <= 512,
+    "av_require_clean": lambda v: v in ("true", "false"),
     "av_scan_retry_attempts": lambda v: v.isdigit() and 1 <= int(v) <= 10,
     # First-run wizard completion flag (set by the profile wizard after first profile selection)
-    "first_run_completed":    lambda v: v in ("0", "1"),
+    "first_run_completed": lambda v: v in ("0", "1"),
     # Trash / soft-delete
-    "trash_enabled":          lambda v: v in ("true", "false"),
-    "trash_retention_days":   lambda v: v.isdigit() and 1 <= int(v) <= 3650,
+    "trash_enabled": lambda v: v in ("true", "false"),
+    "trash_retention_days": lambda v: v.isdigit() and 1 <= int(v) <= 3650,
     # Rate limits (Phase 1)
-    "anon_share_upload_rate_limit":  lambda v: v.isdigit() and 1 <= int(v) <= 1000,
-    "rate_limit_login":              lambda v: v.isdigit() and 1 <= int(v) <= 1000,
-    "rate_limit_api":                lambda v: v.isdigit() and 1 <= int(v) <= 10000,
-    "rate_limit_share_create":       lambda v: v.isdigit() and 1 <= int(v) <= 1000,
-    "rate_limit_upload":             lambda v: v.isdigit() and 1 <= int(v) <= 10000,
-    "rate_limit_management":         lambda v: v.isdigit() and 1 <= int(v) <= 10000,
-    "rate_limit_error_threshold":    lambda v: v.isdigit() and 0 <= int(v) <= 100,
-    "rate_limit_error_window":       lambda v: v.isdigit() and 1 <= int(v) <= 3600,
-    "rate_limit_escalated_max":      lambda v: v.isdigit() and 1 <= int(v) <= 1000,
-    "rate_limit_escalated_window":   lambda v: v.isdigit() and 1 <= int(v) <= 60,
+    "anon_share_upload_rate_limit": lambda v: v.isdigit() and 1 <= int(v) <= 1000,
+    "rate_limit_login": lambda v: v.isdigit() and 1 <= int(v) <= 1000,
+    "rate_limit_api": lambda v: v.isdigit() and 1 <= int(v) <= 10000,
+    "rate_limit_share_create": lambda v: v.isdigit() and 1 <= int(v) <= 1000,
+    "rate_limit_upload": lambda v: v.isdigit() and 1 <= int(v) <= 10000,
+    "rate_limit_management": lambda v: v.isdigit() and 1 <= int(v) <= 10000,
+    "rate_limit_error_threshold": lambda v: v.isdigit() and 0 <= int(v) <= 100,
+    "rate_limit_error_window": lambda v: v.isdigit() and 1 <= int(v) <= 3600,
+    "rate_limit_escalated_max": lambda v: v.isdigit() and 1 <= int(v) <= 1000,
+    "rate_limit_escalated_window": lambda v: v.isdigit() and 1 <= int(v) <= 60,
     "rate_limit_escalated_duration": lambda v: v.isdigit() and 1 <= int(v) <= 86400,
     # Session & auth policy (Phase 2)
-    "access_token_expire_minutes":   lambda v: v.isdigit() and 1 <= int(v) <= 60,
-    "refresh_token_expire_days":     lambda v: v.isdigit() and 1 <= int(v) <= 365,
-    "session_idle_timeout_minutes":  lambda v: v.isdigit() and 1 <= int(v) <= 1440,
-    "share_session_expire_hours":    lambda v: v.isdigit() and 1 <= int(v) <= 168,
+    "access_token_expire_minutes": lambda v: v.isdigit() and 1 <= int(v) <= 60,
+    "refresh_token_expire_days": lambda v: v.isdigit() and 1 <= int(v) <= 365,
+    "session_idle_timeout_minutes": lambda v: v.isdigit() and 1 <= int(v) <= 1440,
+    "share_session_expire_hours": lambda v: v.isdigit() and 1 <= int(v) <= 168,
     "public_device_refresh_minutes": lambda v: v.isdigit() and 1 <= int(v) <= 1440,
-    "mfa_pending_token_ttl":         lambda v: v.isdigit() and 10 <= int(v) <= 600,
-    "step_up_window_seconds":        lambda v: v.isdigit() and 0 <= int(v) <= 86400,
-    "step_up_max_failures":          lambda v: v.isdigit() and 1 <= int(v) <= 20,
+    "mfa_pending_token_ttl": lambda v: v.isdigit() and 10 <= int(v) <= 600,
+    "step_up_window_seconds": lambda v: v.isdigit() and 0 <= int(v) <= 86400,
+    "step_up_max_failures": lambda v: v.isdigit() and 1 <= int(v) <= 20,
     # Operational tuning (Phase 3)
     "tus_upload_expiry_hours": lambda v: v.isdigit() and 1 <= int(v) <= 168,
-    "upload_evict_stride_mb":  lambda v: v.isdigit() and 0 <= int(v) <= 256,
-    "webauthn_rp_name":        lambda v: 1 <= len(v.strip()) <= 128,
-    "allow_http_idp":          lambda v: v in ("true", "false"),
+    "upload_evict_stride_mb": lambda v: v.isdigit() and 0 <= int(v) <= 256,
+    "webauthn_rp_name": lambda v: 1 <= len(v.strip()) <= 128,
+    "allow_http_idp": lambda v: v in ("true", "false"),
 }
 
 
@@ -135,8 +136,8 @@ async def get_settings(
     return {
         "settings": {
             row["key"]: {
-                "value":          row["value"],
-                "is_locked":      bool(row["is_locked"]),
+                "value": row["value"],
+                "is_locked": bool(row["is_locked"]),
                 "locked_min_tier": row["locked_min_tier"],
             }
             for row in rows
@@ -185,22 +186,29 @@ async def update_settings(
 
     live_settings.update_many(body.settings)
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.policy.changed",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"keys_changed": list(body.settings.keys())},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.policy.changed",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"keys_changed": list(body.settings.keys())},
+        )
+    )
 
     if any(k in _CLIENT_RELEVANT_SETTINGS for k in body.settings):
-        sse_broker.publish("broadcast", {
-            "type": "config_changed",
-            "config": {
-                "upload_rate_limit":      live_settings.get_int("rate_limit_upload", settings.RATE_LIMIT_UPLOAD),
-                "step_up_window_seconds": live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
+        sse_broker.publish(
+            "broadcast",
+            {
+                "type": "config_changed",
+                "config": {
+                    "upload_rate_limit": live_settings.get_int("rate_limit_upload", settings.RATE_LIMIT_UPLOAD),
+                    "step_up_window_seconds": live_settings.get_int(
+                        "step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS
+                    ),
+                },
             },
-        })
+        )
 
     return {"message": "Settings updated"}
 
@@ -243,7 +251,7 @@ async def update_setting_locks(
     await db.execute("BEGIN")
     try:
         for key, lock_spec in body.locks.items():
-            new_locked   = bool(lock_spec.get("is_locked", False))
+            new_locked = bool(lock_spec.get("is_locked", False))
             new_min_tier = lock_spec.get("locked_min_tier")
             await db.execute(
                 "INSERT INTO admin_settings (key, value, is_locked, locked_min_tier) "
@@ -264,15 +272,14 @@ async def update_setting_locks(
 # Disk usage
 # ---------------------------------------------------------------------------
 
+
 @router.get("/disk-usage")
 async def get_disk_usage(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
     """Get disk usage breakdown: per-user stats + filesystem totals."""
-    cursor = await db.execute(
-        "SELECT id, username, disk_used, disk_quota FROM users ORDER BY disk_used DESC"
-    )
+    cursor = await db.execute("SELECT id, username, disk_used, disk_quota FROM users ORDER BY disk_used DESC")
     users = [
         {
             "id": row["id"],
@@ -289,31 +296,32 @@ async def get_disk_usage(
     try:
         usage = await storage.get_manager().get_usage_summary()
         fs_total = usage.get("total_capacity_bytes") or 0
-        fs_free  = max(0, fs_total - (usage.get("total_used_bytes") or 0))
+        fs_free = max(0, fs_total - (usage.get("total_used_bytes") or 0))
     except Exception:
         fs_total = 0
-        fs_free  = 0
+        fs_free = 0
 
     thr_val = await get_admin_setting(db, "disk_warning_threshold")
     threshold_pct = int(thr_val) if thr_val is not None else settings.DISK_WARNING_THRESHOLD
 
     usage_pct = ((fs_total - fs_free) / fs_total * 100) if fs_total > 0 else 0
-    warning   = usage_pct >= threshold_pct
+    warning = usage_pct >= threshold_pct
 
     return {
-        "total_used_bytes":  total_used,
-        "filesystem_total":  fs_total,
-        "filesystem_free":   fs_free,
-        "usage_percent":     round(usage_pct, 1),
+        "total_used_bytes": total_used,
+        "filesystem_total": fs_total,
+        "filesystem_free": fs_free,
+        "usage_percent": round(usage_pct, 1),
         "warning_threshold": threshold_pct,
-        "warning":           warning,
-        "users":             users,
+        "warning": warning,
+        "users": users,
     }
 
 
 # ---------------------------------------------------------------------------
 # Hardware capability scan
 # ---------------------------------------------------------------------------
+
 
 @router.get("/hw-scan")
 async def get_hw_scan(
@@ -335,8 +343,8 @@ async def get_hw_scan(
 # Invites
 # ---------------------------------------------------------------------------
 
-_INVITE_EXPIRE_HOURS  = 24
-_INVITE_TOKEN_BYTES   = 16   # 128-bit = 22 URL-safe base64 chars
+_INVITE_EXPIRE_HOURS = 24
+_INVITE_TOKEN_BYTES = 16  # 128-bit = 22 URL-safe base64 chars
 
 
 @router.post("/invites", responses={403: {"description": "Forbidden"}})
@@ -350,12 +358,10 @@ async def create_invite(
     """
     if not admin.has_flag(FLAG_USERS_INVITE_MANAGE):
         raise HTTPException(status_code=403, detail="users_invite_manage permission required")
-    raw_token  = secrets.token_urlsafe(_INVITE_TOKEN_BYTES)
+    raw_token = secrets.token_urlsafe(_INVITE_TOKEN_BYTES)
     token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-    invite_id  = str(uuid.uuid4())
-    expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=_INVITE_EXPIRE_HOURS)
-    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    invite_id = str(uuid.uuid4())
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=_INVITE_EXPIRE_HOURS)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     await db.execute(
         "INSERT INTO invites (id, token_hash, created_by, expires_at) VALUES (?, ?, ?, ?)",
@@ -364,8 +370,8 @@ async def create_invite(
     await db.commit()
 
     return {
-        "id":         invite_id,
-        "token":      raw_token,
+        "id": invite_id,
+        "token": raw_token,
         "expires_at": expires_at,
     }
 
@@ -389,14 +395,14 @@ async def list_invites(
     return {
         "invites": [
             {
-                "id":                row["id"],
-                "created_by":        row["created_by"],
-                "expires_at":        row["expires_at"],
-                "used_at":           row["used_at"],
-                "used_by_ip":        row["used_by_ip"],
-                "used_by_user_id":   row["used_by_user_id"],
-                "used_by_username":  row["used_by_username"],
-                "created_at":        row["created_at"],
+                "id": row["id"],
+                "created_by": row["created_by"],
+                "expires_at": row["expires_at"],
+                "used_at": row["used_at"],
+                "used_by_ip": row["used_by_ip"],
+                "used_by_user_id": row["used_by_user_id"],
+                "used_by_username": row["used_by_username"],
+                "created_at": row["created_at"],
             }
             for row in rows
         ]
@@ -428,6 +434,7 @@ async def revoke_invite(
 # Theme hot-reload
 # ---------------------------------------------------------------------------
 
+
 @router.post("/theme/reload")
 async def reload_theme(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -438,16 +445,17 @@ async def reload_theme(
     into index.html.  The next page load will pick up the new theme.
     """
     from pathlib import Path as _Path
-    from app.util.theme import inject_theme, get_theme_config
+
+    from app.util.theme import get_theme_config, inject_theme
 
     frontend_dir = _Path(__file__).parent.parent.parent / "frontend"
     inject_theme(frontend_dir, settings.DATA_DIR)
 
     config = get_theme_config()
     return {
-        "message":         "Theme reloaded",
-        "brand_name":      config.get("brand_name"),
-        "has_logo":        "logo_path" in config,
+        "message": "Theme reloaded",
+        "brand_name": config.get("brand_name"),
+        "has_logo": "logo_path" in config,
         "color_overrides": len(config.get("colors", {})),
     }
 
@@ -468,8 +476,12 @@ async def update_theme(
     then triggers an in-process reload so the change is live immediately.
     """
     from pathlib import Path as _Path
+
     from app.util.theme import (
-        inject_theme, load_theme, _BRAND_NAME_MAX, _UI_FLAG_DEFAULTS,
+        _BRAND_NAME_MAX,
+        _UI_FLAG_DEFAULTS,
+        inject_theme,
+        load_theme,
     )
 
     path = settings.DATA_DIR / _THEME_JSON
@@ -508,9 +520,9 @@ async def update_theme(
     config = load_theme(settings.DATA_DIR)
 
     return {
-        "message":         "Theme updated",
-        "brand_name":      config.get("brand_name"),
-        "has_logo":        "logo_path" in config,
+        "message": "Theme updated",
+        "brand_name": config.get("brand_name"),
+        "has_logo": "logo_path" in config,
         "color_overrides": len(config.get("colors", {})),
     }
 
@@ -518,17 +530,33 @@ async def update_theme(
 _LOGO_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
 # SVG excluded: it is XML text without a binary magic signature and can contain
 # embedded scripts that execute when served from the app's origin.
-_LOGO_ALLOWED_MIME: frozenset[str] = frozenset({
-    "image/png", "image/jpeg", "image/gif", "image/webp",
-})
+_LOGO_ALLOWED_MIME: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+    }
+)
 
 _FAVICON_MAX_BYTES = 256 * 1024  # 256 KB
-_FAVICON_ALLOWED_MIME: frozenset[str] = frozenset({
-    "image/png", "image/x-icon", "image/vnd.microsoft.icon",
-})
+_FAVICON_ALLOWED_MIME: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/x-icon",
+        "image/vnd.microsoft.icon",
+    }
+)
 
 
-@router.post("/theme/logo", responses={400: {"description": "Bad Request"}, 413: {"description": "413"}, 500: {"description": "Internal Server Error"}})
+@router.post(
+    "/theme/logo",
+    responses={
+        400: {"description": "Bad Request"},
+        413: {"description": "413"},
+        500: {"description": "Internal Server Error"},
+    },
+)
 async def upload_theme_logo(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     file: Annotated[UploadFile, File(...)],
@@ -540,12 +568,15 @@ async def upload_theme_logo(
     """
     import re as _re
     from pathlib import Path as _Path
-    from app.util.theme import (
-        inject_theme, load_theme, _LOGO_FILENAME_RE, _BRAND_NAME_MAX,
-        _UI_FLAG_DEFAULTS,
-    )
 
     import filetype as _filetype
+
+    from app.util.theme import (
+        _LOGO_FILENAME_RE,
+        inject_theme,
+        load_theme,
+    )
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -596,7 +627,14 @@ async def upload_theme_logo(
     return {"message": "Logo uploaded", "logo_path": safe_name, "logo_url": "/api/v1/theme/logo"}
 
 
-@router.post("/theme/favicon", responses={400: {"description": "Bad Request"}, 413: {"description": "413"}, 500: {"description": "Internal Server Error"}})
+@router.post(
+    "/theme/favicon",
+    responses={
+        400: {"description": "Bad Request"},
+        413: {"description": "413"},
+        500: {"description": "Internal Server Error"},
+    },
+)
 async def upload_theme_favicon(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     file: Annotated[UploadFile, File(...)],
@@ -607,9 +645,11 @@ async def upload_theme_favicon(
     """
     import re as _re
     from pathlib import Path as _Path
-    from app.util.theme import inject_theme, load_theme, _LOGO_FILENAME_RE
 
     import filetype as _filetype
+
+    from app.util.theme import _LOGO_FILENAME_RE, inject_theme, load_theme
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
 
@@ -662,7 +702,9 @@ class CreateInviteShortLinkRequest(BaseModel):
     expires_at: str
 
 
-@router.post("/invites/{invite_id}/short-link", responses={404: {"description": "Not Found"}, 503: {"description": "503"}})
+@router.post(
+    "/invites/{invite_id}/short-link", responses={404: {"description": "Not Found"}, 503: {"description": "503"}}
+)
 async def create_invite_short_link(
     invite_id: str,
     body: CreateInviteShortLinkRequest,
@@ -680,8 +722,7 @@ async def create_invite_short_link(
     # Verify the invite exists, is pending, and the supplied token matches
     token_hash = hashlib.sha256(body.token.encode()).hexdigest()
     cursor = await db.execute(
-        "SELECT id, expires_at FROM invites "
-        "WHERE id = ? AND token_hash = ? AND used_at IS NULL",
+        "SELECT id, expires_at FROM invites WHERE id = ? AND token_hash = ? AND used_at IS NULL",
         (invite_id, token_hash),
     )
     invite = await cursor.fetchone()
@@ -707,6 +748,7 @@ async def create_invite_short_link(
 # Antivirus / server-side scanning
 # ---------------------------------------------------------------------------
 
+
 @router.get("/files/av-status")
 async def get_av_status(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -726,11 +768,11 @@ async def get_av_status(
     )
     row = await cursor.fetchone()
     return {
-        "null":     row["null_count"]     or 0,
-        "pending":  row["pending_count"]  or 0,
-        "clean":    row["clean_count"]    or 0,
+        "null": row["null_count"] or 0,
+        "pending": row["pending_count"] or 0,
+        "clean": row["clean_count"] or 0,
         "infected": row["infected_count"] or 0,
-        "error":    row["error_count"]    or 0,
+        "error": row["error_count"] or 0,
     }
 
 
@@ -744,7 +786,8 @@ async def bulk_av_rescan(
     Returns 501 when TUSSHARE_ESCROW_PRIVATE_KEY is not configured (no-op
     would silently do nothing, which is worse than a clear error).
     """
-    from app.services.av_scanner import get_escrow_public_key_b64, scan_file
+    from app.services.av_scanner import get_escrow_public_key_b64
+
     if get_escrow_public_key_b64() is None:
         raise HTTPException(
             status_code=501,
@@ -752,9 +795,7 @@ async def bulk_av_rescan(
         )
 
     cursor = await db.execute(
-        "SELECT id FROM files "
-        "WHERE upload_complete = 1 "
-        "  AND (av_scan_status IS NULL OR av_scan_status = 'error')"
+        "SELECT id FROM files WHERE upload_complete = 1   AND (av_scan_status IS NULL OR av_scan_status = 'error')"
     )
     rows = await cursor.fetchall()
     queued = 0
@@ -770,9 +811,11 @@ async def bulk_av_rescan(
 async def _bg_scan(file_id: str) -> None:
     from app.database import db_session
     from app.services.av_scanner import scan_file
+
     try:
         async with db_session() as _db:
             await scan_file(_db, file_id)
     except Exception as exc:
         import logging
+
         logging.getLogger(__name__).warning("Bulk rescan failed for file %s: %s", file_id, exc)

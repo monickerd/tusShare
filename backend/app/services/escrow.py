@@ -64,8 +64,7 @@ async def resolve_effective_escrow_agents(
     if ancestor_ids:
         placeholders = ",".join("?" * len(ancestor_ids))
         cursor = await db.execute(
-            f"SELECT * FROM folder_escrow_policies "
-            f"WHERE folder_id IN ({placeholders})",
+            f"SELECT * FROM folder_escrow_policies WHERE folder_id IN ({placeholders})",
             ancestor_ids,
         )
         policies = {r["folder_id"]: r for r in await cursor.fetchall()}
@@ -111,8 +110,7 @@ async def resolve_effective_escrow_agents(
 async def _get_org_default_agents(db) -> list[dict]:
     """Expand org-level escrow_default_user_ids + escrow_default_role_ids."""
     cursor = await db.execute(
-        "SELECT key, value FROM admin_settings "
-        "WHERE key IN ('escrow_default_user_ids', 'escrow_default_role_ids')"
+        "SELECT key, value FROM admin_settings WHERE key IN ('escrow_default_user_ids', 'escrow_default_role_ids')"
     )
     rows = {r["key"]: r["value"] for r in await cursor.fetchall()}
 
@@ -188,8 +186,8 @@ async def _fetch_agent_user(db, user_id: str) -> dict | None:
 
 def _agent_from_row(row) -> dict:
     return {
-        "user_id":             row["id"],
-        "username":            row["username"],
-        "x25519_public_key":   row["x25519_public_key"],
+        "user_id": row["id"],
+        "username": row["username"],
+        "x25519_public_key": row["x25519_public_key"],
         "mlkem768_public_key": row["mlkem768_public_key"],
     }

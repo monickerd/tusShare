@@ -40,7 +40,8 @@ def create_access_token(
     payload: dict = {
         "sub": user_id,
         "iat": now,
-        "exp": now + timedelta(minutes=live_settings.get_int("access_token_expire_minutes", settings.ACCESS_TOKEN_EXPIRE_MINUTES)),
+        "exp": now
+        + timedelta(minutes=live_settings.get_int("access_token_expire_minutes", settings.ACCESS_TOKEN_EXPIRE_MINUTES)),
         "type": "access",
     }
     if session_id:
@@ -52,9 +53,7 @@ def create_access_token(
 
 def verify_access_token(token: str) -> dict:
     """Verify and decode an access token. Raises jwt.PyJWTError on failure."""
-    payload = jwt.decode(
-        token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
-    )
+    payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     if payload.get("type") != "access":
         raise jwt.InvalidTokenError("Not an access token")
     return payload
@@ -96,7 +95,9 @@ async def store_refresh_token(
     if expire_minutes is not None:
         expires_at = (now + timedelta(minutes=expire_minutes)).isoformat()
     else:
-        expires_at = (now + timedelta(days=live_settings.get_int("refresh_token_expire_days", settings.REFRESH_TOKEN_EXPIRE_DAYS))).isoformat()
+        expires_at = (
+            now + timedelta(days=live_settings.get_int("refresh_token_expire_days", settings.REFRESH_TOKEN_EXPIRE_DAYS))
+        ).isoformat()
     now_iso = now.isoformat()
 
     # Remove stale tokens for this user before inserting the new one
@@ -122,8 +123,7 @@ async def validate_refresh_token(db, raw_token: str) -> dict | None:
     now = datetime.now(timezone.utc).isoformat()
 
     cursor = await db.execute(
-        "SELECT id, user_id FROM refresh_tokens "
-        "WHERE token_hash = ? AND revoked = 0 AND expires_at > ?",
+        "SELECT id, user_id FROM refresh_tokens WHERE token_hash = ? AND revoked = 0 AND expires_at > ?",
         (token_hash, now),
     )
     row = await cursor.fetchone()
@@ -187,23 +187,20 @@ def create_share_session_token(share_id: str, client_ip: str, user_agent: str) -
         "ip": ip_hash,
         "ua": ua_hash,
         "iat": now,
-        "exp": now + timedelta(hours=live_settings.get_int("share_session_expire_hours", settings.SHARE_SESSION_EXPIRE_HOURS)),
+        "exp": now
+        + timedelta(hours=live_settings.get_int("share_session_expire_hours", settings.SHARE_SESSION_EXPIRE_HOURS)),
     }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def verify_share_session_token(
-    token: str, share_id: str, client_ip: str, user_agent: str
-) -> bool:
+def verify_share_session_token(token: str, share_id: str, client_ip: str, user_agent: str) -> bool:
     """Verify a share session token for a specific share and client.
 
     Returns True only if the token is valid, unexpired, scoped to the correct
     share_id, and was issued to the same IP + User-Agent.
     """
     try:
-        payload = jwt.decode(
-            token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
-        )
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM])
     except jwt.PyJWTError:
         return False
     if payload.get("type") != "share_session":
@@ -235,7 +232,12 @@ async def cleanup_expired_tokens(db) -> int:
     """
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
-    idle_cutoff = (now - timedelta(minutes=live_settings.get_int("session_idle_timeout_minutes", settings.SESSION_IDLE_TIMEOUT_MINUTES))).isoformat()
+    idle_cutoff = (
+        now
+        - timedelta(
+            minutes=live_settings.get_int("session_idle_timeout_minutes", settings.SESSION_IDLE_TIMEOUT_MINUTES)
+        )
+    ).isoformat()
 
     # Phase 1: revoke idle-but-otherwise-valid sessions
     await db.execute(

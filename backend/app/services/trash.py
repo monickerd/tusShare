@@ -57,8 +57,7 @@ async def _purge_expired(db) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     cursor = await db.execute(
-        "SELECT id, storage_key, encrypted_size, owner_id FROM files "
-        "WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+        "SELECT id, storage_key, encrypted_size, owner_id FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?",
         (cutoff,),
     )
     expired_files = await cursor.fetchall()

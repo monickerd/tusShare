@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
@@ -36,21 +37,18 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.models.role import (
-    FLAG_SHARING_MANAGE,
-    FLAG_SHARES_LINK_CREATE,
-    FLAG_SHARES_USER_CREATE,
-    FLAG_SHARES_UPLOAD_GRANT_CREATE,
     FLAG_SHARES_FOLDER_CREATE,
-    ROLE_TIER,
+    FLAG_SHARES_LINK_CREATE,
+    FLAG_SHARES_UPLOAD_GRANT_CREATE,
+    FLAG_SHARES_USER_CREATE,
+    FLAG_SHARING_MANAGE,
     admin_best_tier,
 )
 from app.routes._access import require_flag
-from app.services import event_bus
 from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus
 from app.services.sharing_rules import simulate_sharing_rules
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
-
 
 _ERR_PERM_MANAGE_SHARING = "sharing_manage permission required"
 _SQL_RULE_BY_ID = "SELECT * FROM sharing_rules WHERE id = ?"
@@ -69,10 +67,21 @@ _SHARING_CAPABILITY_FLAGS = [
     FLAG_SHARES_FOLDER_CREATE,
 ]
 
-_VALID_OPERATORS = frozenset({
-    "eq", "neq", "contains", "not_contains", "starts_with", "ends_with",
-    "in", "not_in", "matches_re", "cross_eq", "cross_neq",
-})
+_VALID_OPERATORS = frozenset(
+    {
+        "eq",
+        "neq",
+        "contains",
+        "not_contains",
+        "starts_with",
+        "ends_with",
+        "in",
+        "not_in",
+        "matches_re",
+        "cross_eq",
+        "cross_neq",
+    }
+)
 _CROSS_OPERATORS = frozenset({"cross_eq", "cross_neq"})
 _VALID_SUBJECTS = frozenset({"sender", "recipient", "cross"})
 _VALID_EFFECTS = frozenset({"deny", "allow"})
@@ -82,7 +91,6 @@ _VALID_SHARE_TYPES = frozenset({"link", "user"})
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 
 def _admin_tier(admin: AuthenticatedUser) -> int:
@@ -101,8 +109,7 @@ def _check_rule_lock(rule: dict, my_tier: int) -> None:
 async def _check_priority_floor(db, actor_tier: int, new_priority: int) -> None:
     """Prevent lower-tier admins from inserting rules above locked higher-authority rules."""
     cursor = await db.execute(
-        "SELECT MAX(priority) AS floor FROM sharing_rules "
-        "WHERE is_locked = TRUE AND created_by_tier < ?",
+        "SELECT MAX(priority) AS floor FROM sharing_rules WHERE is_locked = TRUE AND created_by_tier < ?",
         (actor_tier,),
     )
     row = await cursor.fetchone()
@@ -155,6 +162,7 @@ async def _rule_to_dict(db, rule: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
 
 class ConditionIn(BaseModel):
     attribute_path: str
@@ -284,10 +292,7 @@ class UpdateFlagsRequest(BaseModel):
     def validate_flags(cls, v: dict) -> dict:
         for flag in v:
             if flag not in _SHARING_CAPABILITY_FLAGS:
-                raise ValueError(
-                    f"Unknown sharing flag '{flag}'. "
-                    f"Valid flags: {_SHARING_CAPABILITY_FLAGS}"
-                )
+                raise ValueError(f"Unknown sharing flag '{flag}'. Valid flags: {_SHARING_CAPABILITY_FLAGS}")
         return v
 
 
@@ -319,6 +324,7 @@ class TestRulesRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Attribute reference endpoint
 # ---------------------------------------------------------------------------
+
 
 @router.get("/attributes")
 async def list_sharing_attributes(
@@ -359,6 +365,7 @@ async def list_sharing_attributes(
 # ---------------------------------------------------------------------------
 # Flag endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get("/flags")
 async def get_sharing_flags(
@@ -429,19 +436,22 @@ async def update_sharing_flags(
         )
 
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.sharing_rule.flags_updated",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"role_id": body.role_id, "flags": body.flags},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.sharing_rule.flags_updated",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"role_id": body.role_id, "flags": body.flags},
+        )
+    )
     return {"message": "Sharing flags updated", "role_id": body.role_id}
 
 
 # ---------------------------------------------------------------------------
 # Rule endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get("/rules")
 async def list_sharing_rules(
@@ -461,9 +471,7 @@ async def list_sharing_rules(
     )
     rules = await cursor.fetchall()
 
-    count_cursor = await db.execute(
-        f"SELECT COUNT(*) FROM sharing_rules {where}"
-    )
+    count_cursor = await db.execute(f"SELECT COUNT(*) FROM sharing_rules {where}")
     total = (await count_cursor.fetchone())[0]
 
     result = []
@@ -492,15 +500,11 @@ async def test_sharing_rules(
         raise HTTPException(status_code=404, detail="Sender user not found")
 
     if body.recipient_user_id:
-        cursor = await db.execute(
-            "SELECT id FROM users WHERE id = ?", (body.recipient_user_id,)
-        )
+        cursor = await db.execute("SELECT id FROM users WHERE id = ?", (body.recipient_user_id,))
         if await cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="Recipient user not found")
 
-    matching = await simulate_sharing_rules(
-        db, body.sender_user_id, body.recipient_user_id, body.share_type
-    )
+    matching = await simulate_sharing_rules(db, body.sender_user_id, body.recipient_user_id, body.share_type)
 
     outcome = "allow"
     for m in matching:
@@ -555,10 +559,18 @@ async def create_sharing_rule(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            rule_id, body.name, body.description, body.is_active,
-            body.priority, body.subject, body.applies_to_share_type,
-            body.effect, body.is_locked, body.locked_min_tier,
-            admin.id, my_tier,
+            rule_id,
+            body.name,
+            body.description,
+            body.is_active,
+            body.priority,
+            body.subject,
+            body.applies_to_share_type,
+            body.effect,
+            body.is_locked,
+            body.locked_min_tier,
+            admin.id,
+            my_tier,
         ),
     )
 
@@ -571,21 +583,26 @@ async def create_sharing_rule(
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()), rule_id,
-                cond.attribute_path, cond.attribute_path2,
-                cond.operator, cond.value,
+                str(uuid.uuid4()),
+                rule_id,
+                cond.attribute_path,
+                cond.attribute_path2,
+                cond.operator,
+                cond.value,
                 cond.block_on_missing_attribute,
             ),
         )
 
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.sharing_rule.created",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"rule_id": rule_id, "name": body.name, "effect": body.effect},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.sharing_rule.created",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"rule_id": rule_id, "name": body.name, "effect": body.effect},
+        )
+    )
 
     cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
@@ -688,9 +705,7 @@ async def update_sharing_rule(
     )
 
     if body.conditions is not None:
-        await db.execute(
-            "DELETE FROM sharing_rule_conditions WHERE rule_id = ?", (rule_id,)
-        )
+        await db.execute("DELETE FROM sharing_rule_conditions WHERE rule_id = ?", (rule_id,))
         for cond in body.conditions:
             await db.execute(
                 """
@@ -700,21 +715,26 @@ async def update_sharing_rule(
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    str(uuid.uuid4()), rule_id,
-                    cond.attribute_path, cond.attribute_path2,
-                    cond.operator, cond.value,
+                    str(uuid.uuid4()),
+                    rule_id,
+                    cond.attribute_path,
+                    cond.attribute_path2,
+                    cond.operator,
+                    cond.value,
                     cond.block_on_missing_attribute,
                 ),
             )
 
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.sharing_rule.updated",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"rule_id": rule_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.sharing_rule.updated",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"rule_id": rule_id},
+        )
+    )
 
     cursor = await db.execute(_SQL_RULE_BY_ID, (rule_id,))
     rule = await cursor.fetchone()
@@ -742,12 +762,14 @@ async def delete_sharing_rule(
 
     await db.execute("DELETE FROM sharing_rules WHERE id = ?", (rule_id,))
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.sharing_rule.deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"rule_id": rule_id, "name": rule["name"]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.sharing_rule.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"rule_id": rule_id, "name": rule["name"]},
+        )
+    )
 
     return {"message": "Rule deleted", "rule_id": rule_id}

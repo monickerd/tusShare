@@ -47,9 +47,7 @@ async def check_bandwidth(db, user_id: str, bytes_count: int) -> None:
         bytes_count: bytes about to be transferred (chunk or range size)
     """
     # Read per-user bandwidth limit
-    cursor = await db.execute(
-        "SELECT bandwidth_limit FROM users WHERE id = ?", (user_id,)
-    )
+    cursor = await db.execute("SELECT bandwidth_limit FROM users WHERE id = ?", (user_id,))
     row = await cursor.fetchone()
     user_bw_bps: int = (row["bandwidth_limit"] or 0) if row else 0
 
@@ -58,7 +56,7 @@ async def check_bandwidth(db, user_id: str, bytes_count: int) -> None:
         db, "global_bandwidth_limit", settings.GLOBAL_BANDWIDTH_LIMIT, dtype=int
     )
 
-    user_window_limit   = user_bw_bps   * WINDOW_SECONDS
+    user_window_limit = user_bw_bps * WINDOW_SECONDS
     global_window_limit = global_bw_bps * WINDOW_SECONDS
 
     # Build the list of (key, limit, error_detail) pairs that are actually active
@@ -84,7 +82,10 @@ async def check_bandwidth(db, user_id: str, bytes_count: int) -> None:
             if current + bytes_count > limit:
                 logger.warning(
                     "Bandwidth limit exceeded: key=%s current=%d requested=%d limit=%d",
-                    key, current, bytes_count, limit,
+                    key,
+                    current,
+                    bytes_count,
+                    limit,
                 )
                 raise HTTPException(
                     status_code=429,
@@ -106,10 +107,7 @@ async def cleanup(max_age: float = 3600.0) -> None:
     """
     now = time.monotonic()
     async with _lock:
-        stale = [
-            k for k, v in _windows.items()
-            if not v or v[-1][0] < now - max_age
-        ]
+        stale = [k for k, v in _windows.items() if not v or v[-1][0] < now - max_age]
         for k in stale:
             del _windows[k]
         if stale:

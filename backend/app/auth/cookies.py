@@ -22,7 +22,11 @@ def set_auth_cookies(
     *max_age* overrides the default refresh-token / CSRF lifetime (seconds).
     Pass a shorter value for public-device sessions.
     """
-    rt_max_age = max_age if max_age is not None else live_settings.get_int("refresh_token_expire_days", settings.REFRESH_TOKEN_EXPIRE_DAYS) * 86400
+    rt_max_age = (
+        max_age
+        if max_age is not None
+        else live_settings.get_int("refresh_token_expire_days", settings.REFRESH_TOKEN_EXPIRE_DAYS) * 86400
+    )
     response.set_cookie(
         key=COOKIE_ACCESS,
         value=access_token,
@@ -84,6 +88,6 @@ def user_response_dict(user: AuthenticatedUser) -> dict:
         "x25519_private_wrapped": getattr(user, "x25519_private_wrapped", None),
         "mlkem768_private_wrapped": getattr(user, "mlkem768_private_wrapped", None),
         "asymmetric_key_iv": getattr(user, "asymmetric_key_iv", None),
-        "upload_rate_limit":      live_settings.get_int("rate_limit_upload",      settings.RATE_LIMIT_UPLOAD),
+        "upload_rate_limit": live_settings.get_int("rate_limit_upload", settings.RATE_LIMIT_UPLOAD),
         "step_up_window_seconds": live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
     }

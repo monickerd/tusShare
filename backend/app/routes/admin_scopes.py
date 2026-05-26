@@ -18,6 +18,7 @@ Access control:
 """
 
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -25,12 +26,10 @@ from pydantic import BaseModel
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
-from app.models.policy import AdminScopeCondition, VALID_OPERATORS
+from app.models.policy import VALID_OPERATORS, AdminScopeCondition
 from app.models.role import FLAG_POLICIES_MANAGE
 from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
-
 
 _ERR_PERM_MANAGE_POLICIES = "policies_manage required"
 
@@ -45,19 +44,17 @@ _MAX_VALUE_LEN = 500
 
 
 async def _load_scope_cond(db, cond_id: str) -> AdminScopeCondition:
-    cursor = await db.execute(
-        "SELECT * FROM admin_scope_conditions WHERE id = ?", (cond_id,)
-    )
+    cursor = await db.execute("SELECT * FROM admin_scope_conditions WHERE id = ?", (cond_id,))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Admin scope condition not found")  # NOSONAR — helper; 404 documented in callers
+        raise HTTPException(
+            status_code=404, detail="Admin scope condition not found"
+        )  # NOSONAR — helper; 404 documented in callers
     return AdminScopeCondition.from_row(row)
 
 
 async def _field_exists(db, field_name: str) -> bool:
-    cursor = await db.execute(
-        "SELECT 1 FROM policy_field_definitions WHERE name = ?", (field_name,)
-    )
+    cursor = await db.execute("SELECT 1 FROM policy_field_definitions WHERE name = ?", (field_name,))
     return await cursor.fetchone() is not None
 
 
@@ -65,22 +62,24 @@ async def _field_exists(db, field_name: str) -> bool:
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class CreateScopeCondRequest(BaseModel):
-    holder_type: str   # 'user' | 'role'
-    holder_id:   str   # user_id (UUID) or role name
-    field:       str
-    operator:    str
-    value:       str
+    holder_type: str  # 'user' | 'role'
+    holder_id: str  # user_id (UUID) or role name
+    field: str
+    operator: str
+    value: str
 
 
 class UpdateScopeCondRequest(BaseModel):
     operator: str | None = None
-    value:    str | None = None
+    value: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # GET /admin/scopes — list all scope conditions
 # ---------------------------------------------------------------------------
+
 
 @router.get("")
 async def list_scope_conditions(
@@ -92,9 +91,7 @@ async def list_scope_conditions(
     Returns all conditions across all holders.  The UI groups them by holder.
     """
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_MANAGE_POLICIES)
-    cursor = await db.execute(
-        "SELECT * FROM admin_scope_conditions ORDER BY holder_type, holder_id, field"
-    )
+    cursor = await db.execute("SELECT * FROM admin_scope_conditions ORDER BY holder_type, holder_id, field")
     conds = [AdminScopeCondition.from_row(r).to_dict() for r in await cursor.fetchall()]
     return {"conditions": conds}
 
@@ -103,10 +100,11 @@ async def list_scope_conditions(
 # GET /admin/scopes/{holder_type}/{holder_id} — list conditions for a holder
 # ---------------------------------------------------------------------------
 
+
 @router.get("/{holder_type}/{holder_id}", responses={400: {"description": "Bad Request"}})
 async def list_scope_conditions_for_holder(
     holder_type: str,
-    holder_id:   str,
+    holder_id: str,
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
     db: Annotated[Database, Depends(get_db)],
 ):
@@ -120,8 +118,7 @@ async def list_scope_conditions_for_holder(
         holder_id = validate_uuid(holder_id)
 
     cursor = await db.execute(
-        "SELECT * FROM admin_scope_conditions "
-        "WHERE holder_type = ? AND holder_id = ? ORDER BY field",
+        "SELECT * FROM admin_scope_conditions WHERE holder_type = ? AND holder_id = ? ORDER BY field",
         (holder_type, holder_id),
     )
     conds = [AdminScopeCondition.from_row(r).to_dict() for r in await cursor.fetchall()]
@@ -131,6 +128,7 @@ async def list_scope_conditions_for_holder(
 # ---------------------------------------------------------------------------
 # POST /admin/scopes — create a scope condition
 # ---------------------------------------------------------------------------
+
 
 @router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
 async def create_scope_condition(
@@ -189,6 +187,7 @@ async def create_scope_condition(
 # GET /admin/scopes/conditions/{cond_id}
 # ---------------------------------------------------------------------------
 
+
 @router.get("/conditions/{cond_id}")
 async def get_scope_condition(
     cond_id: str,
@@ -205,6 +204,7 @@ async def get_scope_condition(
 # ---------------------------------------------------------------------------
 # PATCH /admin/scopes/conditions/{cond_id} — update operator or value
 # ---------------------------------------------------------------------------
+
 
 @router.patch("/conditions/{cond_id}", responses={400: {"description": "Bad Request"}})
 async def update_scope_condition(
@@ -223,7 +223,7 @@ async def update_scope_condition(
     await _load_scope_cond(db, cond_id)  # 404 guard
 
     updates = []
-    params  = []
+    params = []
 
     if body.operator is not None:
         if body.operator not in VALID_OPERATORS:
@@ -244,9 +244,7 @@ async def update_scope_condition(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     params.append(cond_id)
-    await db.execute(
-        f"UPDATE admin_scope_conditions SET {', '.join(updates)} WHERE id = ?", params
-    )
+    await db.execute(f"UPDATE admin_scope_conditions SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
     return {"message": "Scope condition updated"}
 
@@ -254,6 +252,7 @@ async def update_scope_condition(
 # ---------------------------------------------------------------------------
 # DELETE /admin/scopes/conditions/{cond_id}
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/conditions/{cond_id}")
 async def delete_scope_condition(

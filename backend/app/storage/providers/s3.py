@@ -64,6 +64,7 @@ class S3CompatProvider(StorageProvider):
 
     async def _store_mpu(self, upload_id: str, mpu_id: str) -> None:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             await r.set(f"s3:mpu:{upload_id}", mpu_id, ex=3600)
@@ -72,6 +73,7 @@ class S3CompatProvider(StorageProvider):
 
     async def _get_mpu(self, upload_id: str) -> str | None:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             return await r.get(f"s3:mpu:{upload_id}")
@@ -79,6 +81,7 @@ class S3CompatProvider(StorageProvider):
 
     async def _del_mpu(self, upload_id: str) -> str | None:
         from app.redis_client import get_redis
+
         r = get_redis()
         mpu_id: str | None = None
         if r is not None:
@@ -128,10 +131,7 @@ class S3CompatProvider(StorageProvider):
         if mpu_id is None:
             raise RuntimeError(f"No active multipart upload to finalize for {upload_id}")
 
-        parts = [
-            {"PartNumber": i + 1, "ETag": etag}
-            for i, etag in enumerate(part_tags)
-        ]
+        parts = [{"PartNumber": i + 1, "ETag": etag} for i, etag in enumerate(part_tags)]
 
         async with self._client() as s3:
             await s3.complete_multipart_upload(
@@ -234,12 +234,10 @@ class S3CompatProvider(StorageProvider):
 def _require_aioboto3():
     try:
         import aioboto3
+
         return aioboto3
     except ImportError:
-        raise RuntimeError(
-            "aioboto3 is required for S3-compatible storage. "
-            "Install it with: pip install aioboto3"
-        )
+        raise RuntimeError("aioboto3 is required for S3-compatible storage. Install it with: pip install aioboto3")
 
 
 async def _s3_stream(

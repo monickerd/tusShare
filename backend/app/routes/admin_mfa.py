@@ -13,6 +13,7 @@ POST   /admin/users/{user_id}/mfa/reset        wipe + set mfa_reset_required = 1
 """
 
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
@@ -25,14 +26,13 @@ from app.middleware.rate_limit import _get_client_ip
 from app.models.role import FLAG_USERS_MFA_MANAGE
 from app.routes._access import require_flag
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _ERR_PERM_MANAGE_MFA = "users_mfa_manage permission required"
 _ERR_INVALID_USER_ID = "Invalid user ID"
-_SQL_REVOKE_TOKENS   = "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?"
+_SQL_REVOKE_TOKENS = "UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?"
 
 
 def _request_info(request: Request) -> tuple[str, str]:
@@ -51,6 +51,7 @@ async def _resolve_user(db, user_id: str) -> None:
 # List credentials for a user
 # ---------------------------------------------------------------------------
 
+
 @router.get("/users/{user_id}/mfa", responses={400: {"description": "Bad Request"}})
 async def admin_list_mfa(
     user_id: str,
@@ -68,9 +69,7 @@ async def admin_list_mfa(
 
     credentials = await list_active_credentials(db, user_id)
 
-    cursor = await db.execute(
-        "SELECT mfa_reset_required FROM users WHERE id = ?", (user_id,)
-    )
+    cursor = await db.execute("SELECT mfa_reset_required FROM users WHERE id = ?", (user_id,))
     row = await cursor.fetchone()
     reset_required = bool(row["mfa_reset_required"]) if row else False
 
@@ -80,6 +79,7 @@ async def admin_list_mfa(
 # ---------------------------------------------------------------------------
 # Wipe all MFA data (remove credentials, clear reset flag)
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/users/{user_id}/mfa", responses={400: {"description": "Bad Request"}})
 async def admin_wipe_mfa(
@@ -105,7 +105,11 @@ async def admin_wipe_mfa(
 
     client_ip, ua = _request_info(request)
     await log_security_event(
-        db, "mfa_admin_removed", admin.id, client_ip, ua,
+        db,
+        "mfa_admin_removed",
+        admin.id,
+        client_ip,
+        ua,
         username=admin.username,
         detail={"target_user_id": user_id},
     )
@@ -116,7 +120,10 @@ async def admin_wipe_mfa(
 # Remove a specific credential
 # ---------------------------------------------------------------------------
 
-@router.delete("/users/{user_id}/mfa/{cred_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+
+@router.delete(
+    "/users/{user_id}/mfa/{cred_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}}
+)
 async def admin_remove_credential(
     user_id: str,
     cred_id: str,
@@ -136,24 +143,25 @@ async def admin_remove_credential(
     await _resolve_user(db, user_id)
 
     cursor = await db.execute(
-        "SELECT id, method FROM user_mfa_credentials "
-        "WHERE id = ? AND user_id = ? AND is_active = 1",
+        "SELECT id, method FROM user_mfa_credentials WHERE id = ? AND user_id = ? AND is_active = 1",
         (cred_id, user_id),
     )
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Credential not found")
 
-    await db.execute(
-        "UPDATE user_mfa_credentials SET is_active = 0 WHERE id = ?", (cred_id,)
-    )
+    await db.execute("UPDATE user_mfa_credentials SET is_active = 0 WHERE id = ?", (cred_id,))
     # Invalidate all sessions for the target user
     await db.execute(_SQL_REVOKE_TOKENS, (user_id,))
     await db.commit()
 
     client_ip, ua = _request_info(request)
     await log_security_event(
-        db, "mfa_admin_removed", admin.id, client_ip, ua,
+        db,
+        "mfa_admin_removed",
+        admin.id,
+        client_ip,
+        ua,
         username=admin.username,
         detail={"target_user_id": user_id, "credential_id": cred_id, "method": row["method"]},
     )
@@ -164,7 +172,10 @@ async def admin_remove_credential(
 # Force re-enrollment (wipe + set mfa_reset_required)
 # ---------------------------------------------------------------------------
 
-@router.post("/users/{user_id}/mfa/reset", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+
+@router.post(
+    "/users/{user_id}/mfa/reset", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}}
+)
 async def admin_reset_mfa(
     user_id: str,
     request: Request,
@@ -188,7 +199,11 @@ async def admin_reset_mfa(
 
     client_ip, ua = _request_info(request)
     await log_security_event(
-        db, "mfa_admin_reset", admin.id, client_ip, ua,
+        db,
+        "mfa_admin_reset",
+        admin.id,
+        client_ip,
+        ua,
         username=admin.username,
         detail={"target_user_id": user_id},
     )
@@ -198,6 +213,7 @@ async def admin_reset_mfa(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _check_step_up(request: Request, admin: AuthenticatedUser, action_key: str) -> None:
     """Verify X-Step-Up-Token header for a sensitive admin MFA action."""

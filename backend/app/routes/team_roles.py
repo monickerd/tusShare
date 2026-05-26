@@ -16,12 +16,14 @@ Inheritance cap (hard invariant on creation):
 """
 
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
+from app.conf.teams import TEAM_ROLE_OWNER
 from app.database import Database, get_db
 from app.models.role import FLAG_ROLES_CREATE, FLAG_ROLES_CROSS_TEAM_CREATE, FLAG_ROLES_MANAGE
 from app.models.team import get_team, get_team_member_role
@@ -30,14 +32,11 @@ from app.models.team_role import (
     MAX_TEAM_ROLE_NAME_LEN,
     TEAM_FLAG_META,
     TEAM_ROLE_FLAGS,
-    TeamRole,
     get_user_team_move_flags,
 )
-from app.conf.teams import TEAM_ROLE_OWNER
-from app.validation.sanitizers import validate_uuid
-from app.services import event_bus
 from app.schemas.security_event import EventActor, SecurityEvent
-from typing import Annotated
+from app.services import event_bus
+from app.validation.sanitizers import validate_uuid
 
 router = APIRouter()
 
@@ -45,6 +44,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 # Shared access-control helpers
 # ---------------------------------------------------------------------------
+
 
 async def _require_team(db, team_id: str):
     """Return team row or raise 404."""
@@ -65,7 +65,9 @@ def _is_team_admin(member_role: str | None) -> bool:
 def _check_can_view(user: AuthenticatedUser, member_role: str | None):
     """Viewable by any team member or global role managers."""
     if member_role is None and not user.has_flag(FLAG_ROLES_MANAGE):
-        raise HTTPException(status_code=403, detail="Team membership or roles_manage required")  # NOSONAR — helper; 403 documented in callers
+        raise HTTPException(
+            status_code=403, detail="Team membership or roles_manage required"
+        )  # NOSONAR — helper; 403 documented in callers
 
 
 def _check_can_manage(user: AuthenticatedUser, member_role: str | None):
@@ -73,7 +75,9 @@ def _check_can_manage(user: AuthenticatedUser, member_role: str | None):
     if user.has_flag(FLAG_ROLES_MANAGE):
         return
     if not _is_team_admin(member_role):
-        raise HTTPException(status_code=403, detail="Team Admin or roles_manage required")  # NOSONAR — helper; 403 documented in callers
+        raise HTTPException(
+            status_code=403, detail="Team Admin or roles_manage required"
+        )  # NOSONAR — helper; 403 documented in callers
 
 
 def _check_can_create(user: AuthenticatedUser, member_role: str | None):
@@ -97,12 +101,12 @@ def _check_can_create(user: AuthenticatedUser, member_role: str | None):
 
 async def _load_team_role(db, team_id: str, role_id: str):
     """Fetch a team role row or raise 404. Also verifies it belongs to the team."""
-    cursor = await db.execute(
-        "SELECT * FROM team_roles WHERE id = ? AND team_id = ?", (role_id, team_id)
-    )
+    cursor = await db.execute("SELECT * FROM team_roles WHERE id = ? AND team_id = ?", (role_id, team_id))
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="Team role not found")  # NOSONAR — helper; 404 documented in callers
+        raise HTTPException(
+            status_code=404, detail="Team role not found"
+        )  # NOSONAR — helper; 404 documented in callers
     return row
 
 
@@ -116,12 +120,12 @@ async def _load_role_permissions(db, team_role_id: str) -> dict[str, str]:
 
 def _row_to_dict(row, permissions: dict[str, str]) -> dict:
     return {
-        "id":          row["id"],
-        "team_id":     row["team_id"],
-        "name":        row["name"],
+        "id": row["id"],
+        "team_id": row["team_id"],
+        "name": row["name"],
         "description": row["description"],
-        "created_by":  row["created_by"],
-        "created_at":  row["created_at"],
+        "created_by": row["created_by"],
+        "created_at": row["created_at"],
         "permissions": permissions,
     }
 
@@ -130,19 +134,20 @@ def _row_to_dict(row, permissions: dict[str, str]) -> dict:
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class CreateTeamRoleRequest(BaseModel):
-    name:        str
+    name: str
     description: str = ""
-    permissions: dict[str, str] = {}   # {flag: '0'/'1'}
+    permissions: dict[str, str] = {}  # {flag: '0'/'1'}
 
 
 class UpdateTeamRoleRequest(BaseModel):
-    name:        str | None = None
+    name: str | None = None
     description: str | None = None
 
 
 class UpdateTeamRolePermissionsRequest(BaseModel):
-    permissions: dict[str, str]   # {flag: '0'/'1'}
+    permissions: dict[str, str]  # {flag: '0'/'1'}
 
 
 class AssignRoleRequest(BaseModel):
@@ -156,6 +161,7 @@ class AssignRoleRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # GET /{team_id}/custom-roles
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{team_id}/custom-roles")
 async def list_team_roles(
@@ -185,10 +191,7 @@ async def list_team_roles(
     for r in await cursor.fetchall():
         perms_by_role.setdefault(r["team_role_id"], {})[r["flag"]] = r["value"]
 
-    roles = [
-        _row_to_dict(row, perms_by_role.get(row["id"], {}))
-        for row in role_rows
-    ]
+    roles = [_row_to_dict(row, perms_by_role.get(row["id"], {})) for row in role_rows]
 
     return {"roles": roles, "flags": TEAM_FLAG_META}
 
@@ -197,18 +200,19 @@ async def list_team_roles(
 # POST /{team_id}/custom-roles
 # ---------------------------------------------------------------------------
 
+
 def _validate_permission_flags(permissions: dict) -> None:
     """Raise 400 if any flag name or value is invalid."""
     for flag, val in permissions.items():
         if flag not in TEAM_ROLE_FLAGS:
             raise HTTPException(status_code=400, detail=f"Unknown team role flag: {flag!r}")
         if val not in ("0", "1"):
-            raise HTTPException(
-                status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}"
-            )
+            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}")
 
 
-@router.post("/{team_id}/custom-roles", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+@router.post(
+    "/{team_id}/custom-roles", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}}
+)
 async def create_team_role(
     team_id: str,
     body: CreateTeamRoleRequest,
@@ -253,8 +257,7 @@ async def create_team_role(
 
     role_id = str(uuid.uuid4())
     await db.execute(
-        "INSERT INTO team_roles (id, team_id, name, description, created_by) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO team_roles (id, team_id, name, description, created_by) VALUES (?, ?, ?, ?, ?)",
         (role_id, team_id, body.name, body.description, user.id),
     )
 
@@ -265,19 +268,22 @@ async def create_team_role(
         )
 
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.team_role.created",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"team_id": team_id, "role_id": role_id, "flags_set": list(body.permissions.keys())},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.team_role.created",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"team_id": team_id, "role_id": role_id, "flags_set": list(body.permissions.keys())},
+        )
+    )
     return {"message": "Team role created", "role_id": role_id}
 
 
 # ---------------------------------------------------------------------------
 # GET /{team_id}/custom-roles/{role_id}
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{team_id}/custom-roles/{role_id}")
 async def get_team_role(
@@ -301,6 +307,7 @@ async def get_team_role(
 # ---------------------------------------------------------------------------
 # PATCH /{team_id}/custom-roles/{role_id}
 # ---------------------------------------------------------------------------
+
 
 @router.patch("/{team_id}/custom-roles/{role_id}", responses={400: {"description": "Bad Request"}})
 async def update_team_role(
@@ -344,19 +351,22 @@ async def update_team_role(
     params.append(role_id)
     await db.execute(f"UPDATE team_roles SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.team_role.updated",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"team_id": team_id, "role_id": role_id, "fields_changed": [u.split(" =")[0] for u in updates]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.team_role.updated",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"team_id": team_id, "role_id": role_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+        )
+    )
     return {"message": "Team role updated"}
 
 
 # ---------------------------------------------------------------------------
 # DELETE /{team_id}/custom-roles/{role_id}
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/{team_id}/custom-roles/{role_id}")
 async def delete_team_role(
@@ -376,19 +386,22 @@ async def delete_team_role(
 
     await db.execute("DELETE FROM team_roles WHERE id = ?", (role_id,))
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.team_role.deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"team_id": team_id, "role_id": role_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.team_role.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"team_id": team_id, "role_id": role_id},
+        )
+    )
     return {"message": "Team role deleted"}
 
 
 # ---------------------------------------------------------------------------
 # PUT /{team_id}/custom-roles/{role_id}/permissions
 # ---------------------------------------------------------------------------
+
 
 @router.put("/{team_id}/custom-roles/{role_id}/permissions", responses={400: {"description": "Bad Request"}})
 async def update_team_role_permissions(
@@ -415,9 +428,7 @@ async def update_team_role_permissions(
         if flag not in TEAM_ROLE_FLAGS:
             raise HTTPException(status_code=400, detail=f"Unknown team role flag: {flag!r}")
         if val not in ("0", "1"):
-            raise HTTPException(
-                status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}"
-            )
+            raise HTTPException(status_code=400, detail=f"Flag value must be '0' or '1', got: {val!r}")
 
     for flag, val in body.permissions.items():
         await db.execute(
@@ -433,6 +444,7 @@ async def update_team_role_permissions(
 # ---------------------------------------------------------------------------
 # GET /{team_id}/custom-roles/{role_id}/assignments
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{team_id}/custom-roles/{role_id}/assignments")
 async def list_role_assignments(
@@ -460,9 +472,9 @@ async def list_role_assignments(
     )
     assignments = [
         {
-            "id":         r["id"],
-            "user_id":    r["user_id"],
-            "username":   r["username"],
+            "id": r["id"],
+            "user_id": r["user_id"],
+            "username": r["username"],
             "granted_by": r["granted_by"],
             "granted_at": r["granted_at"],
         }
@@ -475,7 +487,11 @@ async def list_role_assignments(
 # POST /{team_id}/custom-roles/{role_id}/assignments
 # ---------------------------------------------------------------------------
 
-@router.post("/{team_id}/custom-roles/{role_id}/assignments", responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}})
+
+@router.post(
+    "/{team_id}/custom-roles/{role_id}/assignments",
+    responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}},
+)
 async def assign_team_role(
     team_id: str,
     role_id: str,
@@ -505,9 +521,7 @@ async def assign_team_role(
     assignment_id = str(uuid.uuid4())
     try:
         await db.execute(
-            "INSERT INTO team_role_assignments "
-            "(id, team_role_id, user_id, team_id, granted_by) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO team_role_assignments (id, team_role_id, user_id, team_id, granted_by) VALUES (?, ?, ?, ?, ?)",
             (assignment_id, role_id, target_user_id, team_id, user.id),
         )
         await db.commit()
@@ -521,7 +535,10 @@ async def assign_team_role(
 # DELETE /{team_id}/custom-roles/{role_id}/assignments/{user_id}
 # ---------------------------------------------------------------------------
 
-@router.delete("/{team_id}/custom-roles/{role_id}/assignments/{target_user_id}", responses={404: {"description": "Not Found"}})
+
+@router.delete(
+    "/{team_id}/custom-roles/{role_id}/assignments/{target_user_id}", responses={404: {"description": "Not Found"}}
+)
 async def revoke_team_role(
     team_id: str,
     role_id: str,
@@ -541,8 +558,7 @@ async def revoke_team_role(
     await _load_team_role(db, team_id, role_id)  # 404 guard
 
     result = await db.execute(
-        "DELETE FROM team_role_assignments "
-        "WHERE team_role_id = ? AND user_id = ? RETURNING id",
+        "DELETE FROM team_role_assignments WHERE team_role_id = ? AND user_id = ? RETURNING id",
         (role_id, target_user_id),
     )
     deleted = await result.fetchone()

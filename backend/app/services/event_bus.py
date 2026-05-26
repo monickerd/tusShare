@@ -20,13 +20,13 @@ to add new output paths.
 Single-process only — replace with a Redis-backed implementation for
 multi-worker deployments (same as sse_broker).
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import uuid
-from contextlib import asynccontextmanager
 from datetime import timezone
 
 from app.config import settings
@@ -54,6 +54,7 @@ _drainer_task: asyncio.Task | None = None
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def emit(event: SecurityEvent) -> None:
     """Enqueue a security event for persistence and fan-out.
@@ -98,6 +99,7 @@ def unsubscribe(q: asyncio.Queue[SecurityEvent]) -> None:
 # Lifecycle — called from main.py lifespan
 # ---------------------------------------------------------------------------
 
+
 def init(db_session_factory) -> None:
     """Store the DB session factory. Called once before start()."""
     global _db_session_factory
@@ -115,6 +117,7 @@ def start() -> asyncio.Task:
 # ---------------------------------------------------------------------------
 # Internal — drainer + persistence
 # ---------------------------------------------------------------------------
+
 
 async def _flush_remaining_events() -> None:
     while not _write_queue.empty():
@@ -168,7 +171,7 @@ async def _persist(event: SecurityEvent) -> None:
                     event.actor.username,
                     event.actor.auth_method,
                     event.actor.ip or "",
-                    None,                           # user_agent — not available at bus level
+                    None,  # user_agent — not available at bus level
                     event.event_type,
                     event.severity,
                     event.outcome,

@@ -49,11 +49,7 @@ def inject_sri(frontend_dir: Path) -> None:
         if not asset_path.exists():
             logger.warning("SRI: asset not found, skipping: %s", asset_path)
             return m.group(0)
-        return (
-            f'<script src="{src}"'
-            f' integrity="{_sha384(asset_path)}"'
-            f' crossorigin="anonymous"></script>'
-        )
+        return f'<script src="{src}" integrity="{_sha384(asset_path)}" crossorigin="anonymous"></script>'
 
     def _replace_link(m: re.Match) -> str:
         href = m.group(1)
@@ -61,11 +57,7 @@ def inject_sri(frontend_dir: Path) -> None:
         if not asset_path.exists():
             logger.warning("SRI: asset not found, skipping: %s", asset_path)
             return m.group(0)
-        return (
-            f'<link rel="stylesheet" href="{href}"'
-            f' integrity="{_sha384(asset_path)}"'
-            f' crossorigin="anonymous">'
-        )
+        return f'<link rel="stylesheet" href="{href}" integrity="{_sha384(asset_path)}" crossorigin="anonymous">'
 
     new_html = _SCRIPT_RE.sub(_replace_script, html)
     new_html = _LINK_RE.sub(_replace_link, new_html)

@@ -39,7 +39,9 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         header_token = request.headers.get("X-CSRF-Token", "")
 
         if not cookie_token or not header_token:
-            logger.warning("CSRF: missing token (path=%s, ip=%s)", path, request.client.host if request.client else "unknown")
+            logger.warning(
+                "CSRF: missing token (path=%s, ip=%s)", path, request.client.host if request.client else "unknown"
+            )
             return JSONResponse(
                 status_code=403,
                 content={"error": {"code": "CSRF_ERROR", "message": "CSRF token missing"}},

@@ -7,6 +7,7 @@ Key precedence:
   1. TUSSHARE_NOTIF_ENCRYPTION_KEY (32 bytes, base64url)
   2. HKDF-SHA256 over JWT_SECRET with a dedicated salt/info context
 """
+
 from __future__ import annotations
 
 import base64

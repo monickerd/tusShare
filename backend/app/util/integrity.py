@@ -25,9 +25,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # Resolved once at import time.
-_APP_DIR = Path(__file__).resolve().parent.parent      # …/app/app/
-_MANIFEST_PATH = _APP_DIR / "manifest.json"            # …/app/app/manifest.json
-_APP_ROOT = _APP_DIR.parent                            # …/app/  (container root)
+_APP_DIR = Path(__file__).resolve().parent.parent  # …/app/app/
+_MANIFEST_PATH = _APP_DIR / "manifest.json"  # …/app/app/manifest.json
+_APP_ROOT = _APP_DIR.parent  # …/app/  (container root)
 
 _result: "IntegrityResult | None" = None
 _manifest_hashes: dict[str, str] = {}

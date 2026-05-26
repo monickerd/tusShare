@@ -821,6 +821,7 @@ const Crypto = (() => {
  * @param {number} timestampBucket - Math.floor(Date.now() / 1000 / 30)
  * @returns {Promise<string>} lowercase hex HMAC-SHA256
  */
+// eslint-disable-next-line no-unused-vars -- global function used by auth.js
 async function computeOpaqueStepUpHmac(sessionKeyB64, actionKey, payloadHash, timestampBucket) {
     const enc = new TextEncoder();
     // serenity-kit/opaque returns base64url (- and _); atob() only accepts standard

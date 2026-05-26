@@ -9,7 +9,6 @@ visible on the login page before the user authenticates.
 """
 
 import mimetypes
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -24,12 +23,14 @@ _FAVICON_NOT_FOUND = "Favicon file not found on disk"
 
 # Only serve recognised image MIME types for the logo.  SVG excluded: it can
 # contain scripts that execute when served from the app's same origin.
-_ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset({
-    "image/png",
-    "image/jpeg",
-    "image/gif",
-    "image/webp",
-})
+_ALLOWED_IMAGE_TYPES: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+    }
+)
 
 
 @router.get("/theme")
@@ -41,11 +42,11 @@ async def get_theme():
     """
     config = get_theme_config()
     return {
-        "brand_name":                 config.get("brand_name"),
-        "logo_url":                   "/api/v1/theme/logo"    if "logo_path"    in config else None,
-        "favicon_url":                "/api/v1/theme/favicon" if "favicon_path" in config else None,
-        "ui":                         get_ui_flags(),
-        "public_device_banner_text":  config.get("public_device_banner_text"),
+        "brand_name": config.get("brand_name"),
+        "logo_url": "/api/v1/theme/logo" if "logo_path" in config else None,
+        "favicon_url": "/api/v1/theme/favicon" if "favicon_path" in config else None,
+        "ui": get_ui_flags(),
+        "public_device_banner_text": config.get("public_device_banner_text"),
     }
 
 
@@ -87,11 +88,13 @@ async def get_theme_logo():
     )
 
 
-_ALLOWED_FAVICON_TYPES: frozenset[str] = frozenset({
-    "image/png",
-    "image/x-icon",
-    "image/vnd.microsoft.icon",
-})
+_ALLOWED_FAVICON_TYPES: frozenset[str] = frozenset(
+    {
+        "image/png",
+        "image/x-icon",
+        "image/vnd.microsoft.icon",
+    }
+)
 
 
 @router.get("/theme/favicon", responses={404: {"description": "Not Found"}})

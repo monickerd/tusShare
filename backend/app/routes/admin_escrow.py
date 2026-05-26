@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -35,15 +36,12 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
-from app.models.role import FLAG_ESCROW_MANAGE, ROLE_TIER, admin_best_tier
+from app.models.role import FLAG_ESCROW_MANAGE, admin_best_tier
 from app.routes._access import require_flag
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
-from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import check_admin_setting_lock
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
-
 
 _ERR_PERM_MANAGE_ESCROW = "escrow_manage permission required"
 _SQL_ESCROW_BY_FOLDER = "SELECT * FROM folder_escrow_policies WHERE folder_id = ?"
@@ -58,6 +56,7 @@ _STEPUP = "policy.escrow.*"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _admin_tier(admin: AuthenticatedUser) -> int:
     return admin_best_tier(admin.roles)
@@ -87,11 +86,13 @@ def _check_overrides_allowed(ancestor_ids: list[str], db_policies: dict) -> None
 # Org-level settings
 # ---------------------------------------------------------------------------
 
-_ESCROW_SETTING_KEYS = frozenset({
-    "escrow_default_user_ids",
-    "escrow_default_role_ids",
-    "escrow_require_coverage",
-})
+_ESCROW_SETTING_KEYS = frozenset(
+    {
+        "escrow_default_user_ids",
+        "escrow_default_role_ids",
+        "escrow_require_coverage",
+    }
+)
 
 
 class EscrowSettingsUpdate(BaseModel):
@@ -99,7 +100,7 @@ class EscrowSettingsUpdate(BaseModel):
     escrow_default_role_ids: list[str] | None = None
     escrow_require_coverage: bool | None = None
     # Lock controls — only admins with sufficient tier may change these
-    is_locked:       bool | None = None
+    is_locked: bool | None = None
     locked_min_tier: int | None = None
 
 
@@ -125,7 +126,7 @@ async def get_escrow_settings(
         "escrow_default_user_ids": json.loads(_get("escrow_default_user_ids", "[]")),
         "escrow_default_role_ids": json.loads(_get("escrow_default_role_ids", "[]")),
         "escrow_require_coverage": _get("escrow_require_coverage", "0") == "1",
-        "is_locked":       sample["is_locked"]       if sample else False,
+        "is_locked": sample["is_locked"] if sample else False,
         "locked_min_tier": sample["locked_min_tier"] if sample else None,
     }
 
@@ -181,7 +182,9 @@ async def _apply_setting_with_lock(db, key: str, value: str, new_is_locked, new_
     )
 
 
-@router.put("/settings", dependencies=[Depends(require_step_up(_STEPUP))], responses={400: {"description": "Bad Request"}})
+@router.put(
+    "/settings", dependencies=[Depends(require_step_up(_STEPUP))], responses={400: {"description": "Bad Request"}}
+)
 async def update_escrow_settings(
     body: EscrowSettingsUpdate,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -218,13 +221,15 @@ async def update_escrow_settings(
     changed_keys = [k for k, _ in updates]
     if body.is_locked is not None or body.locked_min_tier is not None:
         changed_keys.append("lock_state")
-    event_bus.emit(SecurityEvent(
-        event_type="admin.escrow.settings_changed",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"keys_changed": changed_keys},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.escrow.settings_changed",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"keys_changed": changed_keys},
+        )
+    )
     return {"message": "Escrow settings updated"}
 
 
@@ -232,10 +237,11 @@ async def update_escrow_settings(
 # Folder-level policy overrides
 # ---------------------------------------------------------------------------
 
+
 class FolderEscrowPolicyRequest(BaseModel):
-    override_mode:     str  = "replace"  # replace | merge | none
-    policy_locked:     bool = False
-    locked_min_tier:   int | None = None
+    override_mode: str = "replace"  # replace | merge | none
+    policy_locked: bool = False
+    locked_min_tier: int | None = None
     overrides_allowed: bool = True
     # Agent entries — exactly one of user_id or role_id per entry
     agents: list[dict] = []  # [{"user_id": ...} | {"role_id": ...}]
@@ -302,18 +308,20 @@ async def list_folder_policies(
             (row["id"],),
         )
         agent_rows = await ac.fetchall()
-        policies.append({
-            "policy_id":         row["id"],
-            "folder_id":         row["folder_id"],
-            "folder_name":       row["folder_name"],
-            "override_mode":     row["override_mode"],
-            "policy_locked":     row["policy_locked"],
-            "locked_min_tier":   row["locked_min_tier"],
-            "overrides_allowed": row["overrides_allowed"],
-            "agent_count":       len(agent_rows),
-            "created_at":        row["created_at"],
-            "updated_at":        row["updated_at"],
-        })
+        policies.append(
+            {
+                "policy_id": row["id"],
+                "folder_id": row["folder_id"],
+                "folder_name": row["folder_name"],
+                "override_mode": row["override_mode"],
+                "policy_locked": row["policy_locked"],
+                "locked_min_tier": row["locked_min_tier"],
+                "overrides_allowed": row["overrides_allowed"],
+                "agent_count": len(agent_rows),
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
     return {"policies": policies}
 
 
@@ -327,9 +335,7 @@ async def get_folder_policy(
     require_flag(admin, FLAG_ESCROW_MANAGE, _ERR_PERM_MANAGE_ESCROW)
     folder_id = validate_uuid(folder_id)
 
-    cursor = await db.execute(
-        _SQL_ESCROW_BY_FOLDER, (folder_id,)
-    )
+    cursor = await db.execute(_SQL_ESCROW_BY_FOLDER, (folder_id,))
     policy = await cursor.fetchone()
     if not policy:
         raise HTTPException(status_code=404, detail="No policy found for this folder")
@@ -344,24 +350,24 @@ async def get_folder_policy(
     )
     agents = [
         {
-            "user_id":   r["agent_user_id"],
-            "username":  r["username"],
-            "role_id":   r["agent_role_id"],
+            "user_id": r["agent_user_id"],
+            "username": r["username"],
+            "role_id": r["agent_role_id"],
             "role_name": r["role_name"],
         }
         for r in await ac.fetchall()
     ]
 
     return {
-        "policy_id":         policy["id"],
-        "folder_id":         policy["folder_id"],
-        "override_mode":     policy["override_mode"],
-        "policy_locked":     policy["policy_locked"],
-        "locked_min_tier":   policy["locked_min_tier"],
+        "policy_id": policy["id"],
+        "folder_id": policy["folder_id"],
+        "override_mode": policy["override_mode"],
+        "policy_locked": policy["policy_locked"],
+        "locked_min_tier": policy["locked_min_tier"],
         "overrides_allowed": policy["overrides_allowed"],
-        "agents":            agents,
-        "created_at":        policy["created_at"],
-        "updated_at":        policy["updated_at"],
+        "agents": agents,
+        "created_at": policy["created_at"],
+        "updated_at": policy["updated_at"],
     }
 
 
@@ -379,39 +385,51 @@ async def _validate_policy_agents(db, agents: list[dict]) -> None:
 
 
 async def _upsert_policy_record(
-    db, existing, policy_id: str, folder_id: str,
-    body: "FolderEscrowPolicyRequest", admin: AuthenticatedUser, my_tier: int,
+    db,
+    existing,
+    policy_id: str,
+    folder_id: str,
+    body: "FolderEscrowPolicyRequest",
+    admin: AuthenticatedUser,
+    my_tier: int,
 ) -> None:
     """Insert or update the folder_escrow_policies row and replace agents."""
     if existing:
         await db.execute(
             "UPDATE folder_escrow_policies SET override_mode=?, policy_locked=?, locked_min_tier=?, "
             "overrides_allowed=?, updated_at=NOW() WHERE id=?",
-            (body.override_mode, body.policy_locked, body.locked_min_tier,
-             body.overrides_allowed, policy_id),
+            (body.override_mode, body.policy_locked, body.locked_min_tier, body.overrides_allowed, policy_id),
         )
-        await db.execute(
-            "DELETE FROM folder_escrow_policy_agents WHERE policy_id = ?", (policy_id,)
-        )
+        await db.execute("DELETE FROM folder_escrow_policy_agents WHERE policy_id = ?", (policy_id,))
     else:
         await db.execute(
             "INSERT INTO folder_escrow_policies "
             "(id, folder_id, override_mode, policy_locked, locked_min_tier, overrides_allowed, "
             " created_by, created_by_tier) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (policy_id, folder_id, body.override_mode, body.policy_locked,
-             body.locked_min_tier, body.overrides_allowed, admin.id, my_tier),
+            (
+                policy_id,
+                folder_id,
+                body.override_mode,
+                body.policy_locked,
+                body.locked_min_tier,
+                body.overrides_allowed,
+                admin.id,
+                my_tier,
+            ),
         )
     for entry in body.agents:
         await db.execute(
-            "INSERT INTO folder_escrow_policy_agents (id, policy_id, agent_user_id, agent_role_id) "
-            "VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), policy_id,
-             entry.get("user_id") or None, entry.get("role_id") or None),
+            "INSERT INTO folder_escrow_policy_agents (id, policy_id, agent_user_id, agent_role_id) VALUES (?, ?, ?, ?)",
+            (str(uuid.uuid4()), policy_id, entry.get("user_id") or None, entry.get("role_id") or None),
         )
 
 
-@router.put("/folder-policies/{folder_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+@router.put(
+    "/folder-policies/{folder_id}",
+    dependencies=[Depends(require_step_up(_STEPUP))],
+    responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}},
+)
 async def upsert_folder_policy(
     folder_id: str,
     body: FolderEscrowPolicyRequest,
@@ -433,9 +451,7 @@ async def upsert_folder_policy(
         raise HTTPException(status_code=404, detail="Folder not found")
 
     # Check existing policy lock (only for updates, not initial creation)
-    cursor = await db.execute(
-        _SQL_ESCROW_BY_FOLDER, (folder_id,)
-    )
+    cursor = await db.execute(_SQL_ESCROW_BY_FOLDER, (folder_id,))
     existing = await cursor.fetchone()
     if existing:
         _check_policy_lock(existing, my_tier)
@@ -452,22 +468,28 @@ async def upsert_folder_policy(
     policy_id = existing["id"] if existing else str(uuid.uuid4())
     await _upsert_policy_record(db, existing, policy_id, folder_id, body, admin, my_tier)
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.escrow.folder_policy_changed",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={
-            "action": "updated" if existing else "created",
-            "folder_id": folder_id,
-            "policy_id": policy_id,
-            "override_mode": body.override_mode,
-        },
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.escrow.folder_policy_changed",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={
+                "action": "updated" if existing else "created",
+                "folder_id": folder_id,
+                "policy_id": policy_id,
+                "override_mode": body.override_mode,
+            },
+        )
+    )
     return {"message": "Policy saved", "policy_id": policy_id}
 
 
-@router.delete("/folder-policies/{folder_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}})
+@router.delete(
+    "/folder-policies/{folder_id}",
+    dependencies=[Depends(require_step_up(_STEPUP))],
+    responses={404: {"description": "Not Found"}},
+)
 async def delete_folder_policy(
     folder_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -478,32 +500,31 @@ async def delete_folder_policy(
     folder_id = validate_uuid(folder_id)
     my_tier = _admin_tier(admin)
 
-    cursor = await db.execute(
-        _SQL_ESCROW_BY_FOLDER, (folder_id,)
-    )
+    cursor = await db.execute(_SQL_ESCROW_BY_FOLDER, (folder_id,))
     policy = await cursor.fetchone()
     if not policy:
         raise HTTPException(status_code=404, detail="No policy found for this folder")
 
     _check_policy_lock(policy, my_tier)
 
-    await db.execute(
-        "DELETE FROM folder_escrow_policies WHERE id = ?", (policy["id"],)
-    )
+    await db.execute("DELETE FROM folder_escrow_policies WHERE id = ?", (policy["id"],))
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.escrow.folder_policy_changed",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"action": "deleted", "folder_id": folder_id, "policy_id": policy["id"]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.escrow.folder_policy_changed",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"action": "deleted", "folder_id": folder_id, "policy_id": policy["id"]},
+        )
+    )
     return {"message": "Policy deleted"}
 
 
 # ---------------------------------------------------------------------------
 # Coverage report
 # ---------------------------------------------------------------------------
+
 
 @router.get("/coverage-report")
 async def get_coverage_report(
@@ -548,10 +569,10 @@ async def get_coverage_report(
     )
     teams = [
         {
-            "team_id":        row["id"],
-            "team_name":      row["name"],
+            "team_id": row["id"],
+            "team_name": row["name"],
             "owner_username": row["owner_username"],
-            "created_at":     row["created_at"],
+            "created_at": row["created_at"],
         }
         for row in await cursor.fetchall()
     ]

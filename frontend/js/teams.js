@@ -1065,6 +1065,7 @@ const Teams = (() => {
             ]));
         }
 
+        // eslint-disable-next-line prefer-const -- forward reference: callbacks capture this before Utils.showModal() assigns it
         let closeModal;
         const createBtn = Utils.el('button', {
             className: 'btn btn-primary',

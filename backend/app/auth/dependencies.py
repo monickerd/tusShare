@@ -60,6 +60,7 @@ async def get_current_user(
     # the JWT path entirely — they authenticate directly against the key table.
     if token.startswith("sa_"):
         from app.auth.service_account import authenticate_service_account
+
         return await authenticate_service_account(token)
 
     try:
@@ -80,7 +81,7 @@ async def get_current_user(
         # Bind step-up tokens to this session (T1-M3).
         user.session_id = sid
         # Fire-and-forget: update last_active_at for idle-timeout tracking.
-        _t = asyncio.ensure_future(touch_session(sid))
+        _t = asyncio.create_task(touch_session(sid))
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
 
@@ -103,6 +104,7 @@ def require_admin(
 ) -> AuthenticatedUser:
     """Require the current user to hold the admin_panel_view permission."""
     from app.models.role import FLAG_ADMIN_PANEL_VIEW
+
     if not user.has_flag(FLAG_ADMIN_PANEL_VIEW):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
@@ -127,14 +129,13 @@ async def require_user_role(
 
     # MFA enforcement — check whether the user must enroll before accessing resources.
     # Only fires when enforcement is not 'off' so the overhead is zero in the default config.
-    from app.auth.mfa import load_mfa_settings, get_active_methods
+    from app.auth.mfa import get_active_methods, load_mfa_settings
+
     mfa_settings = await load_mfa_settings(db)
     enforcement = mfa_settings["mfa_enforcement"]
 
     if enforcement != "off":
-        cursor = await db.execute(
-            "SELECT mfa_reset_required FROM users WHERE id = ?", (user.id,)
-        )
+        cursor = await db.execute("SELECT mfa_reset_required FROM users WHERE id = ?", (user.id,))
         mfa_row = await cursor.fetchone()
         mfa_reset_required = bool(mfa_row["mfa_reset_required"]) if mfa_row else False
 

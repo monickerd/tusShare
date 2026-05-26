@@ -70,9 +70,7 @@ def require_step_up(action_key: str):
             )
 
         if not verify_step_up_token(token, user.id, action_key, session_id=user.session_id):
-            logger.warning(
-                "Invalid step-up token: user=%s action=%s", user.id, action_key
-            )
+            logger.warning("Invalid step-up token: user=%s action=%s", user.id, action_key)
             raise HTTPException(
                 status_code=403,
                 detail={

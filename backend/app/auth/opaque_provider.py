@@ -14,10 +14,15 @@ import uuid
 from app.auth.interface import AuthCredentials, AuthenticatedUser, AuthProvider
 from app.database import DuplicateError
 from app.models.role import (
-    ADMIN_ROLE_IDS, ROLE_USER,
-    get_user_global_flags, get_user_global_role_ids, get_user_scoped_roles, grant_role,
+    ADMIN_ROLE_IDS,
+    ROLE_USER,
+    get_user_global_flags,
+    get_user_global_role_ids,
+    get_user_scoped_roles,
+    grant_role,
 )
 from app.validation.sanitizers import sanitize_username
+
 
 async def _load_role_data(db, user_id: str) -> tuple[set[str], dict[str, str], list[dict]]:
     """Load global roles, global flags, and scoped roles for a user in parallel."""
@@ -74,10 +79,7 @@ class OPAQUEAuthProvider(AuthProvider):
     async def authenticate(self, credentials: AuthCredentials) -> AuthenticatedUser | None:
         # OPAQUE login cannot be reduced to a single authenticate() call.
         # Callers should use the /auth/opaque/login/start+finish routes instead.
-        raise NotImplementedError(
-            "OPAQUEAuthProvider.authenticate() is not supported. "
-            "Use the OPAQUE login routes."
-        )
+        raise NotImplementedError("OPAQUEAuthProvider.authenticate() is not supported. Use the OPAQUE login routes.")
 
     async def create_user(
         self,
@@ -122,11 +124,20 @@ class OPAQUEAuthProvider(AuthProvider):
                 "  x25519_private_wrapped, mlkem768_private_wrapped, asymmetric_key_iv"
                 ") VALUES (?, ?, 'opaque', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
-                    user_id, username, opaque_record, is_admin_flag,
-                    wrapped_master_key, wrapped_master_key_iv,
-                    recovery_key_wrapped, recovery_key_iv, recovery_key_hash,
-                    x25519_public_key, mlkem768_public_key,
-                    x25519_private_wrapped, mlkem768_private_wrapped, asymmetric_key_iv,
+                    user_id,
+                    username,
+                    opaque_record,
+                    is_admin_flag,
+                    wrapped_master_key,
+                    wrapped_master_key_iv,
+                    recovery_key_wrapped,
+                    recovery_key_iv,
+                    recovery_key_hash,
+                    x25519_public_key,
+                    mlkem768_public_key,
+                    x25519_private_wrapped,
+                    mlkem768_private_wrapped,
+                    asymmetric_key_iv,
                 ),
             )
             await grant_role(self._db, user_id, role)
@@ -190,8 +201,7 @@ class OPAQUEAuthProvider(AuthProvider):
     async def get_registration_record(self, username: str) -> bytes | None:
         """Return the stored opaque_registration_record for a username, or None."""
         cursor = await self._db.execute(
-            "SELECT opaque_registration_record, auth_method, is_active "
-            "FROM users WHERE LOWER(username) = LOWER(?)",
+            "SELECT opaque_registration_record, auth_method, is_active FROM users WHERE LOWER(username) = LOWER(?)",
             (username,),
         )
         row = await cursor.fetchone()
@@ -199,9 +209,7 @@ class OPAQUEAuthProvider(AuthProvider):
             return None
         return row["opaque_registration_record"]
 
-    async def get_registration_record_with_canonical(
-        self, username: str
-    ) -> tuple[bytes | None, str | None]:
+    async def get_registration_record_with_canonical(self, username: str) -> tuple[bytes | None, str | None]:
         """Return (opaque_registration_record, canonical_username) for a username.
 
         canonical_username is the stored username with its original casing.
@@ -232,17 +240,13 @@ class OPAQUEAuthProvider(AuthProvider):
         )
         await self._db.commit()
 
-    async def consume_login_session(
-        self, session_id: str
-    ) -> tuple[str, bytes] | None:
+    async def consume_login_session(self, session_id: str) -> tuple[str, bytes] | None:
         """Atomically fetch and delete an unexpired login session.
 
         Returns (username, server_state) or None if expired / not found.
         """
         cursor = await self._db.execute(
-            "DELETE FROM opaque_login_sessions "
-            "WHERE id = ? AND expires_at > NOW() "
-            "RETURNING username, server_state",
+            "DELETE FROM opaque_login_sessions WHERE id = ? AND expires_at > NOW() RETURNING username, server_state",
             (session_id,),
         )
         row = await cursor.fetchone()
@@ -252,9 +256,7 @@ class OPAQUEAuthProvider(AuthProvider):
 
     async def sweep_expired_sessions(self) -> int:
         """Delete all expired login sessions. Returns the number of rows removed."""
-        result = await self._db.execute(
-            "DELETE FROM opaque_login_sessions WHERE expires_at <= NOW()"
-        )
+        result = await self._db.execute("DELETE FROM opaque_login_sessions WHERE expires_at <= NOW()")
         await self._db.commit()
         return result.rowcount
 
@@ -299,9 +301,7 @@ class OPAQUEAuthProvider(AuthProvider):
         Returns username or None if expired / not found.
         """
         cursor = await self._db.execute(
-            "DELETE FROM opaque_recovery_sessions "
-            "WHERE id = ? AND expires_at > NOW() "
-            "RETURNING username",
+            "DELETE FROM opaque_recovery_sessions WHERE id = ? AND expires_at > NOW() RETURNING username",
             (session_id,),
         )
         row = await cursor.fetchone()
@@ -311,8 +311,6 @@ class OPAQUEAuthProvider(AuthProvider):
 
     async def sweep_expired_recovery_sessions(self) -> int:
         """Delete all expired recovery sessions. Returns the number of rows removed."""
-        result = await self._db.execute(
-            "DELETE FROM opaque_recovery_sessions WHERE expires_at <= NOW()"
-        )
+        result = await self._db.execute("DELETE FROM opaque_recovery_sessions WHERE expires_at <= NOW()")
         await self._db.commit()
         return result.rowcount

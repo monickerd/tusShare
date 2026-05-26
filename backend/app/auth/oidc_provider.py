@@ -34,9 +34,9 @@ import logging
 import secrets
 import time
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
-from app.auth.idp_crypto import decrypt_idp_config, encrypt_token, decrypt_token
+from app.auth.idp_crypto import decrypt_idp_config, decrypt_token
 from app.services import live_settings
 from app.util.ssrf import validate_endpoint_url
 
@@ -49,6 +49,7 @@ _ERR_AUTHLIB_MISSING = "authlib is not installed"
 # ---------------------------------------------------------------------------
 # Config validation
 # ---------------------------------------------------------------------------
+
 
 def validate_oidc_config(cfg: dict[str, Any]) -> None:
     """Validate an OIDC config dict.  Raises ValueError on problems.
@@ -84,6 +85,7 @@ def validate_oidc_config(cfg: dict[str, Any]) -> None:
 # OIDC client (authlib AsyncOAuth2Client)
 # ---------------------------------------------------------------------------
 
+
 async def _get_oidc_client(cfg: dict[str, Any]):
     """Build an authlib AsyncOAuth2Client with loaded server metadata."""
     try:
@@ -92,6 +94,7 @@ async def _get_oidc_client(cfg: dict[str, Any]):
         raise RuntimeError(_ERR_AUTHLIB_MISSING) from exc
 
     import httpx
+
     from app.config import settings as _s
 
     discovery_url = cfg["issuer_url"].rstrip("/") + "/.well-known/openid-configuration"
@@ -122,6 +125,7 @@ async def _get_oidc_client(cfg: dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Begin OIDC flow: generate state + return authorization URL
 # ---------------------------------------------------------------------------
+
 
 async def begin_oidc_flow(
     db,
@@ -164,6 +168,7 @@ async def begin_oidc_flow(
 # Handle OIDC callback: exchange code → tokens → user identity
 # ---------------------------------------------------------------------------
 
+
 async def handle_oidc_callback(
     db,
     provider_id: str,
@@ -186,13 +191,14 @@ async def handle_oidc_callback(
 
     # Consume the state nonce atomically; retrieve nonce for ID token binding.
     cursor = await db.execute(
-        "DELETE FROM oidc_states WHERE id = ? AND provider_id = ? AND expires_at > ? "
-        "RETURNING redirect_to, nonce",
+        "DELETE FROM oidc_states WHERE id = ? AND provider_id = ? AND expires_at > ? RETURNING redirect_to, nonce",
         (state, provider_id, now),
     )
     row = await cursor.fetchone()
     if row is None:
-        logger.warning("OIDC callback: unknown/expired state=%s provider=%s", state, provider_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.warning(
+            "OIDC callback: unknown/expired state=%s provider=%s", state, provider_id
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
         return None
 
     expected_nonce = row["nonce"]  # may be None for pre-014 rows
@@ -200,8 +206,8 @@ async def handle_oidc_callback(
     cfg = decrypt_idp_config(config_enc)
 
     try:
-        from authlib.integrations.httpx_client import AsyncOAuth2Client
-        from authlib.jose import JsonWebToken
+        from authlib.integrations.httpx_client import AsyncOAuth2Client  # noqa: F401
+        from authlib.jose import JsonWebToken  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(_ERR_AUTHLIB_MISSING) from exc
 
@@ -234,9 +240,7 @@ async def handle_oidc_callback(
         await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP, allow_private=_s.ALLOW_HTTP_IDP)
 
     # Validate ID token against IdP's JWKS, including nonce binding.
-    claims = await asyncio.to_thread(
-        _validate_id_token, id_token_str, cfg, client.server_metadata, expected_nonce
-    )
+    claims = await asyncio.to_thread(_validate_id_token, id_token_str, cfg, client.server_metadata, expected_nonce)
 
     # Optionally call UserInfo to get additional claims
     if userinfo_endpoint:
@@ -271,8 +275,8 @@ def _validate_id_token(
     expected_nonce: str | None = None,
 ) -> dict[str, Any]:
     """Validate an ID token JWT against the IdP's JWKS.  Returns claims dict."""
-    from authlib.jose import JsonWebToken, JsonWebKey
     import httpx
+    from authlib.jose import JsonWebKey, JsonWebToken
 
     jwks_uri = server_metadata.get("jwks_uri")
     if not jwks_uri:
@@ -304,6 +308,7 @@ def _validate_id_token(
 async def _fetch_userinfo(userinfo_endpoint: str, access_token: str) -> dict[str, Any]:
     """Call the UserInfo endpoint and return the claims dict."""
     import httpx
+
     # follow_redirects=False: a redirect could bypass the SSRF check done before this call (RT-02).
     async with httpx.AsyncClient(follow_redirects=False) as client:
         resp = await client.get(
@@ -318,6 +323,7 @@ async def _fetch_userinfo(userinfo_endpoint: str, access_token: str) -> dict[str
 # ---------------------------------------------------------------------------
 # Live-refetch: exchange refresh token for fresh claims
 # ---------------------------------------------------------------------------
+
 
 async def oidc_fetch_claims(
     config_enc: str,
@@ -341,7 +347,7 @@ async def oidc_fetch_claims(
         return _json.loads(oidc_claims_cache) if oidc_claims_cache else {}
 
     try:
-        from authlib.integrations.httpx_client import AsyncOAuth2Client
+        from authlib.integrations.httpx_client import AsyncOAuth2Client  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(_ERR_AUTHLIB_MISSING) from exc
 
@@ -365,6 +371,7 @@ async def oidc_fetch_claims(
 
     try:
         from app.config import settings as _s
+
         await validate_endpoint_url(userinfo_endpoint, allow_http=_s.ALLOW_HTTP_IDP, allow_private=_s.ALLOW_HTTP_IDP)
         claims = await _fetch_userinfo(userinfo_endpoint, access_token)
         return claims
@@ -376,8 +383,6 @@ async def oidc_fetch_claims(
 async def sweep_expired_oidc_states(db) -> int:
     """Delete oidc_states rows past their expiry; return count removed."""
     now = int(time.time())
-    result = await db.execute(
-        "DELETE FROM oidc_states WHERE expires_at <= ?", (now,)
-    )
+    result = await db.execute("DELETE FROM oidc_states WHERE expires_at <= ?", (now,))
     await db.commit()
     return result.rowcount or 0

@@ -15,8 +15,10 @@ GET    /admin/api-keys
 POST   /admin/api-keys                            [step-up: admin.api_keys.manage]
 DELETE /admin/api-keys/{id}                       [step-up]
 """
+
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -24,6 +26,7 @@ import re
 import secrets
 import uuid
 from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
@@ -32,36 +35,35 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
-from app.services.notification_crypto import decrypt_channel_secret, encrypt_channel_secret
+from app.services.notification_crypto import encrypt_channel_secret
 from app.util.ssrf import validate_endpoint_url
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
-
 
 _ERR_CHANNEL_NOT_FOUND = "Channel not found"
 
 logger = logging.getLogger(__name__)
-router = APIRouter()           # mounted at /api/v1/admin/notifications
+router = APIRouter()  # mounted at /api/v1/admin/notifications
 api_keys_router = APIRouter()  # mounted at /api/v1/admin
 
 _STEPUP_NOTIF = "admin.notifications.configure"
-_STEPUP_KEYS  = "admin.api_keys.manage"
-_REDACTED     = "••••••••"
-_FILTER_RE    = re.compile(r"^[a-z][a-z0-9._:*-]{0,127}$")
+_STEPUP_KEYS = "admin.api_keys.manage"
+_REDACTED = "••••••••"
+_FILTER_RE = re.compile(r"^[a-z][a-z0-9._:*-]{0,127}$")
 
 
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
 
+
 class ChannelCreateModel(BaseModel):
-    name:             str
-    endpoint_url:     str
-    secret:           str | None = None
-    event_filter:     list[str] = []
-    batch_size:       int | None = None
+    name: str
+    endpoint_url: str
+    secret: str | None = None
+    event_filter: list[str] = []
+    batch_size: int | None = None
     batch_interval_s: int | None = None
-    enabled:          bool = True
+    enabled: bool = True
 
     @field_validator("name")
     @classmethod
@@ -95,10 +97,10 @@ class ChannelCreateModel(BaseModel):
 
 
 class NotifSettingsModel(BaseModel):
-    server_id:               str | None = None
-    op_event_retention_days: int        = 30
-    api_key_expiry_warn_days: int       = 30
-    upload_quota_warn_pct:   int        = 90
+    server_id: str | None = None
+    op_event_retention_days: int = 30
+    api_key_expiry_warn_days: int = 30
+    upload_quota_warn_pct: int = 90
 
     @field_validator("op_event_retention_days")
     @classmethod
@@ -126,10 +128,10 @@ _VALID_SCOPES = frozenset({"events.read", "ops_read", "audit_read", "notificatio
 
 
 class ApiKeyCreateModel(BaseModel):
-    name:               str
-    scopes:             list[str] = ["events.read"]
-    expires_at:         str | None = None   # ISO datetime string or None
-    filter_event_types: str | None = None   # comma-separated glob patterns, e.g. "auth.*,admin.*"
+    name: str
+    scopes: list[str] = ["events.read"]
+    expires_at: str | None = None  # ISO datetime string or None
+    filter_event_types: str | None = None  # comma-separated glob patterns, e.g. "auth.*,admin.*"
     filter_min_severity: str | None = None  # info | warning | critical
 
     @field_validator("name")
@@ -145,7 +147,9 @@ class ApiKeyCreateModel(BaseModel):
     def _scopes(cls, v: list[str]) -> list[str]:
         unknown = set(v) - _VALID_SCOPES
         if unknown:
-            raise ValueError(f"Unknown scope(s): {', '.join(sorted(unknown))}. Valid: {', '.join(sorted(_VALID_SCOPES))}")
+            raise ValueError(
+                f"Unknown scope(s): {', '.join(sorted(unknown))}. Valid: {', '.join(sorted(_VALID_SCOPES))}"
+            )
         if not v:
             raise ValueError("At least one scope is required")
         return v
@@ -161,6 +165,7 @@ class ApiKeyCreateModel(BaseModel):
 # ---------------------------------------------------------------------------
 # Notification channel CRUD
 # ---------------------------------------------------------------------------
+
 
 @router.get("/channels")
 async def list_channels(
@@ -185,7 +190,7 @@ async def create_channel(
     await validate_endpoint_url(body.endpoint_url)
     secret_enc = encrypt_channel_secret(body.secret) if body.secret else None
     ch_id = str(uuid.uuid4())
-    now   = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc).isoformat()
 
     await db.execute(
         "INSERT INTO notification_channels "
@@ -206,8 +211,9 @@ async def create_channel(
     await db.commit()
 
     from app.services import notification_emitter
+
     notification_emitter.reload(db)
-    await asyncio.sleep(0.1)   # brief yield so supervisor picks up new channel
+    await asyncio.sleep(0.1)  # brief yield so supervisor picks up new channel
     await notification_emitter.catch_up(ch_id, db)
 
     return {"id": ch_id, "name": body.name}
@@ -244,9 +250,7 @@ async def update_channel(
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP_NOTIF))],
 ):
     channel_id = validate_uuid(channel_id)
-    cursor = await db.execute(
-        "SELECT id, secret_enc FROM notification_channels WHERE id = ?", (channel_id,)
-    )
+    cursor = await db.execute("SELECT id, secret_enc FROM notification_channels WHERE id = ?", (channel_id,))
     existing = await cursor.fetchone()
     if existing is None:
         raise HTTPException(status_code=404, detail=_ERR_CHANNEL_NOT_FOUND)
@@ -276,6 +280,7 @@ async def update_channel(
     await db.commit()
 
     from app.services import notification_emitter
+
     notification_emitter.reload(db)
     return {"ok": True}
 
@@ -288,9 +293,7 @@ async def delete_channel(
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP_NOTIF))],
 ):
     channel_id = validate_uuid(channel_id)
-    cursor = await db.execute(
-        "SELECT id FROM notification_channels WHERE id = ?", (channel_id,)
-    )
+    cursor = await db.execute("SELECT id FROM notification_channels WHERE id = ?", (channel_id,))
     if await cursor.fetchone() is None:
         raise HTTPException(status_code=404, detail=_ERR_CHANNEL_NOT_FOUND)
 
@@ -298,6 +301,7 @@ async def delete_channel(
     await db.commit()
 
     from app.services import notification_emitter
+
     notification_emitter.reload(db)
     return {"ok": True}
 
@@ -340,6 +344,7 @@ async def test_channel(
 # Events log (admin view — no API key required, admin session sufficient)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/events")
 async def list_op_events(
     user: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -371,18 +376,21 @@ async def list_op_events(
             data = json.loads(r["data_json"])
         except Exception:
             data = {}
-        events.append({
-            "event_id":   r["event_id"],
-            "event_type": r["event_type"],
-            "severity":   r["severity"],
-            "source":     r["source"],
-            "data":       data,
-            "server_id":  r["server_id"],
-            "created_at": r["created_at"],
-        })
+        events.append(
+            {
+                "event_id": r["event_id"],
+                "event_type": r["event_type"],
+                "severity": r["severity"],
+                "source": r["source"],
+                "data": data,
+                "server_id": r["server_id"],
+                "created_at": r["created_at"],
+            }
+        )
 
     if type_filters:
         from app.services.notification_emitter import _matches_filter
+
         events = [e for e in events if _matches_filter(e["event_type"], type_filters)]
 
     return {"events": events, "total": len(events)}
@@ -391,6 +399,7 @@ async def list_op_events(
 # ---------------------------------------------------------------------------
 # Notification settings
 # ---------------------------------------------------------------------------
+
 
 @router.get("/settings")
 async def get_notif_settings(
@@ -405,10 +414,10 @@ async def get_notif_settings(
     rows = await cursor.fetchall()
     result = {r["key"]: r["value"] for r in rows}
     return {
-        "server_id":               result.get("server_id", ""),
+        "server_id": result.get("server_id", ""),
         "op_event_retention_days": int(result.get("op_event_retention_days", 30)),
         "api_key_expiry_warn_days": int(result.get("api_key_expiry_warn_days", 30)),
-        "upload_quota_warn_pct":   int(result.get("upload_quota_warn_pct", 90)),
+        "upload_quota_warn_pct": int(result.get("upload_quota_warn_pct", 90)),
     }
 
 
@@ -420,10 +429,10 @@ async def update_notif_settings(
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP_NOTIF))],
 ):
     pairs = [
-        ("server_id",               body.server_id or ""),
-        ("op_event_retention_days",  str(body.op_event_retention_days)),
+        ("server_id", body.server_id or ""),
+        ("op_event_retention_days", str(body.op_event_retention_days)),
         ("api_key_expiry_warn_days", str(body.api_key_expiry_warn_days)),
-        ("upload_quota_warn_pct",    str(body.upload_quota_warn_pct)),
+        ("upload_quota_warn_pct", str(body.upload_quota_warn_pct)),
     ]
     for key, value in pairs:
         await db.execute(
@@ -439,14 +448,14 @@ async def update_notif_settings(
 # API key CRUD (separate sub-path: /admin/api-keys)
 # ---------------------------------------------------------------------------
 
+
 @api_keys_router.get("/api-keys")
 async def list_api_keys(
     user: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
-        "SELECT id, name, scopes, created_at, last_used_at, expires_at "
-        "FROM api_keys ORDER BY created_at ASC"
+        "SELECT id, name, scopes, created_at, last_used_at, expires_at FROM api_keys ORDER BY created_at ASC"
     )
     rows = await cursor.fetchall()
     return {"keys": [dict(r) for r in rows]}
@@ -459,10 +468,10 @@ async def create_api_key(
     db: Annotated[Database, Depends(get_db)],
     _stepup: Annotated[None, Depends(require_step_up(_STEPUP_KEYS))],
 ):
-    raw      = "tss_" + secrets.token_urlsafe(32)
+    raw = "tss_" + secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
-    key_id   = str(uuid.uuid4())
-    now      = datetime.now(timezone.utc).isoformat()
+    key_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
 
     await db.execute(
         "INSERT INTO api_keys "
@@ -484,18 +493,20 @@ async def create_api_key(
     await db.commit()
 
     return {
-        "id":                  key_id,
-        "name":                body.name,
-        "key":                 raw,        # shown only once
-        "scopes":              body.scopes,
-        "filter_event_types":  body.filter_event_types,
+        "id": key_id,
+        "name": body.name,
+        "key": raw,  # shown only once
+        "scopes": body.scopes,
+        "filter_event_types": body.filter_event_types,
         "filter_min_severity": body.filter_min_severity,
-        "created_at":          now,
-        "expires_at":          body.expires_at,
+        "created_at": now,
+        "expires_at": body.expires_at,
     }
 
 
-@api_keys_router.post("/api-keys/{key_id}/rotate", status_code=200, responses={404: {"description": "API key not found"}})
+@api_keys_router.post(
+    "/api-keys/{key_id}/rotate", status_code=200, responses={404: {"description": "API key not found"}}
+)
 async def rotate_api_key(
     key_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -505,15 +516,14 @@ async def rotate_api_key(
     """Issue a new raw key for an existing API key entry (old key is immediately invalidated)."""
     key_id = validate_uuid(key_id)
     cursor = await db.execute(
-        "SELECT id, name, scopes, filter_event_types, filter_min_severity, expires_at "
-        "FROM api_keys WHERE id = ?",
+        "SELECT id, name, scopes, filter_event_types, filter_min_severity, expires_at FROM api_keys WHERE id = ?",
         (key_id,),
     )
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="API key not found")
 
-    raw      = "tss_" + secrets.token_urlsafe(32)
+    raw = "tss_" + secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
 
     await db.execute(
@@ -523,13 +533,13 @@ async def rotate_api_key(
     await db.commit()
 
     return {
-        "id":                  key_id,
-        "name":                row["name"],
-        "key":                 raw,        # shown only once
-        "scopes":              json.loads(row["scopes"] or "[]"),
-        "filter_event_types":  row["filter_event_types"],
+        "id": key_id,
+        "name": row["name"],
+        "key": raw,  # shown only once
+        "scopes": json.loads(row["scopes"] or "[]"),
+        "filter_event_types": row["filter_event_types"],
         "filter_min_severity": row["filter_min_severity"],
-        "expires_at":          row["expires_at"],
+        "expires_at": row["expires_at"],
     }
 
 

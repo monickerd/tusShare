@@ -12,9 +12,11 @@ Identity changes (tab-sync):
 A heartbeat comment (": heartbeat") is sent every 25 seconds to keep the
 connection alive through proxies and detect broken connections quickly.
 """
+
 import asyncio
 import json
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
@@ -24,7 +26,6 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.services import sse_broker
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,6 +39,7 @@ def _sse_response(topic: str) -> StreamingResponse:
     Sends a heartbeat comment every _HEARTBEAT_INTERVAL seconds to keep the
     connection alive through proxies that would otherwise time out a silent stream.
     """
+
     async def event_stream():
         q = sse_broker.subscribe(topic)
         try:
@@ -70,6 +72,7 @@ def _multi_topic_sse_response(topics: list[str]) -> StreamingResponse:
     SSE frames. Heartbeats are emitted whenever the queue is idle for
     _HEARTBEAT_INTERVAL seconds.
     """
+
     async def event_stream():
         merged: asyncio.Queue = asyncio.Queue(maxsize=64)
 

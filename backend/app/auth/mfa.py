@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import base64
 import json
-import secrets
 import time
 import uuid
 from typing import Any
@@ -41,6 +40,7 @@ from app.util.crypto import aesgcm_decrypt_blob, aesgcm_encrypt_blob
 # ---------------------------------------------------------------------------
 # Credential encryption
 # ---------------------------------------------------------------------------
+
 
 def _get_mfa_key() -> bytes:
     """Return the 32-byte AES key used for credential encryption.
@@ -128,8 +128,7 @@ async def consume_pending_token(db, token: str) -> tuple[str, bool] | None:
 
     # Atomically delete the row — if nothing is deleted the token was already used
     result = await db.execute(
-        "DELETE FROM mfa_pending_tokens WHERE jti = ? AND user_id = ? AND expires_at > ? "
-        "RETURNING is_public_device",
+        "DELETE FROM mfa_pending_tokens WHERE jti = ? AND user_id = ? AND expires_at > ? RETURNING is_public_device",
         (jti, user_id, now),
     )
     row = await result.fetchone()
@@ -162,6 +161,7 @@ def extract_pending_jti(token: str) -> str | None:
 # MFA credential list helper
 # ---------------------------------------------------------------------------
 
+
 async def list_active_credentials(db, user_id: str) -> list[dict]:
     """Return all active non-recovery credentials for a user (no secrets)."""
     cursor = await db.execute(
@@ -187,8 +187,7 @@ async def list_active_credentials(db, user_id: str) -> list[dict]:
 async def get_active_methods(db, user_id: str) -> set[str]:
     """Return the set of active (non-recovery) MFA method names for a user."""
     cursor = await db.execute(
-        "SELECT DISTINCT method FROM user_mfa_credentials "
-        "WHERE user_id = ? AND is_active = 1 AND method != 'recovery'",
+        "SELECT DISTINCT method FROM user_mfa_credentials WHERE user_id = ? AND is_active = 1 AND method != 'recovery'",
         (user_id,),
     )
     rows = await cursor.fetchall()
@@ -198,6 +197,7 @@ async def get_active_methods(db, user_id: str) -> set[str]:
 # ---------------------------------------------------------------------------
 # Enforcement evaluation
 # ---------------------------------------------------------------------------
+
 
 async def load_mfa_settings(db) -> dict:
     """Load MFA-related admin_settings rows into a dict."""
@@ -258,9 +258,7 @@ async def user_satisfies_mfa_enforcement(
 async def sweep_expired_pending_tokens(db) -> int:
     """Delete expired pending-token rows; return the count removed."""
     now = int(time.time())
-    result = await db.execute(
-        "DELETE FROM mfa_pending_tokens WHERE expires_at <= ?", (now,)
-    )
+    result = await db.execute("DELETE FROM mfa_pending_tokens WHERE expires_at <= ?", (now,))
     await db.commit()
     return result.rowcount or 0
 
@@ -268,8 +266,6 @@ async def sweep_expired_pending_tokens(db) -> int:
 async def sweep_expired_webauthn_challenges(db) -> int:
     """Delete WebAuthn challenge rows older than 5 minutes."""
     cutoff = int(time.time()) - 300
-    result = await db.execute(
-        "DELETE FROM webauthn_challenges WHERE created_at <= ?", (cutoff,)
-    )
+    result = await db.execute("DELETE FROM webauthn_challenges WHERE created_at <= ?", (cutoff,))
     await db.commit()
     return result.rowcount or 0

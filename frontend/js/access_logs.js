@@ -3,7 +3,7 @@
  * Full implementation in Phase 7. Stub here for importability.
  */
 const AccessLogs = (() => {
-    function renderLogViewer(container, type, id) {
+    function renderLogViewer(container, _type, _id) {
         container.innerHTML = '';
         container.appendChild(Utils.el('p', {
             className: 'text-muted',

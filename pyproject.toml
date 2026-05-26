@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line too long — long lines acceptable in route files
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]

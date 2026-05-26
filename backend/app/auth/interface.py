@@ -14,16 +14,18 @@ from typing import Optional
 @dataclass
 class AuthCredentials:
     """Base class for authentication credentials."""
+
     pass
 
 
 @dataclass
 class AuthenticatedUser:
     """Minimal user representation returned by auth providers."""
+
     id: str
     username: str
     auth_method: str  # 'opaque'
-    roles: Optional[set[str]] = None   # set of global role IDs
+    roles: Optional[set[str]] = None  # set of global role IDs
     flags: Optional[dict[str, str]] = None  # effective permission flags from global roles {flag: value}
     # Scoped role entries: list of {role_id, scope_type, scope_id, flags} dicts.
     # Populated at auth time; used by has_flag_in_scope and get_team_ids_with_flag.
@@ -62,8 +64,7 @@ class AuthenticatedUser:
             return True
         # Any scoped role that grants this flag also counts for panel access.
         return any(
-            entry["flags"].get(flag, "0") not in ("0", "", "false", "False", "no")
-            for entry in self.scoped_roles
+            entry["flags"].get(flag, "0") not in ("0", "", "false", "False", "no") for entry in self.scoped_roles
         )
 
     def has_flag_in_scope(self, flag: str, scope_type: str, scope_id: str) -> bool:
@@ -93,13 +94,13 @@ class AuthenticatedUser:
         return {
             entry["scope_id"]
             for entry in self.scoped_roles
-            if entry["scope_type"] == "team"
-            and entry["flags"].get(flag, "0") not in ("0", "", "false", "False", "no")
+            if entry["scope_type"] == "team" and entry["flags"].get(flag, "0") not in ("0", "", "false", "False", "no")
         }
 
     @property
     def is_admin(self) -> bool:
         from app.models.role import ADMIN_ROLE_IDS
+
         if bool(self.roles & ADMIN_ROLE_IDS):
             return True
         # Scoped team admins (team_admin/team_manager roles in a team scope) are
@@ -113,6 +114,7 @@ class AuthenticatedUser:
     @property
     def is_user(self) -> bool:
         from app.models.role import ROLE_USER
+
         return ROLE_USER in self.roles
 
     @property

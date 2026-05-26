@@ -15,23 +15,22 @@ import logging
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+import app.storage.manager as storage
 from app.auth.dependencies import require_user_role
-from app.routes._access import check_data_permission, copy_folder_permissions
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
-from app.database import Database, get_db
+from app.database import Database, db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import check_upload_rate_limit
-from app.services import live_settings, sse_broker, event_bus
+from app.routes._access import check_data_permission, copy_folder_permissions
 from app.schemas.security_event import SecurityEvent
-import app.storage.manager as storage
+from app.services import event_bus, live_settings, sse_broker
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
-from app.database import db_session
-from typing import Annotated
 
 _bg_tasks: set = set()
 
@@ -39,10 +38,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_TUS_VERSION        = "1.0.0"
+_TUS_VERSION = "1.0.0"
 _CONTENT_TYPE_PATCH = "application/offset+octet-stream"
 _ERR_UPLOAD_NOT_FOUND = "Upload not found"
-_SQL_DELETE_UPLOAD    = "DELETE FROM tus_uploads WHERE id = ?"
+_SQL_DELETE_UPLOAD = "DELETE FROM tus_uploads WHERE id = ?"
 # Maximum single-chunk body: chunkSize (default 5 MB) + AES-GCM tag (16 B) + headroom
 _MAX_CHUNK_BYTES = 21 * 1024 * 1024  # 21 MB
 
@@ -110,6 +109,7 @@ def _parse_upload_metadata(raw: str) -> dict[str, str]:
 # create_upload helpers
 # ---------------------------------------------------------------------------
 
+
 def _validate_metadata_fields(meta: dict) -> tuple:
     """Check required fields and validate escrow key encoding. Returns (escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv)."""
     for field in ("filename", "filetype", "encrypted_file_key", "key_iv", "chunk_size", "original_size"):
@@ -154,29 +154,36 @@ async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> s
 async def _emit_quota_status_event(db, user_id: str, disk_used: int, disk_quota: int) -> None:
     """Emit an op_bus event for quota warning or ok status."""
     try:
-        from app.services import op_bus
         from app.schemas.op_event import OperationalEvent
+        from app.services import op_bus
+
         warn_val = await get_admin_setting(db, "upload_quota_warn_pct")
         warn_pct = int(warn_val) if warn_val else 90
         used_pct = disk_used / disk_quota * 100
         if used_pct >= warn_pct:
-            op_bus.emit(OperationalEvent(
-                event_type="upload.quota.warning",
-                severity="warning", source="upload",
-                data={
-                    "user_id":     user_id,
-                    "used_bytes":  disk_used,
-                    "quota_bytes": disk_quota,
-                    "used_pct":    round(used_pct, 1),
-                    "catch_up":    False,
-                },
-            ))
+            op_bus.emit(
+                OperationalEvent(
+                    event_type="upload.quota.warning",
+                    severity="warning",
+                    source="upload",
+                    data={
+                        "user_id": user_id,
+                        "used_bytes": disk_used,
+                        "quota_bytes": disk_quota,
+                        "used_pct": round(used_pct, 1),
+                        "catch_up": False,
+                    },
+                )
+            )
         else:
-            op_bus.emit(OperationalEvent(
-                event_type="upload.quota.ok",
-                severity="info", source="upload",
-                data={"user_id": user_id},
-            ))
+            op_bus.emit(
+                OperationalEvent(
+                    event_type="upload.quota.ok",
+                    severity="info",
+                    source="upload",
+                    data={"user_id": user_id},
+                )
+            )
     except Exception:
         pass
 
@@ -224,7 +231,10 @@ def _parse_create_upload_headers(request: Request) -> tuple[int, str]:
 # POST /uploads  — create a new upload
 # ---------------------------------------------------------------------------
 
-@router.post("", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 413: {"description": "413"}})
+
+@router.post(
+    "", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 413: {"description": "413"}}
+)
 async def create_upload(
     request: Request,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -281,7 +291,8 @@ async def create_upload(
     storage_key = str(uuid.uuid4())
     upload_id = str(uuid.uuid4())
     expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=live_settings.get_int("tus_upload_expiry_hours", settings.TUS_UPLOAD_EXPIRY_HOURS))
+        datetime.now(timezone.utc)
+        + timedelta(hours=live_settings.get_int("tus_upload_expiry_hours", settings.TUS_UPLOAD_EXPIRY_HOURS))
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     await db.execute("BEGIN")
@@ -297,10 +308,22 @@ async def create_upload(
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             """,
             (
-                file_id, original_name, sanitized_name, storage_key, folder_id, user.id,
-                mime_type, original_size, total_encrypted_size, chunk_size, total_chunks,
-                encrypted_file_key, key_iv,
-                escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
+                file_id,
+                original_name,
+                sanitized_name,
+                storage_key,
+                folder_id,
+                user.id,
+                mime_type,
+                original_size,
+                total_encrypted_size,
+                chunk_size,
+                total_chunks,
+                encrypted_file_key,
+                key_iv,
+                escrow_ephemeral_pk,
+                escrow_encrypted_key,
+                escrow_key_iv,
                 last_modified_ms,
             ),
         )
@@ -325,16 +348,19 @@ async def create_upload(
 
     return Response(
         status_code=201,
-        headers=_tus_headers({
-            "Location": f"/api/v1/uploads/{upload_id}",
-            "Upload-Offset": "0",
-        }),
+        headers=_tus_headers(
+            {
+                "Location": f"/api/v1/uploads/{upload_id}",
+                "Upload-Offset": "0",
+            }
+        ),
     )
 
 
 # ---------------------------------------------------------------------------
 # HEAD /uploads/{upload_id}  — resume check
 # ---------------------------------------------------------------------------
+
 
 @router.head("/{upload_id}", responses={404: {"description": "Not Found"}})
 async def head_upload(
@@ -358,11 +384,13 @@ async def head_upload(
 
     return Response(
         status_code=200,
-        headers=_tus_headers({
-            "Upload-Offset": str(row["current_offset"]),
-            "Upload-Length": str(row["total_size"]),
-            "Cache-Control": "no-store",
-        }),
+        headers=_tus_headers(
+            {
+                "Upload-Offset": str(row["current_offset"]),
+                "Upload-Length": str(row["total_size"]),
+                "Cache-Control": "no-store",
+            }
+        ),
     )
 
 
@@ -370,9 +398,8 @@ async def head_upload(
 # patch_upload helpers
 # ---------------------------------------------------------------------------
 
-async def _read_and_verify_chunk(
-    request: Request, upload_id: str, chunk_index: int, client_offset: int
-) -> bytes:
+
+async def _read_and_verify_chunk(request: Request, upload_id: str, chunk_index: int, client_offset: int) -> bytes:
     """Read request body and verify the X-Chunk-Hash header. Raises 400 on any mismatch."""
     chunk_data = await request.body()
     if not chunk_data:
@@ -388,22 +415,33 @@ async def _read_and_verify_chunk(
     actual_hex = await asyncio.to_thread(lambda: hashlib.sha256(chunk_data).hexdigest())
     if actual_hex != expected_hex:
         logger.warning(  # NOSONAR — server-side audit log; values are Pydantic-validated
-            "Chunk hash mismatch for upload %s chunk %d at offset %d "
-            "(expected=%s actual=%s size=%d)",
-            upload_id, chunk_index, client_offset,
-            expected_hex, actual_hex, len(chunk_data),
+            "Chunk hash mismatch for upload %s chunk %d at offset %d (expected=%s actual=%s size=%d)",
+            upload_id,
+            chunk_index,
+            client_offset,
+            expected_hex,
+            actual_hex,
+            len(chunk_data),
         )
         raise HTTPException(status_code=400, detail="Chunk integrity check failed: hash mismatch")
     return chunk_data
 
 
 async def _record_chunk_in_db(
-    db, upload_id: str, file_id: str, chunk_index: int, chunk_iv_b64: str,
-    chunk_size: int, client_offset: int, new_offset: int, etag
+    db,
+    upload_id: str,
+    file_id: str,
+    chunk_index: int,
+    chunk_iv_b64: str,
+    chunk_size: int,
+    client_offset: int,
+    new_offset: int,
+    etag,
 ) -> None:
     chunk_id = str(uuid.uuid4())
     new_expires_at = (
-        datetime.now(timezone.utc) + timedelta(hours=live_settings.get_int("tus_upload_expiry_hours", settings.TUS_UPLOAD_EXPIRY_HOURS))
+        datetime.now(timezone.utc)
+        + timedelta(hours=live_settings.get_int("tus_upload_expiry_hours", settings.TUS_UPLOAD_EXPIRY_HOURS))
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     chunk_now = datetime.now(timezone.utc).isoformat()
     await db.execute("BEGIN")
@@ -432,7 +470,9 @@ async def _record_chunk_in_db(
             )
         await db.commit()
     except Exception as _phase1_exc:
-        logger.error("Phase 1 DB update failed for upload %s: %s", upload_id, _phase1_exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.error(
+            "Phase 1 DB update failed for upload %s: %s", upload_id, _phase1_exc
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
         await db.rollback()
         raise
 
@@ -441,6 +481,7 @@ async def _record_upload_folder_activity(user_id: str, folder_id: str) -> None:
     """Background task: record that user_id wrote to folder_id."""
     try:
         from app.routes.auth import record_folder_activity  # local import avoids circular dep at module level
+
         async with db_session() as db:
             cur = await db.execute(
                 "SELECT f.name, tf.team_id, t.name AS team_name "
@@ -453,59 +494,61 @@ async def _record_upload_folder_activity(user_id: str, folder_id: str) -> None:
             row = await cur.fetchone()
             if row:
                 await record_folder_activity(
-                    db, user_id, folder_id,
-                    row["team_id"], row["name"], row["team_name"],
+                    db,
+                    user_id,
+                    folder_id,
+                    row["team_id"],
+                    row["name"],
+                    row["team_name"],
                 )
     except Exception:
         pass  # best-effort; never surface to the upload response
 
 
 async def _finalize_completed_upload(
-    db, upload_id: str, file_id: str, storage_key: str,
-    new_offset: int, chunk_index: int, user_id: str, file_row
+    db, upload_id: str, file_id: str, storage_key: str, new_offset: int, chunk_index: int, user_id: str, file_row
 ) -> None:
-    tags_cursor = await db.execute(
-        "SELECT part_tags FROM tus_uploads WHERE id = ?", (upload_id,)
-    )
+    tags_cursor = await db.execute("SELECT part_tags FROM tus_uploads WHERE id = ?", (upload_id,))
     tags_row = await tags_cursor.fetchone()
     part_tags: list[str] = json.loads(tags_row["part_tags"] or "[]") if tags_row else []
 
     try:
-        actual_size = await storage.get_manager().finalize_upload(
-            db, upload_id, file_id, storage_key, part_tags
-        )
+        actual_size = await storage.get_manager().finalize_upload(db, upload_id, file_id, storage_key, part_tags)
     except Exception as exc:
-        logger.error("Upload finalization failed for %s: %s", upload_id, exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.error(
+            "Upload finalization failed for %s: %s", upload_id, exc
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=500, detail="Upload finalization failed")
 
     if actual_size != new_offset:
         logger.error(
             "Blob size mismatch for file %s: expected %d bytes, got %d",
-            file_id, new_offset, actual_size,
+            file_id,
+            new_offset,
+            actual_size,
         )
         await storage.get_manager().abort_upload(upload_id)
         raise HTTPException(status_code=500, detail="Upload finalization failed: size mismatch")
 
     await db.execute("BEGIN")
     try:
-        count_cursor = await db.execute(
-            "SELECT COUNT(*) FROM file_chunks WHERE file_id = ?", (file_id,)
-        )
+        count_cursor = await db.execute("SELECT COUNT(*) FROM file_chunks WHERE file_id = ?", (file_id,))
         count_row = await count_cursor.fetchone()
         expected_chunks = chunk_index + 1
         if count_row[0] != expected_chunks:
             await db.rollback()
             logger.error(
                 "Chunk count mismatch for file %s: expected %d, got %d",
-                file_id, expected_chunks, count_row[0],
+                file_id,
+                expected_chunks,
+                count_row[0],
             )
             raise HTTPException(
                 status_code=500,
                 detail="Upload finalization failed: chunk count mismatch",
             )
         await db.execute(
-            "UPDATE files SET upload_complete = 1, encrypted_size = ?, updated_at = NOW() "
-            "WHERE id = ?",
+            "UPDATE files SET upload_complete = 1, encrypted_size = ?, updated_at = NOW() WHERE id = ?",
             (new_offset, file_id),
         )
         await db.execute(
@@ -536,13 +579,15 @@ async def _finalize_completed_upload(
         await db.rollback()
         raise
 
-    event_bus.emit(SecurityEvent(
-        event_type="file.upload.completed",
-        severity="info",
-        outcome="success",
-        user_id=user_id,
-        detail={"file_id": file_id, "size": new_offset},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.upload.completed",
+            severity="info",
+            outcome="success",
+            user_id=user_id,
+            detail={"file_id": file_id, "size": new_offset},
+        )
+    )
 
     _topic = file_row["folder_id"] or f"root:{file_row['owner_id']}"
     sse_broker.publish(_topic, {"type": "change"})
@@ -552,9 +597,7 @@ async def _finalize_completed_upload(
     _t.add_done_callback(_bg_tasks.discard)
 
     if file_row.get("folder_id"):
-        _t2 = asyncio.create_task(
-            _record_upload_folder_activity(user_id, file_row["folder_id"])
-        )
+        _t2 = asyncio.create_task(_record_upload_folder_activity(user_id, file_row["folder_id"]))
         _bg_tasks.add(_t2)
         _t2.add_done_callback(_bg_tasks.discard)
 
@@ -562,6 +605,7 @@ async def _finalize_completed_upload(
 # ---------------------------------------------------------------------------
 # PATCH /uploads/{upload_id}  — send a chunk
 # ---------------------------------------------------------------------------
+
 
 def _parse_patch_upload_headers(request: Request, upload_id_raw: str) -> tuple[str, int, str]:
     """Validate PATCH /uploads/{id} headers. Returns (upload_id, client_offset, chunk_iv_b64)."""
@@ -586,7 +630,19 @@ def _parse_patch_upload_headers(request: Request, upload_id_raw: str) -> tuple[s
     return upload_id, int(offset_raw), chunk_iv_b64
 
 
-@router.patch("/{upload_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 413: {"description": "413"}, 415: {"description": "415"}, 423: {"description": "423"}, 500: {"description": "Internal Server Error"}})
+@router.patch(
+    "/{upload_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+        410: {"description": "Gone"},
+        413: {"description": "413"},
+        415: {"description": "415"},
+        423: {"description": "423"},
+        500: {"description": "Internal Server Error"},
+    },
+)
 async def patch_upload(
     upload_id: str,
     request: Request,
@@ -626,8 +682,7 @@ async def patch_upload(
 
     # --- Fetch file record (storage_key, transfer lock, chunk geometry) ---
     cursor = await db.execute(
-        "SELECT id, storage_key, folder_id, owner_id, transfer_locked_at, chunk_size "
-        "FROM files WHERE id = ?",
+        "SELECT id, storage_key, folder_id, owner_id, transfer_locked_at, chunk_size FROM files WHERE id = ?",
         (row["file_id"],),
     )
     file_row = await cursor.fetchone()
@@ -656,24 +711,37 @@ async def patch_upload(
 
     # --- Write chunk via storage manager (provider handles seek/multipart internally) ---
     try:
-        etag = await storage.get_manager().write_chunk(
-            upload_id, chunk_index + 1, client_offset, chunk_data
-        )
+        etag = await storage.get_manager().write_chunk(upload_id, chunk_index + 1, client_offset, chunk_data)
     except Exception as exc:
-        logger.error("Failed to write chunk for upload %s: %s", upload_id, exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.error(
+            "Failed to write chunk for upload %s: %s", upload_id, exc
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=500, detail="Chunk write failed")
 
     # --- Phase 1 DB update: record this chunk and advance the tus offset ---
     await _record_chunk_in_db(
-        db, upload_id, row["file_id"], chunk_index, chunk_iv_b64,
-        chunk_size, client_offset, new_offset, etag,
+        db,
+        upload_id,
+        row["file_id"],
+        chunk_index,
+        chunk_iv_b64,
+        chunk_size,
+        client_offset,
+        new_offset,
+        etag,
     )
 
     # --- If complete, finalize via storage manager then commit Phase 2 ---
     if is_complete:
         await _finalize_completed_upload(
-            db, upload_id, row["file_id"], storage_key,
-            new_offset, chunk_index, user.id, file_row,
+            db,
+            upload_id,
+            row["file_id"],
+            storage_key,
+            new_offset,
+            chunk_index,
+            user.id,
+            file_row,
         )
 
     extra_headers: dict = {"Upload-Offset": str(new_offset)}
@@ -690,6 +758,7 @@ async def patch_upload(
 # DELETE /uploads/{upload_id}  — abort
 # ---------------------------------------------------------------------------
 
+
 @router.delete("/{upload_id}", responses={404: {"description": "Not Found"}})
 async def abort_upload(
     upload_id: str,
@@ -703,9 +772,7 @@ async def abort_upload(
         raise HTTPException(status_code=404, detail=_ERR_UPLOAD_NOT_FOUND)
 
     cursor = await db.execute(
-        "SELECT tus_uploads.file_id "
-        "FROM tus_uploads "
-        "WHERE tus_uploads.id = ? AND tus_uploads.user_id = ?",
+        "SELECT tus_uploads.file_id FROM tus_uploads WHERE tus_uploads.id = ? AND tus_uploads.user_id = ?",
         (upload_id, user.id),
     )
     row = await cursor.fetchone()
@@ -732,6 +799,7 @@ async def abort_upload(
 # Escrow public key endpoint
 # ---------------------------------------------------------------------------
 
+
 @router.get("/escrow-key", responses={404: {"description": "Not Found"}})
 async def get_escrow_public_key(
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -742,6 +810,7 @@ async def get_escrow_public_key(
     Clients use this to decide whether to include escrow key fields on upload.
     """
     from app.services.av_scanner import get_escrow_public_key_b64
+
     pub_b64 = get_escrow_public_key_b64()
     if pub_b64 is None:
         raise HTTPException(status_code=404, detail="Escrow key not configured")
@@ -751,7 +820,7 @@ async def get_escrow_public_key(
 @router.get("/pending")
 async def list_pending_uploads(
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
-    db:   Annotated[Database, Depends(get_db)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """Return all incomplete tus uploads owned by the current user.
 
@@ -785,11 +854,13 @@ async def list_pending_uploads(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 async def _maybe_scan_file(file_id: str) -> None:
     """Background task: run AV scan if configured. Errors are logged, not raised."""
     try:
         from app.database import db_session
         from app.services.av_scanner import scan_file
+
         async with db_session() as _db:
             await scan_file(_db, file_id)
     except Exception as exc:
@@ -799,6 +870,7 @@ async def _maybe_scan_file(file_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Background cleanup task
 # ---------------------------------------------------------------------------
+
 
 async def _cleanup_expired_uploads(db) -> int:
     """Delete tus_uploads whose expires_at has passed, plus their file records
@@ -819,7 +891,7 @@ async def _cleanup_expired_uploads(db) -> int:
     count = 0
     for row in rows:
         upload_id = row["upload_id"]
-        file_id   = row["file_id"]
+        file_id = row["file_id"]
         try:
             await db.execute("BEGIN")
             await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))

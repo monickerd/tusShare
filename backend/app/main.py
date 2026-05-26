@@ -6,32 +6,33 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.auth.jwt import run_token_cleanup
-from app.routes.uploads import run_upload_cleanup
-from app.services.trash import run_trash_cleanup
-from app.services.sse_broker import run_redis_listener
-from app.config import settings
-from app.services import event_bus, live_settings, op_bus, notification_emitter, siem_syslog, siem_webhook
-import app.storage.manager as storage
-from app.database import Database, db_session, get_db, init_db, close_db
 import app.sensitive_config as sensitive_config
+import app.storage.manager as storage
+from app.auth.jwt import run_token_cleanup
 from app.conf.auth import ALLOWED_JWT_ALGORITHMS
+from app.config import settings
+from app.database import Database, close_db, db_session, get_db, init_db
 from app.middleware.csrf import CSRFMiddleware
 from app.middleware.https_redirect import HttpsRedirectMiddleware
 from app.middleware.rate_limit import run_rate_limit_cleanup
-from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.sanitize import InputSanitizationMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.routes.uploads import run_upload_cleanup
 from app.schemas.security_event import EventActor, SecurityEvent
-from app.util.integrity import check_integrity, get_result as get_integrity_result, verify_file_integrity
+from app.services import event_bus, live_settings, notification_emitter, op_bus, siem_syslog, siem_webhook
+from app.services.sse_broker import run_redis_listener
+from app.services.trash import run_trash_cleanup
+from app.util.integrity import check_integrity, verify_file_integrity
+from app.util.integrity import get_result as get_integrity_result
 from app.util.sri import inject_sri
 from app.util.theme import inject_theme
+
 
 def _configure_logging() -> None:
     if settings.LOG_JSON:
@@ -41,10 +42,10 @@ def _configure_logging() -> None:
         class _JSONFormatter(logging.Formatter):
             def format(self, record: logging.LogRecord) -> str:
                 obj: dict = {
-                    "ts":      self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
-                    "level":   record.levelname,
-                    "logger":  record.name,
-                    "msg":     record.getMessage(),
+                    "ts": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "msg": record.getMessage(),
                 }
                 if record.exc_info:
                     obj["exc"] = _tb.format_exception(*record.exc_info)
@@ -72,6 +73,7 @@ def _actor_from_request(request: Request) -> EventActor:
     falling back to IP-only if the token is absent or invalid.
     """
     import jwt as _pyjwt
+
     from app.auth.jwt import verify_access_token
     from app.conf.auth import COOKIE_ACCESS
 
@@ -101,6 +103,7 @@ async def _run_opaque_session_cleanup(db_session_factory, interval: int = 120) -
         try:
             async with db_session_factory() as db:
                 from app.auth.opaque_provider import OPAQUEAuthProvider
+
                 provider = OPAQUEAuthProvider(db)
                 removed = await provider.sweep_expired_sessions()
                 if removed:
@@ -119,6 +122,7 @@ async def _run_oidc_state_cleanup(db_session_factory, interval: int = 300) -> No
         try:
             async with db_session_factory() as db:
                 from app.auth.oidc_provider import sweep_expired_oidc_states
+
                 removed = await sweep_expired_oidc_states(db)
                 if removed:
                     logger.debug("Swept %d expired OIDC state nonce(s)", removed)
@@ -133,12 +137,14 @@ async def _run_mfa_cleanup(db_session_factory, interval: int = 120) -> None:
         try:
             async with db_session_factory() as db:
                 from app.auth.mfa import sweep_expired_pending_tokens, sweep_expired_webauthn_challenges
+
                 removed_pt = await sweep_expired_pending_tokens(db)
                 removed_wc = await sweep_expired_webauthn_challenges(db)
                 if removed_pt or removed_wc:
                     logger.debug(
                         "MFA cleanup: %d pending token(s), %d WebAuthn challenge(s) swept",
-                        removed_pt, removed_wc,
+                        removed_pt,
+                        removed_wc,
                     )
         except Exception:
             logger.exception("Error in MFA cleanup task")
@@ -148,7 +154,7 @@ def _validate_startup_config() -> None:
     if not settings.JWT_SECRET or settings.JWT_SECRET == "CHANGE-ME-IN-PRODUCTION":
         raise RuntimeError(
             "TUSSHARE_JWT_SECRET must be set to a strong random value. "
-            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(64))\""
+            'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(64))"'
         )
     if settings.JWT_ALGORITHM not in ALLOWED_JWT_ALGORITHMS:
         raise RuntimeError(
@@ -176,8 +182,7 @@ async def _warn_unencrypted_volumes(db_session_factory) -> None:
     if not settings.STORAGE_ENCRYPTION_KEY:
         async with db_session_factory() as db:
             _cur = await db.execute(
-                "SELECT COUNT(*) FROM storage_volumes "
-                "WHERE provider != 'local' AND config_enc IS NOT NULL"
+                "SELECT COUNT(*) FROM storage_volumes WHERE provider != 'local' AND config_enc IS NOT NULL"
             )
             _row = await _cur.fetchone()
             if _row and _row[0] > 0:
@@ -226,16 +231,16 @@ async def lifespan(app: FastAPI):
         await _bootstrap_admin(db)
 
     # Start background tasks
-    rate_limit_task         = asyncio.create_task(run_rate_limit_cleanup())
-    token_cleanup_task      = asyncio.create_task(run_token_cleanup(db_session))
-    upload_cleanup_task     = asyncio.create_task(run_upload_cleanup(db_session))
-    trash_cleanup_task      = asyncio.create_task(run_trash_cleanup(db_session))
-    redis_sse_task          = asyncio.create_task(run_redis_listener())
-    opaque_session_cleanup  = asyncio.create_task(_run_opaque_session_cleanup(db_session, interval=300))
-    mfa_cleanup_task        = asyncio.create_task(_run_mfa_cleanup(db_session, interval=300))
+    rate_limit_task = asyncio.create_task(run_rate_limit_cleanup())
+    token_cleanup_task = asyncio.create_task(run_token_cleanup(db_session))
+    upload_cleanup_task = asyncio.create_task(run_upload_cleanup(db_session))
+    trash_cleanup_task = asyncio.create_task(run_trash_cleanup(db_session))
+    redis_sse_task = asyncio.create_task(run_redis_listener())
+    opaque_session_cleanup = asyncio.create_task(_run_opaque_session_cleanup(db_session, interval=300))
+    mfa_cleanup_task = asyncio.create_task(_run_mfa_cleanup(db_session, interval=300))
     oidc_state_cleanup_task = asyncio.create_task(_run_oidc_state_cleanup(db_session))
-    storage_tiering_task    = asyncio.create_task(storage_manager.run_tiering_task())
-    storage_reconcile_task  = asyncio.create_task(storage_manager.run_reconciliation_task())
+    storage_tiering_task = asyncio.create_task(storage_manager.run_tiering_task())
+    storage_reconcile_task = asyncio.create_task(storage_manager.run_reconciliation_task())
 
     event_bus.init(db_session)
     event_bus_task = event_bus.start()
@@ -253,6 +258,7 @@ async def lifespan(app: FastAPI):
     siem_webhook_task = siem_webhook.start()
 
     from app.schemas.op_event import OperationalEvent as _OpEvent
+
     op_bus.emit(_OpEvent(event_type="system.startup", severity="info", source="system"))
 
     if settings.FORCE_HTTPS:
@@ -289,13 +295,30 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown — cancel background tasks
-    for task in (rate_limit_task, token_cleanup_task, upload_cleanup_task, trash_cleanup_task, redis_sse_task, opaque_session_cleanup, mfa_cleanup_task, oidc_state_cleanup_task, event_bus_task, op_bus_task, notif_task, siem_syslog_task, siem_webhook_task, storage_tiering_task, storage_reconcile_task):
+    for task in (
+        rate_limit_task,
+        token_cleanup_task,
+        upload_cleanup_task,
+        trash_cleanup_task,
+        redis_sse_task,
+        opaque_session_cleanup,
+        mfa_cleanup_task,
+        oidc_state_cleanup_task,
+        event_bus_task,
+        op_bus_task,
+        notif_task,
+        siem_syslog_task,
+        siem_webhook_task,
+        storage_tiering_task,
+        storage_reconcile_task,
+    ):
         task.cancel()
         try:
             await task
         except asyncio.CancelledError:  # NOSONAR — awaiting deliberately cancelled tasks in shutdown sequence
             pass
     from app import redis_client
+
     await redis_client.close()
     await close_db()
     logger.info("%s stopped", settings.APP_NAME)
@@ -323,9 +346,7 @@ async def _bootstrap_admin(db) -> None:
 
     # If a token is already pending (e.g. container restarted before use),
     # don't regenerate — just warn so the operator knows to reuse the first one.
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'bootstrap_token_hash'"
-    )
+    cursor = await db.execute("SELECT value FROM admin_settings WHERE key = 'bootstrap_token_hash'")
     if await cursor.fetchone() is not None:
         logger.warning(
             "Bootstrap token already pending (no users registered yet). "
@@ -337,8 +358,7 @@ async def _bootstrap_admin(db) -> None:
     token_hash = hashlib.sha256(token.encode()).hexdigest()
 
     await db.execute(
-        "INSERT INTO admin_settings (key, value) VALUES (?, ?) "
-        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        "INSERT INTO admin_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
         ("bootstrap_token_hash", token_hash),
     )
     await db.commit()
@@ -363,63 +383,71 @@ _SLUG_RE = re.compile(r"^[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}[A-Z][a-z]{2,11}$")
 
 
 def _on_401(request: Request, exc: HTTPException):
-    event_bus.emit(SecurityEvent(
-        event_type="auth.unauthorized",
-        severity="warning",
-        outcome="failure",
-        actor=_actor_from_request(request),
-        detail={"path": request.url.path, "method": request.method},
-    ))
-    return JSONResponse({"detail": exc.detail}, status_code=401)
-
-
-def _on_403(request: Request, exc: HTTPException):
-    is_step_up_challenge = (
-        isinstance(exc.detail, dict) and exc.detail.get("error") == "step_up_required"
-    )
-    if not is_step_up_challenge:
-        event_bus.emit(SecurityEvent(
-            event_type="auth.forbidden",
+    event_bus.emit(
+        SecurityEvent(
+            event_type="auth.unauthorized",
             severity="warning",
             outcome="failure",
             actor=_actor_from_request(request),
             detail={"path": request.url.path, "method": request.method},
-        ))
+        )
+    )
+    return JSONResponse({"detail": exc.detail}, status_code=401)
+
+
+def _on_403(request: Request, exc: HTTPException):
+    is_step_up_challenge = isinstance(exc.detail, dict) and exc.detail.get("error") == "step_up_required"
+    if not is_step_up_challenge:
+        event_bus.emit(
+            SecurityEvent(
+                event_type="auth.forbidden",
+                severity="warning",
+                outcome="failure",
+                actor=_actor_from_request(request),
+                detail={"path": request.url.path, "method": request.method},
+            )
+        )
     return JSONResponse({"detail": exc.detail}, status_code=403)
 
 
 def _on_404(request: Request, exc: HTTPException):
     if request.url.path.startswith("/api/"):
-        event_bus.emit(SecurityEvent(
-            event_type="auth.probe_404",
-            severity="info",
-            outcome="failure",
-            actor=_actor_from_request(request),
-            detail={"path": request.url.path, "method": request.method},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="auth.probe_404",
+                severity="info",
+                outcome="failure",
+                actor=_actor_from_request(request),
+                detail={"path": request.url.path, "method": request.method},
+            )
+        )
     return JSONResponse({"detail": exc.detail}, status_code=404)
 
 
 def _on_405(request: Request, exc: HTTPException):
     if request.url.path.startswith("/api/"):
-        event_bus.emit(SecurityEvent(
-            event_type="auth.probe_405",
-            severity="info",
-            outcome="failure",
-            actor=_actor_from_request(request),
-            detail={"path": request.url.path, "method": request.method},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="auth.probe_405",
+                severity="info",
+                outcome="failure",
+                actor=_actor_from_request(request),
+                detail={"path": request.url.path, "method": request.method},
+            )
+        )
     return JSONResponse({"detail": exc.detail}, status_code=405)
 
 
 def _on_429(request: Request, exc: HTTPException):
-    event_bus.emit(SecurityEvent(
-        event_type="auth.rate_limited",
-        severity="warning",
-        outcome="failure",
-        actor=_actor_from_request(request),
-        detail={"path": request.url.path, "method": request.method},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="auth.rate_limited",
+            severity="warning",
+            outcome="failure",
+            actor=_actor_from_request(request),
+            detail={"path": request.url.path, "method": request.method},
+        )
+    )
     headers = exc.headers or {}
     return JSONResponse({"detail": exc.detail}, status_code=429, headers=headers)
 
@@ -511,43 +539,43 @@ def create_app() -> FastAPI:
     app.add_middleware(InputSanitizationMiddleware)
     app.add_middleware(CSRFMiddleware)
 
-    _AUTH_PREFIX  = "/api/v1/auth"
+    _AUTH_PREFIX = "/api/v1/auth"
     _ADMIN_PREFIX = "/api/v1/admin"
 
     # --- API routes ---
-    from app.routes.auth import router as auth_router
-    from app.routes.opaque_auth import router as opaque_auth_router
-    from app.routes.users import router as users_router
-    from app.routes.folders import router as folders_router
-    from app.routes.files import router as files_router
-    from app.routes.uploads import router as uploads_router
-    from app.routes.shares import router as shares_router
-    from app.routes.teams import router as teams_router
-    from app.routes.admin import router as admin_router
-    from app.routes.admin_roles import router as admin_roles_router
-    from app.routes.team_roles import router as team_roles_router
     from app.routes.access_logs import router as access_logs_router
-    from app.routes.events import router as events_router
-    from app.routes.theme import router as theme_router
-    from app.routes.policy_fields import router as policy_fields_router
-    from app.routes.admin_scopes import router as admin_scopes_router
-    from app.routes.policies import router as policies_router
-    from app.routes.mfa import router as mfa_router
-    from app.routes.admin_mfa import router as admin_mfa_router
-    from app.routes.idp_auth import router as idp_auth_router
-    from app.routes.idp_admin import router as idp_admin_router
-    from app.routes.admin_emergency import router as admin_emergency_router
+    from app.routes.admin import router as admin_router
     from app.routes.admin_audit import router as admin_audit_router
-    from app.routes.admin_storage import router as admin_storage_router
-    from app.routes.admin_notifications import router as admin_notifications_router
-    from app.routes.admin_notifications import api_keys_router as admin_api_keys_router
-    from app.routes.op_events import router as op_events_router
+    from app.routes.admin_emergency import router as admin_emergency_router
     from app.routes.admin_escrow import router as admin_escrow_router
-    from app.routes.admin_sharing import router as admin_sharing_router
-    from app.routes.admin_service_accounts import router as admin_service_accounts_router
+    from app.routes.admin_mfa import router as admin_mfa_router
+    from app.routes.admin_notifications import api_keys_router as admin_api_keys_router
+    from app.routes.admin_notifications import router as admin_notifications_router
     from app.routes.admin_profiles import router as admin_profiles_router
+    from app.routes.admin_roles import router as admin_roles_router
+    from app.routes.admin_scopes import router as admin_scopes_router
+    from app.routes.admin_service_accounts import router as admin_service_accounts_router
+    from app.routes.admin_sharing import router as admin_sharing_router
+    from app.routes.admin_storage import router as admin_storage_router
     from app.routes.admin_teams import router as admin_teams_router
+    from app.routes.auth import router as auth_router
+    from app.routes.events import router as events_router
+    from app.routes.files import router as files_router
+    from app.routes.folders import router as folders_router
+    from app.routes.idp_admin import router as idp_admin_router
+    from app.routes.idp_auth import router as idp_auth_router
+    from app.routes.mfa import router as mfa_router
+    from app.routes.op_events import router as op_events_router
+    from app.routes.opaque_auth import router as opaque_auth_router
+    from app.routes.policies import router as policies_router
+    from app.routes.policy_fields import router as policy_fields_router
+    from app.routes.shares import router as shares_router
+    from app.routes.team_roles import router as team_roles_router
+    from app.routes.teams import router as teams_router
+    from app.routes.theme import router as theme_router
     from app.routes.trash import router as trash_router
+    from app.routes.uploads import router as uploads_router
+    from app.routes.users import router as users_router
 
     app.include_router(auth_router, prefix=_AUTH_PREFIX, tags=["auth"])
     app.include_router(opaque_auth_router, prefix="/api/v1/auth/opaque", tags=["auth-opaque"])
@@ -564,24 +592,24 @@ def create_app() -> FastAPI:
     app.include_router(events_router, prefix="/api/v1", tags=["events"])
     app.include_router(theme_router, prefix="/api/v1", tags=["theme"])
     app.include_router(policy_fields_router, prefix="/api/v1/admin/policy-fields", tags=["policy"])
-    app.include_router(admin_scopes_router,  prefix="/api/v1/admin/scopes",         tags=["policy"])
-    app.include_router(policies_router,      prefix="/api/v1/admin/policies",       tags=["policy"])
-    app.include_router(mfa_router,           prefix=_AUTH_PREFIX,                 tags=["mfa"])
-    app.include_router(admin_mfa_router,     prefix=_ADMIN_PREFIX,                tags=["admin-mfa"])
-    app.include_router(idp_auth_router,      prefix=_AUTH_PREFIX,                 tags=["idp-auth"])
-    app.include_router(idp_admin_router,     prefix="/api/v1/admin/identity-providers", tags=["idp-admin"])
-    app.include_router(admin_emergency_router, prefix=_ADMIN_PREFIX,               tags=["admin-emergency"])
-    app.include_router(admin_audit_router,    prefix="/api/v1/admin/audit",          tags=["admin-audit"])
-    app.include_router(admin_storage_router,       prefix="/api/v1/admin/storage",      tags=["admin-storage"])
+    app.include_router(admin_scopes_router, prefix="/api/v1/admin/scopes", tags=["policy"])
+    app.include_router(policies_router, prefix="/api/v1/admin/policies", tags=["policy"])
+    app.include_router(mfa_router, prefix=_AUTH_PREFIX, tags=["mfa"])
+    app.include_router(admin_mfa_router, prefix=_ADMIN_PREFIX, tags=["admin-mfa"])
+    app.include_router(idp_auth_router, prefix=_AUTH_PREFIX, tags=["idp-auth"])
+    app.include_router(idp_admin_router, prefix="/api/v1/admin/identity-providers", tags=["idp-admin"])
+    app.include_router(admin_emergency_router, prefix=_ADMIN_PREFIX, tags=["admin-emergency"])
+    app.include_router(admin_audit_router, prefix="/api/v1/admin/audit", tags=["admin-audit"])
+    app.include_router(admin_storage_router, prefix="/api/v1/admin/storage", tags=["admin-storage"])
     app.include_router(admin_notifications_router, prefix="/api/v1/admin/notifications", tags=["admin-notifications"])
-    app.include_router(admin_api_keys_router,      prefix=_ADMIN_PREFIX,               tags=["admin-api-keys"])
-    app.include_router(op_events_router,           prefix="/api/v1/op-events",           tags=["op-events"])
-    app.include_router(admin_escrow_router,         prefix="/api/v1/admin/escrow",          tags=["admin-escrow"])
-    app.include_router(admin_sharing_router,        prefix="/api/v1/admin/sharing",         tags=["admin-sharing"])
-    app.include_router(admin_service_accounts_router, prefix=_ADMIN_PREFIX,                tags=["admin-service-accounts"])
-    app.include_router(admin_profiles_router,         prefix=_ADMIN_PREFIX,                tags=["admin-profiles"])
-    app.include_router(admin_teams_router,            prefix=_ADMIN_PREFIX,                tags=["admin-teams"])
-    app.include_router(trash_router,                  prefix="/api/v1/trash",                tags=["trash"])
+    app.include_router(admin_api_keys_router, prefix=_ADMIN_PREFIX, tags=["admin-api-keys"])
+    app.include_router(op_events_router, prefix="/api/v1/op-events", tags=["op-events"])
+    app.include_router(admin_escrow_router, prefix="/api/v1/admin/escrow", tags=["admin-escrow"])
+    app.include_router(admin_sharing_router, prefix="/api/v1/admin/sharing", tags=["admin-sharing"])
+    app.include_router(admin_service_accounts_router, prefix=_ADMIN_PREFIX, tags=["admin-service-accounts"])
+    app.include_router(admin_profiles_router, prefix=_ADMIN_PREFIX, tags=["admin-profiles"])
+    app.include_router(admin_teams_router, prefix=_ADMIN_PREFIX, tags=["admin-teams"])
+    app.include_router(trash_router, prefix="/api/v1/trash", tags=["trash"])
 
     # --- SIEM HTTP error event handlers ---
     # Legitimate users should not regularly encounter these codes, so each
@@ -614,10 +642,11 @@ def create_app() -> FastAPI:
         # must verify the file hash before serving them.  A mismatch (e.g. a
         # compromised static store) returns 500 rather than serving tampered code.
         _GUARDED_LIBS = (
-            ("frontend/js/lib/opaque.js",                "/js/lib/opaque.js"),
-            ("frontend/js/lib/noble-post-quantum.js",    "/js/lib/noble-post-quantum.js"),
+            ("frontend/js/lib/opaque.js", "/js/lib/opaque.js"),
+            ("frontend/js/lib/noble-post-quantum.js", "/js/lib/noble-post-quantum.js"),
             ("frontend/js/lib/noble-curves-bls12381.js", "/js/lib/noble-curves-bls12381.js"),
         )
+
         def _make_lib_handler(manifest_rel: str, lib_path: Path):
             def _handler():
                 ok = verify_file_integrity(manifest_rel)
@@ -628,7 +657,9 @@ def create_app() -> FastAPI:
                         status_code=500,
                     )
                 return FileResponse(str(lib_path))
+
             return _handler
+
         for _manifest_rel, _url_path in _GUARDED_LIBS:
             _lib_path = frontend_dir / _manifest_rel.removeprefix("frontend/")
             if _lib_path.exists():

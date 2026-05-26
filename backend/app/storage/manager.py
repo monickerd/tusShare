@@ -16,7 +16,6 @@ Initialisation (called from app lifespan in main.py):
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from datetime import datetime, timezone
 from typing import AsyncGenerator
@@ -79,7 +78,8 @@ class StorageManager:
             except Exception:
                 logger.error(
                     "Failed to decrypt config for storage volume %s (%s) — skipping",
-                    row["id"], row["name"],
+                    row["id"],
+                    row["name"],
                 )
                 continue
 
@@ -99,7 +99,8 @@ class StorageManager:
             except Exception:
                 logger.error(
                     "Failed to initialize storage provider for volume %s (%s) — skipping",
-                    vol.id, vol.name,
+                    vol.id,
+                    vol.name,
                 )
                 continue
 
@@ -109,28 +110,26 @@ class StorageManager:
         if default_id is None and providers:
             # No volume is flagged as default — use the first (lowest priority) one
             default_id = next(iter(providers))
-            logger.warning(
-                "No default storage volume set; falling back to %s", default_id
-            )
+            logger.warning("No default storage volume set; falling back to %s", default_id)
 
         self._providers = providers
         self._volumes = volumes
         self._default_volume_id = default_id
-        logger.info(
-            "Storage: loaded %d volume(s), default=%s", len(providers), default_id
-        )
+        logger.info("Storage: loaded %d volume(s), default=%s", len(providers), default_id)
 
     def volume_list(self) -> list[dict]:
         result = []
         for vol in self._volumes.values():
-            result.append({
-                "id": vol.id,
-                "name": vol.name,
-                "provider": vol.provider,
-                "tier": vol.tier,
-                "is_default": vol.is_default,
-                "priority": vol.priority,
-            })
+            result.append(
+                {
+                    "id": vol.id,
+                    "name": vol.name,
+                    "provider": vol.provider,
+                    "tier": vol.tier,
+                    "is_default": vol.is_default,
+                    "priority": vol.priority,
+                }
+            )
         return result
 
     def local_volumes(self) -> list[VolumeConfig]:
@@ -184,9 +183,7 @@ class StorageManager:
         )
 
         # Fire-and-forget async replication if any replica volumes are configured.
-        _t = asyncio.create_task(
-            self._replicate_async(file_id, storage_key, self._default_volume_id)
-        )
+        _t = asyncio.create_task(self._replicate_async(file_id, storage_key, self._default_volume_id))
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
 
@@ -272,7 +269,7 @@ class StorageManager:
     async def get_usage_summary(
         self,
         warn_pct: float | None = 90.0,
-        warn_bytes_remaining: int | None = 1 * 1024 ** 3,
+        warn_bytes_remaining: int | None = 1 * 1024**3,
     ) -> dict:
         """Return usage across all volumes.
 
@@ -307,14 +304,16 @@ class StorageManager:
                 volumes.append(entry)
             except Exception as exc:
                 logger.warning("Usage check failed for volume %s: %s", vol_id, exc)
-                volumes.append({
-                    "id": vol_id,
-                    "name": vol.name,
-                    "provider": vol.provider,
-                    "tier": vol.tier,
-                    "is_default": vol.is_default,
-                    "error": "unavailable",
-                })
+                volumes.append(
+                    {
+                        "id": vol_id,
+                        "name": vol.name,
+                        "provider": vol.provider,
+                        "tier": vol.tier,
+                        "is_default": vol.is_default,
+                        "error": "unavailable",
+                    }
+                )
 
         return {
             "volumes": volumes,
@@ -373,18 +372,16 @@ class StorageManager:
             dst_size = await dst_provider.stat_size(storage_key)
             src_size = await src_provider.stat_size(storage_key)
             if dst_size != src_size:
-                raise OSError(
-                    f"Size mismatch after tier copy: src={src_size} dst={dst_size}"
-                )
+                raise OSError(f"Size mismatch after tier copy: src={src_size} dst={dst_size}")
         except Exception:
             logger.exception(
                 "Tier migration failed for file %s → volume %s",
-                file_id, target_volume_id,
+                file_id,
+                target_volume_id,
             )
             async with self._db_factory() as db2:
                 await db2.execute(
-                    "UPDATE file_storage_locations SET migration_state = 'failed' "
-                    "WHERE file_id = ? AND volume_id = ?",
+                    "UPDATE file_storage_locations SET migration_state = 'failed' WHERE file_id = ? AND volume_id = ?",
                     (file_id, target_volume_id),
                 )
                 await db2.commit()
@@ -395,16 +392,14 @@ class StorageManager:
             await db2.execute("BEGIN")
             try:
                 src_cursor = await db2.execute(
-                    "SELECT volume_id FROM file_storage_locations "
-                    "WHERE file_id = ? AND is_primary = 1",
+                    "SELECT volume_id FROM file_storage_locations WHERE file_id = ? AND is_primary = 1",
                     (file_id,),
                 )
                 src_row = await src_cursor.fetchone()
                 src_volume_id = src_row["volume_id"] if src_row else None
 
                 await db2.execute(
-                    "UPDATE file_storage_locations "
-                    "SET is_primary = 0 WHERE file_id = ? AND volume_id = ?",
+                    "UPDATE file_storage_locations SET is_primary = 0 WHERE file_id = ? AND volume_id = ?",
                     (file_id, src_volume_id),
                 )
                 await db2.execute(
@@ -430,7 +425,9 @@ class StorageManager:
 
         logger.info(
             "Tier migration complete: file %s moved from %s → %s",
-            file_id, src_volume_id, target_volume_id,
+            file_id,
+            src_volume_id,
+            target_volume_id,
         )
 
     # ------------------------------------------------------------------
@@ -530,23 +527,29 @@ class StorageManager:
         for row in rows:
             logger.info(
                 "Reconciling failed migration: file=%s volume=%s",
-                row["file_id"], row["volume_id"],
+                row["file_id"],
+                row["volume_id"],
             )
             try:
                 await self.migrate_tier(db, row["file_id"], row["storage_key"], row["volume_id"])
             except Exception:
                 logger.exception(
                     "Reconciliation failed for file %s → volume %s",
-                    row["file_id"], row["volume_id"],
+                    row["file_id"],
+                    row["volume_id"],
                 )
                 try:
-                    from app.services import op_bus
                     from app.schemas.op_event import OperationalEvent
-                    op_bus.emit(OperationalEvent(
-                        event_type="storage.migration.failed",
-                        severity="error", source="storage",
-                        data={"file_id": row["file_id"], "volume_id": row["volume_id"]},
-                    ))
+                    from app.services import op_bus
+
+                    op_bus.emit(
+                        OperationalEvent(
+                            event_type="storage.migration.failed",
+                            severity="error",
+                            source="storage",
+                            data={"file_id": row["file_id"], "volume_id": row["volume_id"]},
+                        )
+                    )
                 except Exception:
                     pass
 
@@ -559,32 +562,41 @@ class StorageManager:
             )
             rows = await cursor.fetchall()
             sm = {r["key"]: r["value"] for r in rows}
-            warn_pct   = float(sm["storage_warn_pct"])            if sm.get("storage_warn_pct")            else 90.0
-            warn_bytes = int(sm["storage_warn_bytes_remaining"])  if sm.get("storage_warn_bytes_remaining") else 1 * 1024 ** 3
+            warn_pct = float(sm["storage_warn_pct"]) if sm.get("storage_warn_pct") else 90.0
+            warn_bytes = (
+                int(sm["storage_warn_bytes_remaining"]) if sm.get("storage_warn_bytes_remaining") else 1 * 1024**3
+            )
 
             usage = await self.get_usage_summary(warn_pct=warn_pct, warn_bytes_remaining=warn_bytes)
-            from app.services import op_bus
             from app.schemas.op_event import OperationalEvent
+            from app.services import op_bus
+
             for vol in usage.get("volumes", []):
                 if vol.get("warning"):
-                    op_bus.emit(OperationalEvent(
-                        event_type="storage.volume.capacity_warning",
-                        severity="warning", source="storage",
-                        data={
-                            "volume_id":   vol.get("id"),
-                            "volume_name": vol.get("name"),
-                            "used_bytes":  vol.get("used_bytes", 0),
-                            "total_bytes": vol.get("total_bytes"),
-                            "warning_msg": vol["warning"],
-                            "catch_up":    False,
-                        },
-                    ))
+                    op_bus.emit(
+                        OperationalEvent(
+                            event_type="storage.volume.capacity_warning",
+                            severity="warning",
+                            source="storage",
+                            data={
+                                "volume_id": vol.get("id"),
+                                "volume_name": vol.get("name"),
+                                "used_bytes": vol.get("used_bytes", 0),
+                                "total_bytes": vol.get("total_bytes"),
+                                "warning_msg": vol["warning"],
+                                "catch_up": False,
+                            },
+                        )
+                    )
                 else:
-                    op_bus.emit(OperationalEvent(
-                        event_type="storage.volume.capacity_ok",
-                        severity="info", source="storage",
-                        data={"volume_id": vol.get("id"), "volume_name": vol.get("name")},
-                    ))
+                    op_bus.emit(
+                        OperationalEvent(
+                            event_type="storage.volume.capacity_ok",
+                            severity="info",
+                            source="storage",
+                            data={"volume_id": vol.get("id"), "volume_name": vol.get("name")},
+                        )
+                    )
         except Exception:
             logger.exception("Storage: failed to emit volume state events")
 
@@ -602,10 +614,9 @@ class StorageManager:
         if warm_to_cold_days is not None and cold_volume_id:
             await self._tier_aged_files(db, "warm", cold_volume_id, warm_to_cold_days)
 
-    async def _tier_aged_files(
-        self, db, src_tier: str, dst_volume_id: str, age_days: int
-    ) -> None:
+    async def _tier_aged_files(self, db, src_tier: str, dst_volume_id: str, age_days: int) -> None:
         from datetime import timedelta
+
         cutoff = (datetime.now(timezone.utc) - timedelta(days=age_days)).isoformat()
         cursor = await db.execute(
             """
@@ -632,22 +643,25 @@ class StorageManager:
         try:
             await provider.delete(storage_key)
         except Exception as exc:
-            logger.warning("Failed to delete blob %s from provider %s: %s",
-                           storage_key, provider.volume.id, exc)
+            logger.warning("Failed to delete blob %s from provider %s: %s", storage_key, provider.volume.id, exc)
 
 
 def _build_provider(vol: VolumeConfig) -> StorageProvider:
     if vol.provider == "local":
         from app.storage.providers.local import LocalProvider
+
         return LocalProvider(vol)
     if vol.provider in ("s3", "b2"):
         from app.storage.providers.s3 import S3CompatProvider
+
         return S3CompatProvider(vol)
     if vol.provider == "azure":
         from app.storage.providers.azure import AzureBlobProvider
+
         return AzureBlobProvider(vol)
     if vol.provider == "gcs":
         from app.storage.providers.gcs import GCSProvider
+
         return GCSProvider(vol)
     raise ValueError(f"Unsupported storage provider type: {vol.provider!r}")
 

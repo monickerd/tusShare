@@ -15,6 +15,7 @@ Features
 The signing format matches GitHub/Stripe webhooks:
   X-TusShare-Signature: sha256=<hex(hmac-sha256(secret, body))>
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -33,7 +34,7 @@ _bg_tasks: set = set()
 logger = logging.getLogger(__name__)
 
 _RELOAD_INTERVAL_SECS = 60
-_RETRY_DELAYS = (1, 4, 16)   # seconds between attempts
+_RETRY_DELAYS = (1, 4, 16)  # seconds between attempts
 _OVERFLOW_MAXSIZE = 2000
 _db_session_factory = None
 _dispatcher_task: asyncio.Task | None = None
@@ -43,6 +44,7 @@ _dispatcher_task: asyncio.Task | None = None
 # Lifecycle
 # ---------------------------------------------------------------------------
 
+
 def init(db_session_factory) -> None:
     global _db_session_factory
     _db_session_factory = db_session_factory
@@ -50,16 +52,16 @@ def init(db_session_factory) -> None:
 
 def start() -> asyncio.Task:
     from app.services import event_bus
+
     global _dispatcher_task
-    _dispatcher_task = asyncio.create_task(
-        _dispatch_loop(event_bus.subscribe()), name="siem_webhook"
-    )
+    _dispatcher_task = asyncio.create_task(_dispatch_loop(event_bus.subscribe()), name="siem_webhook")
     return _dispatcher_task
 
 
 # ---------------------------------------------------------------------------
 # Main dispatch loop
 # ---------------------------------------------------------------------------
+
 
 def _flush_pending(
     destinations: list[dict],
@@ -69,9 +71,7 @@ def _flush_pending(
     for dest in destinations:
         did = dest["id"]
         if overflow.get(did):
-            _t = asyncio.create_task(
-                _send_with_retry(dest, overflow[did], secrets_cache.get(did, ""))
-            )
+            _t = asyncio.create_task(_send_with_retry(dest, overflow[did], secrets_cache.get(did, "")))
             _bg_tasks.add(_t)
             _t.add_done_callback(_bg_tasks.discard)
 
@@ -87,9 +87,7 @@ def _enqueue_for_dest(dest: dict, event: SecurityEvent, overflow: dict, secrets_
     if len(overflow[did]) >= batch_size:
         batch = overflow[did][:batch_size]
         overflow[did] = overflow[did][batch_size:]
-        _t = asyncio.create_task(
-            _send_with_retry(dest, batch, secrets_cache.get(did, ""))
-        )
+        _t = asyncio.create_task(_send_with_retry(dest, batch, secrets_cache.get(did, "")))
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
 
@@ -98,7 +96,7 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
     from app.services import event_bus
 
     destinations: list[dict] = []
-    secrets_cache: dict[str, str] = {}    # dest_id → plaintext secret
+    secrets_cache: dict[str, str] = {}  # dest_id → plaintext secret
     # Per-destination overflow queues for retry buffering
     overflow: dict[str, list[SecurityEvent]] = {}
     reload_countdown = _RELOAD_INTERVAL_SECS
@@ -126,15 +124,16 @@ async def _dispatch_loop(q: asyncio.Queue[SecurityEvent]) -> None:
         event_bus.unsubscribe(q)
         _flush_pending(destinations, overflow, secrets_cache)
         raise
+
+
 async def _load_destinations() -> tuple[list[dict], dict[str, str]]:
     from app.auth.idp_crypto import decrypt_token
+
     if _db_session_factory is None:
         return [], {}
     try:
         async with _db_session_factory() as db:
-            cursor = await db.execute(
-                "SELECT * FROM siem_destinations WHERE type='webhook' AND is_active=1"
-            )
+            cursor = await db.execute("SELECT * FROM siem_destinations WHERE type='webhook' AND is_active=1")
             rows = await cursor.fetchall()
             dests = [dict(r) for r in rows]
             secrets: dict[str, str] = {}
@@ -155,6 +154,7 @@ async def _load_destinations() -> tuple[list[dict], dict[str, str]]:
 # HTTP sending + retry
 # ---------------------------------------------------------------------------
 
+
 async def _send_with_retry(dest: dict, events: list[SecurityEvent], secret: str) -> None:
     url = dest.get("url") or ""
     if not url:
@@ -167,12 +167,17 @@ async def _send_with_retry(dest: dict, events: list[SecurityEvent], secret: str)
         except Exception as exc:
             logger.warning(
                 "siem_webhook: attempt %d/%d failed for %s: %s",
-                attempt, len(_RETRY_DELAYS) + 1, dest.get("name"), exc,
+                attempt,
+                len(_RETRY_DELAYS) + 1,
+                dest.get("name"),
+                exc,
             )
             if delay is None:
                 logger.error(
                     "siem_webhook: giving up on %d event(s) for destination %s after %d attempts",
-                    len(events), dest.get("name"), len(_RETRY_DELAYS) + 1,
+                    len(events),
+                    dest.get("name"),
+                    len(_RETRY_DELAYS) + 1,
                 )
                 return
             await asyncio.sleep(delay)
@@ -187,22 +192,24 @@ async def send_one(dest: dict, events: list[SecurityEvent], secret: str) -> None
     payload_dict = {
         "events": [
             {
-                "event_id":   e.event_id,
-                "timestamp":  e.timestamp.astimezone(timezone.utc).isoformat(),
+                "event_id": e.event_id,
+                "timestamp": e.timestamp.astimezone(timezone.utc).isoformat(),
                 "event_type": e.event_type,
-                "severity":   e.severity,
-                "outcome":    e.outcome,
+                "severity": e.severity,
+                "outcome": e.outcome,
                 "actor": {
-                    "user_id":    e.actor.user_id,
-                    "username":   e.actor.username,
-                    "ip":         e.actor.ip,
+                    "user_id": e.actor.user_id,
+                    "username": e.actor.username,
+                    "ip": e.actor.ip,
                     "session_id": e.actor.session_id,
                 },
                 "target": {
                     "type": e.target.type,
-                    "id":   e.target.id,
+                    "id": e.target.id,
                     "name": e.target.name,
-                } if e.target else None,
+                }
+                if e.target
+                else None,
                 "detail": e.detail,
             }
             for e in events

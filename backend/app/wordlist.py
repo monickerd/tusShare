@@ -31,9 +31,7 @@ def _load_words() -> list[str]:
             if word and not word.startswith("#"):
                 words.append(word)
     if len(words) < 10:
-        raise RuntimeError(
-            f"wordlist.txt at {_WORDLIST_PATH} contains fewer than 10 words — check the file."
-        )
+        raise RuntimeError(f"wordlist.txt at {_WORDLIST_PATH} contains fewer than 10 words — check the file.")
     return words
 
 
@@ -107,8 +105,7 @@ async def insert_invite_short_link_with_unique_slug(
         slug = generate_slug()
         try:
             await db.execute(
-                "INSERT INTO invite_short_links (id, slug, invite_id, token, expires_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO invite_short_links (id, slug, invite_id, token, expires_at) VALUES (?, ?, ?, ?, ?)",
                 (link_id, slug, invite_id, token, expires_at),
             )
             await db.commit()
@@ -116,7 +113,4 @@ async def insert_invite_short_link_with_unique_slug(
         except DuplicateError:
             continue
 
-    raise ValueError(
-        "Failed to generate unique invite short link slug after "
-        f"{max_attempts} attempts."
-    )
+    raise ValueError(f"Failed to generate unique invite short link slug after {max_attempts} attempts.")

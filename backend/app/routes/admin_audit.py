@@ -11,6 +11,7 @@ PUT  /admin/audit/siem/{dest_id}  — update a destination
 DELETE /admin/audit/siem/{dest_id}— remove a destination
 POST /admin/audit/siem/{dest_id}/test — send a synthetic test event
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +20,6 @@ import fnmatch
 import io
 import json
 import logging
-import secrets
 import uuid
 from typing import Annotated, AsyncGenerator
 
@@ -29,17 +29,15 @@ from pydantic import BaseModel
 
 from app.auth.api_key import check_api_key, make_api_key_dep
 from app.auth.dependencies import get_optional_user, require_admin
+from app.auth.idp_crypto import decrypt_token, encrypt_token
 from app.auth.interface import AuthenticatedUser
-from app.auth.idp_crypto import encrypt_token, decrypt_token
 from app.database import Database, get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.models.role import FLAG_ADMIN_PANEL_VIEW
-from app.services.siem_filters import PROFILE_META
-from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
+from app.services.siem_filters import PROFILE_META
 from app.validation.sanitizers import validate_uuid
-from app.validation.validators import validate_pagination
-
 
 _EVT_SIEM_CONFIG_CHANGED = "admin.siem.config_changed"
 _ERR_SIEM_NOT_FOUND = "SIEM destination not found"
@@ -58,6 +56,7 @@ _require_audit_key = make_api_key_dep("audit_read")
 # ---------------------------------------------------------------------------
 # Dual-auth dependency (admin JWT OR audit_read API key)
 # ---------------------------------------------------------------------------
+
 
 async def _require_audit_read(
     request: Request,
@@ -82,6 +81,7 @@ async def _require_audit_read(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _matches_event_types(event_type: str, patterns: list[str]) -> bool:
     """Return True if event_type matches any of the given glob patterns."""
@@ -123,7 +123,7 @@ def _apply_key_filters(rows: list, key_row: dict | None) -> list:
     if not key_row:
         return rows
     et_raw = key_row.get("filter_event_types")
-    sev    = key_row.get("filter_min_severity")
+    sev = key_row.get("filter_min_severity")
     if et_raw:
         patterns = [p.strip() for p in et_raw.split(",") if p.strip()]
         if patterns:
@@ -185,22 +185,22 @@ async def _build_audit_filter(
 
 def _row_to_dict(r) -> dict:
     return {
-        "event_id":         r["id"],
-        "timestamp":        str(r["timestamp"]),
-        "event_type":       r["event_type"],
-        "severity":         r["severity"] or "info",
-        "outcome":          r["outcome"],
-        "action_key":       r["action_key"],
-        "actor_user_id":    r["user_id"],
-        "actor_username":   r["actor_username"],
-        "actor_ip":         r["ip_address"],
+        "event_id": r["id"],
+        "timestamp": str(r["timestamp"]),
+        "event_type": r["event_type"],
+        "severity": r["severity"] or "info",
+        "outcome": r["outcome"],
+        "action_key": r["action_key"],
+        "actor_user_id": r["user_id"],
+        "actor_username": r["actor_username"],
+        "actor_ip": r["ip_address"],
         "actor_session_id": r["actor_session_id"],
-        "user_agent":       r["user_agent"],
-        "target_type":      r["target_type"],
-        "target_id":        r["target_id"],
-        "target_name":      r["target_name"],
-        "admin_actor_id":   r["admin_actor_id"],
-        "detail":           (json.loads(r["detail"]) if r["detail"] else None),
+        "user_agent": r["user_agent"],
+        "target_type": r["target_type"],
+        "target_id": r["target_id"],
+        "target_name": r["target_name"],
+        "admin_actor_id": r["admin_actor_id"],
+        "detail": (json.loads(r["detail"]) if r["detail"] else None),
     }
 
 
@@ -220,28 +220,26 @@ async def _fill_missing_usernames(db, events: list[dict]) -> list[dict]:
     )
     urows = await cur.fetchall()
     umap = {r["id"]: r["username"] for r in urows}
-    return [
-        {**e, "actor_username": e["actor_username"] or umap.get(e["actor_user_id"])}
-        for e in events
-    ]
+    return [{**e, "actor_username": e["actor_username"] or umap.get(e["actor_user_id"])} for e in events]
 
 
 # ---------------------------------------------------------------------------
 # GET /admin/audit/logs — paginated pull API
 # ---------------------------------------------------------------------------
 
+
 @router.get("/logs", responses={400: {"description": "Bad Request"}})
 async def list_audit_logs(
     _auth: Annotated[None, Depends(_require_audit_read)],
     db: Annotated[Database, Depends(get_db)],
-    limit:       Annotated[int, Query(ge=1, le=500)] = 100,
-    offset:      Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
     event_types: Annotated[str, Query(description="Comma-separated glob patterns, e.g. auth.*,file.*")] = "",
-    severity:    Annotated[str, Query(description="Minimum severity: info|warning|critical")] = "info",
-    user_id:     Annotated[str, Query(description="Filter by actor user_id")] = "",
-    since:       Annotated[str, Query(description="ISO timestamp lower bound")] = "",
-    until:       Annotated[str, Query(description="ISO timestamp upper bound")] = "",
-    after:       Annotated[str, Query(description="Cursor — event_id to page from (exclusive)")] = "",
+    severity: Annotated[str, Query(description="Minimum severity: info|warning|critical")] = "info",
+    user_id: Annotated[str, Query(description="Filter by actor user_id")] = "",
+    since: Annotated[str, Query(description="ISO timestamp lower bound")] = "",
+    until: Annotated[str, Query(description="ISO timestamp upper bound")] = "",
+    after: Annotated[str, Query(description="Cursor — event_id to page from (exclusive)")] = "",
 ):
     """Paginated query over security_events. Suitable for gap-fill after SIEM reconnect."""
     if severity not in _SEVERITY_ORDER:
@@ -250,8 +248,13 @@ async def list_audit_logs(
     # event_types glob filtering is applied post-fetch because SQL LIKE doesn't
     # support the glob patterns well enough (e.g. auth.* with dots).
     clauses, params, et_patterns = await _build_audit_filter(
-        db, severity, user_id=user_id, since=since, until=until,
-        after=after, event_types=event_types,
+        db,
+        severity,
+        user_id=user_id,
+        since=since,
+        until=until,
+        after=after,
+        event_types=event_types,
     )
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -279,13 +282,20 @@ async def list_audit_logs(
 
 def _build_csv_row(r, umap: dict) -> list:
     return [
-        r["id"], r["timestamp"], r["event_type"],
-        r["severity"] or "info", r["outcome"] or "",
+        r["id"],
+        r["timestamp"],
+        r["event_type"],
+        r["severity"] or "info",
+        r["outcome"] or "",
         r["user_id"] or "",
         r["actor_username"] or umap.get(r["user_id"], "") or "",
-        r["ip_address"] or "", r["actor_session_id"] or "",
-        r["target_type"] or "", r["target_id"] or "", r["target_name"] or "",
-        r["admin_actor_id"] or "", r["detail"] or "",
+        r["ip_address"] or "",
+        r["actor_session_id"] or "",
+        r["target_type"] or "",
+        r["target_id"] or "",
+        r["target_name"] or "",
+        r["admin_actor_id"] or "",
+        r["detail"] or "",
     ]
 
 
@@ -293,22 +303,28 @@ def _build_csv_row(r, umap: dict) -> list:
 # GET /admin/audit/logs/export — CSV download
 # ---------------------------------------------------------------------------
 
+
 @router.get("/logs/export", responses={400: {"description": "Bad Request"}})
 async def export_audit_logs(
     _auth: Annotated[None, Depends(_require_audit_read)],
     db: Annotated[Database, Depends(get_db)],
     event_types: Annotated[str, Query()] = "",
-    severity:    Annotated[str, Query()] = "info",
-    user_id:     Annotated[str, Query()] = "",
-    since:       Annotated[str, Query()] = "",
-    until:       Annotated[str, Query()] = "",
+    severity: Annotated[str, Query()] = "info",
+    user_id: Annotated[str, Query()] = "",
+    since: Annotated[str, Query()] = "",
+    until: Annotated[str, Query()] = "",
 ):
     """Download security_events as a CSV file (max 50 000 rows)."""
     if severity not in _SEVERITY_ORDER:
         raise HTTPException(status_code=400, detail="severity must be info, warning, or critical")
 
     clauses, params, et_patterns = await _build_audit_filter(
-        db, severity, user_id=user_id, since=since, until=until, event_types=event_types,
+        db,
+        severity,
+        user_id=user_id,
+        since=since,
+        until=until,
+        event_types=event_types,
     )
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -343,12 +359,24 @@ async def export_audit_logs(
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "event_id", "timestamp", "event_type", "severity", "outcome",
-        "actor_user_id", "actor_username", "actor_ip", "actor_session_id",
-        "target_type", "target_id", "target_name",
-        "admin_actor_id", "detail",
-    ])
+    writer.writerow(
+        [
+            "event_id",
+            "timestamp",
+            "event_type",
+            "severity",
+            "outcome",
+            "actor_user_id",
+            "actor_username",
+            "actor_ip",
+            "actor_session_id",
+            "target_type",
+            "target_id",
+            "target_name",
+            "admin_actor_id",
+            "detail",
+        ]
+    )
     for r in rows:
         writer.writerow(_build_csv_row(r, umap))
 
@@ -364,12 +392,13 @@ async def export_audit_logs(
 # GET /admin/audit/logs/stream — SSE live stream
 # ---------------------------------------------------------------------------
 
+
 @router.get("/logs/stream", responses={400: {"description": "Bad Request"}})
 async def stream_audit_logs(
     _key: Annotated[dict, Depends(_require_audit_key)],
     event_types: Annotated[str, Query()] = "",
-    severity:    Annotated[str, Query()] = "info",
-    user_id:     Annotated[str, Query()] = "",
+    severity: Annotated[str, Query()] = "info",
+    user_id: Annotated[str, Query()] = "",
 ):
     """Stream security events in real-time via Server-Sent Events.
 
@@ -402,11 +431,7 @@ async def stream_audit_logs(
                     continue
 
                 payload = event.model_dump_json()
-                sse_msg = (
-                    f"id: {event.event_id}\n"
-                    f"event: {event.event_type}\n"
-                    f"data: {payload}\n\n"
-                )
+                sse_msg = f"id: {event.event_id}\nevent: {event.event_type}\ndata: {payload}\n\n"
                 yield sse_msg.encode()
         finally:
             event_bus.unsubscribe(q)
@@ -425,23 +450,24 @@ async def stream_audit_logs(
 # SIEM destination CRUD
 # ---------------------------------------------------------------------------
 
+
 class SiemDestinationRequest(BaseModel):
-    name:               str
-    type:               str   # "syslog" | "webhook"
-    is_active:          bool = True
+    name: str
+    type: str  # "syslog" | "webhook"
+    is_active: bool = True
     # syslog
-    host:               str | None = None
-    port:               int | None = None
-    protocol:           str | None = None   # udp | tcp | tls
-    syslog_format:      str | None = None   # rfc5424 | cef | leef
-    facility:           int = 16            # LOCAL0
+    host: str | None = None
+    port: int | None = None
+    protocol: str | None = None  # udp | tcp | tls
+    syslog_format: str | None = None  # rfc5424 | cef | leef
+    facility: int = 16  # LOCAL0
     # webhook
-    url:                str | None = None
-    secret:             str | None = None   # plaintext; stored encrypted; omit to keep existing
-    batch_size:         int = 1
+    url: str | None = None
+    secret: str | None = None  # plaintext; stored encrypted; omit to keep existing
+    batch_size: int = 1
     # event filter
-    filter_profile:     str = "recommended"  # high_security | recommended | relaxed | custom
-    filter_custom_json: str | None = None    # JSON for custom profile
+    filter_profile: str = "recommended"  # high_security | recommended | relaxed | custom
+    filter_custom_json: str | None = None  # JSON for custom profile
 
 
 _VALID_PROFILES = frozenset({"high_security", "recommended", "relaxed", "custom"})
@@ -467,7 +493,9 @@ def _validate_webhook(body: SiemDestinationRequest) -> None:
 
 def _validate_filter_profile(body: SiemDestinationRequest) -> None:
     if body.filter_profile not in _VALID_PROFILES:
-        raise HTTPException(status_code=400, detail="filter_profile must be high_security, recommended, relaxed, or custom")
+        raise HTTPException(
+            status_code=400, detail="filter_profile must be high_security, recommended, relaxed, or custom"
+        )
     if body.filter_profile == "custom":
         try:
             parsed = json.loads(body.filter_custom_json or "")
@@ -492,22 +520,22 @@ def _validate_destination(body: SiemDestinationRequest) -> None:
 
 def _dest_row_to_dict(r) -> dict:
     return {
-        "id":                 r["id"],
-        "name":               r["name"],
-        "type":               r["type"],
-        "is_active":          bool(r["is_active"]),
-        "host":               r["host"],
-        "port":               r["port"],
-        "protocol":           r["protocol"],
-        "syslog_format":      r["syslog_format"],
-        "facility":           r["facility"],
-        "url":                r["url"],
-        "has_secret":         bool(r["secret_enc"]),   # never expose the raw secret
-        "batch_size":         r["batch_size"],
-        "filter_profile":     r["filter_profile"] or "recommended",
+        "id": r["id"],
+        "name": r["name"],
+        "type": r["type"],
+        "is_active": bool(r["is_active"]),
+        "host": r["host"],
+        "port": r["port"],
+        "protocol": r["protocol"],
+        "syslog_format": r["syslog_format"],
+        "facility": r["facility"],
+        "url": r["url"],
+        "has_secret": bool(r["secret_enc"]),  # never expose the raw secret
+        "batch_size": r["batch_size"],
+        "filter_profile": r["filter_profile"] or "recommended",
         "filter_custom_json": r["filter_custom_json"],
-        "created_at":         str(r["created_at"]),
-        "updated_at":         str(r["updated_at"]),
+        "created_at": str(r["created_at"]),
+        "updated_at": str(r["updated_at"]),
     }
 
 
@@ -516,9 +544,7 @@ async def list_siem_destinations(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
     db: Annotated[Database, Depends(get_db)],
 ):
-    cursor = await db.execute(
-        "SELECT * FROM siem_destinations ORDER BY created_at ASC"
-    )
+    cursor = await db.execute("SELECT * FROM siem_destinations ORDER BY created_at ASC")
     rows = await cursor.fetchall()
     return {
         "destinations": [_dest_row_to_dict(r) for r in rows],
@@ -546,20 +572,34 @@ async def create_siem_destination(
              filter_profile, filter_custom_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (dest_id, body.name, body.type, int(body.is_active),
-         body.host, body.port, body.protocol, body.syslog_format, body.facility,
-         body.url, secret_enc, body.batch_size,
-         body.filter_profile, body.filter_custom_json),
+        (
+            dest_id,
+            body.name,
+            body.type,
+            int(body.is_active),
+            body.host,
+            body.port,
+            body.protocol,
+            body.syslog_format,
+            body.facility,
+            body.url,
+            secret_enc,
+            body.batch_size,
+            body.filter_profile,
+            body.filter_custom_json,
+        ),
     )
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type=_EVT_SIEM_CONFIG_CHANGED,
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        detail={"action": "created", "destination_id": dest_id, "name": body.name, "type": body.type},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type=_EVT_SIEM_CONFIG_CHANGED,
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            detail={"action": "created", "destination_id": dest_id, "name": body.name, "type": body.type},
+        )
+    )
 
     return {"ok": True, "id": dest_id}
 
@@ -593,21 +633,34 @@ async def update_siem_destination(
             updated_at=NOW()
         WHERE id=?
         """,
-        (body.name, body.type, int(body.is_active),
-         body.host, body.port, body.protocol, body.syslog_format, body.facility,
-         body.url, secret_enc, body.batch_size,
-         body.filter_profile, body.filter_custom_json,
-         dest_id),
+        (
+            body.name,
+            body.type,
+            int(body.is_active),
+            body.host,
+            body.port,
+            body.protocol,
+            body.syslog_format,
+            body.facility,
+            body.url,
+            secret_enc,
+            body.batch_size,
+            body.filter_profile,
+            body.filter_custom_json,
+            dest_id,
+        ),
     )
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type=_EVT_SIEM_CONFIG_CHANGED,
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        detail={"action": "updated", "destination_id": dest_id, "name": body.name},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type=_EVT_SIEM_CONFIG_CHANGED,
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            detail={"action": "updated", "destination_id": dest_id, "name": body.name},
+        )
+    )
 
     return {"ok": True}
 
@@ -628,13 +681,15 @@ async def delete_siem_destination(
     await db.execute("DELETE FROM siem_destinations WHERE id = ?", (dest_id,))
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type=_EVT_SIEM_CONFIG_CHANGED,
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        detail={"action": "deleted", "destination_id": dest_id, "name": row["name"]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type=_EVT_SIEM_CONFIG_CHANGED,
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            detail={"action": "deleted", "destination_id": dest_id, "name": row["name"]},
+        )
+    )
 
     return {"ok": True}
 

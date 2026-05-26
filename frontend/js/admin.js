@@ -2876,7 +2876,7 @@ const Admin = (() => {
         }
 
         function _render() {
-            let filtered = filterText && filterFn
+            const filtered = filterText && filterFn
                 ? items.filter(item => filterFn(item, filterText))
                 : items.slice();
 
@@ -3744,7 +3744,7 @@ const Admin = (() => {
             pane.appendChild(footer);
 
             let auditOffset   = 0;
-            let allEvents     = [];
+            const allEvents     = [];
             let filterText    = '';
             const PAGE_SIZE   = 10;
 
@@ -6047,7 +6047,7 @@ const Admin = (() => {
         activeCheck.checked = existing?.is_active ?? true;
 
         // Conditions editor
-        let conditions = (existing?.conditions ?? []).map(c => ({ ...c }));
+        const conditions = (existing?.conditions ?? []).map(c => ({ ...c }));
         const condTable = Utils.el('div');
 
         function _renderCondTable() {

@@ -21,6 +21,7 @@ def _init() -> None:
         return
     try:
         import redis.asyncio as redis  # type: ignore[import]
+
         _pool = redis.ConnectionPool.from_url(
             settings.REDIS_URL,
             decode_responses=True,
@@ -46,6 +47,7 @@ def get_redis():
         return None
     try:
         import redis.asyncio as redis  # type: ignore[import]
+
         return redis.Redis(connection_pool=_pool)
     except Exception:
         return None

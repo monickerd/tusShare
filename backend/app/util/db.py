@@ -11,9 +11,7 @@ async def get_admin_setting(db, key: str, default=None, *, dtype=None):
     Returns the raw string value (or *dtype*-converted value when dtype is given),
     or *default* if the key is not set or its value is NULL/empty.
     """
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = ?", (key,)
-    )
+    cursor = await db.execute("SELECT value FROM admin_settings WHERE key = ?", (key,))
     row = await cursor.fetchone()
     if row is None or not row["value"]:
         return default

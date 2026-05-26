@@ -57,6 +57,7 @@ def _fanout_local(topic: str, event: dict) -> None:
 
 async def _redis_publish(topic: str, event: dict) -> None:
     from app.redis_client import get_redis
+
     r = get_redis()
     if r is None:
         _fanout_local(topic, event)
@@ -76,6 +77,7 @@ def publish(topic: str, event: dict) -> None:
     or when Redis is not configured.
     """
     from app.redis_client import get_redis
+
     if get_redis() is not None:
         _t = asyncio.create_task(_redis_publish(topic, event))
         _bg_tasks.add(_t)
@@ -90,6 +92,7 @@ async def run_redis_listener() -> None:
     Only runs when TUSSHARE_REDIS_URL is set.  Cancelled cleanly on shutdown.
     """
     from app.redis_client import get_redis
+
     r = get_redis()
     if r is None:
         return
@@ -104,7 +107,7 @@ async def run_redis_listener() -> None:
             channel = message.get("channel", "")
             if not channel.startswith(_CHANNEL_PREFIX):
                 continue
-            topic = channel[len(_CHANNEL_PREFIX):]
+            topic = channel[len(_CHANNEL_PREFIX) :]
             try:
                 event = json.loads(message["data"])
             except Exception:

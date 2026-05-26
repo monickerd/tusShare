@@ -47,6 +47,7 @@ class GCSProvider(StorageProvider):
     def _client(self):
         from google.cloud import storage as gcs  # type: ignore[import]
         from google.oauth2 import service_account  # type: ignore[import]
+
         info = json.loads(self._sa_json)
         creds = service_account.Credentials.from_service_account_info(
             info,
@@ -63,6 +64,7 @@ class GCSProvider(StorageProvider):
 
     async def _store_session(self, upload_id: str, session_uri: str) -> None:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             await r.set(f"gcs:session:{upload_id}", session_uri, ex=3600)
@@ -71,6 +73,7 @@ class GCSProvider(StorageProvider):
 
     async def _get_session(self, upload_id: str) -> str | None:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             return await r.get(f"gcs:session:{upload_id}")
@@ -78,6 +81,7 @@ class GCSProvider(StorageProvider):
 
     async def _del_session(self, upload_id: str) -> str | None:
         from app.redis_client import get_redis
+
         r = get_redis()
         session_uri: str | None = None
         if r is not None:
@@ -95,9 +99,7 @@ class GCSProvider(StorageProvider):
             client = self._client()
             bucket = self._bucket(client)
             blob = bucket.blob(upload_id)
-            return blob.initiate_resumable_upload(
-                content_type="application/octet-stream"
-            )
+            return blob.initiate_resumable_upload(content_type="application/octet-stream")
 
         session_uri = await asyncio.to_thread(_initiate)
         await self._store_session(upload_id, session_uri)
@@ -119,12 +121,11 @@ class GCSProvider(StorageProvider):
             "Content-Type": "application/octet-stream",
         }
         import httpx  # type: ignore[import]
+
         async with httpx.AsyncClient() as http:
             resp = await http.put(session_uri, content=data, headers=headers)
             if resp.status_code not in (200, 201, 308):
-                raise RuntimeError(
-                    f"GCS write_chunk failed for {upload_id}: HTTP {resp.status_code}"
-                )
+                raise RuntimeError(f"GCS write_chunk failed for {upload_id}: HTTP {resp.status_code}")
         return None
 
     async def finalize_upload(
@@ -155,6 +156,7 @@ class GCSProvider(StorageProvider):
         if total_size is None:
             # Session not yet closed — send zero-byte closing request
             import httpx  # type: ignore[import]
+
             async with httpx.AsyncClient() as http:
                 query_resp = await http.put(
                     session_uri,
@@ -162,9 +164,7 @@ class GCSProvider(StorageProvider):
                 )
                 if query_resp.status_code == 308:
                     # In progress — shouldn't happen after all chunks written
-                    raise RuntimeError(
-                        f"GCS session {upload_id} still in progress during finalize"
-                    )
+                    raise RuntimeError(f"GCS session {upload_id} still in progress during finalize")
 
         await self._del_session(upload_id)
 
@@ -189,16 +189,19 @@ class GCSProvider(StorageProvider):
         if session_uri is not None:
             try:
                 import httpx  # type: ignore[import]
+
                 async with httpx.AsyncClient() as http:
                     await http.delete(session_uri)
             except Exception as exc:
                 logger.warning("GCS abort session DELETE failed for %s: %s", upload_id, exc)
         # Best-effort: also delete the staging blob in case it was committed
         try:
+
             def _del():
                 client = self._client()
                 bucket = self._bucket(client)
                 bucket.blob(upload_id).delete()
+
             await asyncio.to_thread(_del)
         except Exception:
             pass
@@ -243,6 +246,7 @@ class GCSProvider(StorageProvider):
                 self._bucket(client).blob(storage_key).delete()
             except Exception as exc:
                 from google.cloud.exceptions import NotFound  # type: ignore[import]
+
                 if not isinstance(exc, NotFound):
                     logger.warning("GCS delete failed for %s: %s", storage_key, exc)
 
@@ -286,8 +290,7 @@ def _require_gcs():
         from google.cloud import storage  # noqa: F401  type: ignore[import]
     except ImportError:
         raise RuntimeError(
-            "google-cloud-storage is required for GCS storage. "
-            "Install it with: pip install google-cloud-storage"
+            "google-cloud-storage is required for GCS storage. Install it with: pip install google-cloud-storage"
         )
 
 

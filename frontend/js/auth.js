@@ -339,7 +339,7 @@ const Auth = (() => {
     }
 
     // Finalise an IdP session (LDAP or OIDC) — no KEK derivation needed.
-    async function _finishIdpSession(data, container) {
+    async function _finishIdpSession(data, _container) {
         _currentUser = data.user;
         if (_currentUser.is_admin) {
             globalThis.location.hash = '#/admin';
@@ -1350,7 +1350,7 @@ const Auth = (() => {
     // MFA challenge (post-OPAQUE login, before cookie issuance)
     // ------------------------------------------------------------------
 
-    function _renderMfaChallenge(container, mfaData, exportKey, username, isPublicDevice) {
+    function _renderMfaChallenge(container, mfaData, exportKey, username, _isPublicDevice) {
         const { pending_token, methods, reset_required } = mfaData;
         while (container.firstChild) container.firstChild.remove();
 
@@ -1573,7 +1573,7 @@ const Auth = (() => {
         ]));
     }
 
-    async function _completeMfaSuccess(container, exportKey, username) {
+    async function _completeMfaSuccess(container, exportKey, _username) {
         // MFA challenge completed — server has now issued session cookies.
         // Re-fetch the user profile (cookies are set now) and complete key derivation.
         const meData = await Api.get(`${Config.app.apiPrefix}/auth/me`);
@@ -1628,7 +1628,7 @@ const Auth = (() => {
         }
     }
 
-    function _renderMfaEnrollmentGate(container, pending_token, exportKey, username) {
+    function _renderMfaEnrollmentGate(container, _pending_token, _exportKey, _username) {
         while (container.firstChild) container.firstChild.remove();
         container.appendChild(Utils.el('div', { className: 'auth-form' }, [
             Utils.el('h2', { textContent: 'MFA Enrollment Required' }),
@@ -1738,7 +1738,7 @@ const Auth = (() => {
         }
     }
 
-    function _buildTotpEnrollForm(wrapRef, statusData) {
+    function _buildTotpEnrollForm(wrapRef, _statusData) {
         const area = Utils.el('div', { style: 'padding:12px 0' });
         const startBtn = Utils.el('button', {
             type: 'button', className: 'btn btn-secondary',
@@ -1949,7 +1949,7 @@ const Auth = (() => {
     // MFA banner (optional-mode nudge)
     // ------------------------------------------------------------------
 
-    async function checkMfaBanner(container) {
+    async function checkMfaBanner(_container) {
         try {
             const data = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
             if (data.enforcement !== 'optional') return;
@@ -2180,7 +2180,7 @@ const StepUp = (() => {
      * @returns {Promise<string>}  Resolved with the step-up token JWT
      * @throws If the user cancels or verification fails
      */
-    async function challenge(actionKey, payloadHash, challengeType = 'password') {
+    async function challenge(actionKey, payloadHash, _challengeType = 'password') {
         // Check cache first (sudo window mode)
         const cached = _getCached(actionKey);
         if (cached) return cached;
@@ -2266,7 +2266,6 @@ const StepUp = (() => {
 
                 const nowSeconds = Math.floor(Date.now() / 1000);
                 const timestampBucket = Math.floor(nowSeconds / 30);
-                let reqBody;
 
                 // OPAQUE step-up: run login challenge, derive HMAC from session_key
                 const opaque = await _loadOpaque();
@@ -2294,7 +2293,7 @@ const StepUp = (() => {
                     sessionKey, actionKey, payloadHash, timestampBucket
                 );
 
-                reqBody = {
+                const reqBody = {
                     action_key: actionKey,
                     payload_hash: payloadHash,
                     timestamp: nowSeconds,

@@ -20,23 +20,21 @@ can see what was configured without re-entering everything on every edit.
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
 from app.auth.dependencies import require_admin
+from app.auth.idp_crypto import decrypt_idp_config, encrypt_idp_config
 from app.auth.interface import AuthenticatedUser
-from app.auth.idp_crypto import encrypt_idp_config, decrypt_idp_config
-from app.auth.ldap_provider import validate_ldap_config, ldap_test_connection, ldap_fetch_attributes
+from app.auth.ldap_provider import ldap_fetch_attributes, ldap_test_connection, validate_ldap_config
 from app.auth.oidc_provider import validate_oidc_config
 from app.database import Database, DuplicateError, get_db
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
-
 
 _ERR_PROVIDER_NOT_FOUND = "Provider not found"
 _SQL_PROVIDER_BY_ID = "SELECT provider_type, config_enc FROM identity_providers WHERE id = ?"
@@ -57,6 +55,7 @@ def _redact_config(cfg: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
 
 class LDAPConfigModel(BaseModel):
     server_uri: str
@@ -118,8 +117,8 @@ class CreateProviderRequest(BaseModel):
     provider_type: str
     name: str
     is_active: bool = True
-    claim_mode: str | None = None   # OIDC only: 'at_login' | 'live_refetch'
-    config: dict                    # shape varies by provider_type
+    claim_mode: str | None = None  # OIDC only: 'at_login' | 'live_refetch'
+    config: dict  # shape varies by provider_type
 
     @field_validator("provider_type")
     @classmethod
@@ -171,6 +170,7 @@ class UpdateProviderRequest(BaseModel):
 # Config validation helper
 # ---------------------------------------------------------------------------
 
+
 def _validate_and_encrypt_config(provider_type: str, raw_config: dict) -> str:
     """Validate and AES-GCM encrypt a provider config dict."""
     if provider_type == "ldap":
@@ -186,6 +186,7 @@ def _validate_and_encrypt_config(provider_type: str, raw_config: dict) -> str:
 # ---------------------------------------------------------------------------
 # List
 # ---------------------------------------------------------------------------
+
 
 @router.get("")
 async def list_providers(
@@ -204,6 +205,7 @@ async def list_providers(
 # ---------------------------------------------------------------------------
 # Create
 # ---------------------------------------------------------------------------
+
 
 @router.post("", responses={400: {"description": "Bad Request"}, 409: {"description": "Conflict"}})
 async def create_provider(
@@ -237,20 +239,24 @@ async def create_provider(
                 1 if body.is_active else 0,
                 claim_mode,
                 config_enc,
-                now, now,
+                now,
+                now,
             ),
         )
         await db.commit()
     except DuplicateError:
         raise HTTPException(status_code=409, detail="A provider with that name already exists")
 
-    logger.info("IdP created: id=%s type=%s name=%r by admin=%s", provider_id, body.provider_type, body.name, admin.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    logger.info(
+        "IdP created: id=%s type=%s name=%r by admin=%s", provider_id, body.provider_type, body.name, admin.id
+    )  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"id": provider_id, "provider_type": body.provider_type, "name": body.name, "is_active": body.is_active}
 
 
 # ---------------------------------------------------------------------------
 # Get one (redacted)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{provider_id}", responses={404: {"description": "Not Found"}})
 async def get_provider(
@@ -304,7 +310,15 @@ def _build_merged_config_enc(provider_type: str, existing_enc: str | None, new_c
 # Update
 # ---------------------------------------------------------------------------
 
-@router.put("/{provider_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
+
+@router.put(
+    "/{provider_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+    },
+)
 async def update_provider(
     provider_id: str,
     body: UpdateProviderRequest,
@@ -371,13 +385,16 @@ async def update_provider(
     except DuplicateError:
         raise HTTPException(status_code=409, detail="A provider with that name already exists")
 
-    logger.info("IdP updated: id=%s by admin=%s", provider_id, admin.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    logger.info(
+        "IdP updated: id=%s by admin=%s", provider_id, admin.id
+    )  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
 # Delete
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/{provider_id}", responses={404: {"description": "Not Found"}})
 async def delete_provider(
@@ -412,13 +429,16 @@ async def delete_provider(
         raise HTTPException(status_code=404, detail=_ERR_PROVIDER_NOT_FOUND)
     await db.commit()
 
-    logger.info("IdP deleted: id=%s by admin=%s", provider_id, admin.id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    logger.info(
+        "IdP deleted: id=%s by admin=%s", provider_id, admin.id
+    )  # NOSONAR — server-side audit log; values are Pydantic-validated
     return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
 # Test connection
 # ---------------------------------------------------------------------------
+
 
 @router.post("/{provider_id}/test", responses={404: {"description": "Not Found"}})
 async def test_provider(
@@ -458,6 +478,7 @@ async def _test_oidc_discovery(config_enc: str) -> dict:
     """Attempt to fetch the OIDC discovery document."""
     try:
         import httpx
+
         cfg = decrypt_idp_config(config_enc)
         discovery_url = cfg["issuer_url"].rstrip("/") + "/.well-known/openid-configuration"
         async with httpx.AsyncClient() as client:
@@ -476,6 +497,7 @@ async def _test_oidc_discovery(config_enc: str) -> dict:
 # ---------------------------------------------------------------------------
 # Attribute/claim wizard
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{provider_id}/wizard", responses={404: {"description": "Not Found"}})
 async def provider_wizard(
@@ -518,47 +540,36 @@ async def _ldap_wizard(config_enc: str, admin_username: str) -> dict:
     if attrs is None:
         return {
             "error": "Could not fetch attributes — check that the service account can "
-                     "search and that the admin's username matches the user_filter template",
+            "search and that the admin's username matches the user_filter template",
             "attributes": [],
         }
-    return {
-        "attributes": [
-            {"name": k, "example_value": str(v)[:200]}
-            for k, v in sorted(attrs.items())
-        ]
-    }
+    return {"attributes": [{"name": k, "example_value": str(v)[:200]} for k, v in sorted(attrs.items())]}
 
 
 async def _oidc_wizard(_config_enc: str, admin_user_id: str, db) -> dict:
     """Return OIDC claim names from the admin's cached claims (if available)."""
     import json as _json
-    cursor = await db.execute(
-        "SELECT oidc_claims_cache FROM users WHERE id = ?", (admin_user_id,)
-    )
+
+    cursor = await db.execute("SELECT oidc_claims_cache FROM users WHERE id = ?", (admin_user_id,))
     row = await cursor.fetchone()
     cache_raw = row["oidc_claims_cache"] if row else None
 
     if cache_raw:
         try:
             cached = _json.loads(cache_raw)
-            return {
-                "claims": [
-                    {"name": k, "example_value": str(v)[:200]}
-                    for k, v in sorted(cached.items())
-                ]
-            }
+            return {"claims": [{"name": k, "example_value": str(v)[:200]} for k, v in sorted(cached.items())]}
         except Exception:
             pass
 
     # No cached claims — return standard well-known claims as a hint
     return {
         "claims": [
-            {"name": "sub",        "example_value": "(IdP subject ID — stable unique identifier)"},
-            {"name": "email",      "example_value": "(user email address)"},
-            {"name": "name",       "example_value": "(display name)"},
+            {"name": "sub", "example_value": "(IdP subject ID — stable unique identifier)"},
+            {"name": "email", "example_value": "(user email address)"},
+            {"name": "name", "example_value": "(display name)"},
             {"name": "given_name", "example_value": "(first name)"},
-            {"name": "family_name","example_value": "(last name)"},
-            {"name": "groups",     "example_value": "(group membership array — provider-specific)"},
+            {"name": "family_name", "example_value": "(last name)"},
+            {"name": "groups", "example_value": "(group membership array — provider-specific)"},
             {"name": "department", "example_value": "(org-specific; must be configured in IdP)"},
         ],
         "note": "Log in via this OIDC provider to populate live claim values here.",

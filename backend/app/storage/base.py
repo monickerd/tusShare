@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import AsyncGenerator
 
-_SAFE_KEY_RE = re.compile(r'^[A-Za-z0-9_\-]+$')
+_SAFE_KEY_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 def validate_storage_key(key: str) -> str:
@@ -40,8 +40,8 @@ def validate_storage_key(key: str) -> str:
 class VolumeConfig:
     id: str
     name: str
-    provider: str       # 'local' | 's3' | 'azure' | 'gcs' | 'b2'
-    tier: str           # 'hot' | 'warm' | 'cold'
+    provider: str  # 'local' | 's3' | 'azure' | 'gcs' | 'b2'
+    tier: str  # 'hot' | 'warm' | 'cold'
     is_default: bool
     priority: int
     config: dict = field(default_factory=dict)  # decrypted provider-specific config

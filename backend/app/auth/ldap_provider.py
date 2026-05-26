@@ -40,7 +40,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import time
 from typing import Any
 
 from app.auth.idp_crypto import decrypt_idp_config
@@ -51,19 +50,25 @@ logger = logging.getLogger(__name__)
 # Username input validation — applied before building any LDAP filter
 # ---------------------------------------------------------------------------
 
-_LDAP_USERNAME_RE = re.compile(r'^[a-zA-Z0-9._@\-]{1,64}$')
+_LDAP_USERNAME_RE = re.compile(r"^[a-zA-Z0-9._@\-]{1,64}$")
 _LDAPS_SCHEME = "ldaps://"
 
 # Minimum attribute set fetched on every LDAP auth/fetch.
 # Covers common AD and OpenLDAP schemas without pulling sensitive fields.
 # Admins extend this per-provider via cfg["extra_attrs"].
 _DEFAULT_LDAP_ATTRS = [
-    "uid", "sAMAccountName",           # primary usernames
-    "mail", "userPrincipalName",       # email
-    "cn", "displayName", "name",       # display name
-    "memberOf",                        # group membership (role mapping)
-    "department", "departmentNumber",  # department (AD & inetOrgPerson schemas)
-    "title", "ou",                     # title/org-unit — common policy fields
+    "uid",
+    "sAMAccountName",  # primary usernames
+    "mail",
+    "userPrincipalName",  # email
+    "cn",
+    "displayName",
+    "name",  # display name
+    "memberOf",  # group membership (role mapping)
+    "department",
+    "departmentNumber",  # department (AD & inetOrgPerson schemas)
+    "title",
+    "ou",  # title/org-unit — common policy fields
 ]
 
 
@@ -76,9 +81,7 @@ def _validate_ldap_username(username: str) -> str:
     be unusual, and allowing those characters widens the injection surface.
     """
     if not _LDAP_USERNAME_RE.match(username):
-        raise ValueError(
-            "Username contains characters not permitted for LDAP authentication"
-        )
+        raise ValueError("Username contains characters not permitted for LDAP authentication")
     return username
 
 
@@ -96,6 +99,7 @@ def _validate_extra_attrs(extra) -> None:
 def _check_plaintext_ldap_tls(uri: str, tls: str) -> None:
     """Raise ValueError if plaintext ldap:// is used without STARTTLS (unless env override)."""
     import os
+
     if uri.startswith("ldap://") and tls != "starttls":
         if os.environ.get("TUSSHARE_ALLOW_HTTP_IDP", "").lower() not in ("1", "true", "yes"):
             raise ValueError(
@@ -136,12 +140,9 @@ def validate_ldap_config(cfg: dict[str, Any]) -> None:
         raise ValueError("server_uri must begin with ldap:// or ldaps://")
 
     filt = cfg["user_filter"]
-    placeholders = re.findall(r'\{username\}', filt)
+    placeholders = re.findall(r"\{username\}", filt)
     if len(placeholders) != 1:
-        raise ValueError(
-            "user_filter must contain exactly one {username} placeholder "
-            f"(found {len(placeholders)})"
-        )
+        raise ValueError(f"user_filter must contain exactly one {{username}} placeholder (found {len(placeholders)})")
 
     tls = cfg.get("tls", "verify")
     if tls not in ("verify", "starttls", "skip_verify"):
@@ -159,6 +160,7 @@ def validate_ldap_config(cfg: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # LDAP authentication
 # ---------------------------------------------------------------------------
+
 
 async def ldap_authenticate(
     config_enc: str,
@@ -198,12 +200,21 @@ def _ldap_authenticate_sync(
 ) -> dict[str, Any] | None:
     """Synchronous LDAP auth — runs in a thread pool via asyncio.to_thread."""
     try:
+        import ssl
+
         from ldap3 import (
-            Server, Connection, AUTO_BIND_NO_TLS, AUTO_BIND_TLS_BEFORE_BIND,
-            SYNC, Tls, SUBTREE, NONE as GET_INFO_NONE,
+            AUTO_BIND_NO_TLS,
+            AUTO_BIND_TLS_BEFORE_BIND,
+            SUBTREE,
+            SYNC,
+            Connection,
+            Server,
+            Tls,
+        )
+        from ldap3 import (
+            NONE as GET_INFO_NONE,
         )
         from ldap3.utils.conv import escape_filter_chars
-        import ssl
     except ImportError as exc:
         raise RuntimeError("ldap3 is not installed") from exc
 
@@ -245,7 +256,9 @@ def _ldap_authenticate_sync(
         if not svc_conn.bound:
             logger.error(
                 "LDAP service-account bind failed — server=%s dn=%s result=%s",
-                server_uri, bind_dn, svc_conn.result,
+                server_uri,
+                bind_dn,
+                svc_conn.result,
             )
             return None
     except Exception:
@@ -267,15 +280,17 @@ def _ldap_authenticate_sync(
             attributes=fetch_attrs,
         )
         result_entries = [
-            e for e in (svc_conn.response or [])
-            if isinstance(e, dict) and e.get("type") == "searchResEntry"
+            e for e in (svc_conn.response or []) if isinstance(e, dict) and e.get("type") == "searchResEntry"
         ]
 
         # --- Layer 3: assert exactly one result ---
         if len(result_entries) != 1:
             logger.warning(
                 "LDAP search returned %d entries for user=%s (expected 1) — server=%s filter=%s — auth denied",
-                len(result_entries), username, server_uri, search_filter,
+                len(result_entries),
+                username,
+                server_uri,
+                search_filter,
             )
             return None
 
@@ -284,7 +299,9 @@ def _ldap_authenticate_sync(
 
         logger.debug(
             "LDAP found user=%s dn=%s attrs=%s",
-            username, user_dn, sorted(raw_attrs.keys()),
+            username,
+            user_dn,
+            sorted(raw_attrs.keys()),
         )
 
     finally:
@@ -338,12 +355,21 @@ async def ldap_fetch_attributes(
 def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | None:
     """Synchronous attribute fetch — runs in thread pool."""
     try:
+        import ssl
+
         from ldap3 import (
-            Server, Connection, AUTO_BIND_NO_TLS, AUTO_BIND_TLS_BEFORE_BIND,
-            SYNC, Tls, SUBTREE, NONE as GET_INFO_NONE,
+            AUTO_BIND_NO_TLS,
+            AUTO_BIND_TLS_BEFORE_BIND,
+            SUBTREE,
+            SYNC,
+            Connection,
+            Server,
+            Tls,
+        )
+        from ldap3 import (
+            NONE as GET_INFO_NONE,
         )
         from ldap3.utils.conv import escape_filter_chars
-        import ssl
     except ImportError as exc:
         raise RuntimeError("ldap3 is not installed") from exc
 
@@ -379,15 +405,14 @@ def _ldap_fetch_sync(cfg: dict[str, Any], username: str) -> dict[str, Any] | Non
         extra_attrs = cfg.get("extra_attrs") or []
         fetch_attrs = list(dict.fromkeys(_DEFAULT_LDAP_ATTRS + extra_attrs))
         conn.search(base_dn, search_filter, search_scope=SUBTREE, attributes=fetch_attrs)
-        result_entries = [
-            e for e in (conn.response or [])
-            if isinstance(e, dict) and e.get("type") == "searchResEntry"
-        ]
+        result_entries = [e for e in (conn.response or []) if isinstance(e, dict) and e.get("type") == "searchResEntry"]
 
         if len(result_entries) != 1:
             logger.debug(
                 "LDAP fetch returned %d entries for user=%s (expected 1) — server=%s",
-                len(result_entries), username, server_uri,
+                len(result_entries),
+                username,
+                server_uri,
             )
             return None
 
@@ -422,12 +447,20 @@ async def ldap_test_connection(config_enc: str) -> dict[str, Any]:
 
 def _ldap_test_sync(cfg: dict[str, Any]) -> dict[str, Any]:
     try:
-        from ldap3 import (
-            Server, Connection, AUTO_BIND_NO_TLS, AUTO_BIND_TLS_BEFORE_BIND,
-            SYNC, Tls, NONE as GET_INFO_NONE,
-        )
         import ssl
-    except ImportError as exc:
+
+        from ldap3 import (
+            AUTO_BIND_NO_TLS,
+            AUTO_BIND_TLS_BEFORE_BIND,
+            SYNC,
+            Connection,
+            Server,
+            Tls,
+        )
+        from ldap3 import (
+            NONE as GET_INFO_NONE,
+        )
+    except ImportError:
         return {"ok": False, "error": "ldap3 not installed"}
 
     tls_mode = cfg.get("tls", "verify")

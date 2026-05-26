@@ -8,6 +8,7 @@ one worker take effect immediately in that worker; other workers stay on the
 previous value until restart or a future Redis pub/sub bust. Rate limits and TTLs
 tolerate this window of staleness.
 """
+
 from __future__ import annotations
 
 import logging

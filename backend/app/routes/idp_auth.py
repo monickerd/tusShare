@@ -34,38 +34,38 @@ redirect to redirect the user to an arbitrary external URL.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import secrets
 import time
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, field_validator
 
 from app.auth.cookies import set_auth_cookies
-from app.auth.dependencies import get_current_user
+from app.auth.idp_crypto import encrypt_token
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
-from app.auth.ldap_provider import ldap_authenticate, _validate_ldap_username
-from app.auth.oidc_provider import begin_oidc_flow, handle_oidc_callback, sweep_expired_oidc_states
-from app.auth.idp_crypto import decrypt_idp_config, encrypt_token
+from app.auth.ldap_provider import _validate_ldap_username, ldap_authenticate
 from app.auth.mfa import (
+    extract_pending_jti,
     get_active_methods,
     issue_pending_token,
-    store_pending_token,
-    extract_pending_jti,
     load_mfa_settings,
+    store_pending_token,
 )
+from app.auth.oidc_provider import begin_oidc_flow, handle_oidc_callback
 from app.auth.stepup import log_security_event
 from app.config import settings
 from app.database import Database, DuplicateError, get_db
-from app.services import live_settings, event_bus
-from app.schemas.security_event import EventActor, SecurityEvent
-from app.models.role import ROLE_USER, grant_role
 from app.middleware.rate_limit import _counter, _get_client_ip
+from app.models.role import ROLE_USER, grant_role
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus, live_settings
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
 
 _bg_tasks: set = set()
 
@@ -73,8 +73,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-_LDAP_LOGIN_RATE_LIMIT  = 5
-_LDAP_LOGIN_RATE_WINDOW = 900   # 5 attempts per 15 minutes per IP
+_LDAP_LOGIN_RATE_LIMIT = 5
+_LDAP_LOGIN_RATE_WINDOW = 900  # 5 attempts per 15 minutes per IP
 _OIDC_ERROR_URL = "/?oidc_error=1"
 
 # ---------------------------------------------------------------------------
@@ -90,6 +90,7 @@ _OIDC_ERROR_URL = "/?oidc_error=1"
 # callback and the challenge exchange must hit the same worker (use sticky
 # sessions in nginx / Cloudflare) or migrate this to Redis.
 # ---------------------------------------------------------------------------
+
 
 class _OidcMfaChallengeStore:
     def __init__(self) -> None:
@@ -119,7 +120,10 @@ class _OidcMfaChallengeStore:
 _oidc_mfa_challenges = _OidcMfaChallengeStore()
 
 
-@router.get("/mfa/challenge/{challenge_id}", responses={404: {"description": "Not Found"}, 500: {"description": "Internal Server Error"}})
+@router.get(
+    "/mfa/challenge/{challenge_id}",
+    responses={404: {"description": "Not Found"}, 500: {"description": "Internal Server Error"}},
+)
 async def exchange_mfa_challenge(challenge_id: str):
     """One-time exchange: challenge_id → pending_token.
 
@@ -146,9 +150,7 @@ async def _issue_session_or_mfa_challenge(
     Mirrors the logic in opaque_auth.py login/finish.
     """
     # Load MFA state
-    cursor = await db.execute(
-        "SELECT mfa_reset_required FROM users WHERE id = ?", (user_id,)
-    )
+    cursor = await db.execute("SELECT mfa_reset_required FROM users WHERE id = ?", (user_id,))
     mfa_row = await cursor.fetchone()
     mfa_reset_required = bool(mfa_row["mfa_reset_required"]) if mfa_row else False
 
@@ -188,7 +190,9 @@ async def _finish_with_cookies(
 ) -> dict:
     """Issue session cookies and return the user response dict."""
     if is_public_device:
-        rt_expire_minutes = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
+        rt_expire_minutes = live_settings.get_int(
+            "public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+        )
         rt_max_age = rt_expire_minutes * 60
     else:
         rt_expire_minutes = None
@@ -196,7 +200,9 @@ async def _finish_with_cookies(
 
     raw_refresh, rt_hash = create_refresh_token()
     token_id = await store_refresh_token(
-        db, user_id, rt_hash,
+        db,
+        user_id,
+        rt_hash,
         expire_minutes=rt_expire_minutes,
         is_public_device=is_public_device,
     )
@@ -215,12 +221,12 @@ async def _finish_with_cookies(
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=500, detail="User record not found after authentication")  # NOSONAR — helper; 500 documented in callers
+        raise HTTPException(
+            status_code=500, detail="User record not found after authentication"
+        )  # NOSONAR — helper; 500 documented in callers
 
     # Load roles
-    cursor2 = await db.execute(
-        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type IS NULL", (user_id,)
-    )
+    cursor2 = await db.execute("SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type IS NULL", (user_id,))
     role_rows = await cursor2.fetchall()
     roles = sorted(r["role_id"] for r in role_rows)
 
@@ -301,15 +307,14 @@ async def _ensure_idp_user(
             (
                 user_id,
                 display_username,
-                provider_type,   # 'ldap' or 'oidc' — stored as auth_method
+                provider_type,  # 'ldap' or 'oidc' — stored as auth_method
                 provider_id,
                 claims_json,
                 refresh_token_enc,
             ),
         )
         await db.execute(
-            "INSERT INTO identity_provider_users (id, provider_id, user_id, external_id) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO identity_provider_users (id, provider_id, user_id, external_id) VALUES (?, ?, ?, ?)",
             (ipu_id, provider_id, user_id, external_id),
         )
         await grant_role(db, user_id, ROLE_USER)
@@ -327,37 +332,41 @@ async def _ensure_idp_user(
             (user_id, username_alt, provider_type, provider_id, claims_json, refresh_token_enc),
         )
         await db.execute(
-            "INSERT INTO identity_provider_users (id, provider_id, user_id, external_id) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO identity_provider_users (id, provider_id, user_id, external_id) VALUES (?, ?, ?, ?)",
             (ipu_id, provider_id, user_id, external_id),
         )
         await grant_role(db, user_id, ROLE_USER)
         await db.commit()
 
-    logger.info("New IdP user created: user_id=%s provider=%s external_id=%s", user_id, provider_id, external_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
-    event_bus.emit(SecurityEvent(
-        event_type="user.registered",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=user_id),
-        detail={"auth_method": provider_type, "provider_id": provider_id},
-    ))
+    logger.info(
+        "New IdP user created: user_id=%s provider=%s external_id=%s", user_id, provider_id, external_id
+    )  # NOSONAR — server-side audit log; values are Pydantic-validated
+    event_bus.emit(
+        SecurityEvent(
+            event_type="user.registered",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=user_id),
+            detail={"auth_method": provider_type, "provider_id": provider_id},
+        )
+    )
     return user_id
 
 
 def _fire_policy_eval(user_id: str) -> None:
     """Fire-and-forget background policy evaluation for a newly logged-in IdP user."""
-    import asyncio as _asyncio
     try:
-        from app.models.policy import evaluate_user_policies as _eval
         from app.database import db_session as _dbs
+        from app.models.policy import evaluate_user_policies as _eval
+
         async def _bg():
             try:
                 async with _dbs() as _bg_db:
                     await _eval(_bg_db, user_id)
             except Exception:
                 pass
-        _t = _asyncio.create_task(_bg())
+
+        _t = asyncio.create_task(_bg())
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
     except Exception:
@@ -368,6 +377,7 @@ def _fire_policy_eval(user_id: str) -> None:
 # List active providers (used by login page to render buttons)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/idp/providers")
 async def list_active_providers(db: Annotated[Database, Depends(get_db)]):
     """Return name + type for all active identity providers.
@@ -376,8 +386,7 @@ async def list_active_providers(db: Annotated[Database, Depends(get_db)]):
     No authentication required; secrets are never returned.
     """
     cursor = await db.execute(
-        "SELECT id, provider_type, name FROM identity_providers "
-        "WHERE is_active = 1 ORDER BY name"
+        "SELECT id, provider_type, name FROM identity_providers WHERE is_active = 1 ORDER BY name"
     )
     rows = await cursor.fetchall()
     return {"providers": [{"id": r["id"], "provider_type": r["provider_type"], "name": r["name"]} for r in rows]}
@@ -386,6 +395,7 @@ async def list_active_providers(db: Annotated[Database, Depends(get_db)]):
 # ---------------------------------------------------------------------------
 # LDAP login
 # ---------------------------------------------------------------------------
+
 
 class LDAPLoginRequest(BaseModel):
     provider_id: str
@@ -417,7 +427,14 @@ class LDAPLoginRequest(BaseModel):
         return v
 
 
-@router.post("/ldap/login", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}, 429: {"description": "Too Many Requests"}})
+@router.post(
+    "/ldap/login",
+    responses={
+        400: {"description": "Bad Request"},
+        401: {"description": "Unauthorized"},
+        429: {"description": "Too Many Requests"},
+    },
+)
 async def ldap_login(
     body: LDAPLoginRequest,
     request: Request,
@@ -431,9 +448,7 @@ async def ldap_login(
     returns a pending_token if MFA is required).
     """
     client_ip = _get_client_ip(request)
-    allowed = await _counter.is_allowed(
-        f"ldap_login:{client_ip}", _LDAP_LOGIN_RATE_LIMIT, _LDAP_LOGIN_RATE_WINDOW
-    )
+    allowed = await _counter.is_allowed(f"ldap_login:{client_ip}", _LDAP_LOGIN_RATE_LIMIT, _LDAP_LOGIN_RATE_WINDOW)
     if not allowed:
         raise HTTPException(
             status_code=429,
@@ -443,8 +458,7 @@ async def ldap_login(
 
     # Load the provider
     cursor = await db.execute(
-        "SELECT id, config_enc FROM identity_providers "
-        "WHERE id = ? AND provider_type = 'ldap' AND is_active = 1",
+        "SELECT id, config_enc FROM identity_providers WHERE id = ? AND provider_type = 'ldap' AND is_active = 1",
         (body.provider_id,),
     )
     row = await cursor.fetchone()
@@ -462,8 +476,7 @@ async def ldap_login(
 
     # Serialise LDAP attributes as JSON for claims cache
     claims_json = json.dumps(
-        {k: str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v
-         for k, v in attrs.items()},
+        {k: str(v) if not isinstance(v, (str, int, float, bool, type(None))) else v for k, v in attrs.items()},
         default=str,
     )
 
@@ -477,21 +490,25 @@ async def ldap_login(
         refresh_token=None,
     )
 
-    logger.info("LDAP login: user_id=%s username=%s ip=%s", user_id, body.username, client_ip)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    logger.info(
+        "LDAP login: user_id=%s username=%s ip=%s", user_id, body.username, client_ip
+    )  # NOSONAR — server-side audit log; values are Pydantic-validated
     await log_security_event(db, "ldap_login_success", user_id, client_ip, user_agent)
 
     _fire_policy_eval(user_id)
 
-    return await _issue_session_or_mfa_challenge(
-        db, response, user_id, body.provider_id, body.is_public_device
-    )
+    return await _issue_session_or_mfa_challenge(db, response, user_id, body.provider_id, body.is_public_device)
 
 
 # ---------------------------------------------------------------------------
 # OIDC begin
 # ---------------------------------------------------------------------------
 
-@router.get("/oidc/{provider_id}/begin", responses={404: {"description": "Not Found"}, 500: {"description": "Internal Server Error"}})
+
+@router.get(
+    "/oidc/{provider_id}/begin",
+    responses={404: {"description": "Not Found"}, 500: {"description": "Internal Server Error"}},
+)
 async def oidc_begin(
     provider_id: str,
     request: Request,
@@ -513,8 +530,7 @@ async def oidc_begin(
         raise HTTPException(status_code=404, detail="Provider not found")
 
     cursor = await db.execute(
-        "SELECT id, config_enc FROM identity_providers "
-        "WHERE id = ? AND provider_type = 'oidc' AND is_active = 1",
+        "SELECT id, config_enc FROM identity_providers WHERE id = ? AND provider_type = 'oidc' AND is_active = 1",
         (provider_id,),
     )
     row = await cursor.fetchone()
@@ -530,7 +546,9 @@ async def oidc_begin(
     try:
         redirect_url = await begin_oidc_flow(db, provider_id, row["config_enc"], safe_redirect)
     except Exception as exc:
-        logger.error("OIDC begin error for provider=%s: %s", provider_id, exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.error(
+            "OIDC begin error for provider=%s: %s", provider_id, exc
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=500, detail="Failed to build OIDC authorization URL")
 
     return {"redirect_url": redirect_url}
@@ -539,6 +557,7 @@ async def oidc_begin(
 # ---------------------------------------------------------------------------
 # OIDC callback
 # ---------------------------------------------------------------------------
+
 
 @router.get("/oidc/callback")
 async def oidc_callback(
@@ -560,9 +579,12 @@ async def oidc_callback(
     user_agent = request.headers.get("user-agent", "")[:512] if request else ""
 
     if error:
-        logger.warning("OIDC callback error: %s — %s", error, error_description)  # NOSONAR — server-side audit log; values are Pydantic-validated
-        await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
-                                 detail={"error": f"IdP error: {error}"})
+        logger.warning(
+            "OIDC callback error: %s — %s", error, error_description
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
+        await log_security_event(
+            db, "oidc_login_failed", None, client_ip, user_agent, detail={"error": f"IdP error: {error}"}
+        )
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     if not code or not state:
@@ -574,23 +596,22 @@ async def oidc_callback(
 
     # Look up state to find provider — we need this before consuming it
     cursor = await db.execute(
-        "SELECT provider_id, redirect_to FROM oidc_states "
-        "WHERE id = ? AND expires_at > ?",
+        "SELECT provider_id, redirect_to FROM oidc_states WHERE id = ? AND expires_at > ?",
         (state, int(time.time())),
     )
     state_row = await cursor.fetchone()
     if state_row is None:
         logger.warning("OIDC callback: unknown/expired state")
-        await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
-                                 detail={"error": "unknown or expired state nonce"})
+        await log_security_event(
+            db, "oidc_login_failed", None, client_ip, user_agent, detail={"error": "unknown or expired state nonce"}
+        )
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     provider_id = state_row["provider_id"]
     redirect_to = state_row["redirect_to"] or "/"
 
     cursor = await db.execute(
-        "SELECT id, config_enc FROM identity_providers "
-        "WHERE id = ? AND provider_type = 'oidc' AND is_active = 1",
+        "SELECT id, config_enc FROM identity_providers WHERE id = ? AND provider_type = 'oidc' AND is_active = 1",
         (provider_id,),
     )
     prov_row = await cursor.fetchone()
@@ -599,13 +620,17 @@ async def oidc_callback(
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     try:
-        identity = await handle_oidc_callback(
-            db, provider_id, prov_row["config_enc"], code, state
-        )
+        identity = await handle_oidc_callback(db, provider_id, prov_row["config_enc"], code, state)
     except Exception:
         logger.exception("OIDC callback exchange error provider=%s", provider_id)
-        await log_security_event(db, "oidc_login_failed", None, client_ip, user_agent,
-                                 detail={"error": f"token exchange error provider={provider_id}"})
+        await log_security_event(
+            db,
+            "oidc_login_failed",
+            None,
+            client_ip,
+            user_agent,
+            detail={"error": f"token exchange error provider={provider_id}"},
+        )
         return RedirectResponse(url=_OIDC_ERROR_URL, status_code=302)
 
     if identity is None:
@@ -623,10 +648,8 @@ async def oidc_callback(
         refresh_token=identity.get("refresh_token"),
     )
 
-    logger.info("OIDC login: user_id=%s provider=%s sub=%s ip=%s",
-                user_id, provider_id, identity["sub"], client_ip)
-    await log_security_event(db, "oidc_login_success", user_id, client_ip, user_agent,
-                             action_key=provider_id)
+    logger.info("OIDC login: user_id=%s provider=%s sub=%s ip=%s", user_id, provider_id, identity["sub"], client_ip)
+    await log_security_event(db, "oidc_login_success", user_id, client_ip, user_agent, action_key=provider_id)
 
     _fire_policy_eval(user_id)
 
@@ -636,9 +659,7 @@ async def oidc_callback(
     # Issue session or MFA challenge.  For OIDC the response is a redirect,
     # so we build a temporary Response, copy the cookies, then redirect.
     temp_response = Response()
-    result = await _issue_session_or_mfa_challenge(
-        db, temp_response, user_id, provider_id, False
-    )
+    result = await _issue_session_or_mfa_challenge(db, temp_response, user_id, provider_id, False)
 
     if result.get("mfa_required"):
         # Store pending_token server-side; redirect with an opaque challenge_id only.

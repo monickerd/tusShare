@@ -52,6 +52,7 @@ _RECOVERY_CODE_BYTES = 16
 # Enrollment helpers
 # ---------------------------------------------------------------------------
 
+
 async def enroll_start(db, user_id: str, issuer: str = "tusShare") -> tuple[str, str, str]:
     """Begin TOTP enrollment.
 
@@ -60,8 +61,7 @@ async def enroll_start(db, user_id: str, issuer: str = "tusShare") -> tuple[str,
     rows for this user are deleted first (re-start is a clean slate).
     """
     await db.execute(
-        "DELETE FROM user_mfa_credentials "
-        "WHERE user_id = ? AND method = 'totp' AND is_active = 0",
+        "DELETE FROM user_mfa_credentials WHERE user_id = ? AND method = 'totp' AND is_active = 0",
         (user_id,),
     )
     await db.commit()
@@ -89,9 +89,7 @@ async def enroll_start(db, user_id: str, issuer: str = "tusShare") -> tuple[str,
     return totp_uri, secret_b32, cred_id
 
 
-async def enroll_finish(
-    db, user_id: str, cred_id: str, totp_code: str, name: str
-) -> list[str] | None:
+async def enroll_finish(db, user_id: str, cred_id: str, totp_code: str, name: str) -> list[str] | None:
     """Complete TOTP enrollment after the user confirms a valid code.
 
     Returns the list of 10 plaintext recovery codes on success, or None if the
@@ -165,6 +163,7 @@ def _generate_recovery_codes() -> tuple[list[str], dict]:
 # TOTP verification (login gate / step-up)
 # ---------------------------------------------------------------------------
 
+
 async def verify_totp(db, user_id: str, code: str) -> bool:
     """Verify a TOTP code for a user.
 
@@ -193,8 +192,7 @@ async def verify_totp(db, user_id: str, code: str) -> bool:
         return False
 
     cursor = await db.execute(
-        "SELECT id, credential FROM user_mfa_credentials "
-        "WHERE user_id = ? AND method = 'totp' AND is_active = 1",
+        "SELECT id, credential FROM user_mfa_credentials WHERE user_id = ? AND method = 'totp' AND is_active = 1",
         (user_id,),
     )
     rows = await cursor.fetchall()
@@ -227,6 +225,7 @@ async def verify_totp(db, user_id: str, code: str) -> bool:
 # ---------------------------------------------------------------------------
 # Recovery code verification
 # ---------------------------------------------------------------------------
+
 
 async def verify_recovery_code(db, user_id: str, code: str) -> bool:
     """Check a plaintext recovery code and invalidate it if correct.

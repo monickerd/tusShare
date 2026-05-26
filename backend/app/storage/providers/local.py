@@ -18,9 +18,9 @@ import shutil
 from pathlib import Path
 from typing import AsyncGenerator
 
-from app.storage.base import StorageProvider, VolumeConfig, validate_storage_key
 from app.config import settings
 from app.services import live_settings
+from app.storage.base import StorageProvider, VolumeConfig, validate_storage_key
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ _EVICT_REDIS_KEY = "evict_offsets"
 
 async def _get_evict_offset(upload_id: str) -> int:
     from app.redis_client import get_redis
+
     r = get_redis()
     if r is not None:
         try:
@@ -45,6 +46,7 @@ async def _get_evict_offset(upload_id: str) -> int:
 
 async def _set_evict_offset(upload_id: str, value: int) -> None:
     from app.redis_client import get_redis
+
     r = get_redis()
     if r is not None:
         try:
@@ -57,6 +59,7 @@ async def _set_evict_offset(upload_id: str, value: int) -> None:
 
 async def _del_evict_offset(upload_id: str) -> None:
     from app.redis_client import get_redis
+
     r = get_redis()
     if r is not None:
         try:
@@ -210,6 +213,7 @@ class LocalProvider(StorageProvider):
     async def get_usage(self) -> tuple[int, int | None]:
         def _du():
             return shutil.disk_usage(str(self._files_dir))
+
         try:
             du = await asyncio.to_thread(_du)
             return du.used, du.total
@@ -220,6 +224,7 @@ class LocalProvider(StorageProvider):
 # ------------------------------------------------------------------
 # Module-level helpers (avoid repeated lambda closures in hot path)
 # ------------------------------------------------------------------
+
 
 def _write_at(path: Path, offset: int, data: bytes) -> None:
     """Seek to offset, write data, truncate beyond end. Idempotent."""

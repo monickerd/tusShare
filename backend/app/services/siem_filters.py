@@ -16,6 +16,7 @@ relaxed        Critical-severity events only — lockouts, emergency revocations
 custom         Admin-supplied JSON: {"event_type_globs": [...], "min_severity": "info"}
                Glob patterns follow fnmatch syntax (e.g. "auth.*", "file.*").
 """
+
 from __future__ import annotations
 
 import fnmatch
@@ -30,14 +31,14 @@ _SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 
 PROFILE_PRESETS: dict[str, dict] = {
     "high_security": {
-        "label":            "High Security",
-        "description":      "All events including file downloads, uploads, and shares.",
+        "label": "High Security",
+        "description": "All events including file downloads, uploads, and shares.",
         "event_type_globs": ["*"],
-        "min_severity":     "info",
+        "min_severity": "info",
     },
     "recommended": {
-        "label":            "Recommended",
-        "description":      "Auth, admin actions, policy/role changes, and destructive file ops.",
+        "label": "Recommended",
+        "description": "Auth, admin actions, policy/role changes, and destructive file ops.",
         "event_type_globs": [
             "auth.*",
             "admin.*",
@@ -47,32 +48,32 @@ PROFILE_PRESETS: dict[str, dict] = {
             "share.*",
             "team.*",
         ],
-        "min_severity":     "info",
+        "min_severity": "info",
     },
     "relaxed": {
-        "label":            "Relaxed",
-        "description":      "Critical severity only — lockouts, emergency revocations, auth failures.",
+        "label": "Relaxed",
+        "description": "Critical severity only — lockouts, emergency revocations, auth failures.",
         "event_type_globs": ["*"],
-        "min_severity":     "critical",
+        "min_severity": "critical",
     },
 }
 
 # Exported for the admin API to surface preset metadata to the UI.
 PROFILE_META: list[dict] = [
     {
-        "id":          profile_id,
-        "label":       meta["label"],
+        "id": profile_id,
+        "label": meta["label"],
         "description": meta["description"],
-        "globs":       meta["event_type_globs"],
+        "globs": meta["event_type_globs"],
         "min_severity": meta["min_severity"],
     }
     for profile_id, meta in PROFILE_PRESETS.items()
 ] + [
     {
-        "id":          "custom",
-        "label":       "Custom",
+        "id": "custom",
+        "label": "Custom",
         "description": "Define your own event type glob patterns and minimum severity.",
-        "globs":       None,
+        "globs": None,
         "min_severity": None,
     }
 ]
@@ -108,7 +109,7 @@ def matches_destination_filter(dest: dict, event: SecurityEvent) -> bool:
         if preset is None:
             logger.warning("siem_filters: unknown profile %r, defaulting to recommended", profile)
             preset = PROFILE_PRESETS["recommended"]
-        globs   = preset["event_type_globs"]
+        globs = preset["event_type_globs"]
         min_sev = preset["min_severity"]
 
     if not _severity_gte(event.severity, min_sev):

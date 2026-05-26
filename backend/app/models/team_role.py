@@ -16,14 +16,16 @@ from dataclasses import dataclass
 # Team-scoped permission flag name constants
 # ---------------------------------------------------------------------------
 
-TEAM_FLAG_MOVE_OWN_OUT    = "move_own_files_out_of_team"
+TEAM_FLAG_MOVE_OWN_OUT = "move_own_files_out_of_team"
 TEAM_FLAG_MOVE_OTHERS_OUT = "move_others_files_out_of_team"
 
 # All valid flags for team roles (the complete set checked server-side)
-TEAM_ROLE_FLAGS: frozenset[str] = frozenset({
-    TEAM_FLAG_MOVE_OWN_OUT,
-    TEAM_FLAG_MOVE_OTHERS_OUT,
-})
+TEAM_ROLE_FLAGS: frozenset[str] = frozenset(
+    {
+        TEAM_FLAG_MOVE_OWN_OUT,
+        TEAM_FLAG_MOVE_OTHERS_OUT,
+    }
+)
 
 # Global team role IDs that carry default move authority
 _MOVE_AUTHORITY_ROLES = frozenset({"team_admin", "team_manager"})
@@ -31,13 +33,13 @@ _MOVE_AUTHORITY_ROLES = frozenset({"team_admin", "team_manager"})
 # Display metadata for UI rendering (ordered)
 TEAM_FLAG_META: list[dict] = [
     {
-        "flag":        TEAM_FLAG_MOVE_OWN_OUT,
-        "label":       "Move own files out of team",
+        "flag": TEAM_FLAG_MOVE_OWN_OUT,
+        "label": "Move own files out of team",
         "description": "May move files owned by themselves out of a team folder",
     },
     {
-        "flag":        TEAM_FLAG_MOVE_OTHERS_OUT,
-        "label":       "Move others' files out of team",
+        "flag": TEAM_FLAG_MOVE_OTHERS_OUT,
+        "label": "Move others' files out of team",
         "description": "May move files owned by another user out of a team folder",
     },
 ]
@@ -51,14 +53,15 @@ MAX_TEAM_ROLE_DESC_LEN = 255
 # Dataclass
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class TeamRole:
-    id:          str
-    team_id:     str
-    name:        str
+    id: str
+    team_id: str
+    name: str
     description: str
-    created_by:  str | None
-    created_at:  str
+    created_by: str | None
+    created_at: str
 
     @classmethod
     def from_row(cls, row) -> "TeamRole":
@@ -73,18 +76,19 @@ class TeamRole:
 
     def to_dict(self) -> dict:
         return {
-            "id":          self.id,
-            "team_id":     self.team_id,
-            "name":        self.name,
+            "id": self.id,
+            "team_id": self.team_id,
+            "name": self.name,
             "description": self.description,
-            "created_by":  self.created_by,
-            "created_at":  self.created_at,
+            "created_by": self.created_by,
+            "created_at": self.created_at,
         }
 
 
 # ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------
+
 
 async def get_user_team_move_flags(db, user_id: str, team_id: str) -> dict[str, bool]:
     """Return the effective move permission flags for a user within a team.
@@ -98,8 +102,7 @@ async def get_user_team_move_flags(db, user_id: str, team_id: str) -> dict[str, 
     """
     # Check global roles scoped to this team
     cursor = await db.execute(
-        "SELECT role_id FROM user_roles "
-        "WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
         (user_id, team_id),
     )
     scoped_role_ids = {r["role_id"] for r in await cursor.fetchall()}
@@ -107,7 +110,7 @@ async def get_user_team_move_flags(db, user_id: str, team_id: str) -> dict[str, 
     if scoped_role_ids & _MOVE_AUTHORITY_ROLES:
         # team_admin or team_manager: full move authority
         return {
-            TEAM_FLAG_MOVE_OWN_OUT:    True,
+            TEAM_FLAG_MOVE_OWN_OUT: True,
             TEAM_FLAG_MOVE_OTHERS_OUT: True,
         }
 
@@ -120,12 +123,9 @@ async def get_user_team_move_flags(db, user_id: str, team_id: str) -> dict[str, 
         "GROUP BY tp.flag",
         (user_id, team_id),
     )
-    custom_flags = {
-        r["flag"]: r["value"] not in ("0", "", "false", "False", "no")
-        for r in await cursor.fetchall()
-    }
+    custom_flags = {r["flag"]: r["value"] not in ("0", "", "false", "False", "no") for r in await cursor.fetchall()}
 
     return {
-        TEAM_FLAG_MOVE_OWN_OUT:    custom_flags.get(TEAM_FLAG_MOVE_OWN_OUT, False),
+        TEAM_FLAG_MOVE_OWN_OUT: custom_flags.get(TEAM_FLAG_MOVE_OWN_OUT, False),
         TEAM_FLAG_MOVE_OTHERS_OUT: custom_flags.get(TEAM_FLAG_MOVE_OTHERS_OUT, False),
     }

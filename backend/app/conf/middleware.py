@@ -5,12 +5,12 @@ HEADER_MAX_LENGTHS = {
     "user-agent": 512,
     "x-csrf-token": 128,
     "x-chunk-iv": 64,
-    "x-chunk-hash": 71,         # "sha256:" (7) + 64 hex chars
+    "x-chunk-hash": 71,  # "sha256:" (7) + 64 hex chars
     "authorization": 2048,
     "upload-metadata": 4096,
-    "upload-length": 24,    # max 20-digit integer
-    "upload-offset": 24,    # max 20-digit integer
-    "tus-resumable": 16,    # e.g. "1.0.0"
+    "upload-length": 24,  # max 20-digit integer
+    "upload-offset": 24,  # max 20-digit integer
+    "tus-resumable": 16,  # e.g. "1.0.0"
     "content-type": 256,
     "range": 128,
 }
@@ -61,9 +61,9 @@ CSRF_EXEMPT_PREFIXES = (
 )
 
 # --- Rate limiting ---
-RATE_LIMIT_CLEANUP_MAX_AGE = 3600.0      # seconds (1 hour)
-RATE_LIMIT_LOGIN_WINDOW = 900            # seconds (15 minutes)
-RATE_LIMIT_MANAGEMENT_WINDOW = 60        # seconds (1 minute)
+RATE_LIMIT_CLEANUP_MAX_AGE = 3600.0  # seconds (1 hour)
+RATE_LIMIT_LOGIN_WINDOW = 900  # seconds (15 minutes)
+RATE_LIMIT_MANAGEMENT_WINDOW = 60  # seconds (1 minute)
 
 # --- Security response headers ---
 SECURITY_HEADERS = {

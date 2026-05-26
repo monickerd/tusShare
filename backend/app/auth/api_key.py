@@ -18,6 +18,7 @@ For dual-auth (JWT or API key) routes, call check_api_key() directly:
     from app.auth.api_key import check_api_key
     await check_api_key(request.headers.get("x-api-key", ""), "audit_read")
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -55,7 +56,7 @@ async def _check_key(raw_key: str, accepted_scopes: tuple[str, ...]) -> dict:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     key_hash = sha256_hex(raw_key)
-    now_iso  = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     async with db_session() as db:
         cursor = await db.execute(

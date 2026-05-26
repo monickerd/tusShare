@@ -46,9 +46,9 @@ class Team:
 class TeamMember:
     user_id: str
     username: str
-    role: str   # team_owner | team_supervisor | team_member
+    role: str  # team_owner | team_supervisor | team_member
     key_delivery_pending: bool = False  # True when policy grant key_wrapped=0 (no key slot yet)
-    key_confirmed: bool = False         # True when Schnorr PoK submitted post-rotation
+    key_confirmed: bool = False  # True when Schnorr PoK submitted post-rotation
 
     @property
     def role_rank(self) -> int:
@@ -106,6 +106,7 @@ class TeamFileKey:
 # Query helpers
 # ---------------------------------------------------------------------------
 
+
 async def get_team(db, team_id: str) -> Team | None:
     cursor = await db.execute("SELECT * FROM teams WHERE id = ?", (team_id,))
     row = await cursor.fetchone()
@@ -115,8 +116,7 @@ async def get_team(db, team_id: str) -> Team | None:
 async def get_team_member_role(db, team_id: str, user_id: str) -> str | None:
     """Return the user's role in the team, or None if not a member."""
     cursor = await db.execute(
-        "SELECT role_id FROM user_roles "
-        "WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
         (user_id, team_id),
     )
     row = await cursor.fetchone()
@@ -158,8 +158,7 @@ async def get_team_members(db, team_id: str) -> list[TeamMember]:
 
 async def get_team_member_count(db, team_id: str) -> int:
     cursor = await db.execute(
-        "SELECT COUNT(*) FROM user_roles "
-        "WHERE scope_type = 'team' AND scope_id = ?",
+        "SELECT COUNT(*) FROM user_roles WHERE scope_type = 'team' AND scope_id = ?",
         (team_id,),
     )
     row = await cursor.fetchone()
@@ -197,8 +196,8 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
     return [
         {
             **Team.from_row(r).to_dict(),
-            "my_roles":              list(r["my_roles"]) if r["my_roles"] else [],
-            "my_key_confirmed":      bool(r["my_key_confirmed"]),
+            "my_roles": list(r["my_roles"]) if r["my_roles"] else [],
+            "my_key_confirmed": bool(r["my_key_confirmed"]),
             "has_pending_key_grants": bool(r["has_pending_key_grants"]),
         }
         for r in rows

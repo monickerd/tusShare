@@ -28,6 +28,7 @@ Fiat-Shamir challenge (DLEQ):
 Fiat-Shamir challenge (Schnorr PoK):
   SHA-256( pk_new_96bytes ‖ R_96bytes ) mod Fr
 """
+
 import base64
 import hashlib
 import logging
@@ -35,14 +36,16 @@ import logging
 log = logging.getLogger(__name__)
 
 # BLS12-381 scalar field order (Fr)
-_FR_ORDER = 0x73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001
+_FR_ORDER = 0x73EDA753299D7D483339D80809A1D80553BDA402FFFE5BFEFFFFFFFF00000001
 
 try:
-    from py_ecc.optimized_bls12_381 import G1, G2, pairing, multiply, add, eq
     from py_ecc.bls.point_compression import (
-        compress_G1, decompress_G1,
-        compress_G2, decompress_G2,
+        compress_G1,
+        decompress_G1,
+        decompress_G2,
     )
+    from py_ecc.optimized_bls12_381 import G1, G2, add, eq, multiply, pairing
+
     _BLS_AVAILABLE = True
 except Exception:
     log.warning("py_ecc BLS12-381 import failed; all verification will return False")
@@ -52,6 +55,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _b64_decode(b64: str) -> bytes:
     return base64.b64decode(b64)
@@ -91,6 +95,7 @@ def _g1_to_bytes(point) -> bytes:
 # Public verification functions
 # ---------------------------------------------------------------------------
 
+
 def verify_rk_consistency(rk_point_b64: str, pk_old_b64: str, pk_new_b64: str) -> bool:
     """Check e(rk_point, pk_new) == e(G1, pk_old) via BLS12-381 pairings.
 
@@ -113,11 +118,11 @@ def verify_rk_consistency(rk_point_b64: str, pk_old_b64: str, pk_new_b64: str) -
         return False
     try:
         rk_point = _g1_from_b64(rk_point_b64)
-        pk_old   = _g2_from_b64(pk_old_b64)
-        pk_new   = _g2_from_b64(pk_new_b64)
+        pk_old = _g2_from_b64(pk_old_b64)
+        pk_new = _g2_from_b64(pk_new_b64)
         # pairing(Q, P) in py_ecc: Q ∈ G2, P ∈ G1
-        lhs = pairing(pk_new, rk_point)   # e(rk_point, pk_new)
-        rhs = pairing(pk_old, G1)          # e(G1_gen, pk_old)
+        lhs = pairing(pk_new, rk_point)  # e(rk_point, pk_new)
+        rhs = pairing(pk_old, G1)  # e(G1_gen, pk_old)
         return lhs == rhs
     except Exception:
         log.exception("verify_rk_consistency: error during verification")
@@ -157,23 +162,23 @@ def verify_dleq_proof(
         return False
     try:
         rk_point = _g1_from_b64(rk_point_b64)
-        c1_old   = _g1_from_b64(c1_old_b64)
-        c1_new   = _g1_from_b64(c1_new_b64)
-        R1       = _g1_from_b64(dleq_r1)
-        R2       = _g1_from_b64(dleq_r2)
-        s        = _scalar_from_b64(dleq_s)
+        c1_old = _g1_from_b64(c1_old_b64)
+        c1_new = _g1_from_b64(c1_new_b64)
+        R1 = _g1_from_b64(dleq_r1)
+        R2 = _g1_from_b64(dleq_r2)
+        s = _scalar_from_b64(dleq_s)
 
         # Fiat-Shamir challenge — byte-exact match with client SHA-256 computation.
         # Client hashes: [G1_base, C1_old, rk_point, C1_new, R1, R2] as raw bytes.
         # We use the raw decoded base64 bytes for the transmitted points so we match
         # exactly; G1_base is serialized from py_ecc to ensure same encoding.
         hash_input = (
-            _g1_to_bytes(G1)          # G1 generator compressed (48 bytes)
+            _g1_to_bytes(G1)  # G1 generator compressed (48 bytes)
             + _b64_decode(c1_old_b64)  # C1_old  (48 bytes)
             + _b64_decode(rk_point_b64)  # rk_point (48 bytes)
             + _b64_decode(c1_new_b64)  # C1_new  (48 bytes)
-            + _b64_decode(dleq_r1)     # R1      (48 bytes)
-            + _b64_decode(dleq_r2)     # R2      (48 bytes)
+            + _b64_decode(dleq_r1)  # R1      (48 bytes)
+            + _b64_decode(dleq_r2)  # R2      (48 bytes)
         )
         c = int.from_bytes(hashlib.sha256(hash_input).digest(), "big") % _FR_ORDER
 
@@ -251,9 +256,9 @@ def verify_schnorr_pok(schnorr_r_b64: str, schnorr_s_b64: str, pk_new_b64: str) 
         log.error("verify_schnorr_pok: py_ecc not available")
         return False
     try:
-        R      = _g2_from_b64(schnorr_r_b64)
+        R = _g2_from_b64(schnorr_r_b64)
         pk_new = _g2_from_b64(pk_new_b64)
-        s      = _scalar_from_b64(schnorr_s_b64)
+        s = _scalar_from_b64(schnorr_s_b64)
 
         # Fiat-Shamir challenge — must match client: SHA-256(pk_new ‖ R) mod Fr
         hash_input = _b64_decode(pk_new_b64) + _b64_decode(schnorr_r_b64)

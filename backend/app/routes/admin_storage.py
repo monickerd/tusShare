@@ -21,21 +21,20 @@ from __future__ import annotations
 
 import logging
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, field_validator
 
+import app.storage.manager as storage
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.config import settings
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.storage.crypto import decrypt_volume_config, encrypt_volume_config
-import app.storage.manager as storage
 from app.util.ssrf import validate_endpoint_url
 from app.validation.sanitizers import validate_uuid
-from typing import Annotated
-
 
 _ERR_VOLUME_NOT_FOUND = "Volume not found"
 
@@ -46,10 +45,12 @@ router = APIRouter()
 _STEPUP = "admin.storage.configure"
 _REDACTED = "••••••••"
 _SECRET_FIELDS = {
-    "access_key_id", "secret_access_key",   # S3-compatible
-    "connection_string",                     # Azure Blob
-    "service_account_json",                  # GCS
-    "bind_password", "client_secret",        # IdP (shared path)
+    "access_key_id",
+    "secret_access_key",  # S3-compatible
+    "connection_string",  # Azure Blob
+    "service_account_json",  # GCS
+    "bind_password",
+    "client_secret",  # IdP (shared path)
 }
 
 _VALID_PROVIDERS = {"local", "s3", "b2", "azure", "gcs"}
@@ -63,6 +64,7 @@ def _redact_config(cfg: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
 
 class VolumeCreateModel(BaseModel):
     name: str
@@ -103,7 +105,7 @@ class TieringPolicyModel(BaseModel):
     cold_volume_id: str | None = None
     auto_warm_on_read: bool = False
     warn_pct: float | None = 90.0
-    warn_bytes_remaining: int | None = 1 * 1024 ** 3
+    warn_bytes_remaining: int | None = 1 * 1024**3
 
     @field_validator("warn_pct")
     @classmethod
@@ -124,6 +126,7 @@ class TieringPolicyModel(BaseModel):
 # Volume CRUD
 # ---------------------------------------------------------------------------
 
+
 @router.get("/volumes")
 async def list_volumes(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -137,7 +140,11 @@ async def list_volumes(
     return [dict(row) for row in rows]
 
 
-@router.post("/volumes", dependencies=[Depends(require_step_up(_STEPUP))], responses={409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
+@router.post(
+    "/volumes",
+    dependencies=[Depends(require_step_up(_STEPUP))],
+    responses={409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}},
+)
 async def create_volume(
     body: VolumeCreateModel,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -203,7 +210,11 @@ async def get_volume(
     return result
 
 
-@router.put("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
+@router.put(
+    "/volumes/{volume_id}",
+    dependencies=[Depends(require_step_up(_STEPUP))],
+    responses={404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}},
+)
 async def update_volume(
     volume_id: str,
     body: VolumeCreateModel,
@@ -253,7 +264,11 @@ async def update_volume(
     return {"message": "Volume updated"}
 
 
-@router.delete("/volumes/{volume_id}", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
+@router.delete(
+    "/volumes/{volume_id}",
+    dependencies=[Depends(require_step_up(_STEPUP))],
+    responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}},
+)
 async def delete_volume(
     volume_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -261,9 +276,7 @@ async def delete_volume(
 ):
     volume_id = validate_uuid(volume_id)
 
-    cursor = await db.execute(
-        "SELECT is_default FROM storage_volumes WHERE id = ?", (volume_id,)
-    )
+    cursor = await db.execute("SELECT is_default FROM storage_volumes WHERE id = ?", (volume_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail=_ERR_VOLUME_NOT_FOUND)
@@ -274,9 +287,7 @@ async def delete_volume(
         )
 
     # Reject if any files still live on this volume
-    cursor = await db.execute(
-        "SELECT COUNT(*) FROM file_storage_locations WHERE volume_id = ?", (volume_id,)
-    )
+    cursor = await db.execute("SELECT COUNT(*) FROM file_storage_locations WHERE volume_id = ?", (volume_id,))
     count_row = await cursor.fetchone()
     if count_row[0] > 0:
         raise HTTPException(
@@ -290,7 +301,11 @@ async def delete_volume(
     return {"message": "Volume deleted"}
 
 
-@router.post("/volumes/{volume_id}/default", dependencies=[Depends(require_step_up(_STEPUP))], responses={404: {"description": "Not Found"}})
+@router.post(
+    "/volumes/{volume_id}/default",
+    dependencies=[Depends(require_step_up(_STEPUP))],
+    responses={404: {"description": "Not Found"}},
+)
 async def set_default_volume(
     volume_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -340,6 +355,7 @@ async def test_volume(
 # Usage summary
 # ---------------------------------------------------------------------------
 
+
 @router.get("/usage")
 async def get_storage_usage(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -367,6 +383,7 @@ async def get_storage_usage(
 # Tiering policy
 # ---------------------------------------------------------------------------
 
+
 @router.get("/tiers")
 async def get_tiering_policy(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -390,13 +407,11 @@ async def get_tiering_policy(
     sm = {row["key"]: row["value"] for row in rows}
 
     raw_pct = sm.get("storage_warn_pct", "90")
-    raw_bytes = sm.get("storage_warn_bytes_remaining", str(1 * 1024 ** 3))
+    raw_bytes = sm.get("storage_warn_bytes_remaining", str(1 * 1024**3))
     return {
         "enabled": sm.get("storage_tiering_enabled", "0") == "1",
-        "hot_to_warm_days": int(sm["storage_hot_to_warm_days"])
-            if sm.get("storage_hot_to_warm_days") else None,
-        "warm_to_cold_days": int(sm["storage_warm_to_cold_days"])
-            if sm.get("storage_warm_to_cold_days") else None,
+        "hot_to_warm_days": int(sm["storage_hot_to_warm_days"]) if sm.get("storage_hot_to_warm_days") else None,
+        "warm_to_cold_days": int(sm["storage_warm_to_cold_days"]) if sm.get("storage_warm_to_cold_days") else None,
         "warm_volume_id": sm.get("storage_warm_volume_id") or None,
         "cold_volume_id": sm.get("storage_cold_volume_id") or None,
         "auto_warm_on_read": sm.get("storage_auto_warm_on_read", "0") == "1",
@@ -428,14 +443,16 @@ async def update_tiering_policy(
     db: Annotated[Database, Depends(get_db)],
 ):
     updates = {
-        "storage_tiering_enabled":      "1" if body.enabled else "0",
-        "storage_hot_to_warm_days":     str(body.hot_to_warm_days) if body.hot_to_warm_days else "",
-        "storage_warm_to_cold_days":    str(body.warm_to_cold_days) if body.warm_to_cold_days else "",
-        "storage_warm_volume_id":       body.warm_volume_id or "",
-        "storage_cold_volume_id":       body.cold_volume_id or "",
-        "storage_auto_warm_on_read":    "1" if body.auto_warm_on_read else "0",
-        "storage_warn_pct":             str(body.warn_pct) if body.warn_pct is not None else "null",
-        "storage_warn_bytes_remaining": str(body.warn_bytes_remaining) if body.warn_bytes_remaining is not None else "null",
+        "storage_tiering_enabled": "1" if body.enabled else "0",
+        "storage_hot_to_warm_days": str(body.hot_to_warm_days) if body.hot_to_warm_days else "",
+        "storage_warm_to_cold_days": str(body.warm_to_cold_days) if body.warm_to_cold_days else "",
+        "storage_warm_volume_id": body.warm_volume_id or "",
+        "storage_cold_volume_id": body.cold_volume_id or "",
+        "storage_auto_warm_on_read": "1" if body.auto_warm_on_read else "0",
+        "storage_warn_pct": str(body.warn_pct) if body.warn_pct is not None else "null",
+        "storage_warn_bytes_remaining": str(body.warn_bytes_remaining)
+        if body.warn_bytes_remaining is not None
+        else "null",
     }
     for key, value in updates.items():
         await db.execute(

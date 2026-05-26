@@ -16,6 +16,7 @@ An admin may not lock a flag at a tier lower (higher privilege) than their own.
 """
 
 import re as _re
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -24,8 +25,8 @@ from app.auth.dependencies import get_current_user, require_admin
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.models.role import (
-    FLAG_REQUIRES,
     FLAG_RELATED,
+    FLAG_REQUIRES,
     FLAG_ROLES_CREATE,
     FLAG_ROLES_MANAGE,
     FLAG_USERS_MANAGE,
@@ -36,10 +37,8 @@ from app.models.role import (
     admin_best_tier,
 )
 from app.routes._access import require_flag
-from app.services import event_bus
 from app.schemas.security_event import EventActor, SecurityEvent
-from typing import Annotated
-
+from app.services import event_bus
 
 _ERR_PERM_MANAGE_ROLES = "roles_manage required"
 
@@ -49,17 +48,18 @@ router = APIRouter()
 _SENSITIVE_FLAG_ROLE_IDS = frozenset({ROLE_SERVER_ADMIN, ROLE_ORG_ADMIN})
 
 # Hard limit on role_id / name length
-_MAX_ROLE_ID_LEN   = 64
+_MAX_ROLE_ID_LEN = 64
 _MAX_ROLE_NAME_LEN = 80
 _MAX_ROLE_DESC_LEN = 255
 
 # Allowed characters in a custom role ID (slug-style)
-_ROLE_ID_RE = _re.compile(r'^[a-z0-9_]{1,64}$')
+_ROLE_ID_RE = _re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 async def _load_role(db, role_id: str):
     """Fetch a role row or raise 404."""
@@ -78,8 +78,8 @@ async def _load_role_permissions(db, role_id: str) -> dict:
     )
     return {
         r["flag"]: {
-            "value":           r["value"],
-            "is_locked":       bool(r["is_locked"]),
+            "value": r["value"],
+            "is_locked": bool(r["is_locked"]),
             "locked_min_tier": r["locked_min_tier"],
         }
         for r in await cursor.fetchall()
@@ -89,14 +89,13 @@ async def _load_role_permissions(db, role_id: str) -> dict:
 async def _load_all_flags(db) -> list[dict]:
     """Return all flag definitions ordered by category then flag name."""
     cursor = await db.execute(
-        "SELECT flag, description, category, is_sensitive "
-        "FROM role_permission_flags ORDER BY category, flag"
+        "SELECT flag, description, category, is_sensitive FROM role_permission_flags ORDER BY category, flag"
     )
     return [
         {
-            "flag":         r["flag"],
-            "description":  r["description"],
-            "category":     r["category"],
+            "flag": r["flag"],
+            "description": r["description"],
+            "category": r["category"],
             "is_sensitive": bool(r["is_sensitive"]),
         }
         for r in await cursor.fetchall()
@@ -105,14 +104,12 @@ async def _load_all_flags(db) -> list[dict]:
 
 def _role_to_dict(row, permissions: dict[str, str]) -> dict:
     return {
-        "id":          row["id"],
-        "name":        row["name"],
+        "id": row["id"],
+        "name": row["name"],
         "description": row["description"],
-        "is_system":   bool(row["is_system"]),
+        "is_system": bool(row["is_system"]),
         "permissions": permissions,
     }
-
-
 
 
 def _check_sensitive_flag_authority(user: AuthenticatedUser):
@@ -136,21 +133,22 @@ def _validate_new_role_flags(known_flags: set, permissions: dict) -> None:
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class CreateRoleRequest(BaseModel):
-    id:          str
-    name:        str
+    id: str
+    name: str
     description: str = ""
-    permissions: dict[str, str] = {}   # {flag: '0'/'1'}
+    permissions: dict[str, str] = {}  # {flag: '0'/'1'}
 
 
 class UpdateRoleRequest(BaseModel):
-    name:        str | None = None
+    name: str | None = None
     description: str | None = None
 
 
 class FlagUpdate(BaseModel):
-    value:           str
-    is_locked:       bool = False
+    value: str
+    is_locked: bool = False
     locked_min_tier: int | None = None
 
 
@@ -161,6 +159,7 @@ class UpdatePermissionsRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # GET /roles — list all roles with their permission flags
 # ---------------------------------------------------------------------------
+
 
 @router.get("")
 async def list_roles(
@@ -173,28 +172,21 @@ async def list_roles(
     a second round-trip.
     """
     require_flag(admin, FLAG_ROLES_MANAGE, _ERR_PERM_MANAGE_ROLES)
-    cursor = await db.execute(
-        "SELECT * FROM roles ORDER BY is_system DESC, id"
-    )
+    cursor = await db.execute("SELECT * FROM roles ORDER BY is_system DESC, id")
     role_rows = await cursor.fetchall()
 
     # Bulk-load permissions for all roles in one query
-    cursor = await db.execute(
-        "SELECT role_id, flag, value, is_locked, locked_min_tier FROM role_permissions"
-    )
+    cursor = await db.execute("SELECT role_id, flag, value, is_locked, locked_min_tier FROM role_permissions")
     perm_rows = await cursor.fetchall()
     perms_by_role: dict[str, dict] = {}
     for r in perm_rows:
         perms_by_role.setdefault(r["role_id"], {})[r["flag"]] = {
-            "value":           r["value"],
-            "is_locked":       bool(r["is_locked"]),
+            "value": r["value"],
+            "is_locked": bool(r["is_locked"]),
             "locked_min_tier": r["locked_min_tier"],
         }
 
-    roles = [
-        _role_to_dict(row, perms_by_role.get(row["id"], {}))
-        for row in role_rows
-    ]
+    roles = [_role_to_dict(row, perms_by_role.get(row["id"], {})) for row in role_rows]
 
     flags = await _load_all_flags(db)
     return {"roles": roles, "flags": flags, "admin_tier": admin_best_tier(admin.roles)}
@@ -203,6 +195,7 @@ async def list_roles(
 # ---------------------------------------------------------------------------
 # GET /roles/capabilities — what can the calling admin grant?
 # ---------------------------------------------------------------------------
+
 
 @router.get("/capabilities")
 async def get_admin_capabilities(
@@ -225,8 +218,7 @@ async def get_admin_capabilities(
         cursor = await db.execute("SELECT id FROM roles ORDER BY id")
         all_role_ids = [r["id"] for r in await cursor.fetchall()]
         grantable_role_ids = [
-            rid for rid in all_role_ids
-            if (ROLE_TIER.get(rid) is None or ROLE_TIER.get(rid) >= my_tier)
+            rid for rid in all_role_ids if (ROLE_TIER.get(rid) is None or ROLE_TIER.get(rid) >= my_tier)
         ]
     else:
         grantable_role_ids = []
@@ -256,12 +248,17 @@ async def get_flag_metadata(
     users_delete also requires users_manage') and related-flag hints.
     No specific flag required — every admin may read this metadata.
     """
-    cursor = await db.execute("SELECT flag, description, category, is_sensitive FROM role_permission_flags ORDER BY flag")
-    flag_defs = {r["flag"]: {"description": r["description"], "category": r["category"], "is_sensitive": bool(r["is_sensitive"])} for r in await cursor.fetchall()}
+    cursor = await db.execute(
+        "SELECT flag, description, category, is_sensitive FROM role_permission_flags ORDER BY flag"
+    )
+    flag_defs = {
+        r["flag"]: {"description": r["description"], "category": r["category"], "is_sensitive": bool(r["is_sensitive"])}
+        for r in await cursor.fetchall()
+    }
     return {
         "requires": FLAG_REQUIRES,
-        "related":  FLAG_RELATED,
-        "flags":    flag_defs,
+        "related": FLAG_RELATED,
+        "flags": flag_defs,
     }
 
 
@@ -269,7 +266,15 @@ async def get_flag_metadata(
 # POST /roles — create a custom role
 # ---------------------------------------------------------------------------
 
-@router.post("", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 409: {"description": "Conflict"}})
+
+@router.post(
+    "",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        409: {"description": "Conflict"},
+    },
+)
 async def create_role(
     body: CreateRoleRequest,
     admin: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -297,9 +302,7 @@ async def create_role(
         raise HTTPException(status_code=400, detail=f"Description must be ≤{_MAX_ROLE_DESC_LEN} characters")
 
     # Verify all specified flags exist
-    all_flags_cursor = await db.execute(
-        "SELECT flag FROM role_permission_flags"
-    )
+    all_flags_cursor = await db.execute("SELECT flag FROM role_permission_flags")
     known_flags = {r["flag"] for r in await all_flags_cursor.fetchall()}
 
     _validate_new_role_flags(known_flags, body.permissions)
@@ -334,19 +337,22 @@ async def create_role(
         )
 
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.role.created",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"role_id": body.id, "flags_set": list(body.permissions.keys())},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.role.created",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"role_id": body.id, "flags_set": list(body.permissions.keys())},
+        )
+    )
     return {"message": "Role created", "role_id": body.id}
 
 
 # ---------------------------------------------------------------------------
 # GET /roles/{role_id}
 # ---------------------------------------------------------------------------
+
 
 @router.get("/{role_id}")
 async def get_role(
@@ -364,6 +370,7 @@ async def get_role(
 # ---------------------------------------------------------------------------
 # PATCH /roles/{role_id} — update name / description
 # ---------------------------------------------------------------------------
+
 
 @router.patch("/{role_id}", responses={400: {"description": "Bad Request"}})
 async def update_role(
@@ -396,19 +403,22 @@ async def update_role(
     params.append(role_id)
     await db.execute(f"UPDATE roles SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.role.updated",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"role_id": role_id, "fields_changed": [u.split(" =")[0] for u in updates]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.role.updated",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"role_id": role_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+        )
+    )
     return {"message": "Role updated"}
 
 
 # ---------------------------------------------------------------------------
 # DELETE /roles/{role_id}
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/{role_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
 async def delete_role(
@@ -429,13 +439,15 @@ async def delete_role(
     # CASCADE on role_permissions and user_roles removes child rows automatically
     await db.execute("DELETE FROM roles WHERE id = ?", (role_id,))
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.role.deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"role_id": role_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.role.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"role_id": role_id},
+        )
+    )
     return {"message": "Role deleted"}
 
 
@@ -460,7 +472,10 @@ def _check_flag_lock_tier(flag: str, row, my_tier: int) -> None:
 # PUT /roles/{role_id}/permissions — replace all flag values for a role
 # ---------------------------------------------------------------------------
 
-@router.put("/{role_id}/permissions", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+
+@router.put(
+    "/{role_id}/permissions", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}}
+)
 async def update_role_permissions(
     role_id: str,
     body: UpdatePermissionsRequest,
@@ -530,11 +545,13 @@ async def update_role_permissions(
         )
 
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.role.permissions_changed",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(admin.id), username=admin.username),
-        detail={"role_id": role_id, "flags_updated": list(body.permissions.keys())},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.role.permissions_changed",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(admin.id), username=admin.username),
+            detail={"role_id": role_id, "flags_updated": list(body.permissions.keys())},
+        )
+    )
     return {"message": "Permissions updated"}

@@ -5,12 +5,14 @@ GET /api/v1/op-events/log     — JSON log polling with cursor pagination
 
 Both endpoints require an API key with the "events.read" scope.
 """
+
 from __future__ import annotations
 
 import asyncio
 import base64
 import json
 import logging
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -19,7 +21,6 @@ from app.auth.api_key import require_api_key
 from app.database import Database, get_db
 from app.services import op_bus
 from app.services.notification_emitter import _matches_filter
-from typing import Annotated
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,6 +31,7 @@ _KEEPALIVE_INTERVAL = 25  # seconds
 # ---------------------------------------------------------------------------
 # SSE stream
 # ---------------------------------------------------------------------------
+
 
 @router.get("/stream")
 async def op_events_stream(
@@ -58,7 +60,7 @@ async def op_events_stream(
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control":    "no-cache",
+            "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
     )
@@ -67,6 +69,7 @@ async def op_events_stream(
 # ---------------------------------------------------------------------------
 # Log poll (cursor-paginated)
 # ---------------------------------------------------------------------------
+
 
 def _encode_cursor(created_at: str, event_id: str) -> str:
     raw = f"{created_at}:{event_id}"
@@ -86,9 +89,9 @@ def _decode_cursor(cursor: str) -> tuple[str, str]:
 async def op_events_log(
     _key: Annotated[dict, Depends(require_api_key)],
     db: Annotated[Database, Depends(get_db)],
-    since:  Annotated[str | None, Query(description="ISO datetime lower bound")] = None,
-    limit:  Annotated[int, Query(ge=1, le=1000)] = 100,
-    types:  Annotated[str | None, Query(description="Comma-separated prefix filter")] = None,
+    since: Annotated[str | None, Query(description="ISO datetime lower bound")] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+    types: Annotated[str | None, Query(description="Comma-separated prefix filter")] = None,
     cursor: Annotated[str | None, Query(description="Opaque pagination cursor")] = None,
 ):
     """Return a page of operational events from the persisted log."""
@@ -127,15 +130,17 @@ async def op_events_log(
             data = json.loads(r["data_json"])
         except Exception:
             data = {}
-        events.append({
-            "event_id":   r["event_id"],
-            "event_type": r["event_type"],
-            "severity":   r["severity"],
-            "source":     r["source"],
-            "data":       data,
-            "server_id":  r["server_id"],
-            "created_at": r["created_at"],
-        })
+        events.append(
+            {
+                "event_id": r["event_id"],
+                "event_type": r["event_type"],
+                "severity": r["severity"],
+                "source": r["source"],
+                "data": data,
+                "server_id": r["server_id"],
+                "created_at": r["created_at"],
+            }
+        )
 
     # Apply type prefix filter in Python (avoids complex SQL)
     if type_filters:

@@ -27,34 +27,32 @@ DELETE /auth/mfa/credentials/{id}              remove own credential (with proof
 import base64
 import io
 import logging
-import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
+from app.auth.cookies import set_auth_cookies
 from app.auth.dependencies import get_current_user
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
 from app.auth.mfa import (
     consume_pending_token,
-    encrypt_credential,
-    list_active_credentials,
     get_active_methods,
-    store_pending_token,
+    list_active_credentials,
 )
-from app.auth.totp import enroll_start, enroll_finish, verify_totp, verify_recovery_code
+from app.auth.stepup import log_security_event
+from app.auth.totp import enroll_finish, enroll_start, verify_recovery_code, verify_totp
 from app.auth.webauthn_helper import (
     begin_authentication,
     begin_registration,
     finish_authentication,
     finish_registration,
 )
-from app.auth.stepup import log_security_event
-from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
 from app.config import settings
 from app.database import Database, get_db
-from app.services import live_settings
 from app.middleware.rate_limit import _get_client_ip
+from app.services import live_settings
 from app.validation.sanitizers import validate_uuid
 
 logger = logging.getLogger(__name__)
@@ -65,15 +63,12 @@ def _make_qr_data_url(data: str) -> str:
     """Return an SVG QR code for *data* as a base64 data URL (no external dependency)."""
     import qrcode
     import qrcode.image.svg as _svg
+
     img = qrcode.make(data, image_factory=_svg.SvgFillImage)
     buf = io.BytesIO()
     img.save(buf)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/svg+xml;base64,{b64}"
-
-# Re-use cookie helpers from auth.py to avoid duplication
-from app.auth.cookies import set_auth_cookies, clear_auth_cookies
-from typing import Annotated
 
 
 _ERR_INVALID_MFA_TOKEN = "Invalid or expired MFA token"
@@ -83,6 +78,7 @@ _ERR_INVALID_CHALLENGE_ID = "challenge_id must be a valid UUID"
 # ---------------------------------------------------------------------------
 # Validators
 # ---------------------------------------------------------------------------
+
 
 def _check_pending_token(v: str) -> str:
     if not v or len(v) > 1024:
@@ -100,6 +96,7 @@ def _check_name(v: str) -> str:
 # ---------------------------------------------------------------------------
 # TOTP enrollment
 # ---------------------------------------------------------------------------
+
 
 class TotpEnrollStartResponse(BaseModel):
     totp_uri: str
@@ -164,7 +161,11 @@ async def totp_enroll_finish(
     client_ip = _get_client_ip(request)
     ua = request.headers.get("user-agent", "")
     await log_security_event(
-        db, "mfa_credential_enrolled", user.id, client_ip, ua,
+        db,
+        "mfa_credential_enrolled",
+        user.id,
+        client_ip,
+        ua,
         username=user.username,
         detail={"method": "totp"},
     )
@@ -174,6 +175,7 @@ async def totp_enroll_finish(
 # ---------------------------------------------------------------------------
 # TOTP verification (post-login MFA challenge)
 # ---------------------------------------------------------------------------
+
 
 class TotpVerifyRequest(BaseModel):
     pending_token: str
@@ -223,6 +225,7 @@ async def totp_verify(
 # WebAuthn registration
 # ---------------------------------------------------------------------------
 
+
 @router.post("/webauthn/register/begin")
 async def webauthn_register_begin(
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -261,15 +264,17 @@ async def webauthn_register_finish(
 ):
     """Complete WebAuthn registration and store the new credential."""
     try:
-        cred_id = await finish_registration(
-            db, user.id, body.challenge_id, body.attestation, body.name
-        )
+        cred_id = await finish_registration(db, user.id, body.challenge_id, body.attestation, body.name)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     client_ip = _get_client_ip(request)
     ua = request.headers.get("user-agent", "")
     await log_security_event(
-        db, "mfa_credential_enrolled", user.id, client_ip, ua,
+        db,
+        "mfa_credential_enrolled",
+        user.id,
+        client_ip,
+        ua,
         username=user.username,
         detail={"method": "webauthn", "credential_id": cred_id},
     )
@@ -279,6 +284,7 @@ async def webauthn_register_finish(
 # ---------------------------------------------------------------------------
 # WebAuthn authentication (post-login MFA challenge)
 # ---------------------------------------------------------------------------
+
 
 class WebAuthnAuthBeginRequest(BaseModel):
     pending_token: str
@@ -296,6 +302,7 @@ async def webauthn_authenticate_begin(
 ):
     """Begin a WebAuthn authentication challenge for a pending-token login."""
     from app.auth.mfa import _decode_pending_token
+
     payload = _decode_pending_token(body.pending_token)
     if payload is None:
         raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
@@ -348,7 +355,11 @@ async def webauthn_authenticate_finish(
         await log_security_event(db, event_type, user_id, client_ip, ua, detail=detail)
 
     ok = await finish_authentication(
-        db, user_id, body.challenge_id, body.assertion, "authentication",
+        db,
+        user_id,
+        body.challenge_id,
+        body.assertion,
+        "authentication",
         emit_security_event=_emit,
     )
     if not ok:
@@ -362,6 +373,7 @@ async def webauthn_authenticate_finish(
 # ---------------------------------------------------------------------------
 # Recovery code verification (post-login)
 # ---------------------------------------------------------------------------
+
 
 class RecoveryVerifyRequest(BaseModel):
     pending_token: str
@@ -411,6 +423,7 @@ async def verify_recovery(
 # Session unlock via WebAuthn (tab still open, grace period expired)
 # ---------------------------------------------------------------------------
 
+
 @router.post("/mfa/unlock/webauthn/begin", responses={400: {"description": "Bad Request"}})
 async def unlock_webauthn_begin(
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -453,7 +466,11 @@ async def unlock_webauthn_finish(
         await log_security_event(db, event_type, user.id, client_ip, ua, username=user.username, detail=detail)
 
     ok = await finish_authentication(
-        db, user.id, body.challenge_id, body.assertion, "unlock",
+        db,
+        user.id,
+        body.challenge_id,
+        body.assertion,
+        "unlock",
         emit_security_event=_emit,
     )
     if not ok:
@@ -467,6 +484,7 @@ async def unlock_webauthn_finish(
 # Credential management (self-service)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/mfa/credentials")
 async def list_credentials(
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -477,7 +495,9 @@ async def list_credentials(
     return {"credentials": credentials}
 
 
-@router.delete("/mfa/credentials/{cred_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/mfa/credentials/{cred_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}}
+)
 async def delete_credential(
     cred_id: str,
     request: Request,
@@ -496,8 +516,7 @@ async def delete_credential(
         raise HTTPException(status_code=400, detail="Invalid credential ID")
 
     cursor = await db.execute(
-        "SELECT id, method FROM user_mfa_credentials "
-        "WHERE id = ? AND user_id = ? AND is_active = 1",
+        "SELECT id, method FROM user_mfa_credentials WHERE id = ? AND user_id = ? AND is_active = 1",
         (cred_id, user.id),
     )
     row = await cursor.fetchone()
@@ -505,6 +524,7 @@ async def delete_credential(
         raise HTTPException(status_code=404, detail="Credential not found")
 
     from app.auth.mfa import load_mfa_settings
+
     mfa_settings = await load_mfa_settings(db)
     enforcement = mfa_settings["mfa_enforcement"]
 
@@ -522,15 +542,17 @@ async def delete_credential(
                 detail="Cannot remove the last MFA credential while enforcement is 'required'.",
             )
 
-    await db.execute(
-        "UPDATE user_mfa_credentials SET is_active = 0 WHERE id = ?", (cred_id,)
-    )
+    await db.execute("UPDATE user_mfa_credentials SET is_active = 0 WHERE id = ?", (cred_id,))
     await db.commit()
 
     client_ip = _get_client_ip(request)
     ua = request.headers.get("user-agent", "")
     await log_security_event(
-        db, "mfa_credential_removed", user.id, client_ip, ua,
+        db,
+        "mfa_credential_removed",
+        user.id,
+        client_ip,
+        ua,
         username=user.username,
         detail={"credential_id": cred_id, "method": row["method"]},
     )
@@ -541,6 +563,7 @@ async def delete_credential(
 # MFA status (for frontend gating / banner)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/mfa/status")
 async def mfa_status(
     user: Annotated[AuthenticatedUser, Depends(get_current_user)],
@@ -548,6 +571,7 @@ async def mfa_status(
 ):
     """Return MFA enrollment status and enforcement policy for the current user."""
     from app.auth.mfa import load_mfa_settings
+
     credentials = await list_active_credentials(db, user.id)
     mfa_settings = await load_mfa_settings(db)
 
@@ -576,9 +600,7 @@ async def dismiss_mfa_banner(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Dismiss the MFA enrollment nudge banner (optional-mode only)."""
-    await db.execute(
-        "UPDATE users SET mfa_banner_dismissed = 1 WHERE id = ?", (user.id,)
-    )
+    await db.execute("UPDATE users SET mfa_banner_dismissed = 1 WHERE id = ?", (user.id,))
     await db.commit()
     return {"message": "Banner dismissed"}
 
@@ -586,6 +608,7 @@ async def dismiss_mfa_banner(
 # ---------------------------------------------------------------------------
 # Pending token info (used by OIDC callback to render correct MFA challenge)
 # ---------------------------------------------------------------------------
+
 
 class PendingInfoRequest(BaseModel):
     pending_token: str
@@ -605,8 +628,9 @@ async def mfa_pending_info(
     Rate-limited by the same token decode/validation; the token is NOT consumed.
     Returns {"methods": [...]} or 400 if the token is invalid/expired.
     """
-    from app.auth.mfa import _decode_pending_token, get_active_methods
     import time
+
+    from app.auth.mfa import _decode_pending_token, get_active_methods
 
     payload = _decode_pending_token(body.pending_token)
     if payload is None:
@@ -633,17 +657,20 @@ async def mfa_pending_info(
 # Shared: issue session cookies after successful MFA
 # ---------------------------------------------------------------------------
 
+
 async def _issue_session(db, response: Response, user_id: str, is_public_device: bool) -> None:
     """Store a refresh token and set session cookies for a post-MFA login."""
     from app.auth.opaque_provider import OPAQUEAuthProvider
+
     provider = OPAQUEAuthProvider(db)
     user = await provider.get_user_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
 
-    from datetime import timedelta
     if is_public_device:
-        rt_expire_minutes = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
+        rt_expire_minutes = live_settings.get_int(
+            "public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+        )
         rt_max_age = rt_expire_minutes * 60
     else:
         rt_expire_minutes = None
@@ -651,7 +678,9 @@ async def _issue_session(db, response: Response, user_id: str, is_public_device:
 
     raw_refresh, rt_hash = create_refresh_token()
     token_id = await store_refresh_token(
-        db, user.id, rt_hash,
+        db,
+        user.id,
+        rt_hash,
         expire_minutes=rt_expire_minutes,
         is_public_device=is_public_device,
     )

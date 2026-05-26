@@ -5,17 +5,17 @@ PASSWORD_MIN_LENGTH = 8
 PASSWORD_MAX_LENGTH = 128
 
 # --- Token generation ---
-REFRESH_TOKEN_BYTES = 48       # secrets.token_urlsafe length
-CSRF_TOKEN_BYTES = 32          # secrets.token_hex length
+REFRESH_TOKEN_BYTES = 48  # secrets.token_urlsafe length
+CSRF_TOKEN_BYTES = 32  # secrets.token_hex length
 
 # --- Share session tokens ---
-SHARE_SESSION_EXPIRE_HOURS = 2   # short-lived IP-bound token for public share access
+SHARE_SESSION_EXPIRE_HOURS = 2  # short-lived IP-bound token for public share access
 
 # --- Cookie names and paths ---
 # __Host- prefix: browser enforces Secure + no Domain + Path=/ — prevents subdomain injection.
 # __Secure- prefix: browser enforces Secure only — used for refresh_token which has a narrow path.
-COOKIE_ACCESS  = "__Host-access_token"
-COOKIE_CSRF    = "__Host-csrf_token"
+COOKIE_ACCESS = "__Host-access_token"
+COOKIE_CSRF = "__Host-csrf_token"
 # __Host- prefix: enforces Secure + no Domain + Path=/ at the browser level — prevents subdomain injection.
 # Path narrowing for the refresh cookie is application-layer only (only /auth/refresh reads it).
 COOKIE_REFRESH = "__Host-refresh_token"

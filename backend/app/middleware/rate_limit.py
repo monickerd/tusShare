@@ -86,12 +86,18 @@ class _SlidingWindowCounter:
 
     async def is_allowed(self, key: str, max_requests: int, window_seconds: int) -> bool:
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             try:
                 result = await r.eval(
-                    _REDIS_SLIDE_SCRIPT, 1, key,
-                    time.time(), window_seconds, max_requests, str(uuid.uuid4()),
+                    _REDIS_SLIDE_SCRIPT,
+                    1,
+                    key,
+                    time.time(),
+                    window_seconds,
+                    max_requests,
+                    str(uuid.uuid4()),
                 )
                 return bool(result)
             except Exception as exc:
@@ -111,10 +117,7 @@ class _SlidingWindowCounter:
         """Clean up stale in-process entries (Redis entries expire automatically)."""
         now = time.monotonic()
         async with self._lock:
-            stale_keys = [
-                k for k, v in self._requests.items()
-                if not v or v[-1] < now - max_age
-            ]
+            stale_keys = [k for k, v in self._requests.items() if not v or v[-1] < now - max_age]
             for k in stale_keys:
                 del self._requests[k]
             if stale_keys:
@@ -153,17 +156,19 @@ class _ErrorRateTracker:
         if threshold <= 0:
             return False
 
-        error_window = live_settings.get_int("rate_limit_error_window",    settings.RATE_LIMIT_ERROR_WINDOW)
+        error_window = live_settings.get_int("rate_limit_error_window", settings.RATE_LIMIT_ERROR_WINDOW)
         esc_duration = live_settings.get_int("rate_limit_escalated_duration", settings.RATE_LIMIT_ESCALATED_DURATION)
 
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             try:
                 result = await r.eval(
                     _REDIS_ESCALATE_SCRIPT,
                     2,
-                    f"errtk:{ip}", f"errtk:esc:{ip}",
+                    f"errtk:{ip}",
+                    f"errtk:esc:{ip}",
                     time.time(),
                     error_window,
                     threshold,
@@ -180,9 +185,7 @@ class _ErrorRateTracker:
         async with self._lock:
             self._errors[ip] = [t for t in self._errors[ip] if t > cutoff]
             self._errors[ip].append(now)
-            already_escalated = (
-                ip in self._escalated_until and self._escalated_until[ip] > now
-            )
+            already_escalated = ip in self._escalated_until and self._escalated_until[ip] > now
             if not already_escalated and len(self._errors[ip]) >= threshold:
                 self._escalated_until[ip] = now + esc_duration
                 return True
@@ -194,6 +197,7 @@ class _ErrorRateTracker:
             return False
 
         from app.redis_client import get_redis
+
         r = get_redis()
         if r is not None:
             try:
@@ -226,6 +230,7 @@ _error_tracker = _ErrorRateTracker()
 async def run_rate_limit_cleanup(interval: float = RATE_LIMIT_CLEANUP_MAX_AGE) -> None:
     """Periodic cleanup task — call from app lifespan. Runs until cancelled."""
     from app.middleware.bandwidth import cleanup as _bandwidth_cleanup
+
     while True:
         await asyncio.sleep(interval)
         await _counter.cleanup()
@@ -256,23 +261,35 @@ def _get_client_ip(request: Request) -> str:
 # hardcoded max, or 5-tuples (prefix, methods, live_key, default, window) where
 # max_requests is read live from live_settings at dispatch time.
 _ROUTE_LIMITS = [
-    ("/api/v1/auth/login",      {"POST"},        "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/me/password", {"POST", "PUT"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/login", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    (
+        "/api/v1/auth/me/password",
+        {"POST", "PUT"},
+        "rate_limit_login",
+        settings.RATE_LIMIT_LOGIN,
+        RATE_LIMIT_LOGIN_WINDOW,
+    ),
     # Registration via invite — same limit as login to prevent invite brute-force
-    ("/api/v1/auth/register",   {"POST"},        "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/register", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     # OPAQUE login and registration — same limits as above
-    ("/api/v1/auth/opaque/login/",    {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/login/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
     ("/api/v1/auth/opaque/register/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/step-up/",  {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/migrate/",         {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/recover/",         {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
-    ("/api/v1/auth/opaque/password-change/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/step-up/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/migrate/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    ("/api/v1/auth/opaque/recover/", {"POST"}, "rate_limit_login", settings.RATE_LIMIT_LOGIN, RATE_LIMIT_LOGIN_WINDOW),
+    (
+        "/api/v1/auth/opaque/password-change/",
+        {"POST"},
+        "rate_limit_login",
+        settings.RATE_LIMIT_LOGIN,
+        RATE_LIMIT_LOGIN_WINDOW,
+    ),
     # Invite validation — tighter window to slow token enumeration
-    ("/api/v1/auth/invite/",    {"GET"},   20, 60),
+    ("/api/v1/auth/invite/", {"GET"}, 20, 60),
     # Public share resolution — keyed by IP to slow token enumeration
-    ("/s/",                     {"GET"},   60, 60),
+    ("/s/", {"GET"}, 60, 60),
     # Share uploads — prevent disk-exhaustion DoS from a single IP
-    ("/s/",                     {"POST"},  10, 60),
+    ("/s/", {"POST"}, 10, 60),
     # Bootstrap status — rate-limit to reduce first-run oracle exposure
     ("/api/v1/auth/opaque/bootstrap/", {"GET"}, 10, 60),
 ]
@@ -290,13 +307,15 @@ async def _check_route_limits(request: Request, client_ip: str, path: str) -> JS
             key = f"rate:{prefix}:{client_ip}"
             if not await _counter.is_allowed(key, max_req, window):
                 logger.warning("Rate limited: %s on %s (ip=%s)", request.method, path, client_ip)
-                event_bus.emit(SecurityEvent(
-                    event_type="auth.rate_limited",
-                    severity="warning",
-                    outcome="failure",
-                    actor=EventActor(ip=client_ip),
-                    detail={"path": path, "method": request.method, "reason": "route_limit"},
-                ))
+                event_bus.emit(
+                    SecurityEvent(
+                        event_type="auth.rate_limited",
+                        severity="warning",
+                        outcome="failure",
+                        actor=EventActor(ip=client_ip),
+                        detail={"path": path, "method": request.method, "reason": "route_limit"},
+                    )
+                )
                 return JSONResponse(
                     status_code=429,
                     content={"error": {"code": "RATE_LIMITED", "message": _TOO_MANY_REQUESTS_MSG}},
@@ -313,20 +332,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         # Escalated throttle check: IPs that recently exceeded the error threshold
         # are throttled to ESCALATED_MAX requests per ESCALATED_WINDOW seconds.
         if await _error_tracker.is_escalated(client_ip):
-            esc_max    = live_settings.get_int("rate_limit_escalated_max",    settings.RATE_LIMIT_ESCALATED_MAX)
+            esc_max = live_settings.get_int("rate_limit_escalated_max", settings.RATE_LIMIT_ESCALATED_MAX)
             esc_window = live_settings.get_int("rate_limit_escalated_window", settings.RATE_LIMIT_ESCALATED_WINDOW)
             if not await _counter.is_allowed(f"esc:{client_ip}", esc_max, esc_window):
                 logger.warning(
                     "Escalated rate limit enforced: ip=%s on %s %s",
-                    client_ip, request.method, path,
+                    client_ip,
+                    request.method,
+                    path,
                 )
-                event_bus.emit(SecurityEvent(
-                    event_type="auth.rate_limited",
-                    severity="warning",
-                    outcome="failure",
-                    actor=EventActor(ip=client_ip),
-                    detail={"path": path, "method": request.method, "reason": "escalated"},
-                ))
+                event_bus.emit(
+                    SecurityEvent(
+                        event_type="auth.rate_limited",
+                        severity="warning",
+                        outcome="failure",
+                        actor=EventActor(ip=client_ip),
+                        detail={"path": path, "method": request.method, "reason": "escalated"},
+                    )
+                )
                 return JSONResponse(
                     status_code=429,
                     content={"error": {"code": "RATE_LIMITED", "message": _TOO_MANY_REQUESTS_MSG}},
@@ -345,24 +368,29 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             escalated = await _error_tracker.record_error(client_ip)
             if escalated:
                 logger.warning(
-                    "IP escalated to aggressive rate limiting: ip=%s "
-                    "(>= %d errors in %ds window)",
+                    "IP escalated to aggressive rate limiting: ip=%s (>= %d errors in %ds window)",
                     client_ip,
                     settings.RATE_LIMIT_ERROR_THRESHOLD,
                     settings.RATE_LIMIT_ERROR_WINDOW,
                 )
-                event_bus.emit(SecurityEvent(
-                    event_type="auth.rate_limit_escalated",
-                    severity="critical",
-                    outcome="failure",
-                    actor=EventActor(ip=client_ip),
-                    detail={
-                        "path": path,
-                        "method": request.method,
-                        "threshold": live_settings.get_int("rate_limit_error_threshold", settings.RATE_LIMIT_ERROR_THRESHOLD),
-                        "window_seconds": live_settings.get_int("rate_limit_error_window", settings.RATE_LIMIT_ERROR_WINDOW),
-                    },
-                ))
+                event_bus.emit(
+                    SecurityEvent(
+                        event_type="auth.rate_limit_escalated",
+                        severity="critical",
+                        outcome="failure",
+                        actor=EventActor(ip=client_ip),
+                        detail={
+                            "path": path,
+                            "method": request.method,
+                            "threshold": live_settings.get_int(
+                                "rate_limit_error_threshold", settings.RATE_LIMIT_ERROR_THRESHOLD
+                            ),
+                            "window_seconds": live_settings.get_int(
+                                "rate_limit_error_window", settings.RATE_LIMIT_ERROR_WINDOW
+                            ),
+                        },
+                    )
+                )
 
         return response
 

@@ -34,19 +34,17 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import HTTPException
 
 from app.models.role import (
-    FLAG_SHARES_LINK_CREATE,
-    FLAG_SHARES_USER_CREATE,
-    FLAG_SHARES_UPLOAD_GRANT_CREATE,
     FLAG_SHARES_FOLDER_CREATE,
+    FLAG_SHARES_LINK_CREATE,
+    FLAG_SHARES_UPLOAD_GRANT_CREATE,
+    FLAG_SHARES_USER_CREATE,
 )
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 
 logger = logging.getLogger(__name__)
 
-_VALID_INTERNAL_COLS: frozenset[str] = frozenset(
-    {"username", "email", "display_name", "created_at"}
-)
+_VALID_INTERNAL_COLS: frozenset[str] = frozenset({"username", "email", "display_name", "created_at"})
 _CROSS_OPERATORS: frozenset[str] = frozenset({"cross_eq", "cross_neq"})
 
 # Thread pool for regex evaluation with timeout (prevents ReDoS blocking the event loop)
@@ -56,6 +54,7 @@ _regex_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="re-eval")
 # ---------------------------------------------------------------------------
 # Layer 1 — behavioral flag check (synchronous)
 # ---------------------------------------------------------------------------
+
 
 def check_sharing_flags(
     actor,
@@ -95,10 +94,9 @@ def check_sharing_flags(
 # Layer 2 — identity-scoped rule evaluation (async)
 # ---------------------------------------------------------------------------
 
+
 async def _resolve_ldap_oidc_attribute(db, user_id: str, source: str, attr_name: str):
-    cursor = await db.execute(
-        "SELECT oidc_claims_cache, auth_method FROM users WHERE id = ?", (user_id,)
-    )
+    cursor = await db.execute("SELECT oidc_claims_cache, auth_method FROM users WHERE id = ?", (user_id,))
     row = await cursor.fetchone()
     if not row or not row["oidc_claims_cache"]:
         return None
@@ -121,9 +119,7 @@ async def _resolve_attribute(db, user_id: str, attribute_path: str):
     if source == "internal":
         if attr_name not in _VALID_INTERNAL_COLS:
             return None
-        cursor = await db.execute(
-            f"SELECT {attr_name} FROM users WHERE id = ?", (user_id,)
-        )
+        cursor = await db.execute(f"SELECT {attr_name} FROM users WHERE id = ?", (user_id,))
         row = await cursor.fetchone()
         if row is None or row[attr_name] is None:
             return None
@@ -178,7 +174,7 @@ async def _match_scalar(resolved, operator: str, value: str | None, timeout_ms: 
     if operator == "not_in":
         return not _value_in_list(resolved, str(value))
     if operator == "matches_re":
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             future = loop.run_in_executor(_regex_pool, _run_regex, str(value), s)
             return await asyncio.wait_for(future, timeout=timeout_ms / 1000.0)
@@ -241,18 +237,14 @@ async def _conditions_all_match(
     timeout_ms: int,
 ) -> bool:
     for cond in conditions:
-        matched = await _evaluate_condition(
-            db, dict(cond), subject, actor_id, recipient_id, timeout_ms
-        )
+        matched = await _evaluate_condition(db, dict(cond), subject, actor_id, recipient_id, timeout_ms)
         if not matched:
             return False
     return True
 
 
 async def _get_timeout_ms(db) -> int:
-    cursor = await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'regex_match_timeout_ms'"
-    )
+    cursor = await db.execute("SELECT value FROM admin_settings WHERE key = 'regex_match_timeout_ms'")
     row = await cursor.fetchone()
     try:
         return int(row["value"]) if row and row["value"] else 500
@@ -272,9 +264,7 @@ async def evaluate_sharing_rules(
     Raises HTTPException(403) if a deny rule fires, returns silently otherwise.
     Called after flag check, before the DB transaction in POST /shares.
     """
-    count_cursor = await db.execute(
-        "SELECT COUNT(*) FROM sharing_rules WHERE is_active = TRUE"
-    )
+    count_cursor = await db.execute("SELECT COUNT(*) FROM sharing_rules WHERE is_active = TRUE")
     count_row = await count_cursor.fetchone()
     if not count_row or count_row[0] == 0:
         return
@@ -311,20 +301,21 @@ async def evaluate_sharing_rules(
 
         # Rule fires
         if rule["effect"] == "deny":
-            event_bus.emit(SecurityEvent(
-                event_type="share.blocked",
-                severity="info",
-                outcome="failure",
-                actor=EventActor(user_id=actor.id, username=actor.username, ip=actor_ip),
-                target=EventTarget(type="user", id=recipient_id or "", name=None)
-                if recipient_id else None,
-                detail={
-                    "block_reason": "rule",
-                    "rule_id": rule["id"],
-                    "rule_name": rule["name"],
-                    "share_type": share_type,
-                },
-            ))
+            event_bus.emit(
+                SecurityEvent(
+                    event_type="share.blocked",
+                    severity="info",
+                    outcome="failure",
+                    actor=EventActor(user_id=actor.id, username=actor.username, ip=actor_ip),
+                    target=EventTarget(type="user", id=recipient_id or "", name=None) if recipient_id else None,
+                    detail={
+                        "block_reason": "rule",
+                        "rule_id": rule["id"],
+                        "rule_name": rule["name"],
+                        "share_type": share_type,
+                    },
+                )
+            )
             raise HTTPException(
                 status_code=403,
                 detail=f"Share blocked by policy: {rule['name']}",
@@ -373,14 +364,14 @@ async def simulate_sharing_rules(
         matched_conditions = []
         all_match = True
         for cond in conditions:
-            m = await _evaluate_condition(
-                db, dict(cond), subject, sender_id, recipient_id, timeout_ms
+            m = await _evaluate_condition(db, dict(cond), subject, sender_id, recipient_id, timeout_ms)
+            matched_conditions.append(
+                {
+                    "attribute_path": cond["attribute_path"],
+                    "operator": cond["operator"],
+                    "matched": m,
+                }
             )
-            matched_conditions.append({
-                "attribute_path": cond["attribute_path"],
-                "operator": cond["operator"],
-                "matched": m,
-            })
             if not m:
                 all_match = False
                 break
@@ -388,13 +379,15 @@ async def simulate_sharing_rules(
         if not all_match:
             continue
 
-        results.append({
-            "rule_id": rule["id"],
-            "rule_name": rule["name"],
-            "priority": rule["priority"],
-            "effect": rule["effect"],
-            "matched_conditions": matched_conditions,
-        })
+        results.append(
+            {
+                "rule_id": rule["id"],
+                "rule_name": rule["name"],
+                "priority": rule["priority"],
+                "effect": rule["effect"],
+                "matched_conditions": matched_conditions,
+            }
+        )
 
         if rule["effect"] == "allow":
             break  # first-match-wins

@@ -1,5 +1,7 @@
 """Access log viewing routes."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.dependencies import get_current_user
@@ -8,7 +10,6 @@ from app.database import Database, get_db
 from app.models.access_log import AccessLog
 from app.validation.sanitizers import validate_uuid
 from app.validation.validators import validate_pagination
-from typing import Annotated
 
 router = APIRouter()
 
@@ -26,26 +27,22 @@ async def get_file_access_logs(
     pagination = validate_pagination(page, limit)
 
     # Verify ownership or admin
-    cursor = await db.execute(
-        "SELECT owner_id FROM files WHERE id = ?", (file_id,)
-    )
+    cursor = await db.execute("SELECT owner_id FROM files WHERE id = ?", (file_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="File not found")
     from app.models.role import FLAG_FILES_ACCESS_ALL_READ
+
     if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_READ):
         raise HTTPException(status_code=403, detail="Access denied")
 
     cursor = await db.execute(
-        "SELECT * FROM access_logs WHERE file_id = ? ORDER BY timestamp DESC "
-        "LIMIT ? OFFSET ?",
+        "SELECT * FROM access_logs WHERE file_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
         (file_id, pagination.limit, pagination.offset),
     )
     logs = [AccessLog.from_row(r).to_dict() for r in await cursor.fetchall()]
 
-    count_cursor = await db.execute(
-        "SELECT COUNT(*) FROM access_logs WHERE file_id = ?", (file_id,)
-    )
+    count_cursor = await db.execute("SELECT COUNT(*) FROM access_logs WHERE file_id = ?", (file_id,))
     total = (await count_cursor.fetchone())[0]
 
     return {"logs": logs, "total": total, "page": pagination.page, "limit": pagination.limit}
@@ -64,26 +61,22 @@ async def get_share_access_logs(
     pagination = validate_pagination(page, limit)
 
     # Verify share ownership or admin (FLAG_FILES_ACCESS_ALL_READ, consistent with file log check)
-    cursor = await db.execute(
-        "SELECT created_by FROM shares WHERE id = ?", (share_id,)
-    )
+    cursor = await db.execute("SELECT created_by FROM shares WHERE id = ?", (share_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Share not found")
     from app.models.role import FLAG_FILES_ACCESS_ALL_READ
+
     if row["created_by"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_READ):
         raise HTTPException(status_code=403, detail="Access denied")
 
     cursor = await db.execute(
-        "SELECT * FROM access_logs WHERE share_id = ? ORDER BY timestamp DESC "
-        "LIMIT ? OFFSET ?",
+        "SELECT * FROM access_logs WHERE share_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
         (share_id, pagination.limit, pagination.offset),
     )
     logs = [AccessLog.from_row(r).to_dict() for r in await cursor.fetchall()]
 
-    count_cursor = await db.execute(
-        "SELECT COUNT(*) FROM access_logs WHERE share_id = ?", (share_id,)
-    )
+    count_cursor = await db.execute("SELECT COUNT(*) FROM access_logs WHERE share_id = ?", (share_id,))
     total = (await count_cursor.fetchone())[0]
 
     return {"logs": logs, "total": total, "page": pagination.page, "limit": pagination.limit}

@@ -59,6 +59,7 @@ _CHALLENGE_TTL = 300  # 5 minutes
 # Challenge management
 # ---------------------------------------------------------------------------
 
+
 async def _create_challenge(db, user_id: str, purpose: str) -> tuple[str, bytes]:
     """Create and store a WebAuthn challenge row. Returns (challenge_id, challenge_bytes)."""
     challenge_id = str(uuid.uuid4())
@@ -67,8 +68,7 @@ async def _create_challenge(db, user_id: str, purpose: str) -> tuple[str, bytes]
     now = int(time.time())
 
     await db.execute(
-        "INSERT INTO webauthn_challenges (id, user_id, purpose, challenge, created_at) "
-        "VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO webauthn_challenges (id, user_id, purpose, challenge, created_at) VALUES (?, ?, ?, ?, ?)",
         (challenge_id, user_id, purpose, challenge_b64, now),
     )
     await db.commit()
@@ -96,6 +96,7 @@ async def _consume_challenge(db, challenge_id: str, user_id: str, purpose: str) 
 # Registration
 # ---------------------------------------------------------------------------
 
+
 async def begin_registration(db, user_id: str) -> tuple[str, dict]:
     """Generate a WebAuthn registration challenge.
 
@@ -110,8 +111,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
 
     # Collect existing credential IDs to exclude from new registration
     cursor = await db.execute(
-        "SELECT credential FROM user_mfa_credentials "
-        "WHERE user_id = ? AND method = 'webauthn' AND is_active = 1",
+        "SELECT credential FROM user_mfa_credentials WHERE user_id = ? AND method = 'webauthn' AND is_active = 1",
         (user_id,),
     )
     cred_rows = await cursor.fetchall()
@@ -119,9 +119,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
     for cr in cred_rows:
         try:
             payload = decrypt_credential(cr["credential"])
-            exclude_ids.append(
-                PublicKeyCredentialDescriptor(id=base64url_to_bytes(payload["credential_id"]))
-            )
+            exclude_ids.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(payload["credential_id"])))
         except Exception:
             pass
 
@@ -145,9 +143,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
     return challenge_id, options_dict
 
 
-async def finish_registration(
-    db, user_id: str, challenge_id: str, attestation_dict: dict, name: str
-) -> str:
+async def finish_registration(db, user_id: str, challenge_id: str, attestation_dict: dict, name: str) -> str:
     """Verify a WebAuthn registration response and store the credential.
 
     Returns the new credential row ID.
@@ -199,6 +195,7 @@ async def finish_registration(
 # Authentication
 # ---------------------------------------------------------------------------
 
+
 async def begin_authentication(db, user_id: str, purpose: str) -> tuple[str, dict]:
     """Generate a WebAuthn authentication challenge.
 
@@ -206,8 +203,7 @@ async def begin_authentication(db, user_id: str, purpose: str) -> tuple[str, dic
     purpose must be one of: 'authentication', 'step_up', 'unlock'.
     """
     cursor = await db.execute(
-        "SELECT credential FROM user_mfa_credentials "
-        "WHERE user_id = ? AND method = 'webauthn' AND is_active = 1",
+        "SELECT credential FROM user_mfa_credentials WHERE user_id = ? AND method = 'webauthn' AND is_active = 1",
         (user_id,),
     )
     cred_rows = await cursor.fetchall()
@@ -270,8 +266,7 @@ async def finish_authentication(
     asserted_cred_id_bytes = base64url_to_bytes(raw_cred_id)
 
     cursor = await db.execute(
-        "SELECT id, credential FROM user_mfa_credentials "
-        "WHERE user_id = ? AND method = 'webauthn' AND is_active = 1",
+        "SELECT id, credential FROM user_mfa_credentials WHERE user_id = ? AND method = 'webauthn' AND is_active = 1",
         (user_id,),
     )
     cred_rows = await cursor.fetchall()
@@ -316,9 +311,10 @@ async def finish_authentication(
     # Sign-count anomaly detection
     if new_sign_count > 0 and sign_count_before > 0 and new_sign_count <= sign_count_before:
         logger.warning(
-            "WebAuthn sign_count anomaly for user %s: stored=%d asserted=%d "
-            "(possible credential clone)",
-            user_id, sign_count_before, new_sign_count,
+            "WebAuthn sign_count anomaly for user %s: stored=%d asserted=%d (possible credential clone)",
+            user_id,
+            sign_count_before,
+            new_sign_count,
         )
         if emit_security_event:
             await emit_security_event(

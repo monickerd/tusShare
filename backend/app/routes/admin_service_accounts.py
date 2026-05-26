@@ -12,6 +12,7 @@ POST   /admin/service-accounts/{id}/rotate-key  replace key, return new one  [st
 All mutations require FLAG_SERVICE_ACCOUNTS_MANAGE.  Step-up action key:
   admin.service_accounts.*
 """
+
 from __future__ import annotations
 
 import base64
@@ -35,7 +36,6 @@ from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
 
-
 _ERR_PERM_SERVICE_ACCOUNTS = "Service account management permission required"
 _ERR_SERVICE_ACCOUNT_NOT_FOUND = "Service account not found"
 
@@ -50,6 +50,7 @@ _KEY_ENTROPY_BYTES = 24  # 24 bytes → 32 url-safe base64 chars
 # ---------------------------------------------------------------------------
 # Key helpers
 # ---------------------------------------------------------------------------
+
 
 def _generate_raw_key() -> str:
     return _KEY_PREFIX + base64.urlsafe_b64encode(secrets.token_bytes(_KEY_ENTROPY_BYTES)).rstrip(b"=").decode()
@@ -68,10 +69,10 @@ def _key_prefix_display(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
 
 def _validate_expires_at(v: Optional[str]) -> Optional[str]:
     """Accept None/empty (no expiry), or a future ISO-8601 timestamp."""
@@ -133,25 +134,27 @@ class UpdateServiceAccountRequest(BaseModel):
 # Response helpers
 # ---------------------------------------------------------------------------
 
+
 def _sa_row_to_dict(row, key_row=None) -> dict:
     d = {
-        "id":          row["id"],
-        "username":    row["username"],
+        "id": row["id"],
+        "username": row["username"],
         "description": row["description"],
-        "is_active":   bool(row["is_active"]),
-        "created_at":  row["created_at"],
+        "is_active": bool(row["is_active"]),
+        "created_at": row["created_at"],
     }
     if key_row is not None:
-        d["key_prefix"]   = key_row["key_prefix"]
+        d["key_prefix"] = key_row["key_prefix"]
         d["key_created_at"] = key_row["created_at"]
         d["key_expires_at"] = key_row["expires_at"]
-        d["last_used_at"]   = key_row["last_used_at"]
+        d["last_used_at"] = key_row["last_used_at"]
     return d
 
 
 # ---------------------------------------------------------------------------
 # GET /service-accounts
 # ---------------------------------------------------------------------------
+
 
 @router.get("/service-accounts")
 async def list_service_accounts(
@@ -172,25 +175,28 @@ async def list_service_accounts(
         """
     )
     rows = await cursor.fetchall()
-    return {"service_accounts": [
-        {
-            "id":             r["id"],
-            "username":       r["username"],
-            "description":    r["description"],
-            "is_active":      bool(r["is_active"]),
-            "created_at":     r["created_at"],
-            "key_prefix":     r["key_prefix"],
-            "key_created_at": r["key_created_at"],
-            "key_expires_at": r["expires_at"],
-            "last_used_at":   r["last_used_at"],
-        }
-        for r in rows
-    ]}
+    return {
+        "service_accounts": [
+            {
+                "id": r["id"],
+                "username": r["username"],
+                "description": r["description"],
+                "is_active": bool(r["is_active"]),
+                "created_at": r["created_at"],
+                "key_prefix": r["key_prefix"],
+                "key_created_at": r["key_created_at"],
+                "key_expires_at": r["expires_at"],
+                "last_used_at": r["last_used_at"],
+            }
+            for r in rows
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
 # POST /service-accounts  [step-up]
 # ---------------------------------------------------------------------------
+
 
 @router.post("/service-accounts", responses={409: {"description": "Conflict"}})
 async def create_service_account(
@@ -201,12 +207,12 @@ async def create_service_account(
 ):
     require_flag(admin, FLAG_SERVICE_ACCOUNTS_MANAGE, _ERR_PERM_SERVICE_ACCOUNTS)
 
-    sa_id  = str(uuid.uuid4())
+    sa_id = str(uuid.uuid4())
     raw_key = _generate_raw_key()
-    key_hash   = _hash_key(raw_key)
+    key_hash = _hash_key(raw_key)
     key_prefix = _key_prefix_display(raw_key)
-    key_id     = str(uuid.uuid4())
-    now        = datetime.now(timezone.utc).isoformat()
+    key_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
 
     # Insert users row — no OPAQUE record, no KEK, no MFA.
     # Policy hooks are intentionally NOT called here (service accounts are
@@ -235,26 +241,31 @@ async def create_service_account(
     )
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.service_account.created",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
-        target=EventTarget(object_id=sa_id, type="service_account"),
-        detail={"username": body.username},
-    ))
-    logger.info("Service account '%s' created by %s", body.username, admin.username)  # NOSONAR — server-side audit log; values are Pydantic-validated
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.service_account.created",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username),
+            target=EventTarget(object_id=sa_id, type="service_account"),
+            detail={"username": body.username},
+        )
+    )
+    logger.info(
+        "Service account '%s' created by %s", body.username, admin.username
+    )  # NOSONAR — server-side audit log; values are Pydantic-validated
 
     return {
-        "id":       sa_id,
+        "id": sa_id,
         "username": body.username,
-        "key":      raw_key,   # shown exactly once
+        "key": raw_key,  # shown exactly once
     }
 
 
 # ---------------------------------------------------------------------------
 # GET /service-accounts/{id}
 # ---------------------------------------------------------------------------
+
 
 @router.get("/service-accounts/{sa_id}", responses={404: {"description": "Not Found"}})
 async def get_service_account(
@@ -286,27 +297,27 @@ async def get_service_account(
         (sa_id,),
     )
     roles = [
-        {"role_id": r["role_id"], "scope_type": r["scope_type"], "scope_id": r["scope_id"]}
-        for r in await rc.fetchall()
+        {"role_id": r["role_id"], "scope_type": r["scope_type"], "scope_id": r["scope_id"]} for r in await rc.fetchall()
     ]
 
     return {
-        "id":             row["id"],
-        "username":       row["username"],
-        "description":    row["description"],
-        "is_active":      bool(row["is_active"]),
-        "created_at":     row["created_at"],
-        "key_prefix":     row["key_prefix"],
+        "id": row["id"],
+        "username": row["username"],
+        "description": row["description"],
+        "is_active": bool(row["is_active"]),
+        "created_at": row["created_at"],
+        "key_prefix": row["key_prefix"],
         "key_created_at": row["key_created_at"],
         "key_expires_at": row["expires_at"],
-        "last_used_at":   row["last_used_at"],
-        "roles":          roles,
+        "last_used_at": row["last_used_at"],
+        "roles": roles,
     }
 
 
 # ---------------------------------------------------------------------------
 # PATCH /service-accounts/{id}  [step-up]
 # ---------------------------------------------------------------------------
+
 
 @router.patch("/service-accounts/{sa_id}", responses={404: {"description": "Not Found"}})
 async def update_service_account(
@@ -358,14 +369,16 @@ async def update_service_account(
     severity = "warning" if body.is_active is False else "info"
     event_type = "admin.service_account.deactivated" if body.is_active is False else "admin.service_account.updated"
 
-    event_bus.emit(SecurityEvent(
-        event_type=event_type,
-        severity=severity,
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
-        target=EventTarget(object_id=sa_id, type="service_account"),
-        detail={"username": row["username"], "changes": list(changed.keys())},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type=event_type,
+            severity=severity,
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username),
+            target=EventTarget(object_id=sa_id, type="service_account"),
+            detail={"username": row["username"], "changes": list(changed.keys())},
+        )
+    )
 
     return {"id": sa_id, "updated": True}
 
@@ -373,6 +386,7 @@ async def update_service_account(
 # ---------------------------------------------------------------------------
 # DELETE /service-accounts/{id}  [step-up]
 # ---------------------------------------------------------------------------
+
 
 @router.delete("/service-accounts/{sa_id}", responses={404: {"description": "Not Found"}})
 async def delete_service_account(
@@ -396,14 +410,16 @@ async def delete_service_account(
     await db.execute("DELETE FROM users WHERE id = ?", (sa_id,))
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.service_account.deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
-        target=EventTarget(object_id=sa_id, type="service_account"),
-        detail={"username": row["username"]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.service_account.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username),
+            target=EventTarget(object_id=sa_id, type="service_account"),
+            detail={"username": row["username"]},
+        )
+    )
     logger.warning("Service account '%s' deleted by %s", row["username"], admin.username)
 
     return {"deleted": True}
@@ -412,6 +428,7 @@ async def delete_service_account(
 # ---------------------------------------------------------------------------
 # POST /service-accounts/{id}/rotate-key  [step-up]
 # ---------------------------------------------------------------------------
+
 
 @router.post("/service-accounts/{sa_id}/rotate-key", responses={404: {"description": "Not Found"}})
 async def rotate_service_account_key(
@@ -431,11 +448,11 @@ async def rotate_service_account_key(
     if row is None:
         raise HTTPException(status_code=404, detail=_ERR_SERVICE_ACCOUNT_NOT_FOUND)
 
-    raw_key    = _generate_raw_key()
-    key_hash   = _hash_key(raw_key)
+    raw_key = _generate_raw_key()
+    key_hash = _hash_key(raw_key)
     key_prefix = _key_prefix_display(raw_key)
-    key_id     = str(uuid.uuid4())
-    now        = datetime.now(timezone.utc).isoformat()
+    key_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
 
     # Delete the old key row (CASCADE would also handle account deletion but
     # here we're replacing, not deleting the account)
@@ -453,17 +470,19 @@ async def rotate_service_account_key(
     )
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.service_account.key_rotated",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
-        target=EventTarget(object_id=sa_id, type="service_account"),
-        detail={"username": row["username"]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.service_account.key_rotated",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username),
+            target=EventTarget(object_id=sa_id, type="service_account"),
+            detail={"username": row["username"]},
+        )
+    )
     logger.warning("Service account '%s' key rotated by %s", row["username"], admin.username)
 
     return {
-        "id":  sa_id,
+        "id": sa_id,
         "key": raw_key,  # shown exactly once
     }

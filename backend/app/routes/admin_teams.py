@@ -74,14 +74,14 @@ async def list_all_teams(
     return {
         "teams": [
             {
-                "id":               r["id"],
-                "name":             r["name"],
-                "description":      r["description"],
+                "id": r["id"],
+                "name": r["name"],
+                "description": r["description"],
                 "rotation_pending": bool(r["rotation_pending"]),
-                "created_at":       r["created_at"],
-                "owner_id":         r["owner_id"],
-                "owner_username":   r["owner_username"],
-                "member_count":     r["member_count"],
+                "created_at": r["created_at"],
+                "owner_id": r["owner_id"],
+                "owner_username": r["owner_username"],
+                "member_count": r["member_count"],
             }
             for r in rows
         ]
@@ -133,26 +133,26 @@ async def get_team_detail(
     )
     members = [
         {
-            "id":            m["id"],
-            "username":      m["username"],
-            "is_active":     bool(m["is_active"]),
+            "id": m["id"],
+            "username": m["username"],
+            "is_active": bool(m["is_active"]),
             "key_confirmed": bool(m["key_confirmed"]),
-            "joined_at":     m["joined_at"],
-            "role_id":       m["role_id"],
-            "role_name":     m["role_name"],
+            "joined_at": m["joined_at"],
+            "role_id": m["role_id"],
+            "role_name": m["role_name"],
         }
         for m in await cursor2.fetchall()
     ]
 
     return {
         "team": {
-            "id":               team_row["id"],
-            "name":             team_row["name"],
-            "description":      team_row["description"],
+            "id": team_row["id"],
+            "name": team_row["name"],
+            "description": team_row["description"],
             "rotation_pending": bool(team_row["rotation_pending"]),
-            "created_at":       team_row["created_at"],
-            "owner_id":         team_row["owner_id"],
-            "owner_username":   team_row["owner_username"],
+            "created_at": team_row["created_at"],
+            "owner_id": team_row["owner_id"],
+            "owner_username": team_row["owner_username"],
         },
         "members": members,
     }
@@ -178,7 +178,16 @@ async def admin_delete_team(
     return {"deleted": True, "name": row["name"]}
 
 
-@router.delete("/teams/{team_id}/members/{user_id}", status_code=204, responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}})
+@router.delete(
+    "/teams/{team_id}/members/{user_id}",
+    status_code=204,
+    responses={
+        400: {"description": "Bad Request"},
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+        422: {"description": "Unprocessable Entity"},
+    },
+)
 async def admin_remove_team_member(
     team_id: str,
     user_id: str,
@@ -237,7 +246,10 @@ async def admin_remove_team_member(
     await db.commit()
 
 
-@router.get("/teams/{team_id}/folder-role-levels", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+@router.get(
+    "/teams/{team_id}/folder-role-levels",
+    responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}},
+)
 async def get_team_folder_role_levels(
     team_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -272,7 +284,10 @@ async def get_team_folder_role_levels(
     return {"team_id": team_id, "levels": levels}
 
 
-@router.put("/teams/{team_id}/folder-role-levels", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+@router.put(
+    "/teams/{team_id}/folder-role-levels",
+    responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}},
+)
 async def set_team_folder_role_levels(
     team_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -298,6 +313,7 @@ async def set_team_folder_role_levels(
         raise HTTPException(status_code=400, detail="levels must be an object")
 
     from app.conf.teams import VALID_TEAM_ROLES
+
     valid_levels = {"admin", "write", "read", "none"}
 
     for role_id, level in levels.items():

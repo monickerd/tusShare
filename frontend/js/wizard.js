@@ -560,7 +560,7 @@ const Wizard = (() => {
         if (_state.advancedValues) _adv = { ..._state.advancedValues };
 
         let _importWarnings = [];
-        let _advInputs = {};
+        const _advInputs = {};
 
         function _buildToggle(label, key, hint) {
             const r = Utils.el('div', { style: 'display:flex;align-items:flex-start;gap:10px;margin-bottom:10px' });

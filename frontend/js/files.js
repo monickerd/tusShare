@@ -2705,7 +2705,7 @@ const Files = (() => {
         let _stopped       = false;
         let _deleteOnAbort = true;   // false when stopped by logout (leave partial for resume)
         let _uploadId      = null;
-        let _resumeResolvers = [];
+        const _resumeResolvers = [];
 
         const ctrl = {
             get uploadId() { return _uploadId; },

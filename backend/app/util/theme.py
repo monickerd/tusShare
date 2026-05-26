@@ -40,72 +40,76 @@ logger = logging.getLogger(__name__)
 # theme.json.  Split into two sets: color vars (strict color syntax) and shadow
 # vars (box-shadow syntax).  Restricting to these whitelists prevents arbitrary
 # CSS injection.
-_ALLOWED_COLOR_VARS: frozenset[str] = frozenset({
-    "--color-bg",
-    "--color-surface",
-    "--color-surface-hover",
-    "--color-surface-active",
-    "--color-border",
-    "--color-border-light",
-    "--color-text",
-    "--color-text-muted",
-    "--color-text-inverse",
-    "--color-primary",
-    "--color-primary-hover",
-    "--color-primary-muted",
-    "--color-danger",
-    "--color-danger-hover",
-    "--color-danger-muted",
-    "--color-success",
-    "--color-success-hover",
-    "--color-success-muted",
-    "--color-warning",
-    "--color-warning-hover",
-    "--color-warning-muted",
-    "--color-info",
-    "--color-info-muted",
-    "--color-overlay",
-    "--color-scrollbar-track",
-    "--color-scrollbar-thumb",
-    "--color-scrollbar-hover",
-})
+_ALLOWED_COLOR_VARS: frozenset[str] = frozenset(
+    {
+        "--color-bg",
+        "--color-surface",
+        "--color-surface-hover",
+        "--color-surface-active",
+        "--color-border",
+        "--color-border-light",
+        "--color-text",
+        "--color-text-muted",
+        "--color-text-inverse",
+        "--color-primary",
+        "--color-primary-hover",
+        "--color-primary-muted",
+        "--color-danger",
+        "--color-danger-hover",
+        "--color-danger-muted",
+        "--color-success",
+        "--color-success-hover",
+        "--color-success-muted",
+        "--color-warning",
+        "--color-warning-hover",
+        "--color-warning-muted",
+        "--color-info",
+        "--color-info-muted",
+        "--color-overlay",
+        "--color-scrollbar-track",
+        "--color-scrollbar-thumb",
+        "--color-scrollbar-hover",
+    }
+)
 
-_ALLOWED_SHADOW_VARS: frozenset[str] = frozenset({
-    "--shadow-toast",
-    "--shadow-modal",
-    "--shadow-dropdown",
-})
+_ALLOWED_SHADOW_VARS: frozenset[str] = frozenset(
+    {
+        "--shadow-toast",
+        "--shadow-modal",
+        "--shadow-dropdown",
+    }
+)
 
 # CSS color value: hex, rgb/rgba, hsl/hsla, or 'transparent'.
 # No semicolons, braces, or quotes — prevents CSS injection through values.
 _CSS_COLOR_RE = re.compile(
-    r'^(?:'
-    r'#[0-9a-fA-F]{3,8}'              # #rgb  #rgba  #rrggbb  #rrggbbaa
-    r'|rgba?\(\s*[\d.,\s%]+\)'        # rgb(…) / rgba(…)
-    r'|hsla?\(\s*[\d.,\s%]+\)'        # hsl(…) / hsla(…)
-    r'|transparent'
-    r')$'
+    r"^(?:"
+    r"#[0-9a-fA-F]{3,8}"  # #rgb  #rgba  #rrggbb  #rrggbbaa
+    r"|rgba?\(\s*[\d.,\s%]+\)"  # rgb(…) / rgba(…)
+    r"|hsla?\(\s*[\d.,\s%]+\)"  # hsl(…) / hsla(…)
+    r"|transparent"
+    r")$"
 )
 
 # Box-shadow value: lengths (px/em/rem), optional rgba/hex color, optional 'inset'.
 # Allows digits, sign, units, spaces, commas, parens, hash, percent.
 # Blocks ;  {  }  '  "  <  >  — sufficient to prevent CSS injection via custom props.
-_CSS_SHADOW_RE = re.compile(r'^[0-9a-z%#.,\s()\-]+$', re.IGNORECASE)
+_CSS_SHADOW_RE = re.compile(r"^[0-9a-z%#.,\s()\-]+$", re.IGNORECASE)
 
 # Logo filename: alphanumeric start, then alphanumeric + safe punctuation.
 # No slashes, dots at start, or traversal sequences.
-_LOGO_FILENAME_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$')
+_LOGO_FILENAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$")
 
 _BRAND_NAME_MAX = 64
 _BANNER_TEXT_MAX = 500
 
 # UI feature flag keys: lowercase letters, digits, underscores; 1-64 chars.
-_UI_FLAG_RE = re.compile(r'^[a-z][a-z0-9_]{0,63}$')
+_UI_FLAG_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 # Recognised UI flags and their defaults (used when theme.json omits the key).
 # Add new UI flags here as features are introduced.
 _UI_FLAG_DEFAULTS: dict[str, bool] = {
-    "admin_transparency_banner":    True,
+    "admin_transparency_banner": True,
     "public_device_banner_visible": True,
 }
 
@@ -114,7 +118,7 @@ _UI_FLAG_DEFAULTS: dict[str, bool] = {
 # ---------------------------------------------------------------------------
 
 _MARKER_START = "<!-- theme:start -->"
-_MARKER_END   = "<!-- theme:end -->"
+_MARKER_END = "<!-- theme:end -->"
 _BLOCK_RE = re.compile(
     r"\s*" + re.escape(_MARKER_START) + r".*?" + re.escape(_MARKER_END),
     re.DOTALL,
@@ -176,7 +180,7 @@ def _load_colors(config: dict, raw: dict) -> None:
         return
     colors: dict[str, str] = {}
     for var, val in colors_raw.items():
-        is_color  = var in _ALLOWED_COLOR_VARS
+        is_color = var in _ALLOWED_COLOR_VARS
         is_shadow = var in _ALLOWED_SHADOW_VARS
         if not is_color and not is_shadow:
             logger.warning("Theme: unknown CSS variable %r, ignoring", var)
@@ -294,14 +298,8 @@ def inject_theme(frontend_dir: Path, data_dir: Path) -> None:
     # Build the replacement style block (empty string = remove existing block)
     colors = config.get("colors", {})
     if colors:
-        vars_css = "\n".join(
-            f"        {var}: {val};" for var, val in sorted(colors.items())
-        )
-        block = (
-            f"{_MARKER_START}\n"
-            f"    <style>:root {{\n{vars_css}\n    }}</style>\n"
-            f"    {_MARKER_END}"
-        )
+        vars_css = "\n".join(f"        {var}: {val};" for var, val in sorted(colors.items()))
+        block = f"{_MARKER_START}\n    <style>:root {{\n{vars_css}\n    }}</style>\n    {_MARKER_END}"
     else:
         block = ""
 
@@ -317,9 +315,7 @@ def inject_theme(frontend_dir: Path, data_dir: Path) -> None:
     if new_html != html:
         index_path.write_text(new_html, encoding="utf-8")
         if colors:
-            logger.info(
-                "Theme: index.html updated with %d CSS variable override(s)", len(colors)
-            )
+            logger.info("Theme: index.html updated with %d CSS variable override(s)", len(colors))
         else:
             logger.info("Theme: removed CSS override block from index.html")
     else:

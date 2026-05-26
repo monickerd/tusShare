@@ -17,6 +17,7 @@ from __future__ import annotations
 import json as _json
 import uuid
 from datetime import datetime, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -32,8 +33,6 @@ from app.models.role import admin_best_tier
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
 from app.util.db import get_admin_setting
-from app.validation.sanitizers import validate_uuid as _vuuid
-from typing import Annotated
 
 router = APIRouter()
 
@@ -52,19 +51,19 @@ _PROFILES: dict[str, dict] = {
             "all security settings locked at tier 1 (server_admin only)."
         ),
         "admin_settings": {
-            "escrow_require_coverage":     {"value": "1",  "is_locked": True,  "locked_min_tier": 1},
-            "notify_escrow_on_revocation": {"value": "1",  "is_locked": True,  "locked_min_tier": 1},
+            "escrow_require_coverage": {"value": "1", "is_locked": True, "locked_min_tier": 1},
+            "notify_escrow_on_revocation": {"value": "1", "is_locked": True, "locked_min_tier": 1},
             # Cap link share expiry at 30 days even though link shares are blocked by
             # role flags and the sharing rule below — belt-and-suspenders.
-            "link_share_max_expiry_days":  {"value": "30", "is_locked": True,  "locked_min_tier": 1},
+            "link_share_max_expiry_days": {"value": "30", "is_locked": True, "locked_min_tier": 1},
         },
         "role_flag_overrides": {
             "role_user": {
-                "shares_link_create":         {"value": "0", "is_locked": True, "locked_min_tier": 1},
-                "shares_user_create":         {"value": "1", "is_locked": True, "locked_min_tier": 1},
+                "shares_link_create": {"value": "0", "is_locked": True, "locked_min_tier": 1},
+                "shares_user_create": {"value": "1", "is_locked": True, "locked_min_tier": 1},
                 # upload_grant requires shares_link_create; keep consistent with the '0' above
                 "shares_upload_grant_create": {"value": "0", "is_locked": True, "locked_min_tier": 1},
-                "shares_folder_create":       {"value": "0", "is_locked": True, "locked_min_tier": 1},
+                "shares_folder_create": {"value": "0", "is_locked": True, "locked_min_tier": 1},
             },
         },
         "sharing_rules": [
@@ -96,16 +95,16 @@ _PROFILES: dict[str, dict] = {
             "escrow encouraged but not enforced; settings locked at tier 2 (org_admin)."
         ),
         "admin_settings": {
-            "escrow_require_coverage":     {"value": "0",   "is_locked": True,  "locked_min_tier": 2},
-            "notify_escrow_on_revocation": {"value": "1",   "is_locked": True,  "locked_min_tier": 2},
-            "link_share_max_expiry_days":  {"value": "365", "is_locked": True,  "locked_min_tier": 2},
+            "escrow_require_coverage": {"value": "0", "is_locked": True, "locked_min_tier": 2},
+            "notify_escrow_on_revocation": {"value": "1", "is_locked": True, "locked_min_tier": 2},
+            "link_share_max_expiry_days": {"value": "365", "is_locked": True, "locked_min_tier": 2},
         },
         "role_flag_overrides": {
             "role_user": {
-                "shares_link_create":         {"value": "1", "is_locked": True, "locked_min_tier": 2},
-                "shares_user_create":         {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_link_create": {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_user_create": {"value": "1", "is_locked": True, "locked_min_tier": 2},
                 "shares_upload_grant_create": {"value": "1", "is_locked": True, "locked_min_tier": 2},
-                "shares_folder_create":       {"value": "1", "is_locked": True, "locked_min_tier": 2},
+                "shares_folder_create": {"value": "1", "is_locked": True, "locked_min_tier": 2},
             },
         },
         "sharing_rules": [],
@@ -117,16 +116,16 @@ _PROFILES: dict[str, dict] = {
             "Intended for dev, internal tooling, or environments with a separate policy layer."
         ),
         "admin_settings": {
-            "escrow_require_coverage":     {"value": "0", "is_locked": False, "locked_min_tier": None},
+            "escrow_require_coverage": {"value": "0", "is_locked": False, "locked_min_tier": None},
             "notify_escrow_on_revocation": {"value": "0", "is_locked": False, "locked_min_tier": None},
-            "link_share_max_expiry_days":  {"value": "0", "is_locked": False, "locked_min_tier": None},
+            "link_share_max_expiry_days": {"value": "0", "is_locked": False, "locked_min_tier": None},
         },
         "role_flag_overrides": {
             "role_user": {
-                "shares_link_create":         {"value": "1", "is_locked": False, "locked_min_tier": None},
-                "shares_user_create":         {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_link_create": {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_user_create": {"value": "1", "is_locked": False, "locked_min_tier": None},
                 "shares_upload_grant_create": {"value": "1", "is_locked": False, "locked_min_tier": None},
-                "shares_folder_create":       {"value": "1", "is_locked": False, "locked_min_tier": None},
+                "shares_folder_create": {"value": "1", "is_locked": False, "locked_min_tier": None},
             },
         },
         "sharing_rules": [],
@@ -137,6 +136,7 @@ _PROFILES: dict[str, dict] = {
 # Permission helper
 # ---------------------------------------------------------------------------
 
+
 def _require_server_admin(admin: AuthenticatedUser) -> None:
     if admin_best_tier(admin.roles) > 1:
         raise HTTPException(  # NOSONAR — helper; 403 documented in callers
@@ -144,25 +144,28 @@ def _require_server_admin(admin: AuthenticatedUser) -> None:
             detail="Only server_admin may manage security profiles",
         )
 
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
 
+
 class ApplyProfileRequest(BaseModel):
-    profile:           str
-    mode:              str = "replace"
-    confirm:           bool = False
+    profile: str
+    mode: str = "replace"
+    confirm: bool = False
     confirmation_text: str = ""
-    decisions:         dict[str, str] = {}
-    mark_first_run:    bool = False  # set first_run_completed='1' after applying
+    decisions: dict[str, str] = {}
+    mark_first_run: bool = False  # set first_run_completed='1' after applying
 
 
 class ImportProfileRequest(BaseModel):
-    profile_json:      dict
-    mode:              str = "replace"
-    confirm:           bool = False
+    profile_json: dict
+    mode: str = "replace"
+    confirm: bool = False
     confirmation_text: str = ""
-    decisions:         dict[str, str] = {}
+    decisions: dict[str, str] = {}
+
 
 # ---------------------------------------------------------------------------
 # Internal: read current state
@@ -186,8 +189,7 @@ async def _read_current(db) -> dict:
     """Read the current profile-managed settings from the DB."""
     placeholders = ",".join("?" * len(_PROFILE_ADMIN_SETTING_KEYS))
     cursor = await db.execute(
-        f"SELECT key, value, is_locked, locked_min_tier FROM admin_settings "
-        f"WHERE key IN ({placeholders})",
+        f"SELECT key, value, is_locked, locked_min_tier FROM admin_settings WHERE key IN ({placeholders})",
         _PROFILE_ADMIN_SETTING_KEYS,
     )
     admin_settings = {
@@ -236,18 +238,20 @@ async def _read_current(db) -> dict:
             }
             for c in await cursor2.fetchall()
         ]
-        sharing_rules.append({
-            "name": rule["name"],
-            "description": rule["description"],
-            "is_active": bool(rule["is_active"]),
-            "priority": rule["priority"],
-            "subject": rule["subject"],
-            "applies_to_share_type": rule["applies_to_share_type"],
-            "effect": rule["effect"],
-            "is_locked": bool(rule["is_locked"]),
-            "locked_min_tier": rule["locked_min_tier"],
-            "conditions": conditions,
-        })
+        sharing_rules.append(
+            {
+                "name": rule["name"],
+                "description": rule["description"],
+                "is_active": bool(rule["is_active"]),
+                "priority": rule["priority"],
+                "subject": rule["subject"],
+                "applies_to_share_type": rule["applies_to_share_type"],
+                "effect": rule["effect"],
+                "is_locked": bool(rule["is_locked"]),
+                "locked_min_tier": rule["locked_min_tier"],
+                "conditions": conditions,
+            }
+        )
 
     return {
         "admin_settings": admin_settings,
@@ -255,9 +259,11 @@ async def _read_current(db) -> dict:
         "sharing_rules": sharing_rules,
     }
 
+
 # ---------------------------------------------------------------------------
 # Internal: diff computation
 # ---------------------------------------------------------------------------
+
 
 def _compute_diff(current: dict, profile: dict) -> list[dict]:
     """Return per-item diffs between current state and proposed profile."""
@@ -265,56 +271,67 @@ def _compute_diff(current: dict, profile: dict) -> list[dict]:
 
     for key, proposed in profile.get("admin_settings", {}).items():
         cur = current["admin_settings"].get(key)
-        diff.append({
-            "type":    "admin_setting",
-            "key":     f"admin_setting.{key}",
-            "label":   key,
-            "current": cur,
-            "proposed": proposed,
-            "changed": cur != proposed,
-        })
+        diff.append(
+            {
+                "type": "admin_setting",
+                "key": f"admin_setting.{key}",
+                "label": key,
+                "current": cur,
+                "proposed": proposed,
+                "changed": cur != proposed,
+            }
+        )
 
     for role_id, flags in profile.get("role_flag_overrides", {}).items():
         role_cur = current.get("role_flag_overrides", {}).get(role_id, {})
         for flag, proposed in flags.items():
             cur = role_cur.get(flag)
-            diff.append({
-                "type":    "role_flag",
-                "key":     f"role_flag.{role_id}.{flag}",
-                "label":   f"{role_id} / {flag}",
-                "role_id": role_id,
-                "flag":    flag,
-                "current": cur,
-                "proposed": proposed,
-                "changed": cur != proposed,
-            })
+            diff.append(
+                {
+                    "type": "role_flag",
+                    "key": f"role_flag.{role_id}.{flag}",
+                    "label": f"{role_id} / {flag}",
+                    "role_id": role_id,
+                    "flag": flag,
+                    "current": cur,
+                    "proposed": proposed,
+                    "changed": cur != proposed,
+                }
+            )
 
     cur_rules = {r["name"]: r for r in current.get("sharing_rules", [])}
     for rule in profile.get("sharing_rules", []):
         cur = cur_rules.get(rule["name"])
         _summary_keys = (
-            "is_active", "priority", "subject", "applies_to_share_type",
-            "effect", "is_locked", "locked_min_tier", "conditions",
+            "is_active",
+            "priority",
+            "subject",
+            "applies_to_share_type",
+            "effect",
+            "is_locked",
+            "locked_min_tier",
+            "conditions",
         )
-        cur_summary = (
-            None if cur is None
-            else {k: cur.get(k) for k in _summary_keys}
-        )
+        cur_summary = None if cur is None else {k: cur.get(k) for k in _summary_keys}
         proposed_summary = {k: rule.get(k) for k in _summary_keys}
-        diff.append({
-            "type":    "sharing_rule",
-            "key":     f"sharing_rule.{rule['name']}",
-            "label":   f"sharing rule: {rule['name']}",
-            "current": cur_summary,
-            "proposed": proposed_summary,
-            "changed": cur_summary != proposed_summary,
-        })
+        diff.append(
+            {
+                "type": "sharing_rule",
+                "key": f"sharing_rule.{rule['name']}",
+                "label": f"sharing rule: {rule['name']}",
+                "current": cur_summary,
+                "proposed": proposed_summary,
+                "changed": cur_summary != proposed_summary,
+            }
+        )
 
     return diff
+
 
 # ---------------------------------------------------------------------------
 # Internal: apply helpers
 # ---------------------------------------------------------------------------
+
 
 async def _upsert_admin_setting(db, key: str, setting: dict) -> None:
     await db.execute(
@@ -347,12 +364,18 @@ async def _insert_rule(db, rule: dict, admin_id: str, admin_tier: int) -> None:
         "created_by, created_by_tier) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            rule_id, rule["name"], rule.get("description", ""),
-            rule.get("is_active", True), rule.get("priority", 100),
-            rule["subject"], rule.get("applies_to_share_type"),
+            rule_id,
+            rule["name"],
+            rule.get("description", ""),
+            rule.get("is_active", True),
+            rule.get("priority", 100),
+            rule["subject"],
+            rule.get("applies_to_share_type"),
             rule.get("effect", "deny"),
-            rule.get("is_locked", False), rule.get("locked_min_tier"),
-            admin_id, admin_tier,
+            rule.get("is_locked", False),
+            rule.get("locked_min_tier"),
+            admin_id,
+            admin_tier,
         ),
     )
     for cond in rule.get("conditions", []):
@@ -361,9 +384,12 @@ async def _insert_rule(db, rule: dict, admin_id: str, admin_tier: int) -> None:
             "(id, rule_id, attribute_path, operator, value, block_on_missing_attribute) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (
-                str(uuid.uuid4()), rule_id,
-                cond["attribute_path"], cond["operator"],
-                cond.get("value"), cond.get("block_on_missing_attribute", True),
+                str(uuid.uuid4()),
+                rule_id,
+                cond["attribute_path"],
+                cond["operator"],
+                cond.get("value"),
+                cond.get("block_on_missing_attribute", True),
             ),
         )
 
@@ -382,9 +408,7 @@ async def _apply_replace(db, profile: dict, admin_id: str, admin_tier: int) -> N
         await _insert_rule(db, rule, admin_id, admin_tier)
 
 
-async def _apply_merge(
-    db, profile: dict, decisions: dict, admin_id: str, admin_tier: int
-) -> None:
+async def _apply_merge(db, profile: dict, decisions: dict, admin_id: str, admin_tier: int) -> None:
     """Apply only items where decisions[key] == 'proposed' (default when absent)."""
     for key, setting in profile.get("admin_settings", {}).items():
         if decisions.get(f"admin_setting.{key}", "proposed") == "proposed":
@@ -439,9 +463,11 @@ def _validate_profile_structure(profile_json: dict) -> None:
                 detail=f"sharing_rules[{i}] is missing required fields (name, subject)",
             )
 
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @router.get("/settings/profiles")
 async def list_profiles(
@@ -450,10 +476,7 @@ async def list_profiles(
     """List available built-in profile names and descriptions."""
     _require_server_admin(admin)
     return {
-        "profiles": [
-            {"id": pid, "name": p["name"], "description": p["description"]}
-            for pid, p in _PROFILES.items()
-        ]
+        "profiles": [{"id": pid, "name": p["name"], "description": p["description"]} for pid, p in _PROFILES.items()]
     }
 
 
@@ -484,30 +507,33 @@ async def export_settings(
             )
 
     from app.config import settings as _app_settings
+
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     export = {
         "_warnings": warnings,
         "_meta": {
-            "format_version":           "1",
-            "profile_name":             f"Custom Export — {date_str}",
-            "exported_at":              now_str,
+            "format_version": "1",
+            "profile_name": f"Custom Export — {date_str}",
+            "exported_at": now_str,
             "exported_from_app_version": getattr(_app_settings, "APP_VERSION", "unknown"),
-            "exported_by_tier":         admin_best_tier(admin.roles),
+            "exported_by_tier": admin_best_tier(admin.roles),
         },
-        "admin_settings":     current["admin_settings"],
+        "admin_settings": current["admin_settings"],
         "role_flag_overrides": current["role_flag_overrides"],
-        "sharing_rules":       current["sharing_rules"],
+        "sharing_rules": current["sharing_rules"],
     }
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.settings.profile_exported",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
-        detail={"exported_by_tier": admin_best_tier(admin.roles)},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.settings.profile_exported",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username),
+            detail={"exported_by_tier": admin_best_tier(admin.roles)},
+        )
+    )
 
     return Response(
         content=_json.dumps(export, indent=2, default=str),
@@ -518,7 +544,9 @@ async def export_settings(
     )
 
 
-@router.post("/settings/apply-profile", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+@router.post(
+    "/settings/apply-profile", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}}
+)
 async def apply_profile(
     body: ApplyProfileRequest,
     request: Request,
@@ -554,8 +582,7 @@ async def apply_profile(
                     "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
                 },
             )
-        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION,
-                                    session_id=admin.session_id):
+        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION, session_id=admin.session_id):
             raise HTTPException(
                 status_code=403,
                 detail={
@@ -586,8 +613,8 @@ async def apply_profile(
             detail="Replace mode requires confirmation_text = 'REPLACE'",
         )
 
-    admin_id  = admin.id
-    tier      = admin_best_tier(admin.roles)
+    admin_id = admin.id
+    tier = admin_best_tier(admin.roles)
 
     if body.mode == "replace":
         await _apply_replace(db, profile, admin_id, tier)
@@ -602,17 +629,19 @@ async def apply_profile(
 
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.settings.profile_applied",
-        severity="high",
-        outcome="success",
-        actor=EventActor(user_id=admin_id, username=admin.username),
-        detail={
-            "profile": body.profile,
-            "mode":    body.mode,
-            "items_changed": sum(1 for d in diff if d["changed"]),
-        },
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.settings.profile_applied",
+            severity="high",
+            outcome="success",
+            actor=EventActor(user_id=admin_id, username=admin.username),
+            detail={
+                "profile": body.profile,
+                "mode": body.mode,
+                "items_changed": sum(1 for d in diff if d["changed"]),
+            },
+        )
+    )
 
     return {"message": "Profile applied", "profile": body.profile, "mode": body.mode}
 
@@ -646,8 +675,7 @@ async def import_profile(
                     "challenge_type": sensitive_config.get_challenge_type(_STEPUP_ACTION),
                 },
             )
-        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION,
-                                    session_id=admin.session_id):
+        if not verify_step_up_token(token, admin.id, _STEPUP_ACTION, session_id=admin.session_id):
             raise HTTPException(
                 status_code=403,
                 detail={
@@ -663,12 +691,12 @@ async def import_profile(
     _validate_profile_structure(body.profile_json)
 
     current = await _read_current(db)
-    diff    = _compute_diff(current, body.profile_json)
+    diff = _compute_diff(current, body.profile_json)
 
     if not body.confirm:
         return {
-            "diff":     diff,
-            "mode":     body.mode,
+            "diff": diff,
+            "mode": body.mode,
             "warnings": body.profile_json.get("_warnings", []),
         }
 
@@ -679,7 +707,7 @@ async def import_profile(
         )
 
     admin_id = admin.id
-    tier     = admin_best_tier(admin.roles)
+    tier = admin_best_tier(admin.roles)
 
     if body.mode == "replace":
         await _apply_replace(db, body.profile_json, admin_id, tier)
@@ -689,16 +717,18 @@ async def import_profile(
     await db.commit()
 
     severity = "critical" if body.mode == "replace" else "high"
-    event_bus.emit(SecurityEvent(
-        event_type="admin.settings.profile_imported",
-        severity=severity,
-        outcome="success",
-        actor=EventActor(user_id=admin_id, username=admin.username),
-        detail={
-            "mode":          body.mode,
-            "items_changed": sum(1 for d in diff if d["changed"]),
-        },
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.settings.profile_imported",
+            severity=severity,
+            outcome="success",
+            actor=EventActor(user_id=admin_id, username=admin.username),
+            detail={
+                "mode": body.mode,
+                "items_changed": sum(1 for d in diff if d["changed"]),
+            },
+        )
+    )
 
     return {"message": "Profile imported", "mode": body.mode}
 
@@ -709,38 +739,55 @@ async def import_profile(
 
 # Admin settings keys that are safe to export (credentials excluded)
 _FULL_EXPORT_SETTING_KEYS = [
-    "open_registration", "global_max_file_size", "global_bandwidth_limit",
-    "disk_warning_threshold", "default_chunk_size",
-    "mfa_enforcement", "mfa_allowed_methods", "mfa_oidc_exempt",
-    "notify_escrow_on_revocation", "escrow_require_coverage",
-    "allow_user_delete_own_account", "can_delete_owned_shared",
-    "allow_multi_team_owner", "copy_boundary",
-    "audit_retention_days", "regex_match_timeout_ms",
-    "av_scan_endpoint", "av_require_clean", "av_scan_retry_attempts",
-    "trash_enabled", "trash_retention_days",
+    "open_registration",
+    "global_max_file_size",
+    "global_bandwidth_limit",
+    "disk_warning_threshold",
+    "default_chunk_size",
+    "mfa_enforcement",
+    "mfa_allowed_methods",
+    "mfa_oidc_exempt",
+    "notify_escrow_on_revocation",
+    "escrow_require_coverage",
+    "allow_user_delete_own_account",
+    "can_delete_owned_shared",
+    "allow_multi_team_owner",
+    "copy_boundary",
+    "audit_retention_days",
+    "regex_match_timeout_ms",
+    "av_scan_endpoint",
+    "av_require_clean",
+    "av_scan_retry_attempts",
+    "trash_enabled",
+    "trash_retention_days",
 ]
 
-_ALL_CATEGORIES = frozenset([
-    "security_profile", "roles", "admin_settings", "policies",
-    "policy_fields", "siem", "notifications", "storage",
-])
+_ALL_CATEGORIES = frozenset(
+    [
+        "security_profile",
+        "roles",
+        "admin_settings",
+        "policies",
+        "policy_fields",
+        "siem",
+        "notifications",
+        "storage",
+    ]
+)
 
 
 class FullImportRequest(BaseModel):
-    data:       dict
+    data: dict
     categories: list[str] = []
-    mode:       str = "replace"
+    mode: str = "replace"
 
 
 async def _read_roles_for_export(db) -> list[dict]:
-    cursor = await db.execute(
-        "SELECT id, name, description, is_system FROM roles ORDER BY is_system DESC, id"
-    )
+    cursor = await db.execute("SELECT id, name, description, is_system FROM roles ORDER BY is_system DESC, id")
     roles = []
     for rr in await cursor.fetchall():
         cursor2 = await db.execute(
-            "SELECT flag, value, is_locked, locked_min_tier "
-            "FROM role_permissions WHERE role_id = ?",
+            "SELECT flag, value, is_locked, locked_min_tier FROM role_permissions WHERE role_id = ?",
             (rr["id"],),
         )
         perms = {
@@ -751,20 +798,21 @@ async def _read_roles_for_export(db) -> list[dict]:
             }
             for r in await cursor2.fetchall()
         }
-        roles.append({
-            "id": rr["id"],
-            "name": rr["name"],
-            "description": rr["description"] or "",
-            "is_system": bool(rr["is_system"]),
-            "permissions": perms,
-        })
+        roles.append(
+            {
+                "id": rr["id"],
+                "name": rr["name"],
+                "description": rr["description"] or "",
+                "is_system": bool(rr["is_system"]),
+                "permissions": perms,
+            }
+        )
     return roles
 
 
 async def _read_policies_for_export(db) -> list[dict]:
     cursor = await db.execute(
-        "SELECT id, name, scope_type, escrow_enabled "
-        "FROM policies WHERE scope_type = 'org' ORDER BY name"
+        "SELECT id, name, scope_type, escrow_enabled FROM policies WHERE scope_type = 'org' ORDER BY name"
     )
     policies = []
     for pr in await cursor.fetchall():
@@ -782,11 +830,13 @@ async def _read_policies_for_export(db) -> list[dict]:
             }
             for c in await cursor2.fetchall()
         ]
-        policies.append({
-            "name": pr["name"],
-            "escrow_enabled": pr["escrow_enabled"],
-            "conditions": conditions,
-        })
+        policies.append(
+            {
+                "name": pr["name"],
+                "escrow_enabled": pr["escrow_enabled"],
+                "conditions": conditions,
+            }
+        )
     return policies
 
 
@@ -817,8 +867,7 @@ async def _full_read(db, categories: set) -> tuple[dict, list[str]]:
 
     if "policy_fields" in categories:
         cursor = await db.execute(
-            "SELECT name, display_label, source "
-            "FROM policy_field_definitions WHERE source != 'internal' ORDER BY name"
+            "SELECT name, display_label, source FROM policy_field_definitions WHERE source != 'internal' ORDER BY name"
         )
         out["policy_fields"] = [
             {"name": r["name"], "display_label": r["display_label"], "source": r["source"]}
@@ -846,14 +895,12 @@ async def _full_read(db, categories: set) -> tuple[dict, list[str]]:
         out["notifications"] = [dict(r) for r in await cursor.fetchall()]
         if out["notifications"]:
             warnings.append(
-                "Notification channel signing secrets are NOT exported. "
-                "Re-configure shared secrets after import."
+                "Notification channel signing secrets are NOT exported. Re-configure shared secrets after import."
             )
 
     if "storage" in categories:
         cursor = await db.execute(
-            "SELECT id, name, provider, tier, is_default, priority "
-            "FROM storage_volumes ORDER BY priority ASC, name ASC"
+            "SELECT id, name, provider, tier, is_default, priority FROM storage_volumes ORDER BY priority ASC, name ASC"
         )
         out["storage"] = [dict(r) for r in await cursor.fetchall()]
         if out["storage"]:
@@ -881,35 +928,37 @@ async def full_export_settings(
     if unknown:
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown export categories: {sorted(unknown)}. "
-                   f"Valid: {sorted(_ALL_CATEGORIES)}",
+            detail=f"Unknown export categories: {sorted(unknown)}. Valid: {sorted(_ALL_CATEGORIES)}",
         )
 
     data, warnings = await _full_read(db, requested)
 
     from app.config import settings as _app_settings
+
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     export = {
         "_warnings": warnings,
         "_meta": {
-            "format_version":            "2",
-            "exported_at":               now_str,
-            "exported_by_tier":          admin_best_tier(admin.roles),
-            "categories":                sorted(requested),
+            "format_version": "2",
+            "exported_at": now_str,
+            "exported_by_tier": admin_best_tier(admin.roles),
+            "categories": sorted(requested),
             "exported_from_app_version": getattr(_app_settings, "APP_VERSION", "unknown"),
         },
         **data,
     }
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.settings.full_exported",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username),
-        detail={"categories": sorted(requested), "tier": admin_best_tier(admin.roles)},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.settings.full_exported",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username),
+            detail={"categories": sorted(requested), "tier": admin_best_tier(admin.roles)},
+        )
+    )
 
     return Response(
         content=_json.dumps(export, indent=2, default=str),
@@ -954,8 +1003,7 @@ async def _upsert_role_permissions(db, rid: str, permissions: dict) -> None:
             "ON CONFLICT (role_id, flag) DO UPDATE SET "
             "value = excluded.value, is_locked = excluded.is_locked, "
             "locked_min_tier = excluded.locked_min_tier",
-            (rid, flag, fu["value"], bool(fu.get("is_locked", False)),
-             fu.get("locked_min_tier")),
+            (rid, flag, fu["value"], bool(fu.get("is_locked", False)), fu.get("locked_min_tier")),
         )
 
 
@@ -984,6 +1032,7 @@ async def _import_roles(db, data: dict, replace: bool) -> int:
 
 async def _import_admin_settings(db, data: dict) -> int:
     from app.routes.admin import _SETTINGS_VALIDATORS
+
     settings_dict = data["admin_settings"]
     if not isinstance(settings_dict, dict):
         raise HTTPException(status_code=400, detail="data.admin_settings must be a dict")
@@ -1010,9 +1059,14 @@ async def _upsert_policy_conditions(db, policy_id: str, conditions: list) -> Non
             "INSERT INTO policy_conditions "
             "(id, policy_id, field, operator, value, block_on_missing_attribute) "
             "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-            (str(uuid.uuid4()), policy_id,
-             cond["field"], cond.get("operator", "="),
-             cond.get("value"), 1 if cond.get("block_on_missing_attribute", True) else 0),
+            (
+                str(uuid.uuid4()),
+                policy_id,
+                cond["field"],
+                cond.get("operator", "="),
+                cond.get("value"),
+                1 if cond.get("block_on_missing_attribute", True) else 0,
+            ),
         )
 
 
@@ -1087,12 +1141,18 @@ async def _import_siem(db, data: dict, replace: bool) -> int:
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?) "
             "ON CONFLICT DO NOTHING",
             (
-                dest_id, dest["name"], dest["type"],
+                dest_id,
+                dest["name"],
+                dest["type"],
                 1 if dest.get("is_active", True) else 0,
-                dest.get("host"), dest.get("port"),
-                dest.get("protocol"), dest.get("syslog_format"),
-                dest.get("facility"), dest.get("url"),
-                dest.get("batch_size"), dest.get("filter_profile"),
+                dest.get("host"),
+                dest.get("port"),
+                dest.get("protocol"),
+                dest.get("syslog_format"),
+                dest.get("facility"),
+                dest.get("url"),
+                dest.get("batch_size"),
+                dest.get("filter_profile"),
             ),
         )
         count += 1
@@ -1116,9 +1176,12 @@ async def _import_notifications(db, data: dict, replace: bool) -> int:
             "batch_size, batch_interval_s, enabled, created_at) "
             "VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
             (
-                ch_id, ch["name"], ch["endpoint_url"],
+                ch_id,
+                ch["name"],
+                ch["endpoint_url"],
                 ch.get("event_filter", "[]"),
-                ch.get("batch_size"), ch.get("batch_interval_s"),
+                ch.get("batch_size"),
+                ch.get("batch_interval_s"),
                 1 if ch.get("enabled", True) else 0,
                 datetime.now(timezone.utc).isoformat(),
             ),
@@ -1144,7 +1207,9 @@ async def _import_storage(db, data: dict) -> int:
             "VALUES (?, ?, ?, NULL, ?, 0, ?) "
             "ON CONFLICT (name) DO NOTHING",
             (
-                vol_id, vol["name"], vol["provider"],
+                vol_id,
+                vol["name"],
+                vol["provider"],
                 vol.get("tier", "hot"),
                 vol.get("priority", 0),
             ),
@@ -1177,7 +1242,9 @@ def _enforce_step_up_import(request: Request, admin: AuthenticatedUser) -> None:
         )
 
 
-@router.post("/settings/full-import", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+@router.post(
+    "/settings/full-import", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}}
+)
 async def full_import_settings(
     body: FullImportRequest,
     request: Request,
@@ -1207,13 +1274,13 @@ async def full_import_settings(
 
     _dispatch = {
         "security_profile": lambda: _import_security_profile(db, data, replace, admin_id, tier),
-        "roles":            lambda: _import_roles(db, data, replace),
-        "admin_settings":   lambda: _import_admin_settings(db, data),
-        "policies":         lambda: _import_policies(db, data, replace, admin_id),
-        "policy_fields":    lambda: _import_policy_fields(db, data),
-        "siem":             lambda: _import_siem(db, data, replace),
-        "notifications":    lambda: _import_notifications(db, data, replace),
-        "storage":          lambda: _import_storage(db, data),
+        "roles": lambda: _import_roles(db, data, replace),
+        "admin_settings": lambda: _import_admin_settings(db, data),
+        "policies": lambda: _import_policies(db, data, replace, admin_id),
+        "policy_fields": lambda: _import_policy_fields(db, data),
+        "siem": lambda: _import_siem(db, data, replace),
+        "notifications": lambda: _import_notifications(db, data, replace),
+        "storage": lambda: _import_storage(db, data),
     }
     for cat in requested:
         if cat in data and cat in _dispatch:
@@ -1221,12 +1288,14 @@ async def full_import_settings(
 
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.settings.full_imported",
-        severity="critical" if replace else "high",
-        outcome="success",
-        actor=EventActor(user_id=admin_id, username=admin.username),
-        detail={"mode": body.mode, "categories": sorted(requested), "items": items_applied},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.settings.full_imported",
+            severity="critical" if replace else "high",
+            outcome="success",
+            actor=EventActor(user_id=admin_id, username=admin.username),
+            detail={"mode": body.mode, "categories": sorted(requested), "items": items_applied},
+        )
+    )
 
     return {"message": "Import applied", "mode": body.mode, "items_applied": items_applied}

@@ -13,18 +13,32 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
+import app.storage.manager as storage
 from app.auth.dependencies import get_optional_user, require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_share_session_token, verify_share_session_token
+from app.config import settings
 from app.database import Database, db_session, get_db
-import app.storage.manager as storage
-from app.middleware.rate_limit import check_management_rate_limit, _counter
+from app.middleware.rate_limit import _counter, check_management_rate_limit
 from app.models.file import FileChunk
+from app.routes._access import (
+    _team_level_for_user,
+    check_data_permission,
+    get_folder_team_id,
+    is_in_shared_tree,
+    is_team_folder_member,
+)
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus
+from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
+from app.util.db import get_admin_setting
+from app.util.http import content_disposition, parse_range_header
 from app.validation.sanitizers import (
     sanitize_filename,
     sanitize_username,
@@ -33,17 +47,7 @@ from app.validation.sanitizers import (
     validate_short_slug,
     validate_uuid,
 )
-from app.config import settings
-from app.routes._access import check_data_permission, get_folder_team_id, is_in_shared_tree, is_team_folder_member, _team_level_for_user
-from app.conf.teams import TEAM_ROLE_SUPERVISOR, TEAM_ROLE_OWNER
-from app.util.http import content_disposition, parse_range_header
-from app.util.db import get_admin_setting
-from app.services.sharing_rules import check_sharing_flags, evaluate_sharing_rules
-from app.services import event_bus
-from app.schemas.security_event import EventActor, SecurityEvent
 from app.wordlist import insert_short_link_with_unique_slug
-from typing import Annotated
-
 
 _UTC_OFFSET = "+00:00"
 _ERR_SHARE_NOT_FOUND = "Share not found or expired"
@@ -64,6 +68,7 @@ _SHARE_MAX_ITEMS = 100
 # ---------------------------------------------------------------------------
 # Pydantic request models
 # ---------------------------------------------------------------------------
+
 
 class _ShareItemIn(BaseModel):
     resource_type: str
@@ -106,7 +111,7 @@ class _ShareItemIn(BaseModel):
         return v
 
 
-_SHARE_UPLOAD_DEFAULT_BUDGET = 100 * 1024 * 1024   # 100 MB
+_SHARE_UPLOAD_DEFAULT_BUDGET = 100 * 1024 * 1024  # 100 MB
 
 
 class CreateShareRequest(BaseModel):
@@ -116,7 +121,7 @@ class CreateShareRequest(BaseModel):
     expires_at: str | None = None
     max_downloads: int | None = None
     allow_upload: bool = False
-    upload_max_bytes: int | None = None   # None → server chooses (min of default and available quota)
+    upload_max_bytes: int | None = None  # None → server chooses (min of default and available quota)
     target_folder_id: str | None = None
     client_token: str | None = None
 
@@ -226,6 +231,7 @@ class CreateShortLinkRequest(BaseModel):
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+
 async def _get_share_for_owner(db, share_id: str, user: AuthenticatedUser):
     """Fetch a share by ID, verifying the requester is the owner or an admin."""
     cursor = await db.execute(_SQL_GET_SHARE_BY_ID, (share_id,))
@@ -245,9 +251,9 @@ async def _check_share_expiry_cap(db, expires_at: str | None, share_type: str) -
     """
     if share_type != "link" or expires_at is None:
         return
-    row = await (await db.execute(
-        "SELECT value FROM admin_settings WHERE key = 'link_share_max_expiry_days'"
-    )).fetchone()
+    row = await (
+        await db.execute("SELECT value FROM admin_settings WHERE key = 'link_share_max_expiry_days'")
+    ).fetchone()
     try:
         max_days = int(row["value"]) if row and row["value"] else 0
     except (ValueError, TypeError):
@@ -298,8 +304,7 @@ async def _get_active_share_by_token(db, token: str):
     """Fetch an active, non-expired share by its token. Raises 404 otherwise."""
     now = datetime.now(timezone.utc).isoformat()
     cursor = await db.execute(
-        "SELECT * FROM shares WHERE token = ? AND is_active = 1 "
-        "AND (expires_at IS NULL OR expires_at > ?)",
+        "SELECT * FROM shares WHERE token = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > ?)",
         (token, now),
     )
     row = await cursor.fetchone()
@@ -308,9 +313,7 @@ async def _get_active_share_by_token(db, token: str):
     return row
 
 
-async def _get_items_with_files(
-    db, share_id: str, folder_id: str | None = None
-) -> list[dict]:
+async def _get_items_with_files(db, share_id: str, folder_id: str | None = None) -> list[dict]:
     """Return share items joined with file metadata for file-type items.
 
     Returns the share-item encrypted_file_key (re-encrypted with shareKey),
@@ -408,8 +411,7 @@ async def _get_items_with_files(
 async def _verify_file_in_share(db, share_id: str, file_id: str) -> None:
     """Raise 403 if the file is not included in the share."""
     cursor = await db.execute(
-        "SELECT id FROM share_items "
-        "WHERE share_id = ? AND resource_type = 'file' AND resource_id = ?",
+        "SELECT id FROM share_items WHERE share_id = ? AND resource_type = 'file' AND resource_id = ?",
         (share_id, file_id),
     )
     if await cursor.fetchone() is None:
@@ -431,8 +433,7 @@ async def _verify_creator_still_has_access(
     File owners always retain access to their own files regardless of location.
     """
     cursor = await db.execute(
-        "SELECT resource_id FROM share_items "
-        "WHERE share_id = ? AND resource_type = 'file'",
+        "SELECT resource_id FROM share_items WHERE share_id = ? AND resource_type = 'file'",
         (share_id,),
     )
     file_ids = [r["resource_id"] for r in await cursor.fetchall()]
@@ -528,6 +529,7 @@ def _require_share_access(
 # Authenticated share management
 # ---------------------------------------------------------------------------
 
+
 @router.get("/api/v1/shares/received")
 async def list_received_shares(
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -561,20 +563,20 @@ async def list_received_shares(
     result = []
     for s in shares:
         items = await _get_items_with_files(db, s["id"])
-        sender_cursor = await db.execute(
-            "SELECT username FROM users WHERE id = ?", (s["created_by"],)
-        )
+        sender_cursor = await db.execute("SELECT username FROM users WHERE id = ?", (s["created_by"],))
         sender_row = await sender_cursor.fetchone()
-        result.append({
-            "id":              s["id"],
-            "token":           s["token"],
-            "key_type":        s["key_type"],
-            "share_type":      s["share_type"],
-            "sender_username": sender_row["username"] if sender_row else None,
-            "expires_at":      s["expires_at"],
-            "created_at":      s["created_at"],
-            "items":           items,
-        })
+        result.append(
+            {
+                "id": s["id"],
+                "token": s["token"],
+                "key_type": s["key_type"],
+                "share_type": s["share_type"],
+                "sender_username": sender_row["username"] if sender_row else None,
+                "expires_at": s["expires_at"],
+                "created_at": s["created_at"],
+                "items": items,
+            }
+        )
 
     return {"shares": result, "total": total, "offset": offset, "limit": limit}
 
@@ -639,38 +641,33 @@ async def list_shares(
     )
     shares = await cursor.fetchall()
 
-    count_cursor = await db.execute(
-        "SELECT COUNT(*) FROM shares WHERE created_by = ?", (user.id,)
-    )
+    count_cursor = await db.execute("SELECT COUNT(*) FROM shares WHERE created_by = ?", (user.id,))
     total = (await count_cursor.fetchone())[0]
 
     result = []
     for s in shares:
         items = await _get_items_with_files(db, s["id"], s["target_folder_id"] or None)
-        sl_cursor = await db.execute(
-            "SELECT slug, expires_at FROM short_links WHERE share_id = ?", (s["id"],)
+        sl_cursor = await db.execute("SELECT slug, expires_at FROM short_links WHERE share_id = ?", (s["id"],))
+        short_links = [{"slug": r["slug"], "expires_at": r["expires_at"]} for r in await sl_cursor.fetchall()]
+        result.append(
+            {
+                "id": s["id"],
+                "token": s["token"],
+                "key_type": s["key_type"],
+                "share_type": s["share_type"],
+                "expires_at": s["expires_at"],
+                "is_active": bool(s["is_active"]),
+                "has_password": s["password_hash"] is not None,
+                "max_downloads": s["max_downloads"],
+                "download_count": s["download_count"],
+                "allow_upload": bool(s["allow_upload"]),
+                "target_folder_id": s["target_folder_id"],
+                "folder_name": s["folder_name"],
+                "created_at": s["created_at"],
+                "items": items,
+                "short_links": short_links,
+            }
         )
-        short_links = [
-            {"slug": r["slug"], "expires_at": r["expires_at"]}
-            for r in await sl_cursor.fetchall()
-        ]
-        result.append({
-            "id": s["id"],
-            "token": s["token"],
-            "key_type": s["key_type"],
-            "share_type": s["share_type"],
-            "expires_at": s["expires_at"],
-            "is_active": bool(s["is_active"]),
-            "has_password": s["password_hash"] is not None,
-            "max_downloads": s["max_downloads"],
-            "download_count": s["download_count"],
-            "allow_upload": bool(s["allow_upload"]),
-            "target_folder_id": s["target_folder_id"],
-            "folder_name": s["folder_name"],
-            "created_at": s["created_at"],
-            "items": items,
-            "short_links": short_links,
-        })
 
     return {"shares": result, "total": total, "offset": offset, "limit": limit}
 
@@ -712,9 +709,8 @@ async def _verify_share_items_access(db: Database, user: AuthenticatedUser, item
         if file_row["owner_id"] != user.id and not user.is_admin:
             has_access = False
             if file_row["folder_id"]:
-                has_access = (
-                    await is_in_shared_tree(db, file_row["folder_id"])
-                    or await is_team_folder_member(db, file_row["folder_id"], user.id)
+                has_access = await is_in_shared_tree(db, file_row["folder_id"]) or await is_team_folder_member(
+                    db, file_row["folder_id"], user.id
                 )
             if not has_access:
                 raise HTTPException(status_code=404, detail=f"File not found or access denied: {item.resource_id}")
@@ -760,10 +756,17 @@ async def _resolve_upload_folder(
 
 
 async def _insert_share_transaction(
-    db: Database, request: Request, share_id: str, token: str,
-    body: "CreateShareRequest", user: AuthenticatedUser,
-    recipient_user_id: str | None, target_folder_id: str | None, allow_upload: bool,
-    key_type: str | None = None, upload_max_bytes: int = _SHARE_UPLOAD_DEFAULT_BUDGET,
+    db: Database,
+    request: Request,
+    share_id: str,
+    token: str,
+    body: "CreateShareRequest",
+    user: AuthenticatedUser,
+    recipient_user_id: str | None,
+    target_folder_id: str | None,
+    allow_upload: bool,
+    key_type: str | None = None,
+    upload_max_bytes: int = _SHARE_UPLOAD_DEFAULT_BUDGET,
 ) -> None:
     await db.execute("BEGIN")
     try:
@@ -774,9 +777,19 @@ async def _insert_share_transaction(
                  max_downloads, allow_upload, target_folder_id, key_type, upload_max_bytes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (share_id, token, user.id, body.share_type, recipient_user_id,
-             body.expires_at, body.max_downloads, 1 if allow_upload else 0,
-             target_folder_id, key_type, upload_max_bytes),
+            (
+                share_id,
+                token,
+                user.id,
+                body.share_type,
+                recipient_user_id,
+                body.expires_at,
+                body.max_downloads,
+                1 if allow_upload else 0,
+                target_folder_id,
+                key_type,
+                upload_max_bytes,
+            ),
         )
         for item in body.items:
             await db.execute(
@@ -786,8 +799,16 @@ async def _insert_share_transaction(
                      encrypted_file_key, key_iv, ephemeral_x25519_pub, kem_ciphertext)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (str(uuid.uuid4()), share_id, item.resource_type, item.resource_id,
-                 item.encrypted_file_key, item.key_iv, item.ephemeral_x25519_pub, item.kem_ciphertext),
+                (
+                    str(uuid.uuid4()),
+                    share_id,
+                    item.resource_type,
+                    item.resource_id,
+                    item.encrypted_file_key,
+                    item.key_iv,
+                    item.ephemeral_x25519_pub,
+                    item.kem_ciphertext,
+                ),
             )
         # For HKDF link shares targeting a folder, flag any files the client
         # did NOT supply keys for so that another team member can fulfill them.
@@ -818,8 +839,14 @@ async def _insert_share_transaction(
             "INSERT INTO access_logs "
             "    (id, file_id, user_id, actor_auth_method, share_id, ip_address, user_agent, action) "
             "VALUES (?, NULL, ?, ?, ?, ?, ?, 'share')",
-            (str(uuid.uuid4()), user.id, user.auth_method, share_id, ip,
-             (request.headers.get("User-Agent") or "")[:512]),
+            (
+                str(uuid.uuid4()),
+                user.id,
+                user.auth_method,
+                share_id,
+                ip,
+                (request.headers.get("User-Agent") or "")[:512],
+            ),
         )
         await db.commit()
     except Exception:
@@ -827,7 +854,14 @@ async def _insert_share_transaction(
         raise
 
 
-@router.post("/api/v1/shares", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}, 422: {"description": "Unprocessable Entity"}})
+@router.post(
+    "/api/v1/shares",
+    responses={
+        400: {"description": "Bad Request"},
+        404: {"description": "Not Found"},
+        422: {"description": "Unprocessable Entity"},
+    },
+)
 async def create_share(
     body: CreateShareRequest,
     request: Request,
@@ -870,20 +904,34 @@ async def create_share(
     key_type = "hkdf-v1" if body.client_token else None
     target_folder_id, allow_upload, upload_max_bytes = await _resolve_upload_folder(db, body, user)
 
-    await _insert_share_transaction(db, request, share_id, token, body, user, recipient_user_id, target_folder_id, allow_upload, key_type, upload_max_bytes)
+    await _insert_share_transaction(
+        db,
+        request,
+        share_id,
+        token,
+        body,
+        user,
+        recipient_user_id,
+        target_folder_id,
+        allow_upload,
+        key_type,
+        upload_max_bytes,
+    )
 
     cursor = await db.execute("SELECT created_at FROM shares WHERE id = ?", (share_id,))
     row = await cursor.fetchone()
     return {
-        "share_id":   share_id,
-        "id":         share_id,
+        "share_id": share_id,
+        "id": share_id,
         "share_type": body.share_type,
-        "token":      token,
+        "token": token,
         "created_at": row["created_at"],
     }
 
 
-@router.get("/api/v1/shares/{share_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.get(
+    "/api/v1/shares/{share_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}}
+)
 async def get_share(
     share_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -899,20 +947,13 @@ async def get_share(
     share = await _get_share_for_manage(db, share_id, user)
 
     items = await _get_items_with_files(db, share_id, share["target_folder_id"] or None)
-    sl_cursor = await db.execute(
-        "SELECT slug, expires_at FROM short_links WHERE share_id = ?", (share_id,)
-    )
-    short_links = [
-        {"slug": r["slug"], "expires_at": r["expires_at"]}
-        for r in await sl_cursor.fetchall()
-    ]
+    sl_cursor = await db.execute("SELECT slug, expires_at FROM short_links WHERE share_id = ?", (share_id,))
+    short_links = [{"slug": r["slug"], "expires_at": r["expires_at"]} for r in await sl_cursor.fetchall()]
 
     # Resolve folder name for the response
     folder_name = None
     if share["target_folder_id"]:
-        fol_cursor = await db.execute(
-            "SELECT name FROM folders WHERE id = ?", (share["target_folder_id"],)
-        )
+        fol_cursor = await db.execute("SELECT name FROM folders WHERE id = ?", (share["target_folder_id"],))
         fol_row = await fol_cursor.fetchone()
         folder_name = fol_row["name"] if fol_row else None
 
@@ -920,27 +961,34 @@ async def get_share(
 
     return {
         "share": {
-            "id":               share["id"],
-            "token":            share["token"],
-            "key_type":         share["key_type"],
-            "share_type":       share["share_type"],
-            "expires_at":       share["expires_at"],
-            "is_active":        bool(share["is_active"]),
-            "has_password":     share["password_hash"] is not None,
-            "max_downloads":    share["max_downloads"],
-            "download_count":   share["download_count"],
-            "allow_upload":     bool(share["allow_upload"]),
+            "id": share["id"],
+            "token": share["token"],
+            "key_type": share["key_type"],
+            "share_type": share["share_type"],
+            "expires_at": share["expires_at"],
+            "is_active": bool(share["is_active"]),
+            "has_password": share["password_hash"] is not None,
+            "max_downloads": share["max_downloads"],
+            "download_count": share["download_count"],
+            "allow_upload": bool(share["allow_upload"]),
             "target_folder_id": share["target_folder_id"],
-            "folder_name":      folder_name,
-            "created_at":       share["created_at"],
-            "items":            items,
-            "short_links":      short_links,
-            "can_manage":       can_manage,
+            "folder_name": folder_name,
+            "created_at": share["created_at"],
+            "items": items,
+            "short_links": short_links,
+            "can_manage": can_manage,
         }
     }
 
 
-@router.put("/api/v1/shares/{share_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.put(
+    "/api/v1/shares/{share_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def update_share(
     share_id: str,
     body: UpdateShareRequest,
@@ -970,21 +1018,23 @@ async def update_share(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     params.append(share_id)
-    await db.execute(
-        f"UPDATE shares SET {', '.join(updates)} WHERE id = ?", params
-    )
+    await db.execute(f"UPDATE shares SET {', '.join(updates)} WHERE id = ?", params)
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="file.share.updated",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=user.id, username=user.username, ip=_get_share_client_ip(request)),
-        detail={"share_id": share_id, "fields_changed": [u.split(" =")[0] for u in updates]},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.share.updated",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=_get_share_client_ip(request)),
+            detail={"share_id": share_id, "fields_changed": [u.split(" =")[0] for u in updates]},
+        )
+    )
     return {"message": "Share updated"}
 
 
-@router.delete("/api/v1/shares/{share_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/api/v1/shares/{share_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}}
+)
 async def delete_share(
     share_id: str,
     request: Request,
@@ -1000,17 +1050,22 @@ async def delete_share(
     await _get_share_for_manage(db, share_id, user)
     await db.execute("DELETE FROM shares WHERE id = ?", (share_id,))
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="file.share.deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=user.id, username=user.username, ip=_get_share_client_ip(request)),
-        detail={"share_id": share_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.share.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=_get_share_client_ip(request)),
+            detail={"share_id": share_id},
+        )
+    )
     return {"message": "Share deleted"}
 
 
-@router.get("/api/v1/folders/{folder_id}/shares", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.get(
+    "/api/v1/folders/{folder_id}/shares",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
 async def get_folder_shares(
     folder_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -1073,17 +1128,19 @@ async def get_folder_shares(
             if team_level_cache is None:
                 team_level_cache = await _team_level_for_user(db, team_id, user.id)
             can_manage = team_level_cache in ("admin", "write")
-        result.append({
-            "share_id":         r["id"],
-            "token":            r["token"],
-            "key_type":         r["key_type"],
-            "creator_username": r["creator_username"],
-            "created_at":       r["created_at"],
-            "expires_at":       r["expires_at"],
-            "allow_upload":     bool(r["allow_upload"]),
-            "short_link_slug":  r["short_link_slug"],
-            "can_manage":       can_manage,
-        })
+        result.append(
+            {
+                "share_id": r["id"],
+                "token": r["token"],
+                "key_type": r["key_type"],
+                "creator_username": r["creator_username"],
+                "created_at": r["created_at"],
+                "expires_at": r["expires_at"],
+                "allow_upload": bool(r["allow_upload"]),
+                "short_link_slug": r["short_link_slug"],
+                "can_manage": can_manage,
+            }
+        )
     return result
 
 
@@ -1130,11 +1187,13 @@ async def get_pending_share_keys(
     result = []
     for r in rows:
         if broad_access or r["created_by"] == user.id:
-            result.append({
-                "share_id": r["share_id"],
-                "token":    r["token"],
-                "file_id":  r["file_id"],
-            })
+            result.append(
+                {
+                    "share_id": r["share_id"],
+                    "token": r["token"],
+                    "file_id": r["file_id"],
+                }
+            )
     return result
 
 
@@ -1151,7 +1210,9 @@ class _ShareItemsRequest(BaseModel):
         return v
 
 
-@router.post("/api/v1/shares/{share_id}/items", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.post(
+    "/api/v1/shares/{share_id}/items", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}}
+)
 async def add_share_items(
     share_id: str,
     body: _ShareItemsRequest,
@@ -1167,6 +1228,7 @@ async def add_share_items(
     Idempotent: ON CONFLICT DO NOTHING, so duplicate posts are safe.
     """
     from app.routes.files import check_file_access
+
     share_id = validate_uuid(share_id)
     await _get_share_for_manage(db, share_id, user)
 
@@ -1189,8 +1251,7 @@ async def add_share_items(
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (share_id, resource_type, resource_id) DO NOTHING
             """,
-            (str(uuid.uuid4()), share_id, item.resource_type, item.resource_id,
-             item.encrypted_file_key, item.key_iv),
+            (str(uuid.uuid4()), share_id, item.resource_type, item.resource_id, item.encrypted_file_key, item.key_iv),
         )
     # Clear pending records for the files we just fulfilled.
     file_ids = [item.resource_id for item in body.items if item.resource_type == "file"]
@@ -1204,7 +1265,10 @@ async def add_share_items(
     return {"added": len(body.items)}
 
 
-@router.delete("/api/v1/shares/{share_id}/items/{resource_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/api/v1/shares/{share_id}/items/{resource_id}",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
 async def remove_share_item(
     share_id: str,
     resource_id: str,
@@ -1217,7 +1281,7 @@ async def remove_share_item(
     (target_folder_id set) are not affected — to stop sharing a folder share,
     delete the share entirely via DELETE /shares/{id}.
     """
-    share_id   = validate_uuid(share_id)
+    share_id = validate_uuid(share_id)
     resource_id = validate_uuid(resource_id)
     await _get_share_for_manage(db, share_id, user)
 
@@ -1235,7 +1299,10 @@ async def remove_share_item(
     return {"removed": True}
 
 
-@router.delete("/api/v1/shares/{share_id}/folder-items/{folder_id}", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/api/v1/shares/{share_id}/folder-items/{folder_id}",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
 async def remove_share_folder_items(
     share_id: str,
     folder_id: str,
@@ -1247,7 +1314,7 @@ async def remove_share_folder_items(
     Walks the folder tree rooted at folder_id and deletes share_items +
     pending_share_keying entries for every file found there.
     """
-    share_id  = validate_uuid(share_id)
+    share_id = validate_uuid(share_id)
     folder_id = validate_uuid(folder_id)
     await _get_share_for_manage(db, share_id, user)
 
@@ -1282,7 +1349,15 @@ async def remove_share_folder_items(
     return {"removed": result.rowcount}
 
 
-@router.post("/api/v1/shares/{share_id}/short-link", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 503: {"description": "503"}})
+@router.post(
+    "/api/v1/shares/{share_id}/short-link",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        503: {"description": "503"},
+    },
+)
 async def create_short_link(
     share_id: str,
     body: CreateShortLinkRequest,
@@ -1319,6 +1394,7 @@ async def create_short_link(
 # ---------------------------------------------------------------------------
 # Public share access (no authentication required)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/api/v1/s/{token}", responses={404: {"description": "Not Found"}})
 async def resolve_share(
@@ -1357,12 +1433,18 @@ async def resolve_share(
         user_agent = (request.headers.get("User-Agent") or "")[:512]
         # Authenticated recipients don't need a share_session_token — their session cookie
         # passes _require_share_access. Unauthenticated link shares still get one.
-        session_token = None if (share["share_type"] == "user" and user is not None) else \
-            create_share_session_token(share["id"], client_ip, user_agent)
+        session_token = (
+            None
+            if (share["share_type"] == "user" and user is not None)
+            else create_share_session_token(share["id"], client_ip, user_agent)
+        )
 
         await _log_share_access(
-            db, request,
-            user.id if user else None, share["id"], None,
+            db,
+            request,
+            user.id if user else None,
+            share["id"],
+            None,
             username=user.username if user else None,
             auth_method=user.auth_method if user else None,
             action="view",
@@ -1382,11 +1464,21 @@ async def resolve_share(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("resolve_share internal error for token %s: %s", token[:8], exc)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.exception(
+            "resolve_share internal error for token %s: %s", token[:8], exc
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise
 
 
-@router.get("/s/{token}/files/{file_id}/chunks", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.get(
+    "/s/{token}/files/{file_id}/chunks",
+    responses={
+        400: {"description": "Bad Request"},
+        401: {"description": "Unauthorized"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def get_shared_file_chunks(
     token: str,
     file_id: str,
@@ -1424,8 +1516,7 @@ async def get_shared_file_chunks(
         raise HTTPException(status_code=404, detail="File not found")
 
     cursor = await db.execute(
-        "SELECT * FROM file_chunks "
-        "WHERE file_id = ? ORDER BY chunk_index LIMIT ? OFFSET ?",
+        "SELECT * FROM file_chunks WHERE file_id = ? ORDER BY chunk_index LIMIT ? OFFSET ?",
         (file_id, limit, offset),
     )
     chunks = [FileChunk.from_row(r).to_dict() for r in await cursor.fetchall()]
@@ -1461,8 +1552,12 @@ async def _load_shared_file_row(db, file_id: str) -> dict:
 
 
 async def _enforce_download_limit(
-    db: Database, share: dict, user: AuthenticatedUser | None,
-    range_header: str, start: int, content_length: int,
+    db: Database,
+    share: dict,
+    user: AuthenticatedUser | None,
+    range_header: str,
+    start: int,
+    content_length: int,
 ) -> None:
     """Atomically increment download_count for non-owner requests that cross the minimum size."""
     is_owner = user is not None and user.id == share["created_by"]
@@ -1472,8 +1567,7 @@ async def _enforce_download_limit(
     if not counts_as_download:
         return
     result = await db.execute(
-        "UPDATE shares SET download_count = download_count + 1 "
-        "WHERE id = ? AND download_count < max_downloads",
+        "UPDATE shares SET download_count = download_count + 1 WHERE id = ? AND download_count < max_downloads",
         (share["id"],),
     )
     await db.commit()
@@ -1481,15 +1575,25 @@ async def _enforce_download_limit(
         raise HTTPException(status_code=410, detail="Download limit reached for this share")
 
 
-async def _require_blob_available(
-    storage_manager, db: Database, file_id: str, storage_key: str
-) -> None:
+async def _require_blob_available(storage_manager, db: Database, file_id: str, storage_key: str) -> None:
     if not await storage_manager.exists(db, file_id, storage_key):
         logger.error("Blob missing for shared file %s (storage_key=%s)", file_id, storage_key)  # NOSONAR
         raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
 
 
-@router.get("/s/{token}/files/{file_id}/content", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 410: {"description": "Gone"}, 422: {"description": "Unprocessable Entity"}, 503: {"description": "503"}})
+@router.get(
+    "/s/{token}/files/{file_id}/content",
+    responses={
+        400: {"description": "Bad Request"},
+        401: {"description": "Unauthorized"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+        410: {"description": "Gone"},
+        422: {"description": "Unprocessable Entity"},
+        503: {"description": "503"},
+    },
+)
 async def download_shared_file(
     token: str,
     file_id: str,
@@ -1538,9 +1642,15 @@ async def download_shared_file(
 
     # --- Access log on first chunk ---
     if not range_header or start == 0:
-        await _log_share_access(db, request, user.id if user else None, share["id"], file_id,
-                                username=user.username if user else None,
-                                auth_method=user.auth_method if user else None)
+        await _log_share_access(
+            db,
+            request,
+            user.id if user else None,
+            share["id"],
+            file_id,
+            username=user.username if user else None,
+            auth_method=user.auth_method if user else None,
+        )
 
     # --- Content-Disposition ---
     disposition = content_disposition(row["sanitized_name"] or "download")
@@ -1602,8 +1712,7 @@ async def resolve_short_link(
         raise HTTPException(status_code=404, detail="Short link not found or expired")
 
     share_cursor = await db.execute(
-        "SELECT * FROM shares WHERE id = ? AND is_active = 1 "
-        "AND (expires_at IS NULL OR expires_at > ?)",
+        "SELECT * FROM shares WHERE id = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > ?)",
         (link_row["share_id"], now),
     )
     share = await share_cursor.fetchone()
@@ -1667,7 +1776,18 @@ async def _bg_delete_blob(file_id: str, storage_key: str) -> None:
         pass
 
 
-@router.post("/s/{share_id}/upload", responses={400: {"description": "Bad Request"}, 401: {"description": "Unauthorized"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 413: {"description": "413"}, 422: {"description": "Unprocessable Entity"}, 429: {"description": "Too Many Requests"}})
+@router.post(
+    "/s/{share_id}/upload",
+    responses={
+        400: {"description": "Bad Request"},
+        401: {"description": "Unauthorized"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        413: {"description": "413"},
+        422: {"description": "Unprocessable Entity"},
+        429: {"description": "Too Many Requests"},
+    },
+)
 async def upload_to_share(
     share_id: str,
     request: Request,
@@ -1702,8 +1822,7 @@ async def upload_to_share(
 
     now = datetime.now(timezone.utc).isoformat()
     cursor = await db.execute(
-        "SELECT * FROM shares WHERE id = ? AND is_active = 1 "
-        "AND (expires_at IS NULL OR expires_at > ?)",
+        "SELECT * FROM shares WHERE id = ? AND is_active = 1 AND (expires_at IS NULL OR expires_at > ?)",
         (share_id, now),
     )
     share = await cursor.fetchone()
@@ -1758,17 +1877,23 @@ async def upload_to_share(
             VALUES (?, ?, ?, ?, ?, ?, 'application/octet-stream', ?, ?, ?, 1, ?, ?, 1)
             """,
             (
-                file_id, safe_name, safe_name, storage_key,
-                share["target_folder_id"], share["created_by"],
-                size_bytes, encrypted_size, encrypted_size,
-                encrypted_file_key, key_iv,
+                file_id,
+                safe_name,
+                safe_name,
+                storage_key,
+                share["target_folder_id"],
+                share["created_by"],
+                size_bytes,
+                encrypted_size,
+                encrypted_size,
+                encrypted_file_key,
+                key_iv,
             ),
         )
         # Write blob after the files row exists so the file_storage_locations FK is satisfied
         await storage.get_manager().write_blob(db, file_id, storage_key, content)
         await db.execute(
-            "INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, \"offset\") "
-            "VALUES (?, ?, 0, ?, ?, 0)",
+            'INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset") VALUES (?, ?, 0, ?, ?, 0)',
             (chunk_id, file_id, chunk_iv, encrypted_size),
         )
         await db.execute(

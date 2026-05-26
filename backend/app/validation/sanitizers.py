@@ -9,6 +9,7 @@ import base64
 import unicodedata
 import urllib.parse
 
+from app.conf.teams import G1_BASE64_MAX_LENGTH, G1_COMPRESSED_BYTES, G2_BASE64_MAX_LENGTH, G2_COMPRESSED_BYTES
 from app.conf.validation import (
     BASE64_MAX_LENGTH,
     BASE64_PATTERN,
@@ -28,7 +29,6 @@ from app.conf.validation import (
     USERNAME_PATTERN,
     UUID_PATTERN,
 )
-from app.conf.teams import G1_COMPRESSED_BYTES, G1_BASE64_MAX_LENGTH, G2_COMPRESSED_BYTES, G2_BASE64_MAX_LENGTH
 
 
 def sanitize_username(value: str) -> str:
@@ -42,9 +42,7 @@ def sanitize_username(value: str) -> str:
     """
     value = value.strip()
     if not USERNAME_PATTERN.match(value):
-        raise ValueError(
-            "Username must be 1-64 characters: letters, digits, . _ + - @"
-        )
+        raise ValueError("Username must be 1-64 characters: letters, digits, . _ + - @")
     if value.startswith((".", "-", "+")) or value.endswith((".", "-", "+")):
         raise ValueError("Username must not start or end with . - or +")
     if ".." in value:
@@ -58,9 +56,7 @@ def sanitize_folder_name(value: str) -> str:
     """Validate and return a folder name. Raises ValueError if invalid."""
     value = value.strip()
     if not FOLDER_NAME_PATTERN.match(value):
-        raise ValueError(
-            "Folder name must be 1-255 characters: letters, digits, spaces, or _ - . ' ! ( ) & ,"
-        )
+        raise ValueError("Folder name must be 1-255 characters: letters, digits, spaces, or _ - . ' ! ( ) & ,")
     if value.replace(".", "") == "":
         raise ValueError("Folder name cannot be only dots")
     return value
@@ -210,9 +206,7 @@ def sanitize_team_name(value: str) -> str:
     """Validate and return a team name. Raises ValueError if invalid."""
     value = value.strip()
     if not TEAM_NAME_PATTERN.match(value):
-        raise ValueError(
-            "Team name must be 1-64 characters: letters, digits, space, underscore, hyphen, dot"
-        )
+        raise ValueError("Team name must be 1-64 characters: letters, digits, space, underscore, hyphen, dot")
     if value.replace(".", "") == "":
         raise ValueError("Team name cannot be only dots")
     return value
@@ -248,9 +242,7 @@ def check_encode_depth(value: str, max_rounds: int = MAX_URL_DECODE_ROUNDS) -> N
 
     # After max_rounds the string still has percent-encoding — suspicious
     if "%" in current:
-        raise ValueError(
-            f"Input still contains percent-encoded sequences after {max_rounds} decode rounds"
-        )
+        raise ValueError(f"Input still contains percent-encoded sequences after {max_rounds} decode rounds")
 
 
 def validate_g1_point(value: str) -> str:

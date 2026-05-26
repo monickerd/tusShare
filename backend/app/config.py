@@ -1,7 +1,8 @@
 """Application configuration loaded from environment variables."""
 
-from pydantic_settings import BaseSettings
 from pathlib import Path
+
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -61,26 +62,26 @@ class Settings(BaseSettings):
     # Admin panel defaults — these seed admin_settings on first run.
     # Once written to the database they can be overridden via the admin UI.
     OPEN_REGISTRATION: bool = False
-    GLOBAL_MAX_FILE_SIZE: int = 0      # bytes; 0 = no global limit
-    GLOBAL_BANDWIDTH_LIMIT: int = 0    # bytes/s; 0 = no global limit
-    DISK_WARNING_THRESHOLD: int = 65   # filesystem usage % that triggers admin alert
+    GLOBAL_MAX_FILE_SIZE: int = 0  # bytes; 0 = no global limit
+    GLOBAL_BANDWIDTH_LIMIT: int = 0  # bytes/s; 0 = no global limit
+    DISK_WARNING_THRESHOLD: int = 65  # filesystem usage % that triggers admin alert
 
     # Rate limiting (requests per window)
-    RATE_LIMIT_LOGIN: int = 5          # per 15 min per IP
-    RATE_LIMIT_API: int = 60           # per min per user
-    RATE_LIMIT_SHARE_CREATE: int = 5   # per min per user
-    RATE_LIMIT_UPLOAD: int = 300       # per min per user
-    RATE_LIMIT_MANAGEMENT: int = 120   # per min per user (folder/share CRUD, non-file actions)
+    RATE_LIMIT_LOGIN: int = 5  # per 15 min per IP
+    RATE_LIMIT_API: int = 60  # per min per user
+    RATE_LIMIT_SHARE_CREATE: int = 5  # per min per user
+    RATE_LIMIT_UPLOAD: int = 300  # per min per user
+    RATE_LIMIT_MANAGEMENT: int = 120  # per min per user (folder/share CRUD, non-file actions)
 
     # Error-rate escalation (brute-force / scanning detection)
     # When a single IP accumulates >= ERROR_THRESHOLD non-429 4xx/5xx responses
     # within ERROR_WINDOW seconds, it is escalated to aggressive throttling:
     # ESCALATED_MAX requests per ESCALATED_WINDOW seconds for ESCALATED_DURATION seconds.
     # Set ERROR_THRESHOLD=0 to disable escalation entirely.
-    RATE_LIMIT_ERROR_THRESHOLD: int = 5    # errors before escalation
-    RATE_LIMIT_ERROR_WINDOW: int = 60      # seconds over which errors are counted
-    RATE_LIMIT_ESCALATED_MAX: int = 1      # max requests allowed per escalated window
-    RATE_LIMIT_ESCALATED_WINDOW: int = 1   # seconds per escalated request slot (1 req/s)
+    RATE_LIMIT_ERROR_THRESHOLD: int = 5  # errors before escalation
+    RATE_LIMIT_ERROR_WINDOW: int = 60  # seconds over which errors are counted
+    RATE_LIMIT_ESCALATED_MAX: int = 1  # max requests allowed per escalated window
+    RATE_LIMIT_ESCALATED_WINDOW: int = 1  # seconds per escalated request slot (1 req/s)
     RATE_LIMIT_ESCALATED_DURATION: int = 300  # seconds the IP stays in escalated mode (5 min)
 
     # Public / shared device sessions
@@ -96,8 +97,8 @@ class Settings(BaseSettings):
     # STEP_UP_WINDOW_SECONDS: how long a granted elevation lasts (sudo window).
     #   0 = single-use (token is bound to the exact payload_hash it was issued for).
     #   >0 = any sensitive action within the window is accepted without re-auth.
-    STEP_UP_WINDOW_SECONDS: int = 300     # default: 5 minute sudo window
-    STEP_UP_MAX_FAILURES: int = 3         # failed attempts before session lockout
+    STEP_UP_WINDOW_SECONDS: int = 300  # default: 5 minute sudo window
+    STEP_UP_MAX_FAILURES: int = 3  # failed attempts before session lockout
 
     # Trusted proxy header (set to X-Real-IP or X-Forwarded-For if behind nginx)
     TRUSTED_IP_HEADER: str = "X-Real-IP"
@@ -147,7 +148,7 @@ class Settings(BaseSettings):
     # WEBAUTHN_RP_ID:   registrable domain suffix of the page origin.
     #                   e.g. "files.example.com" for production; "localhost" for dev.
     # WEBAUTHN_RP_NAME: human-readable display name shown in authenticator dialogs.
-    WEBAUTHN_RP_ID:   str = "localhost"
+    WEBAUTHN_RP_ID: str = "localhost"
     WEBAUTHN_RP_NAME: str = "tusShare"
 
     # MFA pending-token TTL (seconds) — window between OPAQUE login/finish and

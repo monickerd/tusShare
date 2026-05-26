@@ -7,25 +7,31 @@ Phase 4. Encrypted bytes are served verbatim — the server never decrypts.
 import asyncio
 import logging
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 
-from app.auth.dependencies import get_current_user, get_optional_user, require_user_role
+import app.storage.manager as storage
+from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, db_session, get_db
 from app.middleware.bandwidth import check_bandwidth
 from app.middleware.rate_limit import _get_client_ip
 from app.models.file import File, FileChunk
-from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member, _team_level_for_user
+from app.routes._access import (
+    _team_level_for_user,
+    check_data_permission,
+    copy_folder_permissions,
+    get_folder_team_id,
+    is_in_shared_tree,
+    is_team_folder_member,
+)
 from app.services import event_bus, sse_broker
-import app.storage.manager as storage
 from app.util.db import get_admin_setting
 from app.util.http import content_disposition, parse_range_header
-from app.validation.sanitizers import SanitizedFilename, sanitize_filename, validate_uuid
-from typing import Annotated
-
+from app.validation.sanitizers import sanitize_filename, validate_uuid
 
 _ERR_ACCESS_DENIED = "Access denied"
 _SQL_FILE_BY_ID = "SELECT * FROM files WHERE id = ? AND deleted_at IS NULL"
@@ -46,9 +52,12 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
          explicit deny/allow ACL → team-based grant → ancestry walk → deny.
     """
     from app.models.role import FLAG_FILES_ACCESS_ALL_READ, FLAG_FILES_ACCESS_ALL_WRITE
-    if (file_row["owner_id"] == user.id
-            or user.has_flag(FLAG_FILES_ACCESS_ALL_READ)
-            or user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE)):
+
+    if (
+        file_row["owner_id"] == user.id
+        or user.has_flag(FLAG_FILES_ACCESS_ALL_READ)
+        or user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE)
+    ):
         return
     if file_row["folder_id"] and await is_in_shared_tree(db, file_row["folder_id"]):
         return
@@ -56,20 +65,17 @@ async def check_file_access(db, file_row, user: AuthenticatedUser) -> None:
         return
     raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — helper; 403 documented in callers
 
+
 router = APIRouter()
 
 
 async def _av_gate_active(db) -> bool:
     """Return True when av_require_clean is enabled AND av_scan_endpoint is configured."""
     cursor = await db.execute(
-        "SELECT key, value FROM admin_settings "
-        "WHERE key IN ('av_require_clean', 'av_scan_endpoint')"
+        "SELECT key, value FROM admin_settings WHERE key IN ('av_require_clean', 'av_scan_endpoint')"
     )
     rows = {r["key"]: r["value"] for r in await cursor.fetchall()}
-    return (
-        rows.get("av_require_clean", "false").lower() == "true"
-        and bool(rows.get("av_scan_endpoint", "").strip())
-    )
+    return rows.get("av_require_clean", "false").lower() == "true" and bool(rows.get("av_scan_endpoint", "").strip())
 
 
 async def _check_av_gate(db, file_row) -> None:
@@ -82,7 +88,7 @@ async def _check_av_gate(db, file_row) -> None:
     raise HTTPException(  # NOSONAR — helper; 451 documented in callers
         status_code=451,
         detail={
-            "detail":    "File pending antivirus scan",
+            "detail": "File pending antivirus scan",
             "av_status": status,
         },
     )
@@ -110,6 +116,7 @@ class UpdateFileRequest(BaseModel):
 
 class _BatchMoveFileKey(BaseModel):
     """PRE-encrypted file key for a team destination. All fields are base64."""
+
     pre_c1: str
     encrypted_file_key: str
     key_iv: str
@@ -118,6 +125,7 @@ class _BatchMoveFileKey(BaseModel):
     @classmethod
     def validate_b64(cls, v: str) -> str:
         from app.validation.sanitizers import validate_base64
+
         return validate_base64(v)
 
 
@@ -164,19 +172,19 @@ async def _check_batch_move_permission(
     if not is_owner:
         if not src_team_id:
             return "permission_denied"
-        from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OTHERS_OUT
+        from app.models.team_role import TEAM_FLAG_MOVE_OTHERS_OUT, get_user_team_move_flags
+
         move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
         return None if move_flags[TEAM_FLAG_MOVE_OTHERS_OUT] else "permission_denied"
     if src_team_id and src_team_id != dest_team_id:
-        from app.models.team_role import get_user_team_move_flags, TEAM_FLAG_MOVE_OWN_OUT
+        from app.models.team_role import TEAM_FLAG_MOVE_OWN_OUT, get_user_team_move_flags
+
         move_flags = await get_user_team_move_flags(db, user.id, src_team_id)
         return None if move_flags[TEAM_FLAG_MOVE_OWN_OUT] else "permission_denied"
     return None
 
 
-async def _execute_file_move_tx(
-    db, item, dest_id, dest_team_id, src_folder_id, src_team_id, user
-) -> str | None:
+async def _execute_file_move_tx(db, item, dest_id, dest_team_id, src_folder_id, src_team_id, user) -> str | None:
     """Execute DB transaction for one file move. Returns error reason or None on success."""
     await db.execute("BEGIN")
     try:
@@ -210,8 +218,7 @@ async def _execute_file_move_tx(
                 "    pre_c1 = excluded.pre_c1, "
                 "    encrypted_file_key = excluded.encrypted_file_key, "
                 "    key_iv = excluded.key_iv",
-                (new_ftk_id, dest_team_id, item.id,
-                 tk.pre_c1, tk.encrypted_file_key, tk.key_iv),
+                (new_ftk_id, dest_team_id, item.id, tk.pre_c1, tk.encrypted_file_key, tk.key_iv),
             )
         await db.commit()
         topic = src_folder_id if src_folder_id else f"root:{user.id}"
@@ -238,7 +245,9 @@ async def _validate_move_destination(db, dest_id: str | None, user) -> str | Non
     return await get_folder_team_id(db, dest_id)
 
 
-async def _process_single_file_move(db, item, dest_id, dest_team_id, gate_active, user) -> tuple[str | None, str | None]:
+async def _process_single_file_move(
+    db, item, dest_id, dest_team_id, gate_active, user
+) -> tuple[str | None, str | None]:
     """Process one file in batch-move. Returns (succeeded_id, failed_entry) with one set."""
     try:
         cursor = await db.execute(
@@ -329,21 +338,28 @@ async def search_files(
     return {
         "files": [
             {
-                "id":                 r["id"],
-                "original_name":      r["original_name"],
-                "size_bytes":         r["size_bytes"],
-                "created_at":         str(r["created_at"]) if r["created_at"] else None,
-                "folder_id":          r["folder_id"],
-                "folder_path":        r["folder_name"] or "(root)",
+                "id": r["id"],
+                "original_name": r["original_name"],
+                "size_bytes": r["size_bytes"],
+                "created_at": str(r["created_at"]) if r["created_at"] else None,
+                "folder_id": r["folder_id"],
+                "folder_path": r["folder_name"] or "(root)",
                 "encrypted_file_key": r["encrypted_file_key"],
-                "key_iv":             r["key_iv"],
+                "key_iv": r["key_iv"],
             }
             for r in rows
         ]
     }
 
 
-@router.post("/batch-move", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.post(
+    "/batch-move",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def batch_move_files(
     body: BatchMoveRequest,
     request: Request,
@@ -362,6 +378,7 @@ async def batch_move_files(
     Returns a summary of succeeded and failed file IDs.
     """
     from app.schemas.security_event import EventActor, SecurityEvent
+
     dest_id = body.destination_folder_id
     dest_team_id = await _validate_move_destination(db, dest_id, user)
 
@@ -385,18 +402,20 @@ async def batch_move_files(
             failed.append({"id": item.id, "reason": fail_reason})
 
     if succeeded:
-        event_bus.emit(SecurityEvent(
-            event_type="file.move",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=user.id, username=user.username, ip=_get_client_ip(request)),
-            detail={
-                "destination_folder_id": dest_id,
-                "destination_team_id": dest_team_id,
-                "file_ids": succeeded,
-                "move_count": len(succeeded),
-            },
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.move",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=user.id, username=user.username, ip=_get_client_ip(request)),
+                detail={
+                    "destination_folder_id": dest_id,
+                    "destination_team_id": dest_team_id,
+                    "file_ids": succeeded,
+                    "move_count": len(succeeded),
+                },
+            )
+        )
 
     return {"succeeded": succeeded, "failed": failed}
 
@@ -404,6 +423,7 @@ async def batch_move_files(
 # ---------------------------------------------------------------------------
 # POST /files/batch-copy
 # ---------------------------------------------------------------------------
+
 
 class _BatchCopyItem(BaseModel):
     file_id: str
@@ -423,6 +443,7 @@ class _BatchCopyItem(BaseModel):
     def validate_b64(cls, v: str | None) -> str | None:
         if v is not None:
             from app.validation.sanitizers import validate_base64
+
             return validate_base64(v)
         return v
 
@@ -450,9 +471,14 @@ class BatchCopyRequest(BaseModel):
 
 
 def _copy_fields(new_enc_key, new_key_iv, ftk_pre_c1=None, ftk_enc_key=None, ftk_key_iv=None, needs_ftk=False):
-    return {"new_enc_key": new_enc_key, "new_key_iv": new_key_iv,
-            "ftk_pre_c1": ftk_pre_c1, "ftk_enc_key": ftk_enc_key,
-            "ftk_key_iv": ftk_key_iv, "needs_ftk": needs_ftk}
+    return {
+        "new_enc_key": new_enc_key,
+        "new_key_iv": new_key_iv,
+        "ftk_pre_c1": ftk_pre_c1,
+        "ftk_enc_key": ftk_enc_key,
+        "ftk_key_iv": ftk_key_iv,
+        "needs_ftk": needs_ftk,
+    }
 
 
 async def _resolve_same_team_path(db, item, src_row, src_team_id):
@@ -460,14 +486,19 @@ async def _resolve_same_team_path(db, item, src_row, src_team_id):
     if src_team_id is None:
         return _copy_fields(src_row["encrypted_file_key"], src_row["key_iv"]), None
     cursor = await db.execute(
-        "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys "
-        "WHERE team_id = ? AND file_id = ?",
+        "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys WHERE team_id = ? AND file_id = ?",
         (src_team_id, item.file_id),
     )
     src_ftk = await cursor.fetchone()
     if src_ftk:
-        return _copy_fields(src_row["encrypted_file_key"], src_row["key_iv"],
-                            src_ftk["pre_c1"], src_ftk["encrypted_file_key"], src_ftk["key_iv"], True), None
+        return _copy_fields(
+            src_row["encrypted_file_key"],
+            src_row["key_iv"],
+            src_ftk["pre_c1"],
+            src_ftk["encrypted_file_key"],
+            src_ftk["key_iv"],
+            True,
+        ), None
     return _copy_fields(src_row["encrypted_file_key"], src_row["key_iv"]), None
 
 
@@ -475,8 +506,9 @@ def _resolve_personal_to_team_path(item, src_row):
     """Path 4: personal → team."""
     if not item.pre_c1 or not item.encrypted_file_key or not item.key_iv:
         return None, "missing_crypto_fields"
-    return _copy_fields(src_row["encrypted_file_key"], src_row["key_iv"],
-                        item.pre_c1, item.encrypted_file_key, item.key_iv, True), None
+    return _copy_fields(
+        src_row["encrypted_file_key"], src_row["key_iv"], item.pre_c1, item.encrypted_file_key, item.key_iv, True
+    ), None
 
 
 def _resolve_team_to_personal_path(item):
@@ -491,15 +523,20 @@ async def _resolve_cross_team_path(db, item, src_row, src_team_id):
     if not item.pre_c1:
         return None, "missing_crypto_fields"
     cursor = await db.execute(
-        "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys "
-        "WHERE team_id = ? AND file_id = ?",
+        "SELECT pre_c1, encrypted_file_key, key_iv FROM file_team_keys WHERE team_id = ? AND file_id = ?",
         (src_team_id, item.file_id),
     )
     src_ftk = await cursor.fetchone()
     if src_ftk is None:
         return None, "missing_team_key"
-    return _copy_fields(src_row["encrypted_file_key"], src_row["key_iv"],
-                        item.pre_c1, src_ftk["encrypted_file_key"], src_ftk["key_iv"], True), None
+    return _copy_fields(
+        src_row["encrypted_file_key"],
+        src_row["key_iv"],
+        item.pre_c1,
+        src_ftk["encrypted_file_key"],
+        src_ftk["key_iv"],
+        True,
+    ), None
 
 
 async def _resolve_copy_crypto_fields(
@@ -535,14 +572,21 @@ async def _execute_file_copy_tx(
             """,
             (
                 new_file_id,
-                src_row["original_name"], src_row["sanitized_name"],
+                src_row["original_name"],
+                src_row["sanitized_name"],
                 src_row["storage_key"],
-                dest_id, user.id, src_row["mime_type"],
-                src_row["size_bytes"], src_row["encrypted_size"],
-                src_row["chunk_size"], src_row["total_chunks"],
-                cf["new_enc_key"], cf["new_key_iv"],
+                dest_id,
+                user.id,
+                src_row["mime_type"],
+                src_row["size_bytes"],
+                src_row["encrypted_size"],
+                src_row["chunk_size"],
+                src_row["total_chunks"],
+                cf["new_enc_key"],
+                cf["new_key_iv"],
                 src_row["checksum_sha256"],
-                src_row["av_scan_status"], src_row["av_scanned_at"],
+                src_row["av_scan_status"],
+                src_row["av_scanned_at"],
                 src_row["escrow_ephemeral_pk"],
                 src_row["escrow_encrypted_key"],
                 src_row["escrow_key_iv"],
@@ -584,9 +628,7 @@ async def _execute_file_copy_tx(
 
 async def _validate_copy_destination(db, dest_id: str, user) -> str | None:
     """Validate access to copy destination folder and return its team_id (or None)."""
-    cursor = await db.execute(
-        "SELECT owner_id FROM folders WHERE id = ? AND deleted_at IS NULL", (dest_id,)
-    )
+    cursor = await db.execute("SELECT owner_id FROM folders WHERE id = ? AND deleted_at IS NULL", (dest_id,))
     dest_folder = await cursor.fetchone()
     if dest_folder is None:
         raise HTTPException(status_code=404, detail="Destination folder not found")
@@ -599,6 +641,7 @@ async def _validate_copy_destination(db, dest_id: str, user) -> str | None:
 async def _process_single_copy(db, item, dest_id, dest_team_id, copy_boundary, user, ip) -> tuple:
     """Process one file in batch-copy. Returns (copy_info, fail_info) with one set."""
     from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+
     try:
         cursor = await db.execute(
             "SELECT * FROM files WHERE id = ? AND deleted_at IS NULL AND upload_complete = 1",
@@ -614,13 +657,21 @@ async def _process_single_copy(db, item, dest_id, dest_team_id, copy_boundary, u
         src_folder_id = src_row["folder_id"]
         src_team_id = await get_folder_team_id(db, src_folder_id) if src_folder_id else None
         if copy_boundary == "same_team" and src_team_id != dest_team_id:
-            event_bus.emit(SecurityEvent(
-                event_type="file.copy.blocked", severity="warning", outcome="failure",
-                actor=EventActor(user_id=user.id, username=user.username, ip=ip),
-                target=EventTarget(type="file", id=item.file_id, name=src_row["original_name"]),
-                detail={"block_reason": "boundary_violation", "copy_boundary_setting": "same_team",
-                        "source_team_id": src_team_id, "destination_team_id": dest_team_id},
-            ))
+            event_bus.emit(
+                SecurityEvent(
+                    event_type="file.copy.blocked",
+                    severity="warning",
+                    outcome="failure",
+                    actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+                    target=EventTarget(type="file", id=item.file_id, name=src_row["original_name"]),
+                    detail={
+                        "block_reason": "boundary_violation",
+                        "copy_boundary_setting": "same_team",
+                        "source_team_id": src_team_id,
+                        "destination_team_id": dest_team_id,
+                    },
+                )
+            )
             return None, {"source_id": item.file_id, "reason": "boundary_violation"}
         crypto_fields, reason = await _resolve_copy_crypto_fields(db, item, src_row, src_team_id, dest_team_id)
         if reason:
@@ -667,26 +718,26 @@ async def batch_copy_files(
     copy_boundary = boundary_val.lower()
 
     if copy_boundary == "disabled":
-        event_bus.emit(SecurityEvent(
-            event_type="file.copy.blocked",
-            severity="warning",
-            outcome="failure",
-            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
-            detail={
-                "block_reason": "policy_disabled",
-                "copy_boundary_setting": "disabled",
-                "destination_folder_id": dest_id,
-            },
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.copy.blocked",
+                severity="warning",
+                outcome="failure",
+                actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+                detail={
+                    "block_reason": "policy_disabled",
+                    "copy_boundary_setting": "disabled",
+                    "destination_folder_id": dest_id,
+                },
+            )
+        )
         raise HTTPException(status_code=403, detail="copy.disabled")
 
     copied: list[dict] = []
     failed: list[dict] = []
 
     for item in body.files:
-        copy_info, fail_info = await _process_single_copy(
-            db, item, dest_id, dest_team_id, copy_boundary, user, ip
-        )
+        copy_info, fail_info = await _process_single_copy(db, item, dest_id, dest_team_id, copy_boundary, user, ip)
         if copy_info:
             copied.append(copy_info)
         else:
@@ -694,19 +745,21 @@ async def batch_copy_files(
 
     if copied:
         first = copied[0]
-        event_bus.emit(SecurityEvent(
-            event_type="file.copy",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
-            target=EventTarget(type="file", id=first["source_id"]),
-            detail={
-                "destination_folder_id": dest_id,
-                "destination_file_id":   first["new_id"],
-                "destination_team_id":   dest_team_id,
-                "copy_count":            len(copied),
-            },
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.copy",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+                target=EventTarget(type="file", id=first["source_id"]),
+                detail={
+                    "destination_folder_id": dest_id,
+                    "destination_file_id": first["new_id"],
+                    "destination_team_id": dest_team_id,
+                    "copy_count": len(copied),
+                },
+            )
+        )
 
     return {"copied": copied, "failed": failed}
 
@@ -746,9 +799,7 @@ async def get_file_info(
     await check_file_access(db, row, user)
 
     # Creator username
-    owner_cursor = await db.execute(
-        "SELECT username FROM users WHERE id = ?", (row["owner_id"],)
-    )
+    owner_cursor = await db.execute("SELECT username FROM users WHERE id = ?", (row["owner_id"],))
     owner_row = await owner_cursor.fetchone()
     creator = owner_row["username"] if owner_row else row["owner_id"]
 
@@ -769,28 +820,26 @@ async def get_file_info(
     audit_rows = await al_cursor.fetchall()
     audit = [
         {
-            "user":      r["actor_username"],
-            "action":    r["action"],
+            "user": r["actor_username"],
+            "action": r["action"],
             "timestamp": str(r["timestamp"]) if r["timestamp"] else None,
-            "ip":        r["ip_address"],
+            "ip": r["ip_address"],
         }
         for r in audit_rows
     ]
 
     return {
-        "file_id":       row["id"],
-        "name":          row["original_name"],
-        "size_bytes":    row["size_bytes"],
-        "created_at":    str(row["created_at"]) if row["created_at"] else None,
-        "creator":       creator,
+        "file_id": row["id"],
+        "name": row["original_name"],
+        "size_bytes": row["size_bytes"],
+        "created_at": str(row["created_at"]) if row["created_at"] else None,
+        "creator": creator,
         "download_count": download_count,
-        "audit":         audit,
+        "audit": audit,
     }
 
 
-async def _build_file_update_fields(
-    db, body: UpdateFileRequest, user
-) -> "tuple[list, list, list[str]]":
+async def _build_file_update_fields(db, body: UpdateFileRequest, user) -> "tuple[list, list, list[str]]":
     """Build SQL update clauses for a file update. Raises HTTPException on invalid input."""
     if body.move_to_root and body.folder_id is not None:
         raise HTTPException(status_code=400, detail="Cannot specify both folder_id and move_to_root")
@@ -812,9 +861,7 @@ async def _build_file_update_fields(
         # Verify the target folder exists and is owned by this user.
         # Without this check, a user could move their file into another user's folder,
         # making it appear in that user's folder listing (since listing queries by folder_id).
-        target_cursor = await db.execute(
-            "SELECT owner_id FROM folders WHERE id = ?", (body.folder_id,)
-        )
+        target_cursor = await db.execute("SELECT owner_id FROM folders WHERE id = ?", (body.folder_id,))
         target_folder = await target_cursor.fetchone()
         if target_folder is None:
             raise HTTPException(status_code=404, detail="Target folder not found")
@@ -865,7 +912,14 @@ async def _require_file_write_access(db, row, user: AuthenticatedUser) -> None:
     raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
 
-@router.put("/{file_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.put(
+    "/{file_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def update_file(
     file_id: str,
     body: UpdateFileRequest,
@@ -875,6 +929,7 @@ async def update_file(
 ):
     """Update file metadata (rename, move)."""
     from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+
     file_id = validate_uuid(file_id)
 
     cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
@@ -899,23 +954,27 @@ async def update_file(
     ip = _get_client_ip(request)
     is_move = body.folder_id is not None or body.move_to_root
     if is_move:
-        event_bus.emit(SecurityEvent(
-            event_type="file.move",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
-            target=EventTarget(type="file", id=file_id, name=row["original_name"]),
-            detail={"from_folder_id": row["folder_id"], "to_folder_id": body.folder_id},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.move",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+                target=EventTarget(type="file", id=file_id, name=row["original_name"]),
+                detail={"from_folder_id": row["folder_id"], "to_folder_id": body.folder_id},
+            )
+        )
     elif body.original_name:
-        event_bus.emit(SecurityEvent(
-            event_type="file.rename",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
-            target=EventTarget(type="file", id=file_id, name=body.original_name),
-            detail={"old_name": row["original_name"]},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.rename",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+                target=EventTarget(type="file", id=file_id, name=body.original_name),
+                detail={"old_name": row["original_name"]},
+            )
+        )
 
     result = {"message": "File updated"}
     if removed_chars:
@@ -937,6 +996,7 @@ async def delete_file(
     DB mutations are atomic; blob removal is non-blocking and best-effort.
     """
     from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+
     file_id = validate_uuid(file_id)
 
     cursor = await db.execute(
@@ -961,14 +1021,16 @@ async def delete_file(
         )
         await db.commit()
         sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
-        event_bus.emit(SecurityEvent(
-            event_type="file.delete",
-            severity="warning",
-            outcome="success",
-            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
-            target=EventTarget(type="file", id=file_id, name=row["original_name"]),
-            detail={"trash": True},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.delete",
+                severity="warning",
+                outcome="success",
+                actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+                target=EventTarget(type="file", id=file_id, name=row["original_name"]),
+                detail={"trash": True},
+            )
+        )
         return {"message": "File moved to trash"}
 
     # Trash disabled — hard delete immediately.
@@ -993,13 +1055,12 @@ async def delete_file(
     sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
 
     # Blob ref-count: only delete the blob when no other files row shares storage_key
-    cursor = await db.execute(
-        "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (storage_key,)
-    )
+    cursor = await db.execute("SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (storage_key,))
     cnt_row = await cursor.fetchone()
     blob_is_last_ref = cnt_row is None or cnt_row["cnt"] == 0
 
     if blob_is_last_ref:
+
         async def _bg_delete(fid: str, key: str) -> None:
             try:
                 async with db_session() as _db:
@@ -1011,20 +1072,23 @@ async def delete_file(
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
 
-    event_bus.emit(SecurityEvent(
-        event_type="file.delete",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=user.id, username=user.username, ip=ip),
-        target=EventTarget(type="file", id=file_id, name=row["original_name"]),
-        detail={"trash": False},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.delete",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=ip),
+            target=EventTarget(type="file", id=file_id, name=row["original_name"]),
+            detail={"trash": False},
+        )
+    )
     return {"message": "File deleted"}
 
 
 async def _update_last_accessed(file_id: str) -> None:
     try:
         from datetime import datetime, timezone
+
         async with db_session() as _db:
             await _db.execute(
                 "UPDATE files SET last_accessed_at = ? WHERE id = ?",
@@ -1061,10 +1125,21 @@ async def _log_download(
         )
         await db.commit()
     except Exception:
-        logger.warning("Failed to write access log for file %s", file_id)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.warning(
+            "Failed to write access log for file %s", file_id
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
 
 
-@router.get("/{file_id}/content", responses={404: {"description": "Not Found"}, 409: {"description": "Conflict"}, 422: {"description": "Unprocessable Entity"}, 423: {"description": "423"}, 503: {"description": "503"}})
+@router.get(
+    "/{file_id}/content",
+    responses={
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+        422: {"description": "Unprocessable Entity"},
+        423: {"description": "423"},
+        503: {"description": "503"},
+    },
+)
 async def get_file_content(
     file_id: str,
     request: Request,
@@ -1112,7 +1187,9 @@ async def get_file_content(
     # Verify blob is reachable before committing to stream
     blob_exists = await storage.get_manager().exists(db, file_id, storage_key)
     if not blob_exists:
-        logger.error("Blob missing for file %s (storage_key=%s)", file_id, storage_key)  # NOSONAR — server-side audit log; values are Pydantic-validated
+        logger.error(
+            "Blob missing for file %s (storage_key=%s)", file_id, storage_key
+        )  # NOSONAR — server-side audit log; values are Pydantic-validated
         raise HTTPException(status_code=503, detail="File data is temporarily unavailable")
 
     # --- Parse Range header ---
@@ -1192,7 +1269,7 @@ async def get_file_chunks(
         "file_id": file_id,
         "original_name": row["original_name"],
         "mime_type": row["mime_type"],
-        "size_bytes": row["size_bytes"],          # plaintext file size for integrity check
+        "size_bytes": row["size_bytes"],  # plaintext file size for integrity check
         "encrypted_file_key": row["encrypted_file_key"] if is_owner else None,
         "key_iv": row["key_iv"] if is_owner else None,
         "chunk_size": row["chunk_size"],

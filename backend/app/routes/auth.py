@@ -9,13 +9,15 @@ import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
+import app.sensitive_config as sensitive_config
+import app.storage.manager as storage
 from app.auth.cookies import clear_auth_cookies, set_auth_cookies, user_response_dict
-from app.util.db import get_admin_setting
-from app.auth.dependencies import get_current_user, require_user_role, _get_auth_provider
+from app.auth.dependencies import _get_auth_provider, get_current_user, require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import (
     create_access_token,
@@ -29,16 +31,14 @@ from app.auth.stepup import (
     get_verifier,
     log_security_event,
 )
-from app.conf.auth import COOKIE_ACCESS, COOKIE_CSRF, COOKIE_REFRESH, REFRESH_TOKEN_COOKIE_PATH
+from app.conf.auth import COOKIE_REFRESH
 from app.config import settings
 from app.database import Database, db_session, get_db
-from app.services import live_settings, event_bus
-from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.middleware.rate_limit import _get_client_ip
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+from app.services import event_bus, live_settings
+from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
-import app.sensitive_config as sensitive_config
-import app.storage.manager as storage
-from typing import Annotated
 
 _bg_tasks: set = set()
 
@@ -51,8 +51,7 @@ async def _delete_user_blobs(rows_snapshot: list) -> None:
         for row in rows_snapshot:
             try:
                 cur = await _db.execute(
-                    "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?",
-                    (row["storage_key"],)
+                    "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (row["storage_key"],)
                 )
                 cnt = await cur.fetchone()
                 if cnt and cnt["cnt"] > 0:
@@ -61,9 +60,8 @@ async def _delete_user_blobs(rows_snapshot: list) -> None:
             except Exception as exc:
                 logger.warning("Failed to delete blob %s during self-delete: %s", row["storage_key"], exc)
 
+
 router = APIRouter()
-
-
 
 
 @router.post("/logout")
@@ -84,12 +82,14 @@ async def logout(
         await db.commit()
 
     clear_auth_cookies(response)
-    event_bus.emit(SecurityEvent(
-        event_type="auth.logout",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="auth.logout",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
+        )
+    )
     return {"message": "Logged out"}
 
 
@@ -149,13 +149,15 @@ async def refresh(
             )
             await db.commit()
             clear_auth_cookies(response)
-            event_bus.emit(SecurityEvent(
-                event_type="auth.session.force_terminated",
-                severity="critical",
-                outcome="success",
-                actor=EventActor(user_id=str(user_id), ip=_get_client_ip(request)),
-                detail={"reason": "refresh_token_reuse_detected"},
-            ))
+            event_bus.emit(
+                SecurityEvent(
+                    event_type="auth.session.force_terminated",
+                    severity="critical",
+                    outcome="success",
+                    actor=EventActor(user_id=str(user_id), ip=_get_client_ip(request)),
+                    detail={"reason": "refresh_token_reuse_detected"},
+                )
+            )
             raise HTTPException(status_code=401, detail="Session invalidated. Please log in again.")
 
         # Look up user (still inside transaction)
@@ -171,11 +173,17 @@ async def refresh(
         new_now = datetime.now(timezone.utc).isoformat()
         if is_public_device:
             new_expires_at = (
-                datetime.now(timezone.utc) + timedelta(minutes=live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES))
+                datetime.now(timezone.utc)
+                + timedelta(
+                    minutes=live_settings.get_int(
+                        "public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+                    )
+                )
             ).isoformat()
         else:
             new_expires_at = (
-                datetime.now(timezone.utc) + timedelta(days=live_settings.get_int("refresh_token_expire_days", settings.REFRESH_TOKEN_EXPIRE_DAYS))
+                datetime.now(timezone.utc)
+                + timedelta(days=live_settings.get_int("refresh_token_expire_days", settings.REFRESH_TOKEN_EXPIRE_DAYS))
             ).isoformat()
         await db.execute(
             "INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, last_active_at, is_public_device) "
@@ -192,7 +200,11 @@ async def refresh(
 
     access_token = create_access_token(user.id, session_id=new_token_id, is_public_device=is_public_device)
     csrf_token = generate_csrf_token()
-    rt_max_age = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES) * 60 if is_public_device else None
+    rt_max_age = (
+        live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES) * 60
+        if is_public_device
+        else None
+    )
     set_auth_cookies(response, access_token, new_raw_refresh, csrf_token, max_age=rt_max_age)
 
     return {"message": "Token refreshed"}
@@ -241,6 +253,7 @@ async def me(
 # User preferences (UI layout etc.)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/me/prefs")
 async def get_my_prefs(
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -266,11 +279,12 @@ def _clean_pinned_folders(items: list) -> list:
         name = str(item.get("name", ""))[:_PIN_STR_MAX]
         hash_ = str(item.get("hash", ""))[:_PIN_STR_MAX]
         if fid:
-            team_id   = str(item.get("team_id", "") or "")[:64] or None
+            team_id = str(item.get("team_id", "") or "")[:64] or None
             team_name = str(item.get("team_name", "") or "")[:_PIN_STR_MAX] or None
-            path      = str(item.get("path", "") or "")[:_PIN_STR_MAX] or None
-            cleaned.append({"id": fid, "name": name, "hash": hash_,
-                             "team_id": team_id, "team_name": team_name, "path": path})
+            path = str(item.get("path", "") or "")[:_PIN_STR_MAX] or None
+            cleaned.append(
+                {"id": fid, "name": name, "hash": hash_, "team_id": team_id, "team_name": team_name, "path": path}
+            )
     return cleaned
 
 
@@ -345,16 +359,12 @@ async def get_recent_folders(
     return {
         "recent_folders": [
             {
-                "folder_id":     r["folder_id"],
-                "team_id":       r["team_id"],
-                "folder_name":   r["folder_name"],
-                "team_name":     r["team_name"],
+                "folder_id": r["folder_id"],
+                "team_id": r["team_id"],
+                "folder_name": r["folder_name"],
+                "team_name": r["team_name"],
                 "interacted_at": r["interacted_at"],
-                "hash": (
-                    f"#/team-folders/{r['folder_id']}"
-                    if r["team_id"]
-                    else f"#/files/{r['folder_id']}"
-                ),
+                "hash": (f"#/team-folders/{r['folder_id']}" if r["team_id"] else f"#/files/{r['folder_id']}"),
             }
             for r in rows
         ]
@@ -371,7 +381,7 @@ async def record_folder_activity(
 ) -> None:
     """Upsert a recent-folder row for user_id/folder_id; evict 5th+ oldest rows."""
     folder_name = str(folder_name or "")[:_RECENT_STR_MAX]
-    team_name   = str(team_name or "")[:_RECENT_STR_MAX] or None
+    team_name = str(team_name or "")[:_RECENT_STR_MAX] or None
     await db.execute(
         """
         INSERT INTO user_folder_recent
@@ -407,15 +417,16 @@ async def record_folder_activity(
 # ---------------------------------------------------------------------------
 
 # Max lengths for asymmetric key fields (generous margin over theoretical sizes)
-_X25519_PUB_MAX    = 60      # 32 bytes → 44 base64 chars
-_MLKEM_PUB_MAX     = 1700    # 1184 bytes → ~1580 base64 chars
-_X25519_PRIV_MAX   = 80      # 48 bytes ciphertext → 64 base64 chars
-_MLKEM_PRIV_MAX    = 3400    # ~2416 bytes ciphertext → ~3224 base64 chars
-_ASYM_IV_MAX       = 36      # 24 bytes (two packed 12-byte IVs) → 32 base64 chars
+_X25519_PUB_MAX = 60  # 32 bytes → 44 base64 chars
+_MLKEM_PUB_MAX = 1700  # 1184 bytes → ~1580 base64 chars
+_X25519_PRIV_MAX = 80  # 48 bytes ciphertext → 64 base64 chars
+_MLKEM_PRIV_MAX = 3400  # ~2416 bytes ciphertext → ~3224 base64 chars
+_ASYM_IV_MAX = 36  # 24 bytes (two packed 12-byte IVs) → 32 base64 chars
 
 
 class RegisterAsymmetricKeysRequest(BaseModel):
     """All five fields are required — keys are always registered atomically."""
+
     x25519_public_key: str
     mlkem768_public_key: str
     x25519_private_wrapped: str
@@ -468,9 +479,12 @@ async def register_asymmetric_keys(
         "updated_at = NOW() "
         "WHERE id = ?",
         (
-            body.x25519_public_key, body.mlkem768_public_key,
-            body.x25519_private_wrapped, body.mlkem768_private_wrapped,
-            body.asymmetric_key_iv, user.id,
+            body.x25519_public_key,
+            body.mlkem768_public_key,
+            body.x25519_private_wrapped,
+            body.mlkem768_private_wrapped,
+            body.asymmetric_key_iv,
+            user.id,
         ),
     )
     await db.commit()
@@ -480,6 +494,7 @@ async def register_asymmetric_keys(
 # ---------------------------------------------------------------------------
 # Invite validation (consumed during OPAQUE register/finish)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/invite/{token}", responses={404: {"description": "Not Found"}})
 async def validate_invite(token: str, db: Annotated[Database, Depends(get_db)]):
@@ -548,7 +563,7 @@ async def get_user_public_keys(
         raise HTTPException(
             status_code=404,
             detail="User not found or has not set up sharing keys yet. "
-                   "They must log in once before they can receive shares.",
+            "They must log in once before they can receive shares.",
         )
 
     return {
@@ -562,15 +577,16 @@ async def get_user_public_keys(
 # Step-up authentication (sensitive action re-auth)
 # ---------------------------------------------------------------------------
 
+
 class StepUpRequest(BaseModel):
     action_key: str
-    payload_hash: str     # SHA-256 hex of the request body the client will send
-    timestamp: int        # unix seconds (client clock)
-    hmac: str             # hex HMAC-SHA256 proving key derivation
+    payload_hash: str  # SHA-256 hex of the request body the client will send
+    timestamp: int  # unix seconds (client clock)
+    hmac: str  # hex HMAC-SHA256 proving key derivation
 
     # OPAQUE path fields
     session_id: str | None = None
-    client_login_finish: str | None = None   # base64 CredentialFinalization bytes
+    client_login_finish: str | None = None  # base64 CredentialFinalization bytes
 
     @field_validator("action_key")
     @classmethod
@@ -595,6 +611,7 @@ class StepUpRequest(BaseModel):
     @classmethod
     def validate_timestamp(cls, v: int) -> int:
         import time
+
         now = int(time.time())
         if abs(now - v) > 600:
             raise ValueError("timestamp is too far from server time")
@@ -642,7 +659,14 @@ async def _count_step_up_failures(db, user_id: str) -> int:
     return int(row[0]) if row else 0
 
 
-@router.post("/step-up", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 422: {"description": "Unprocessable Entity"}})
+@router.post(
+    "/step-up",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        422: {"description": "Unprocessable Entity"},
+    },
+)
 async def step_up(
     body: StepUpRequest,
     request: Request,
@@ -684,7 +708,11 @@ async def step_up(
         # Log the failure first so the DB count includes it, then query for persistence.
         _step_up_max = live_settings.get_int("step_up_max_failures", settings.STEP_UP_MAX_FAILURES)
         await log_security_event(
-            db, "step_up_failed", user.id, client_ip, user_agent,
+            db,
+            "step_up_failed",
+            user.id,
+            client_ip,
+            user_agent,
             username=user.username,
             action_key=body.action_key,
             detail={"max_failures": _step_up_max},
@@ -692,7 +720,11 @@ async def step_up(
         count = await _count_step_up_failures(db, user.id)
         logger.warning(  # NOSONAR — server-side audit log; values are Pydantic-validated
             "Step-up failed: user=%s action=%s ip=%s (failure %d/%d)",
-            user.id, body.action_key, client_ip, count, _step_up_max,
+            user.id,
+            body.action_key,
+            client_ip,
+            count,
+            _step_up_max,
         )
 
         if count >= _step_up_max:
@@ -702,14 +734,19 @@ async def step_up(
             )
             await db.commit()
             await log_security_event(
-                db, "step_up_lockout", user.id, client_ip, user_agent,
+                db,
+                "step_up_lockout",
+                user.id,
+                client_ip,
+                user_agent,
                 username=user.username,
                 action_key=body.action_key,
                 detail={"failure_count": count},
             )
             logger.warning(
                 "Step-up lockout: user=%s — all sessions revoked after %d failures",
-                user.id, count,
+                user.id,
+                count,
             )
             raise HTTPException(
                 status_code=403,
@@ -721,7 +758,11 @@ async def step_up(
     token = create_step_up_token(user.id, body.action_key, body.payload_hash, session_id=user.session_id)
 
     await log_security_event(
-        db, "step_up_granted", user.id, client_ip, user_agent,
+        db,
+        "step_up_granted",
+        user.id,
+        client_ip,
+        user_agent,
         username=user.username,
         action_key=body.action_key,
         detail={
@@ -731,7 +772,10 @@ async def step_up(
     )
     logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "Step-up granted: user=%s action=%s ip=%s window=%ds",
-        user.id, body.action_key, client_ip, live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
+        user.id,
+        body.action_key,
+        client_ip,
+        live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
     )
 
     # Trigger 1 — fire-and-forget policy evaluation on step-up.
@@ -739,15 +783,18 @@ async def step_up(
     # for policy freshness.  Do not await — step-up response returns immediately.
     # Uses its own db_session() connection (see opaque_auth.py Trigger 1 note).
     try:
-        from app.models.policy import evaluate_user_policies as _eval_policies
         from app.database import db_session as _db_session
+        from app.models.policy import evaluate_user_policies as _eval_policies
+
         _uid = user.id
+
         async def _bg_step_up_eval() -> None:
             try:
                 async with _db_session() as _bg_db:
                     await _eval_policies(_bg_db, _uid)
             except Exception:
                 pass
+
         _t = asyncio.create_task(_bg_step_up_eval())
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
@@ -760,6 +807,7 @@ async def step_up(
 # ---------------------------------------------------------------------------
 # Session management (self-service)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/me/sessions")
 async def list_my_sessions(
@@ -780,19 +828,21 @@ async def list_my_sessions(
     return {
         "sessions": [
             {
-                "id":               row["id"],
-                "created_at":       str(row["created_at"]),
-                "last_active_at":   str(row["last_active_at"]) if row["last_active_at"] else None,
-                "expires_at":       str(row["expires_at"]),
+                "id": row["id"],
+                "created_at": str(row["created_at"]),
+                "last_active_at": str(row["last_active_at"]) if row["last_active_at"] else None,
+                "expires_at": str(row["expires_at"]),
                 "is_public_device": bool(row["is_public_device"]),
-                "is_current":       row["id"] == user.session_id,
+                "is_current": row["id"] == user.session_id,
             }
             for row in rows
         ]
     }
 
 
-@router.delete("/me/sessions/{token_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/me/sessions/{token_id}", responses={400: {"description": "Bad Request"}, 404: {"description": "Not Found"}}
+)
 async def revoke_session(
     token_id: str,
     request: Request,
@@ -810,13 +860,15 @@ async def revoke_session(
     await db.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Session not found")
-    event_bus.emit(SecurityEvent(
-        event_type="auth.session.revoked",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
-        detail={"scope": "single", "session_id": token_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="auth.session.revoked",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
+            detail={"scope": "single", "session_id": token_id},
+        )
+    )
     return {"message": "Session revoked"}
 
 
@@ -832,19 +884,22 @@ async def revoke_other_sessions(
         (user.id, user.session_id or ""),
     )
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="auth.session.revoked",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
-        detail={"scope": "all_others", "count": result.rowcount},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="auth.session.revoked",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username, ip=_get_client_ip(request)),
+            detail={"scope": "all_others", "count": result.rowcount},
+        )
+    )
     return {"revoked": result.rowcount}
 
 
 # ---------------------------------------------------------------------------
 # User activity log (self-service — hard-filtered to caller's own events)
 # ---------------------------------------------------------------------------
+
 
 @router.get("/me/activity")
 async def my_activity(
@@ -915,17 +970,17 @@ async def my_activity(
     return {
         "events": [
             {
-                "source":       row["source"],
-                "event_type":   row["event_type"],
-                "severity":     row["severity"] or "info",
-                "outcome":      row["outcome"],
-                "ip_address":   row["ip_address"],
-                "session_id":   row["actor_session_id"],
-                "timestamp":    str(row["timestamp"]),
-                "target_type":  row["target_type"],
-                "target_id":    row["target_id"],
-                "target_name":  row["target_name"],
-                "detail":       (json.loads(row["detail"]) if row["detail"] else None),
+                "source": row["source"],
+                "event_type": row["event_type"],
+                "severity": row["severity"] or "info",
+                "outcome": row["outcome"],
+                "ip_address": row["ip_address"],
+                "session_id": row["actor_session_id"],
+                "timestamp": str(row["timestamp"]),
+                "target_type": row["target_type"],
+                "target_id": row["target_id"],
+                "target_name": row["target_name"],
+                "detail": (json.loads(row["detail"]) if row["detail"] else None),
             }
             for row in rows
         ],
@@ -937,6 +992,7 @@ async def my_activity(
 # ---------------------------------------------------------------------------
 # Self-delete account
 # ---------------------------------------------------------------------------
+
 
 @router.get("/me/owned-shared")
 async def get_owned_shared(
@@ -987,9 +1043,7 @@ async def delete_my_account(
         raise HTTPException(status_code=403, detail="Self-deletion is not enabled on this server")
 
     # Check for owned teams
-    cursor = await db.execute(
-        "SELECT id, name FROM teams WHERE owner_id = ?", (user.id,)
-    )
+    cursor = await db.execute("SELECT id, name FROM teams WHERE owner_id = ?", (user.id,))
     owned_teams = await cursor.fetchall()
 
     if owned_teams:
@@ -1007,22 +1061,22 @@ async def delete_my_account(
             await db.execute("DELETE FROM teams WHERE id = ?", (team_row["id"],))
 
     # Collect file storage keys before CASCADE deletes them
-    cursor = await db.execute(
-        "SELECT id, storage_key FROM files WHERE owner_id = ?", (user.id,)
-    )
+    cursor = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user.id,))
     file_rows = await cursor.fetchall()
 
     await db.execute("DELETE FROM users WHERE id = ?", (user.id,))
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="user.self_deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=user.id, username=user.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="user", id=user.id, name=user.username),
-        detail={"owned_teams_deleted": len(owned_teams)} if owned_teams else {},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="user.self_deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=user.id, username=user.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user.id, name=user.username),
+            detail={"owned_teams_deleted": len(owned_teams)} if owned_teams else {},
+        )
+    )
 
     rows_snapshot = list(file_rows)
 

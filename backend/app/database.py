@@ -18,9 +18,9 @@ SETUP_DIR = Path(__file__).parent / "sql" / "setup"
 _pool: asyncpg.Pool | None = None
 
 # Translate ? placeholders to $1, $2, ...
-_QMARK_RE = re.compile(r'\?')
+_QMARK_RE = re.compile(r"\?")
 # Detect ISO-8601 datetime strings for parameter coercion to Python datetime
-_ISO_DT_RE = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}')
+_ISO_DT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
 
 class DuplicateError(Exception):
@@ -34,7 +34,7 @@ def _pg_params(query: str) -> str:
     def _replace(_m: re.Match) -> str:
         nonlocal counter
         counter += 1
-        return f'${counter}'
+        return f"${counter}"
 
     return _QMARK_RE.sub(_replace, query)
 
@@ -45,7 +45,7 @@ def _coerce_params(params: tuple) -> tuple:
     for v in params:
         if isinstance(v, str) and _ISO_DT_RE.match(v):
             try:
-                result.append(datetime.fromisoformat(v.replace('Z', '+00:00')))
+                result.append(datetime.fromisoformat(v.replace("Z", "+00:00")))
                 continue
             except ValueError:
                 pass
@@ -69,7 +69,7 @@ class _Row(dict):
         for k in record.keys():
             v = record[k]
             if isinstance(v, datetime):
-                items[k] = v.strftime('%Y-%m-%dT%H:%M:%SZ')
+                items[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
             else:
                 items[k] = v
         super().__init__(items)
@@ -114,11 +114,7 @@ class Database:
         try:
             q_upper = query.strip().upper()
             # WITH [RECURSIVE] ... SELECT ... CTEs start with WITH, not SELECT.
-            is_query = (
-                q_upper.startswith('SELECT')
-                or q_upper.startswith('WITH')
-                or 'RETURNING' in q_upper
-            )
+            is_query = q_upper.startswith("SELECT") or q_upper.startswith("WITH") or "RETURNING" in q_upper
             if is_query:
                 rows = await self._conn.fetch(pg_query, *pg_params)
                 return _Result(rows)
@@ -130,12 +126,12 @@ class Database:
 
     async def commit(self) -> None:
         if self._conn.is_in_transaction():
-            await self._conn.execute('COMMIT')
+            await self._conn.execute("COMMIT")
 
     async def rollback(self) -> None:
         if self._conn.is_in_transaction():
             try:
-                await self._conn.execute('ROLLBACK')
+                await self._conn.execute("ROLLBACK")
             except Exception:
                 pass
 
@@ -143,7 +139,7 @@ class Database:
 async def get_db():
     """FastAPI dependency: yield a Database wrapping a pooled connection."""
     if _pool is None:
-        raise RuntimeError('Database pool not initialized')
+        raise RuntimeError("Database pool not initialized")
     async with _pool.acquire() as conn:
         yield Database(conn)
 
@@ -152,7 +148,7 @@ async def get_db():
 async def db_session():
     """Async context manager for background tasks: yields a Database."""
     if _pool is None:
-        raise RuntimeError('Database pool not initialized')
+        raise RuntimeError("Database pool not initialized")
     async with _pool.acquire() as conn:
         yield Database(conn)
 
@@ -165,37 +161,37 @@ async def seed_admin_settings(db: Database) -> None:
     source of truth for what the defaults are; the database stores overrides.
     """
     defaults = {
-        'open_registration':           'true' if settings.OPEN_REGISTRATION else 'false',
-        'global_max_file_size':        str(settings.GLOBAL_MAX_FILE_SIZE),
-        'global_bandwidth_limit':      str(settings.GLOBAL_BANDWIDTH_LIMIT),
-        'disk_warning_threshold':      str(settings.DISK_WARNING_THRESHOLD),
-        'default_chunk_size':          str(settings.DEFAULT_CHUNK_SIZE),
-        'allow_ephemeral_team_invites': 'false',
+        "open_registration": "true" if settings.OPEN_REGISTRATION else "false",
+        "global_max_file_size": str(settings.GLOBAL_MAX_FILE_SIZE),
+        "global_bandwidth_limit": str(settings.GLOBAL_BANDWIDTH_LIMIT),
+        "disk_warning_threshold": str(settings.DISK_WARNING_THRESHOLD),
+        "default_chunk_size": str(settings.DEFAULT_CHUNK_SIZE),
+        "allow_ephemeral_team_invites": "false",
         # Rate limits (Phase 1)
-        'rate_limit_login':              str(settings.RATE_LIMIT_LOGIN),
-        'rate_limit_api':                str(settings.RATE_LIMIT_API),
-        'rate_limit_share_create':       str(settings.RATE_LIMIT_SHARE_CREATE),
-        'rate_limit_upload':             str(settings.RATE_LIMIT_UPLOAD),
-        'rate_limit_management':         str(settings.RATE_LIMIT_MANAGEMENT),
-        'rate_limit_error_threshold':    str(settings.RATE_LIMIT_ERROR_THRESHOLD),
-        'rate_limit_error_window':       str(settings.RATE_LIMIT_ERROR_WINDOW),
-        'rate_limit_escalated_max':      str(settings.RATE_LIMIT_ESCALATED_MAX),
-        'rate_limit_escalated_window':   str(settings.RATE_LIMIT_ESCALATED_WINDOW),
-        'rate_limit_escalated_duration': str(settings.RATE_LIMIT_ESCALATED_DURATION),
+        "rate_limit_login": str(settings.RATE_LIMIT_LOGIN),
+        "rate_limit_api": str(settings.RATE_LIMIT_API),
+        "rate_limit_share_create": str(settings.RATE_LIMIT_SHARE_CREATE),
+        "rate_limit_upload": str(settings.RATE_LIMIT_UPLOAD),
+        "rate_limit_management": str(settings.RATE_LIMIT_MANAGEMENT),
+        "rate_limit_error_threshold": str(settings.RATE_LIMIT_ERROR_THRESHOLD),
+        "rate_limit_error_window": str(settings.RATE_LIMIT_ERROR_WINDOW),
+        "rate_limit_escalated_max": str(settings.RATE_LIMIT_ESCALATED_MAX),
+        "rate_limit_escalated_window": str(settings.RATE_LIMIT_ESCALATED_WINDOW),
+        "rate_limit_escalated_duration": str(settings.RATE_LIMIT_ESCALATED_DURATION),
         # Session & auth policy (Phase 2)
-        'access_token_expire_minutes':        str(settings.ACCESS_TOKEN_EXPIRE_MINUTES),
-        'refresh_token_expire_days':          str(settings.REFRESH_TOKEN_EXPIRE_DAYS),
-        'session_idle_timeout_minutes':       str(settings.SESSION_IDLE_TIMEOUT_MINUTES),
-        'share_session_expire_hours':         str(settings.SHARE_SESSION_EXPIRE_HOURS),
-        'public_device_refresh_minutes':      str(settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES),
-        'mfa_pending_token_ttl':              str(settings.MFA_PENDING_TOKEN_TTL),
-        'step_up_window_seconds':             str(settings.STEP_UP_WINDOW_SECONDS),
-        'step_up_max_failures':               str(settings.STEP_UP_MAX_FAILURES),
+        "access_token_expire_minutes": str(settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+        "refresh_token_expire_days": str(settings.REFRESH_TOKEN_EXPIRE_DAYS),
+        "session_idle_timeout_minutes": str(settings.SESSION_IDLE_TIMEOUT_MINUTES),
+        "share_session_expire_hours": str(settings.SHARE_SESSION_EXPIRE_HOURS),
+        "public_device_refresh_minutes": str(settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES),
+        "mfa_pending_token_ttl": str(settings.MFA_PENDING_TOKEN_TTL),
+        "step_up_window_seconds": str(settings.STEP_UP_WINDOW_SECONDS),
+        "step_up_max_failures": str(settings.STEP_UP_MAX_FAILURES),
         # Operational tuning (Phase 3)
-        'tus_upload_expiry_hours':  str(settings.TUS_UPLOAD_EXPIRY_HOURS),
-        'upload_evict_stride_mb':   str(settings.UPLOAD_EVICT_STRIDE_MB),
-        'webauthn_rp_name':         settings.WEBAUTHN_RP_NAME,
-        'allow_http_idp':           'true' if settings.ALLOW_HTTP_IDP else 'false',
+        "tus_upload_expiry_hours": str(settings.TUS_UPLOAD_EXPIRY_HOURS),
+        "upload_evict_stride_mb": str(settings.UPLOAD_EVICT_STRIDE_MB),
+        "webauthn_rp_name": settings.WEBAUTHN_RP_NAME,
+        "allow_http_idp": "true" if settings.ALLOW_HTTP_IDP else "false",
     }
     for key, value in defaults.items():
         await db.execute(
@@ -212,17 +208,17 @@ async def seed_policy_fields(db: Database) -> None:
     Keeps existing installs in sync when new internal fields are added.
     """
     fields = [
-        ('totp_enabled',        'TOTP MFA Enabled',               'internal', 'boolean'),
-        ('webauthn_enabled',    'WebAuthn Enabled',               'internal', 'boolean'),
-        ('mfa_enabled',         'MFA Enabled (TOTP or WebAuthn)', 'internal', 'boolean'),
-        ('mfa_reset_required',  'MFA Reset Required',             'internal', 'boolean'),
-        ('auth_provider',       'Auth Provider',                  'internal', 'string'),
-        ('auth_method',         'Auth Method',                    'internal', 'string'),
-        ('identity_provider',   'Identity Provider',              'internal', 'string'),
-        ('role',                'Global Role',                    'internal', 'string'),
-        ('is_active',           'Account Active',                 'internal', 'boolean'),
-        ('has_recovery_key',    'Recovery Key Enrolled',          'internal', 'boolean'),
-        ('has_asymmetric_keys', 'PQ-KEM Keys Generated',         'internal', 'boolean'),
+        ("totp_enabled", "TOTP MFA Enabled", "internal", "boolean"),
+        ("webauthn_enabled", "WebAuthn Enabled", "internal", "boolean"),
+        ("mfa_enabled", "MFA Enabled (TOTP or WebAuthn)", "internal", "boolean"),
+        ("mfa_reset_required", "MFA Reset Required", "internal", "boolean"),
+        ("auth_provider", "Auth Provider", "internal", "string"),
+        ("auth_method", "Auth Method", "internal", "string"),
+        ("identity_provider", "Identity Provider", "internal", "string"),
+        ("role", "Global Role", "internal", "string"),
+        ("is_active", "Account Active", "internal", "boolean"),
+        ("has_recovery_key", "Recovery Key Enrolled", "internal", "boolean"),
+        ("has_asymmetric_keys", "PQ-KEM Keys Generated", "internal", "boolean"),
     ]
     for name, label, source, data_type in fields:
         await db.execute(
@@ -250,7 +246,7 @@ async def init_db() -> None:
         await seed_admin_settings(db)
         await seed_policy_fields(db)
 
-    logger.info('Database pool initialised: %s', settings.DATABASE_URL)
+    logger.info("Database pool initialised: %s", settings.DATABASE_URL)
 
 
 async def close_db() -> None:
@@ -259,7 +255,7 @@ async def close_db() -> None:
     if _pool is not None:
         await _pool.close()
         _pool = None
-        logger.info('Database connection pool closed')
+        logger.info("Database connection pool closed")
 
 
 def _split_statements(sql: str) -> list[str]:
@@ -275,16 +271,16 @@ def _split_statements(sql: str) -> list[str]:
     for line in sql.splitlines():
         stripped = line.strip()
         # Skip blank lines and comments when outside dollar-quotes
-        if not stripped or (stripped.startswith('--') and dollar_depth == 0):
+        if not stripped or (stripped.startswith("--") and dollar_depth == 0):
             continue
 
         # Track $$ pairs to know when we're inside a dollar-quoted body
-        dollar_depth += stripped.count('$$')
+        dollar_depth += stripped.count("$$")
         buf.append(line)
 
         # Statement boundary: line ends with ';' and we're not inside a quote
-        if stripped.endswith(';') and dollar_depth % 2 == 0:
-            stmt = '\n'.join(buf).strip()
+        if stripped.endswith(";") and dollar_depth % 2 == 0:
+            stmt = "\n".join(buf).strip()
             if stmt:
                 stmts.append(stmt)
             buf = []
@@ -310,16 +306,16 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
         ")"
     )
     if not table_exists:
-        setup_file = SETUP_DIR / 'schema.sql'
+        setup_file = SETUP_DIR / "schema.sql"
         if not setup_file.exists():
-            raise RuntimeError(f'Setup schema not found: {setup_file}')
-        logger.info('Fresh database — initialising from %s', setup_file.name)
-        sql = setup_file.read_text(encoding='utf-8')
+            raise RuntimeError(f"Setup schema not found: {setup_file}")
+        logger.info("Fresh database — initialising from %s", setup_file.name)
+        sql = setup_file.read_text(encoding="utf-8")
         statements = _split_statements(sql)
         async with conn.transaction():
             if statements:
-                await conn.execute('\n'.join(statements))
-        logger.info('Schema initialised.')
+                await conn.execute("\n".join(statements))
+        logger.info("Schema initialised.")
 
     # Idempotent additions — run on every startup to handle existing databases.
     # Each block must use CREATE TABLE/INDEX IF NOT EXISTS.
@@ -616,4 +612,3 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_user_folder_recent_user
                 ON user_folder_recent(user_id, interacted_at DESC);
         """)
-

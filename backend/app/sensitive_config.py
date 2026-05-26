@@ -21,7 +21,7 @@ Runtime callers use:
   get_config_value(key)   — arbitrary config blobs (e.g. OPAQUE server setup)
 """
 
-import asyncpg
+import asyncio
 import base64
 import hashlib
 import json
@@ -29,6 +29,8 @@ import logging
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -49,36 +51,37 @@ OPAQUE_SERVER_SETUP_KEY = "opaque.server_setup"
 
 # is_sensitive=True — require step-up authentication
 _SENSITIVE_DEFAULTS = [
-    ("admin.settings.crypto.*",    "password", "All crypto-related server settings"),
-    ("admin.settings.security.*",  "password", "Security policy settings"),
-    ("policy.escrow.enable",       "password", "Enable admin key escrow"),
-    ("policy.escrow.disable",      "password", "Disable admin key escrow"),
-    ("policy.sharing.*",           "password", "Any sharing policy change"),
-    ("admin.audit.export",         "password", "Export the audit trail"),
-    ("admin.audit.configure",      "password", "Change audit retention or settings"),
-    ("admin.user.freeze",          "password", "Freeze a user account"),
-    ("admin.user.delete",          "password", "Delete a user account"),
+    ("admin.settings.crypto.*", "password", "All crypto-related server settings"),
+    ("admin.settings.security.*", "password", "Security policy settings"),
+    ("policy.escrow.enable", "password", "Enable admin key escrow"),
+    ("policy.escrow.disable", "password", "Disable admin key escrow"),
+    ("policy.sharing.*", "password", "Any sharing policy change"),
+    ("admin.audit.export", "password", "Export the audit trail"),
+    ("admin.audit.configure", "password", "Change audit retention or settings"),
+    ("admin.user.freeze", "password", "Freeze a user account"),
+    ("admin.user.delete", "password", "Delete a user account"),
     ("integration.ldap.configure", "password", "Configure LDAP / identity provider"),
-    ("admin.storage.configure",         "password", "Add, edit, or delete storage volumes and credentials"),
-    ("admin.notifications.configure",  "password", "Add, edit, or delete notification channels and channel secrets"),
-    ("admin.api_keys.manage",           "password", "Create or revoke API keys for pull event consumers"),
-    ("auth.mfa.admin_remove",           "password", "Admin removes MFA credential(s) from a user account"),
-    ("auth.mfa.admin_reset",       "password", "Admin forces MFA re-enrollment for a user"),
-    ("admin.service_accounts.*",   "password", "Create, delete, or rotate service account keys"),
-    ("user.change_password",       "password", "Change own account password (OPAQUE re-registration)"),
+    ("admin.storage.configure", "password", "Add, edit, or delete storage volumes and credentials"),
+    ("admin.notifications.configure", "password", "Add, edit, or delete notification channels and channel secrets"),
+    ("admin.api_keys.manage", "password", "Create or revoke API keys for pull event consumers"),
+    ("auth.mfa.admin_remove", "password", "Admin removes MFA credential(s) from a user account"),
+    ("auth.mfa.admin_reset", "password", "Admin forces MFA re-enrollment for a user"),
+    ("admin.service_accounts.*", "password", "Create, delete, or rotate service account keys"),
+    ("user.change_password", "password", "Change own account password (OPAQUE re-registration)"),
 ]
 
 # is_sensitive=False — common operations (step-up can be enabled later by
 # dropping the schema and restarting with an edited seed list)
 _NON_SENSITIVE_DEFAULTS = [
-    ("admin.invite.create",  "password", "Create a registration invite (routine)"),
-    ("team.key.rotate",      "password", "Rotate team encryption keys (routine)"),
+    ("admin.invite.create", "password", "Create a registration invite (routine)"),
+    ("team.key.rotate", "password", "Rotate team encryption keys (routine)"),
 ]
 
 
 # ---------------------------------------------------------------------------
 # Hash utility
 # ---------------------------------------------------------------------------
+
 
 def _hash_rows(func_rows: list[dict], value_rows: list[dict]) -> str:
     """Deterministic SHA-256 over both config tables (sorted by key).
@@ -102,14 +105,13 @@ def _hash_rows(func_rows: list[dict], value_rows: list[dict]) -> str:
         "functions": canonical_funcs,
         "values": canonical_values,
     }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
 # First-run bootstrap (runs once when schema is absent)
 # ---------------------------------------------------------------------------
+
 
 async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
     """Create the immutable sensitive_config schema using superuser credentials.
@@ -132,15 +134,13 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
         conn = await asyncpg.connect(superuser_url)
     except Exception as exc:
         raise RuntimeError(
-            f"sensitive_config bootstrap failed: could not connect with "
-            f"TUSSHARE_SUPERUSER_URL: {exc}"
+            f"sensitive_config bootstrap failed: could not connect with TUSSHARE_SUPERUSER_URL: {exc}"
         ) from exc
 
     try:
         # Guard: abort if schema appeared between the check in load() and now
         exists = await conn.fetchval(
-            "SELECT schema_name FROM information_schema.schemata "
-            "WHERE schema_name = 'sensitive_config'"
+            "SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'sensitive_config'"
         )
         if exists:
             logger.info("sensitive_config schema appeared during bootstrap — skipping creation")
@@ -204,7 +204,9 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
                 "INSERT INTO sensitive_config.sensitive_functions "
                 "(function_key, is_sensitive, challenge_type, description) "
                 "VALUES ($1, TRUE, $2, $3)",
-                key, challenge, desc,
+                key,
+                challenge,
+                desc,
             )
             func_rows.append({"function_key": key, "is_sensitive": True, "challenge_type": challenge})
 
@@ -213,7 +215,9 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
                 "INSERT INTO sensitive_config.sensitive_functions "
                 "(function_key, is_sensitive, challenge_type, description) "
                 "VALUES ($1, FALSE, $2, $3)",
-                key, challenge, desc,
+                key,
+                challenge,
+                desc,
             )
             func_rows.append({"function_key": key, "is_sensitive": False, "challenge_type": challenge})
 
@@ -221,7 +225,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
         logger.info("Bootstrap: generating OPAQUE server setup")
         try:
             import tusshare_opaque
-            import asyncio
+
             setup_bytes = await asyncio.to_thread(tusshare_opaque.generate_server_setup)
             setup_b64 = base64.b64encode(setup_bytes).decode()
         except ImportError:
@@ -233,8 +237,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
 
         value_rows = []
         await conn.execute(
-            "INSERT INTO sensitive_config.config_values "
-            "(config_key, config_value, description) VALUES ($1, $2, $3)",
+            "INSERT INTO sensitive_config.config_values (config_key, config_value, description) VALUES ($1, $2, $3)",
             OPAQUE_SERVER_SETUP_KEY,
             setup_b64,
             "OPAQUE aPAKE server setup blob (ServerSetup<TusShareCipherSuite>, base64). "
@@ -248,9 +251,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
         # --- Permissions ---
         logger.info("Bootstrap: granting SELECT on sensitive_config to %s", app_role)
         await conn.execute(f"GRANT USAGE ON SCHEMA sensitive_config TO {app_role}")
-        await conn.execute(
-            f"GRANT SELECT ON ALL TABLES IN SCHEMA sensitive_config TO {app_role}"
-        )
+        await conn.execute(f"GRANT SELECT ON ALL TABLES IN SCHEMA sensitive_config TO {app_role}")
         await conn.execute("REVOKE ALL ON SCHEMA sensitive_config FROM PUBLIC")
 
         # --- Write integrity hash ---
@@ -259,9 +260,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
         data_dir.mkdir(parents=True, exist_ok=True)
         hash_path.write_text(config_hash)
 
-        logger.info(
-            "Bootstrap complete. sensitive_config schema sealed. Hash: %s", config_hash
-        )
+        logger.info("Bootstrap complete. sensitive_config schema sealed. Hash: %s", config_hash)
 
     except Exception as exc:
         try:
@@ -276,6 +275,7 @@ async def _bootstrap(superuser_url: str, app_role: str, data_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 # Startup loader
 # ---------------------------------------------------------------------------
+
 
 async def load(db, data_dir: Path, superuser_url: str = "") -> None:
     """Load sensitive config from DB, verify integrity, freeze into memory.
@@ -292,8 +292,7 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
     global _config, _config_values, _loaded
 
     cursor = await db.execute(
-        "SELECT schema_name FROM information_schema.schemata "
-        "WHERE schema_name = 'sensitive_config'"
+        "SELECT schema_name FROM information_schema.schemata WHERE schema_name = 'sensitive_config'"
     )
     schema_exists = await cursor.fetchone() is not None
 
@@ -305,6 +304,7 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
                 "and restart — the schema will be created automatically on first run."
             )
         from app.config import settings
+
         app_role = urlparse(settings.DATABASE_URL).username or "tusshare"
         await _bootstrap(superuser_url, app_role, data_dir)
 
@@ -317,11 +317,7 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
     func_rows = [dict(row) for row in await cursor.fetchall()]
 
     # Load config_values
-    cursor = await db.execute(
-        "SELECT config_key, config_value "
-        "FROM sensitive_config.config_values "
-        "ORDER BY config_key"
-    )
+    cursor = await db.execute("SELECT config_key, config_value FROM sensitive_config.config_values ORDER BY config_key")
     value_rows = [dict(row) for row in await cursor.fetchall()]
 
     # Verify combined hash
@@ -338,9 +334,9 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
 
     if computed_hash != stored_hash:
         logger.critical(
-            "SENSITIVE CONFIG INTEGRITY CHECK FAILED — possible tampering. "
-            "Stored hash: %s  Computed: %s",
-            stored_hash, computed_hash,
+            "SENSITIVE CONFIG INTEGRITY CHECK FAILED — possible tampering. Stored hash: %s  Computed: %s",
+            stored_hash,
+            computed_hash,
         )
         raise RuntimeError(
             "Sensitive config integrity check FAILED — "
@@ -371,6 +367,7 @@ async def load(db, data_dir: Path, superuser_url: str = "") -> None:
 # ---------------------------------------------------------------------------
 # Runtime accessors
 # ---------------------------------------------------------------------------
+
 
 def is_sensitive(function_key: str) -> bool:
     """Return True if the function key is marked sensitive.

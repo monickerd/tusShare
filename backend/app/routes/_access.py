@@ -31,23 +31,23 @@ from app.conf.teams import TEAM_ROLE_MEMBER, TEAM_ROLE_OWNER, TEAM_ROLE_SUPERVIS
 # across the affected subtree.
 # ---------------------------------------------------------------------------
 _LEVEL_ACTIONS: dict[str, frozenset[str]] = {
-    "admin":              frozenset({"read", "write", "delete", "download", "rename", "manage_permissions"}),
-    "write":              frozenset({"read", "write", "delete", "download", "rename"}),
-    "read":               frozenset({"read", "download"}),   # backward-compat alias; prefer 'download' for new grants
-    "download":           frozenset({"read", "download"}),   # preferred level for explicit download grants
-    "delete":             frozenset({"read", "delete"}),
-    "rename":             frozenset({"read", "rename"}),     # in-place name change only; parent_id changes use 'write'
+    "admin": frozenset({"read", "write", "delete", "download", "rename", "manage_permissions"}),
+    "write": frozenset({"read", "write", "delete", "download", "rename"}),
+    "read": frozenset({"read", "download"}),  # backward-compat alias; prefer 'download' for new grants
+    "download": frozenset({"read", "download"}),  # preferred level for explicit download grants
+    "delete": frozenset({"read", "delete"}),
+    "rename": frozenset({"read", "rename"}),  # in-place name change only; parent_id changes use 'write'
     "manage_permissions": frozenset({"read", "manage_permissions"}),
-    "deny":               frozenset(),
-    "none":               frozenset(),
+    "deny": frozenset(),
+    "none": frozenset(),
 }
 
 # Default folder permission level granted by each built-in team role.
 # Overridden per-team via the team_folder_role_levels table.
 _TEAM_ROLE_DEFAULTS: dict[str, str] = {
-    TEAM_ROLE_OWNER:      "admin",
+    TEAM_ROLE_OWNER: "admin",
     TEAM_ROLE_SUPERVISOR: "write",
-    TEAM_ROLE_MEMBER:     "write",
+    TEAM_ROLE_MEMBER: "write",
 }
 
 # Legacy alias used by callers that only need truthy / falsy.
@@ -70,6 +70,7 @@ def require_flag(user: AuthenticatedUser, flag: str, detail: str | None = None) 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 async def _get_team_role_level(db, team_id: str, role_id: str) -> str:
     """Return the folder permission level for role_id within team_id.
@@ -120,6 +121,7 @@ async def _team_level_for_user(db, team_id: str, user_id: str) -> str | None:
 # ---------------------------------------------------------------------------
 # Core data-plane permission evaluator (Phase 1)
 # ---------------------------------------------------------------------------
+
 
 async def _check_team_grant(db, folder_id: str, user_id: str, action: str) -> bool:
     cursor = await db.execute(_SQL_TEAM_FOLDER, (folder_id,))
@@ -207,8 +209,7 @@ async def _check_acl(
     *exact=False* → only recursive rows count as inherited grants.
     """
     cursor = await db.execute(
-        "SELECT permission, recursive FROM permissions "
-        "WHERE resource_type = ? AND resource_id = ? AND user_id = ?",
+        "SELECT permission, recursive FROM permissions WHERE resource_type = ? AND resource_id = ? AND user_id = ?",
         (resource_type, resource_id, user_id),
     )
     row = await cursor.fetchone()
@@ -227,6 +228,7 @@ async def _check_acl(
 # Ancestry helpers (unchanged from pre-Phase-1; still used by several routes)
 # ---------------------------------------------------------------------------
 
+
 async def is_team_folder_member(db, folder_id: str, user_id: str) -> str | None:
     """Walk the folder ancestry to check if any ancestor (or self) is a team folder,
     and if so, whether user_id is a member of that team.
@@ -242,18 +244,14 @@ async def is_team_folder_member(db, folder_id: str, user_id: str) -> str | None:
     current_id = folder_id
     while current_id and current_id not in visited:
         visited.add(current_id)
-        cursor = await db.execute(
-            _SQL_TEAM_FOLDER, (current_id,)
-        )
+        cursor = await db.execute(_SQL_TEAM_FOLDER, (current_id,))
         tf_row = await cursor.fetchone()
         if tf_row:
             level = await _team_level_for_user(db, tf_row["team_id"], user_id)
             if level and level != "none":
                 return level
             return None
-        cursor = await db.execute(
-            _SQL_FOLDER_PARENT, (current_id,)
-        )
+        cursor = await db.execute(_SQL_FOLDER_PARENT, (current_id,))
         row = await cursor.fetchone()
         if not row or row["restrict_permissions"]:
             return None
@@ -297,15 +295,11 @@ async def get_folder_team_id(db, folder_id: str) -> str | None:
     current_id = folder_id
     while current_id and current_id not in visited:
         visited.add(current_id)
-        cursor = await db.execute(
-            _SQL_TEAM_FOLDER, (current_id,)
-        )
+        cursor = await db.execute(_SQL_TEAM_FOLDER, (current_id,))
         tf_row = await cursor.fetchone()
         if tf_row:
             return tf_row["team_id"]
-        cursor = await db.execute(
-            "SELECT parent_id FROM folders WHERE id = ?", (current_id,)
-        )
+        cursor = await db.execute("SELECT parent_id FROM folders WHERE id = ?", (current_id,))
         row = await cursor.fetchone()
         if not row:
             return None
@@ -333,8 +327,7 @@ async def copy_folder_permissions(db, source_folder_id: str, dest_resource_type:
             "(id, resource_type, resource_id, user_id, permission, recursive, granted_by) "
             "VALUES (?, ?, ?, ?, ?, 1, ?) "
             "ON CONFLICT DO NOTHING",
-            (new_id, dest_resource_type, dest_resource_id,
-             row["user_id"], row["permission"], row["granted_by"]),
+            (new_id, dest_resource_type, dest_resource_id, row["user_id"], row["permission"], row["granted_by"]),
         )
 
 
@@ -354,16 +347,13 @@ async def has_folder_permission(db, folder_id: str, user_id: str) -> bool:
     while current_id and current_id not in visited:
         visited.add(current_id)
         cursor = await db.execute(
-            "SELECT recursive FROM permissions "
-            "WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
+            "SELECT recursive FROM permissions WHERE resource_type = 'folder' AND resource_id = ? AND user_id = ?",
             (current_id, user_id),
         )
         row = await cursor.fetchone()
         if row and (current_id == folder_id or row["recursive"]):
             return True
-        cursor = await db.execute(
-            _SQL_FOLDER_PARENT, (current_id,)
-        )
+        cursor = await db.execute(_SQL_FOLDER_PARENT, (current_id,))
         prow = await cursor.fetchone()
         if not prow or prow["restrict_permissions"]:
             return False

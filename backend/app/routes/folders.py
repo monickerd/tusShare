@@ -1,23 +1,29 @@
 """Folder management routes."""
 
+import asyncio
 import uuid
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
 
-from app.auth.dependencies import get_current_user, require_user_role
+from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, DuplicateError, get_db
 from app.middleware.rate_limit import check_management_write_rate_limit
 from app.models.file import File, Folder
-from app.routes._access import check_data_permission, copy_folder_permissions, get_folder_team_id, is_in_shared_tree, is_team_folder_member, _team_level_for_user
+from app.routes._access import (
+    _team_level_for_user,
+    check_data_permission,
+    copy_folder_permissions,
+    get_folder_team_id,
+    is_in_shared_tree,
+)
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus, sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_folder_name, validate_uuid
-from typing import Annotated
-
 
 _SQL_FOLDER_BY_ID = "SELECT * FROM folders WHERE id = ?"
 _ERR_FOLDER_NOT_FOUND = "Folder not found"
@@ -30,6 +36,7 @@ async def _check_parent_write_access(db, parent: dict, user: AuthenticatedUser, 
     if not await is_in_shared_tree(db, parent_id):
         if not await check_data_permission(db, "folder", parent_id, user.id, "write"):
             raise HTTPException(status_code=403, detail="No write access to parent folder")
+
 
 # Permission levels that imply manage_permissions capability
 _MANAGE_LEVELS = ("admin", "manage_permissions")
@@ -66,6 +73,7 @@ async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: l
 
     for fd in folder_dicts:
         fd["user_can_manage"] = fd["id"] in can_manage
+
 
 router = APIRouter(dependencies=[Depends(check_management_write_rate_limit)])
 
@@ -129,9 +137,7 @@ async def list_root_folders(
     own_files = [File.from_row(r).to_dict() for r in await cursor.fetchall()]
 
     # Shared folder
-    cursor = await db.execute(
-        "SELECT * FROM folders WHERE is_shared = 1 AND parent_id IS NULL"
-    )
+    cursor = await db.execute("SELECT * FROM folders WHERE is_shared = 1 AND parent_id IS NULL")
     shared_row = await cursor.fetchone()
     shared_folder = Folder.from_row(shared_row).to_dict() if shared_row else None
 
@@ -150,10 +156,18 @@ async def list_root_folders(
     )
     pending_uploads = [dict(r) for r in await cursor.fetchall()]
 
-    return {"folders": own_folders, "files": own_files, "shared_folder": shared_folder, "pending_uploads": pending_uploads}
+    return {
+        "folders": own_folders,
+        "files": own_files,
+        "shared_folder": shared_folder,
+        "pending_uploads": pending_uploads,
+    }
 
 
-@router.post("", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}})
+@router.post(
+    "",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Conflict"}},
+)
 async def create_folder(
     body: CreateFolderRequest,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -164,9 +178,7 @@ async def create_folder(
 
     # If parent_id is specified, verify it exists and user has write access
     if body.parent_id:
-        cursor = await db.execute(
-            _SQL_FOLDER_BY_ID, (body.parent_id,)
-        )
+        cursor = await db.execute(_SQL_FOLDER_BY_ID, (body.parent_id,))
         parent = await cursor.fetchone()
         if parent is None:
             raise HTTPException(status_code=404, detail="Parent folder not found")
@@ -195,22 +207,23 @@ async def create_folder(
             },
         )
 
-    event_bus.emit(SecurityEvent(
-        event_type="file.folder.created",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={"folder_id": folder_id, "name": body.name, "parent_id": body.parent_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.folder.created",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={"folder_id": folder_id, "name": body.name, "parent_id": body.parent_id},
+        )
+    )
 
     # Notify the parent folder (or root) that a new subfolder appeared
     sse_broker.publish(body.parent_id or f"root:{user.id}", {"type": "change"})
 
     # Record recent activity on the parent folder (best-effort, non-blocking)
     if body.parent_id:
-        import asyncio as _asyncio
-        from app.routes.auth import record_folder_activity
         from app.database import db_session
+        from app.routes.auth import record_folder_activity
 
         async def _record() -> None:
             try:
@@ -226,13 +239,17 @@ async def create_folder(
                     _row = await _cur.fetchone()
                     if _row:
                         await record_folder_activity(
-                            _db, str(user.id), body.parent_id,
-                            _row["team_id"], _row["name"], _row["team_name"],
+                            _db,
+                            str(user.id),
+                            body.parent_id,
+                            _row["team_id"],
+                            _row["name"],
+                            _row["team_name"],
                         )
             except Exception:
                 pass
 
-        _t = _asyncio.create_task(_record())
+        _t = asyncio.create_task(_record())
         _t.add_done_callback(lambda _: None)
 
     return {"folder": {"id": folder_id, "name": body.name, "parent_id": body.parent_id}}
@@ -250,9 +267,7 @@ async def get_folder_contents(
     """
     folder_id = validate_uuid(folder_id)
 
-    cursor = await db.execute(
-        "SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,)
-    )
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
     folder_row = await cursor.fetchone()
     if folder_row is None:
         raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
@@ -275,8 +290,7 @@ async def get_folder_contents(
 
     # Files in this folder (excluding soft-deleted)
     cursor = await db.execute(
-        "SELECT * FROM files WHERE folder_id = ? AND upload_complete = 1 AND deleted_at IS NULL "
-        "ORDER BY original_name",
+        "SELECT * FROM files WHERE folder_id = ? AND upload_complete = 1 AND deleted_at IS NULL ORDER BY original_name",
         (folder_id,),
     )
     files = [File.from_row(r).to_dict() for r in await cursor.fetchall()]
@@ -303,9 +317,7 @@ async def get_folder_contents(
     visited_bc: set[str] = {folder.id}
     while current.parent_id and current.parent_id not in visited_bc:
         visited_bc.add(current.parent_id)
-        cursor = await db.execute(
-            _SQL_FOLDER_BY_ID, (current.parent_id,)
-        )
+        cursor = await db.execute(_SQL_FOLDER_BY_ID, (current.parent_id,))
         parent_row = await cursor.fetchone()
         if not parent_row:
             break
@@ -339,7 +351,8 @@ async def _list_team_folder_files(
         )
     """
     count_cursor = await db.execute(
-        _cte + """
+        _cte
+        + """
         SELECT COUNT(*) AS total
           FROM files fi
           JOIN folder_tree ft ON fi.folder_id = ft.id
@@ -352,7 +365,8 @@ async def _list_team_folder_files(
     total = count_row["total"] if count_row else 0
 
     cursor = await db.execute(
-        _cte + """
+        _cte
+        + """
         SELECT fi.id, fi.original_name, fi.size_bytes, fi.owner_id, fi.folder_id,
                fi.encrypted_file_key, fi.key_iv,
                ftk.pre_c1, ftk.encrypted_file_key AS team_encrypted_file_key,
@@ -388,9 +402,7 @@ async def _list_team_folder_files(
     return files, total
 
 
-async def _list_personal_folder_files(
-    db, folder_id: str, user_id: str, limit: int, offset: int
-) -> tuple[list, int]:
+async def _list_personal_folder_files(db, folder_id: str, user_id: str, limit: int, offset: int) -> tuple[list, int]:
     _cte = """
         WITH RECURSIVE folder_tree(id) AS (
             SELECT ? AS id
@@ -402,7 +414,8 @@ async def _list_personal_folder_files(
         )
     """
     count_cursor = await db.execute(
-        _cte + """
+        _cte
+        + """
         SELECT COUNT(*) AS total
           FROM files fi
           JOIN folder_tree ft ON fi.folder_id = ft.id
@@ -415,7 +428,8 @@ async def _list_personal_folder_files(
     total = count_row["total"] if count_row else 0
 
     cursor = await db.execute(
-        _cte + """
+        _cte
+        + """
         SELECT fi.id, fi.original_name, fi.size_bytes,
                fi.encrypted_file_key, fi.key_iv
           FROM files fi
@@ -543,21 +557,25 @@ async def _update_move_permissions(db, folder_id: str, move_to_root: bool, paren
 def _emit_folder_update_event(user, folder_id: str, folder_row, body, is_move: bool) -> None:
     if is_move:
         new_parent = None if body.move_to_root else body.parent_id
-        event_bus.emit(SecurityEvent(
-            event_type="file.folder.moved",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=str(user.id), username=user.username),
-            detail={"folder_id": folder_id, "old_parent_id": folder_row["parent_id"], "new_parent_id": new_parent},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.folder.moved",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                detail={"folder_id": folder_id, "old_parent_id": folder_row["parent_id"], "new_parent_id": new_parent},
+            )
+        )
     elif body.name is not None:
-        event_bus.emit(SecurityEvent(
-            event_type="file.folder.renamed",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=str(user.id), username=user.username),
-            detail={"folder_id": folder_id, "old_name": folder_row["name"], "new_name": body.name},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.folder.renamed",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                detail={"folder_id": folder_id, "old_name": folder_row["name"], "new_name": body.name},
+            )
+        )
 
 
 async def _require_folder_write_access(db, folder_id: str, folder_row, user: AuthenticatedUser) -> None:
@@ -570,7 +588,14 @@ async def _require_folder_write_access(db, folder_id: str, folder_row, user: Aut
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
 
-@router.put("/{folder_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.put(
+    "/{folder_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def update_folder(
     folder_id: str,
     body: UpdateFolderRequest,
@@ -626,7 +651,14 @@ async def update_folder(
     return {"folder": Folder.from_row(updated_row).to_dict()}
 
 
-@router.delete("/{folder_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/{folder_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def delete_folder(
     folder_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -640,9 +672,7 @@ async def delete_folder(
     """
     folder_id = validate_uuid(folder_id)
 
-    cursor = await db.execute(
-        "SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,)
-    )
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
     folder_row = await cursor.fetchone()
     if folder_row is None:
         raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
@@ -721,19 +751,21 @@ async def delete_folder(
             await db.rollback()
             raise
 
-        event_bus.emit(SecurityEvent(
-            event_type="file.folder.deleted",
-            severity="warning",
-            outcome="success",
-            actor=EventActor(user_id=str(user.id), username=user.username),
-            detail={
-                "folder_id": folder_id,
-                "name": folder_row["name"],
-                "soft_delete": True,
-                "subtree_folders": subtree_folder_count,
-                "subtree_files": subtree_file_count,
-            },
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="file.folder.deleted",
+                severity="warning",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                detail={
+                    "folder_id": folder_id,
+                    "name": folder_row["name"],
+                    "soft_delete": True,
+                    "subtree_folders": subtree_folder_count,
+                    "subtree_files": subtree_file_count,
+                },
+            )
+        )
         sse_broker.publish(
             folder_row["parent_id"] or f"root:{folder_row['owner_id']}",
             {"type": "change"},
@@ -744,19 +776,21 @@ async def delete_folder(
     await db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="file.folder.deleted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=str(user.id), username=user.username),
-        detail={
-            "folder_id": folder_id,
-            "name": folder_row["name"],
-            "soft_delete": False,
-            "subtree_folders": subtree_folder_count,
-            "subtree_files": subtree_file_count,
-        },
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="file.folder.deleted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=str(user.id), username=user.username),
+            detail={
+                "folder_id": folder_id,
+                "name": folder_row["name"],
+                "soft_delete": False,
+                "subtree_folders": subtree_folder_count,
+                "subtree_files": subtree_file_count,
+            },
+        )
+    )
     sse_broker.publish(
         folder_row["parent_id"] or f"root:{folder_row['owner_id']}",
         {"type": "change"},
@@ -764,7 +798,10 @@ async def delete_folder(
     return {"message": "Folder deleted"}
 
 
-@router.get("/{folder_id}/effective-escrow-agents", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.get(
+    "/{folder_id}/effective-escrow-agents",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
 async def get_effective_escrow_agents(
     folder_id: str,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -783,9 +820,7 @@ async def get_effective_escrow_agents(
     folder_id = validate_uuid(folder_id)
 
     # Verify the folder exists and the caller has access to it
-    cursor = await db.execute(
-        "SELECT id, owner_id FROM folders WHERE id = ?", (folder_id,)
-    )
+    cursor = await db.execute("SELECT id, owner_id FROM folders WHERE id = ?", (folder_id,))
     folder_row = await cursor.fetchone()
     if not folder_row:
         raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)

@@ -25,28 +25,27 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
+from typing import Annotated
 
-import tusshare_opaque # type: ignore
+import tusshare_opaque  # type: ignore
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 
 import app.sensitive_config as sensitive_config
 from app.auth.cookies import clear_auth_cookies, set_auth_cookies, user_response_dict
-from app.util.db import get_admin_setting
-from app.auth.stepup import log_security_event, verify_step_up_token
-from app.auth.dependencies import get_current_user, require_user_role
-from app.middleware.rate_limit import _counter, _get_client_ip
+from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
 from app.auth.opaque_provider import OPAQUEAuthProvider
+from app.auth.stepup import log_security_event, verify_step_up_token
 from app.config import settings
 from app.database import Database, DuplicateError, get_db
-from app.services import live_settings, event_bus
-from app.schemas.security_event import EventActor, SecurityEvent
+from app.middleware.rate_limit import _counter, _get_client_ip
 from app.models.role import ROLE_SERVER_ADMIN, ROLE_USER, grant_role
+from app.schemas.security_event import EventActor, SecurityEvent
+from app.services import event_bus, live_settings
+from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
-from typing import Annotated
-
 
 _ERR_INVALID_TOKEN = "Invalid token"
 _ERR_INVALID_REG_REQUEST = "Invalid registration request"
@@ -74,7 +73,9 @@ def _decode_b64_field(value: str, field_name: str) -> bytes:
         padded = value + "=" * (-len(value) % 4)
         return base64.urlsafe_b64decode(padded)
     except Exception:
-        raise HTTPException(status_code=422, detail=f"{field_name}: invalid base64")  # NOSONAR — helper; 422 documented in callers
+        raise HTTPException(
+            status_code=422, detail=f"{field_name}: invalid base64"
+        )  # NOSONAR — helper; 422 documented in callers
 
 
 # ---------------------------------------------------------------------------
@@ -83,26 +84,27 @@ def _decode_b64_field(value: str, field_name: str) -> bytes:
 # opaque-ke Ristretto255/TripleDH/SHA-512 protocol message sizes (raw bytes)
 # are fixed and small. We bound at 2× theoretical max to absorb future library
 # changes while still rejecting clearly oversized payloads.
-_OPAQUE_REG_REQUEST_B64_MAX  = 128   # RegistrationRequest  ~32 bytes  → 44 b64
-_OPAQUE_REG_RECORD_B64_MAX   = 512   # RegistrationUpload   ~256 bytes → 344 b64
-_OPAQUE_LOGIN_START_B64_MAX  = 128   # CredentialRequest    ~32 bytes  → 44 b64
-_OPAQUE_LOGIN_FINISH_B64_MAX = 512   # CredentialFinalization ~256 bytes → 344 b64
-_WRAPPED_KEY_B64_MAX         = 128   # AES-256-GCM ciphertext ~48 bytes → 64 b64
-_IV_B64_MAX                  = 64    # 12–24-byte IVs → 32 b64
-_X25519_PUB_B64_MAX          = 60    # 32 bytes → 44 b64
-_MLKEM_PUB_B64_MAX           = 1700  # 1184 bytes → ~1580 b64
-_X25519_PRIV_WRAPPED_B64_MAX = 80    # wrapped 48-byte key → 64 b64
-_MLKEM_PRIV_WRAPPED_B64_MAX  = 3400  # wrapped ~2416-byte key → ~3224 b64
+_OPAQUE_REG_REQUEST_B64_MAX = 128  # RegistrationRequest  ~32 bytes  → 44 b64
+_OPAQUE_REG_RECORD_B64_MAX = 512  # RegistrationUpload   ~256 bytes → 344 b64
+_OPAQUE_LOGIN_START_B64_MAX = 128  # CredentialRequest    ~32 bytes  → 44 b64
+_OPAQUE_LOGIN_FINISH_B64_MAX = 512  # CredentialFinalization ~256 bytes → 344 b64
+_WRAPPED_KEY_B64_MAX = 128  # AES-256-GCM ciphertext ~48 bytes → 64 b64
+_IV_B64_MAX = 64  # 12–24-byte IVs → 32 b64
+_X25519_PUB_B64_MAX = 60  # 32 bytes → 44 b64
+_MLKEM_PUB_B64_MAX = 1700  # 1184 bytes → ~1580 b64
+_X25519_PRIV_WRAPPED_B64_MAX = 80  # wrapped 48-byte key → 64 b64
+_MLKEM_PRIV_WRAPPED_B64_MAX = 3400  # wrapped ~2416-byte key → ~3224 b64
 
 
 # ---------------------------------------------------------------------------
 # Registration models
 # ---------------------------------------------------------------------------
 
+
 class OpaqueRegisterStartRequest(BaseModel):
-    token: str                         # invite token — validated (not consumed) at start
+    token: str  # invite token — validated (not consumed) at start
     username: str
-    client_registration_request: str   # base64 RegistrationRequest bytes
+    client_registration_request: str  # base64 RegistrationRequest bytes
 
     @field_validator("token")
     @classmethod
@@ -124,14 +126,14 @@ class OpaqueRegisterStartRequest(BaseModel):
 
 
 class OpaqueRegisterFinishRequest(BaseModel):
-    token: str                          # invite token — consumed atomically here
+    token: str  # invite token — consumed atomically here
     username: str
-    client_registration_record: str     # base64 RegistrationUpload bytes from client
+    client_registration_record: str  # base64 RegistrationUpload bytes from client
     wrapped_master_key: str
     wrapped_master_key_iv: str
-    recovery_key_wrapped: str           # required — client always generates recovery key
-    recovery_key_iv: str                # required
-    recovery_key_hash: str              # required — hex SHA-256 of the recovery key
+    recovery_key_wrapped: str  # required — client always generates recovery key
+    recovery_key_iv: str  # required
+    recovery_key_hash: str  # required — hex SHA-256 of the recovery key
     x25519_public_key: str | None = None
     mlkem768_public_key: str | None = None
     x25519_private_wrapped: str | None = None
@@ -216,9 +218,10 @@ class OpaqueRegisterFinishRequest(BaseModel):
 # Login models
 # ---------------------------------------------------------------------------
 
+
 class OpaqueLoginStartRequest(BaseModel):
     username: str
-    client_login_start: str    # base64 CredentialRequest bytes
+    client_login_start: str  # base64 CredentialRequest bytes
 
     @field_validator("username")
     @classmethod
@@ -235,7 +238,7 @@ class OpaqueLoginStartRequest(BaseModel):
 class OpaqueLoginFinishRequest(BaseModel):
     username: str
     session_id: str
-    client_login_finish: str   # base64 CredentialFinalization bytes
+    client_login_finish: str  # base64 CredentialFinalization bytes
     is_public_device: bool = False
 
     @field_validator("username")
@@ -262,10 +265,11 @@ class OpaqueLoginFinishRequest(BaseModel):
 # Step-up model
 # ---------------------------------------------------------------------------
 
+
 class OpaqueStepUpStartRequest(BaseModel):
     action_key: str
-    payload_hash: str         # SHA-256 hex of the request body the client will send
-    timestamp: int            # unix seconds
+    payload_hash: str  # SHA-256 hex of the request body the client will send
+    timestamp: int  # unix seconds
     client_step_up_start: str  # base64 CredentialRequest bytes (same as login start)
 
     @field_validator("action_key")
@@ -291,6 +295,7 @@ class OpaqueStepUpStartRequest(BaseModel):
     @classmethod
     def val_timestamp(cls, v: int) -> int:
         import time
+
         if abs(int(time.time()) - v) > 600:
             raise ValueError("timestamp is too far from server time")
         return v
@@ -305,6 +310,7 @@ class OpaqueStepUpStartRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Registration routes
 # ---------------------------------------------------------------------------
+
 
 @router.post("/register/start", responses={400: {"description": "Bad Request"}})
 async def opaque_register_start(
@@ -334,7 +340,9 @@ async def opaque_register_start(
     try:
         reg_response_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_registration,
-            setup_bytes, reg_request_bytes, username_bytes,
+            setup_bytes,
+            reg_request_bytes,
+            username_bytes,
         )
     except ValueError as exc:
         logger.warning("OPAQUE register/start failed: %s", exc)
@@ -397,11 +405,19 @@ async def opaque_register_finish(
             "  x25519_private_wrapped, mlkem768_private_wrapped, asymmetric_key_iv"
             ") VALUES (?, ?, 'opaque', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                user_id, body.username, reg_record_bytes,
-                body.wrapped_master_key, body.wrapped_master_key_iv,
-                body.recovery_key_wrapped, body.recovery_key_iv, body.recovery_key_hash,
-                body.x25519_public_key, body.mlkem768_public_key,
-                body.x25519_private_wrapped, body.mlkem768_private_wrapped, body.asymmetric_key_iv,
+                user_id,
+                body.username,
+                reg_record_bytes,
+                body.wrapped_master_key,
+                body.wrapped_master_key_iv,
+                body.recovery_key_wrapped,
+                body.recovery_key_iv,
+                body.recovery_key_hash,
+                body.x25519_public_key,
+                body.mlkem768_public_key,
+                body.x25519_private_wrapped,
+                body.mlkem768_private_wrapped,
+                body.asymmetric_key_iv,
             ),
         )
         await grant_role(db, user_id, ROLE_USER)
@@ -445,17 +461,20 @@ async def opaque_register_finish(
     set_auth_cookies(response, access_token, raw_refresh, csrf_token)
 
     logger.info("New OPAQUE user registered: %s (id=%s)", user.username, user.id)
-    event_bus.emit(SecurityEvent(
-        event_type="user.registered",
-        severity="info",
-        outcome="success",
-        actor=EventActor(user_id=user_id, username=body.username),
-        detail={"auth_method": "opaque"},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="user.registered",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=user_id, username=body.username),
+            detail={"auth_method": "opaque"},
+        )
+    )
 
     # Tell the client if they need to enroll MFA before accessing resources.
     # New users never have credentials, so only the enforcement mode matters.
     from app.auth.mfa import load_mfa_settings as _load_mfa
+
     mfa_settings = await _load_mfa(db)
     mfa_enrollment_required = mfa_settings["mfa_enforcement"] == "required"
 
@@ -465,6 +484,7 @@ async def opaque_register_finish(
 # ---------------------------------------------------------------------------
 # Login routes
 # ---------------------------------------------------------------------------
+
 
 @router.post("/login/start", responses={400: {"description": "Bad Request"}})
 async def opaque_login_start(
@@ -491,7 +511,10 @@ async def opaque_login_start(
     try:
         login_response_bytes, server_state_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_login,
-            setup_bytes, reg_record_bytes, login_start_bytes, identifier,
+            setup_bytes,
+            reg_record_bytes,
+            login_start_bytes,
+            identifier,
         )
     except ValueError as exc:
         logger.warning("OPAQUE login/start failed: %s", exc)
@@ -515,26 +538,35 @@ async def _maybe_issue_mfa_response(db, user, body, active_methods, mfa_reset_re
     if not (active_methods or mfa_reset_required):
         return None
     from app.auth.mfa import (
-        get_active_methods, issue_pending_token, store_pending_token, extract_pending_jti,
+        extract_pending_jti,
+        issue_pending_token,
+        store_pending_token,
     )
+
     pending_token = issue_pending_token(user.id)
     jti = extract_pending_jti(pending_token)
     await store_pending_token(db, jti, user.id, body.is_public_device)
     await db.commit()
     logger.info(
         "OPAQUE login: user=%s (id=%s) — MFA required (methods=%s reset=%s)",
-        user.username, user.id, sorted(active_methods), mfa_reset_required,
+        user.username,
+        user.id,
+        sorted(active_methods),
+        mfa_reset_required,
     )
     try:
-        from app.models.policy import evaluate_user_policies as _eval_mfa_policies
         from app.database import db_session as _db_session_mfa
+        from app.models.policy import evaluate_user_policies as _eval_mfa_policies
+
         _mfa_uid = user.id
+
         async def _bg_mfa_eval() -> None:
             try:
                 async with _db_session_mfa() as _bg_db:
                     await _eval_mfa_policies(_bg_db, _mfa_uid)
             except Exception:
                 pass
+
         _t = asyncio.create_task(_bg_mfa_eval())
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
@@ -568,26 +600,30 @@ async def opaque_login_finish(
     if session is None:
         # Session expired, not found, or already consumed — uniform error to
         # prevent distinguishing between "wrong password" and "no session"
-        event_bus.emit(SecurityEvent(
-            event_type=_EVT_LOGIN_FAILURE,
-            severity="warning",
-            outcome="failure",
-            actor=EventActor(ip=_client_ip),
-            detail={"method": "opaque", "username": body.username, "reason": "session_not_found"},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type=_EVT_LOGIN_FAILURE,
+                severity="warning",
+                outcome="failure",
+                actor=EventActor(ip=_client_ip),
+                detail={"method": "opaque", "username": body.username, "reason": "session_not_found"},
+            )
+        )
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     stored_username, server_state_bytes = session
 
     # Username in the finish request must match what was used at start
     if stored_username.lower() != body.username.lower():
-        event_bus.emit(SecurityEvent(
-            event_type=_EVT_LOGIN_FAILURE,
-            severity="warning",
-            outcome="failure",
-            actor=EventActor(ip=_client_ip),
-            detail={"method": "opaque", "username": stored_username, "reason": "username_mismatch"},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type=_EVT_LOGIN_FAILURE,
+                severity="warning",
+                outcome="failure",
+                actor=EventActor(ip=_client_ip),
+                detail={"method": "opaque", "username": stored_username, "reason": "username_mismatch"},
+            )
+        )
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     login_finish_bytes = _decode_b64_field(body.client_login_finish, "client_login_finish")
@@ -598,27 +634,33 @@ async def opaque_login_finish(
     try:
         session_key = await asyncio.to_thread(
             tusshare_opaque.server_finish_login,
-            server_state_bytes, login_finish_bytes, identifier,
+            server_state_bytes,
+            login_finish_bytes,
+            identifier,
         )
     except ValueError as exc:
         logger.warning("OPAQUE login/finish error: %s", exc)
-        event_bus.emit(SecurityEvent(
-            event_type=_EVT_LOGIN_FAILURE,
-            severity="warning",
-            outcome="failure",
-            actor=EventActor(ip=_client_ip),
-            detail={"method": "opaque", "username": stored_username, "reason": "invalid_credentials"},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type=_EVT_LOGIN_FAILURE,
+                severity="warning",
+                outcome="failure",
+                actor=EventActor(ip=_client_ip),
+                detail={"method": "opaque", "username": stored_username, "reason": "invalid_credentials"},
+            )
+        )
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     if session_key is None:
-        event_bus.emit(SecurityEvent(
-            event_type=_EVT_LOGIN_FAILURE,
-            severity="warning",
-            outcome="failure",
-            actor=EventActor(ip=_client_ip),
-            detail={"method": "opaque", "username": stored_username, "reason": "invalid_credentials"},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type=_EVT_LOGIN_FAILURE,
+                severity="warning",
+                outcome="failure",
+                actor=EventActor(ip=_client_ip),
+                detail={"method": "opaque", "username": stored_username, "reason": "invalid_credentials"},
+            )
+        )
         raise HTTPException(status_code=401, detail=_ERR_INVALID_CREDENTIALS)
 
     # Auth succeeded — load the full user record and issue tokens
@@ -633,9 +675,8 @@ async def opaque_login_finish(
     # the client can complete the MFA challenge.  mfa_reset_required bypasses
     # the "no credentials → skip" path and forces the user to enrollment.
     from app.auth.mfa import get_active_methods
-    cursor = await db.execute(
-        "SELECT mfa_reset_required FROM users WHERE id = ?", (user.id,)
-    )
+
+    cursor = await db.execute("SELECT mfa_reset_required FROM users WHERE id = ?", (user.id,))
     mfa_row = await cursor.fetchone()
     mfa_reset_required = bool(mfa_row["mfa_reset_required"]) if mfa_row else False
 
@@ -650,7 +691,9 @@ async def opaque_login_finish(
     # (cleared on tab close) — enforced on the client side.
     is_public_device = body.is_public_device
     if is_public_device:
-        rt_expire_minutes = live_settings.get_int("public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES)
+        rt_expire_minutes = live_settings.get_int(
+            "public_device_refresh_minutes", settings.PUBLIC_DEVICE_REFRESH_TOKEN_MINUTES
+        )
         rt_max_age = rt_expire_minutes * 60
     else:
         rt_expire_minutes = None  # uses default REFRESH_TOKEN_EXPIRE_DAYS
@@ -658,7 +701,9 @@ async def opaque_login_finish(
 
     raw_refresh, rt_hash = create_refresh_token()
     token_id = await store_refresh_token(
-        db, user.id, rt_hash,
+        db,
+        user.id,
+        rt_hash,
         expire_minutes=rt_expire_minutes,
         is_public_device=is_public_device,
     )
@@ -672,7 +717,9 @@ async def opaque_login_finish(
 
     logger.info(
         "OPAQUE login: user=%s (id=%s) public_device=%s",
-        user.username, user.id, is_public_device,
+        user.username,
+        user.id,
+        is_public_device,
     )
 
     # Tell the client if MFA enrollment is required (enforcement=required, no credentials).
@@ -680,6 +727,7 @@ async def opaque_login_finish(
     mfa_enrollment_required = False
     if not active_methods:
         from app.auth.mfa import load_mfa_settings as _load_mfa_login
+
         _login_mfa_settings = await _load_mfa_login(db)
         mfa_enrollment_required = _login_mfa_settings["mfa_enforcement"] == "required"
 
@@ -693,15 +741,18 @@ async def opaque_login_finish(
     # get_db() releases it to the pool when this handler returns, and another
     # request could acquire the same connection while the task is still using it.
     try:
-        from app.models.policy import evaluate_user_policies as _eval_policies
         from app.database import db_session as _db_session
+        from app.models.policy import evaluate_user_policies as _eval_policies
+
         _uid = user.id
+
         async def _bg_eval() -> None:
             try:
                 async with _db_session() as _bg_db:
                     await _eval_policies(_bg_db, _uid)
             except Exception:
                 pass
+
         _t = asyncio.create_task(_bg_eval())
         _bg_tasks.add(_t)
         _t.add_done_callback(_bg_tasks.discard)
@@ -718,7 +769,10 @@ async def opaque_login_finish(
 # Step-up start (Phase 6 — OPAQUE step-up challenge)
 # ---------------------------------------------------------------------------
 
-@router.post("/step-up/start", responses={400: {"description": "Bad Request"}, 500: {"description": "Internal Server Error"}})
+
+@router.post(
+    "/step-up/start", responses={400: {"description": "Bad Request"}, 500: {"description": "Internal Server Error"}}
+)
 async def opaque_step_up_start(
     body: OpaqueStepUpStartRequest,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -745,7 +799,7 @@ async def opaque_step_up_start(
         raise HTTPException(
             status_code=400,
             detail="This endpoint is only for OPAQUE-authenticated users. "
-                   "Legacy users should POST to /auth/step-up directly.",
+            "Legacy users should POST to /auth/step-up directly.",
         )
 
     provider = OPAQUEAuthProvider(db)
@@ -761,7 +815,10 @@ async def opaque_step_up_start(
     try:
         login_response_bytes, server_state_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_login,
-            setup_bytes, reg_record_bytes, step_up_start_bytes, username_bytes,
+            setup_bytes,
+            reg_record_bytes,
+            step_up_start_bytes,
+            username_bytes,
         )
     except ValueError as exc:
         logger.warning("OPAQUE step-up/start failed for user %s: %s", user.id, exc)
@@ -783,12 +840,12 @@ async def opaque_step_up_start(
 # Legacy→OPAQUE migration (Step 9 — upgrade existing bcrypt users)
 # ---------------------------------------------------------------------------
 
-_MIGRATE_RATE_LIMIT = 5       # attempts
-_MIGRATE_RATE_WINDOW = 300    # seconds (5 minutes)
+_MIGRATE_RATE_LIMIT = 5  # attempts
+_MIGRATE_RATE_WINDOW = 300  # seconds (5 minutes)
 
 
 class OpaqueMigrateStartRequest(BaseModel):
-    client_registration_request: str   # base64 RegistrationRequest bytes
+    client_registration_request: str  # base64 RegistrationRequest bytes
 
     @field_validator("client_registration_request")
     @classmethod
@@ -798,7 +855,7 @@ class OpaqueMigrateStartRequest(BaseModel):
 
 
 class OpaqueMigrateFinishRequest(BaseModel):
-    client_registration_record: str    # base64 RegistrationUpload bytes
+    client_registration_record: str  # base64 RegistrationUpload bytes
     wrapped_master_key: str
     wrapped_master_key_iv: str
 
@@ -831,7 +888,9 @@ async def opaque_migrate_start(
     try:
         reg_response_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_registration,
-            setup_bytes, reg_request_bytes, username_bytes,
+            setup_bytes,
+            reg_request_bytes,
+            username_bytes,
         )
     except ValueError as exc:
         logger.warning("OPAQUE migrate/start failed for user %s: %s", user.id, exc)
@@ -840,7 +899,14 @@ async def opaque_migrate_start(
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
-@router.post("/migrate/finish", responses={400: {"description": "Bad Request"}, 429: {"description": "Too Many Requests"}, 500: {"description": "Internal Server Error"}})
+@router.post(
+    "/migrate/finish",
+    responses={
+        400: {"description": "Bad Request"},
+        429: {"description": "Too Many Requests"},
+        500: {"description": "Internal Server Error"},
+    },
+)
 async def opaque_migrate_finish(
     body: OpaqueMigrateFinishRequest,
     user: Annotated[AuthenticatedUser, Depends(require_user_role)],
@@ -855,9 +921,7 @@ async def opaque_migrate_finish(
     The UPDATE uses AND auth_method='legacy' so a double-submit is a safe no-op.
     Rate-limited to 5 attempts per 5 minutes per user to prevent brute-force.
     """
-    allowed = await _counter.is_allowed(
-        f"opaque_migrate:{user.id}", _MIGRATE_RATE_LIMIT, _MIGRATE_RATE_WINDOW
-    )
+    allowed = await _counter.is_allowed(f"opaque_migrate:{user.id}", _MIGRATE_RATE_LIMIT, _MIGRATE_RATE_WINDOW)
     if not allowed:
         logger.warning("OPAQUE migrate rate-limited: user=%s", user.id)
         raise HTTPException(
@@ -904,13 +968,15 @@ async def opaque_migrate_finish(
         logger.info("OPAQUE migrate/finish: user %s already migrated (no-op)", user.id)
     else:
         logger.info("OPAQUE migration complete: user=%s (id=%s)", user.username, user.id)
-        event_bus.emit(SecurityEvent(
-            event_type="auth.credential.migrated",
-            severity="info",
-            outcome="success",
-            actor=EventActor(user_id=str(user.id), username=user.username),
-            detail={"auth_method": "opaque"},
-        ))
+        event_bus.emit(
+            SecurityEvent(
+                event_type="auth.credential.migrated",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                detail={"auth_method": "opaque"},
+            )
+        )
 
     # Return updated user record
     provider = OPAQUEAuthProvider(db)
@@ -934,7 +1000,7 @@ async def opaque_migrate_finish(
 
 class OpaqueRecoverStartRequest(BaseModel):
     username: str
-    client_registration_request: str   # base64 RegistrationRequest for the new password
+    client_registration_request: str  # base64 RegistrationRequest for the new password
 
     @field_validator("username")
     @classmethod
@@ -951,13 +1017,13 @@ class OpaqueRecoverStartRequest(BaseModel):
 class OpaqueRecoverFinishRequest(BaseModel):
     username: str
     session_id: str
-    client_registration_record: str    # base64 RegistrationUpload for the new password
-    wrapped_master_key: str            # master key re-wrapped under new OPAQUE KEK
+    client_registration_record: str  # base64 RegistrationUpload for the new password
+    wrapped_master_key: str  # master key re-wrapped under new OPAQUE KEK
     wrapped_master_key_iv: str
-    recovery_key_wrapped: str          # master key wrapped under new recovery key
+    recovery_key_wrapped: str  # master key wrapped under new recovery key
     recovery_key_iv: str
-    recovery_key_hash: str             # SHA-256 hex of new recovery key string
-    old_recovery_key_proof: str        # SHA-256 hex of old recovery key string (proof of possession)
+    recovery_key_hash: str  # SHA-256 hex of new recovery key string
+    old_recovery_key_proof: str  # SHA-256 hex of old recovery key string (proof of possession)
 
     @field_validator("username")
     @classmethod
@@ -1045,7 +1111,9 @@ async def opaque_recover_start(
     try:
         reg_response_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_registration,
-            setup_bytes, reg_request_bytes, username_bytes,
+            setup_bytes,
+            reg_request_bytes,
+            username_bytes,
         )
     except ValueError as exc:
         logger.warning("OPAQUE recover/start failed: %s", exc)
@@ -1060,7 +1128,9 @@ async def opaque_recover_start(
     return {
         "registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("="),
         "session_id": session_id,
-        "recovery_key_wrapped": user_fields["recovery_key_wrapped"] if user_fields else _fake_recovery_blob(body.username),
+        "recovery_key_wrapped": user_fields["recovery_key_wrapped"]
+        if user_fields
+        else _fake_recovery_blob(body.username),
         "recovery_key_iv": user_fields["recovery_key_iv"] if user_fields else _fake_recovery_iv(body.username),
     }
 
@@ -1125,8 +1195,11 @@ async def opaque_recover_finish(
             "WHERE id = ?",
             (
                 new_reg_record_bytes,
-                body.wrapped_master_key, body.wrapped_master_key_iv,
-                body.recovery_key_wrapped, body.recovery_key_iv, body.recovery_key_hash,
+                body.wrapped_master_key,
+                body.wrapped_master_key_iv,
+                body.recovery_key_wrapped,
+                body.recovery_key_iv,
+                body.recovery_key_hash,
                 user_id,
             ),
         )
@@ -1147,7 +1220,11 @@ async def opaque_recover_finish(
     user_agent = request.headers.get("user-agent", "")[:512]
     logger.info("Password reset via recovery key: user_id=%s ip=%s", user_id, client_ip)
     await log_security_event(
-        db, "password_reset_via_recovery_key", user_id, client_ip, user_agent,
+        db,
+        "password_reset_via_recovery_key",
+        user_id,
+        client_ip,
+        user_agent,
     )
 
     return {"success": True}
@@ -1160,8 +1237,9 @@ async def opaque_recover_finish(
 # The step-up in /finish proves the user knows their current password before
 # the new OPAQUE record and re-wrapped master key are written.
 
+
 class OpaquePasswordChangeStartRequest(BaseModel):
-    client_registration_request: str   # base64 RegistrationRequest bytes
+    client_registration_request: str  # base64 RegistrationRequest bytes
 
     @field_validator("client_registration_request")
     @classmethod
@@ -1171,8 +1249,8 @@ class OpaquePasswordChangeStartRequest(BaseModel):
 
 
 class OpaquePasswordChangeFinishRequest(BaseModel):
-    client_registration_record: str    # base64 RegistrationUpload bytes (new password)
-    wrapped_master_key: str            # master key re-wrapped under new OPAQUE KEK
+    client_registration_record: str  # base64 RegistrationUpload bytes (new password)
+    wrapped_master_key: str  # master key re-wrapped under new OPAQUE KEK
     wrapped_master_key_iv: str
 
     @field_validator("client_registration_record")
@@ -1218,7 +1296,9 @@ async def opaque_password_change_start(
     try:
         reg_response_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_registration,
-            setup_bytes, reg_request_bytes, username_bytes,
+            setup_bytes,
+            reg_request_bytes,
+            username_bytes,
         )
     except ValueError as exc:
         logger.warning("OPAQUE password-change/start failed for user %s: %s", user.id, exc)
@@ -1227,7 +1307,9 @@ async def opaque_password_change_start(
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
-@router.post("/password-change/finish", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+@router.post(
+    "/password-change/finish", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}}
+)
 async def opaque_password_change_finish(
     body: OpaquePasswordChangeFinishRequest,
     request: Request,
@@ -1247,9 +1329,7 @@ async def opaque_password_change_finish(
         )
 
     token = request.headers.get("x-step-up-token", "")
-    if not token or not verify_step_up_token(
-        token, user.id, "user.change_password", session_id=user.session_id
-    ):
+    if not token or not verify_step_up_token(token, user.id, "user.change_password", session_id=user.session_id):
         raise HTTPException(
             status_code=403,
             detail={"error": "step_up_required", "action": "user.change_password"},
@@ -1274,7 +1354,8 @@ async def opaque_password_change_finish(
             "WHERE id = ?",
             (
                 new_reg_record_bytes,
-                body.wrapped_master_key, body.wrapped_master_key_iv,
+                body.wrapped_master_key,
+                body.wrapped_master_key_iv,
                 user.id,
             ),
         )
@@ -1299,7 +1380,11 @@ async def opaque_password_change_finish(
     user_agent = request.headers.get("user-agent", "")[:512]
     logger.info("Password changed: user=%s id=%s ip=%s", user.username, user.id, client_ip)
     await log_security_event(
-        db, "user.password_changed", user.id, client_ip, user_agent,
+        db,
+        "user.password_changed",
+        user.id,
+        client_ip,
+        user_agent,
         username=user.username,
     )
 
@@ -1314,14 +1399,14 @@ async def opaque_password_change_finish(
 # generated by _bootstrap_admin() on first run when the users table is empty
 # and consumed (deleted) atomically when /bootstrap/finish succeeds.
 
-_BOOTSTRAP_RATE_LIMIT  = 10
+_BOOTSTRAP_RATE_LIMIT = 10
 _BOOTSTRAP_RATE_WINDOW = 300  # 10 attempts per 5 minutes per IP
 
 
 class OpaqueBootstrapStartRequest(BaseModel):
     token: str
     username: str
-    client_registration_request: str   # base64 RegistrationRequest bytes
+    client_registration_request: str  # base64 RegistrationRequest bytes
 
     @field_validator("token")
     @classmethod
@@ -1345,7 +1430,7 @@ class OpaqueBootstrapStartRequest(BaseModel):
 class OpaqueBootstrapFinishRequest(BaseModel):
     token: str
     username: str
-    client_registration_record: str     # base64 RegistrationUpload bytes
+    client_registration_record: str  # base64 RegistrationUpload bytes
     wrapped_master_key: str
     wrapped_master_key_iv: str
     recovery_key_wrapped: str | None = None
@@ -1454,9 +1539,7 @@ async def opaque_bootstrap_status(db: Annotated[Database, Depends(get_db)]):
     if user_count > 0:
         return {"needs_bootstrap": False}
 
-    cursor = await db.execute(
-        "SELECT 1 FROM admin_settings WHERE key = 'bootstrap_token_hash'"
-    )
+    cursor = await db.execute("SELECT 1 FROM admin_settings WHERE key = 'bootstrap_token_hash'")
     token_pending = (await cursor.fetchone()) is not None
     return {"needs_bootstrap": token_pending}
 
@@ -1487,7 +1570,9 @@ async def opaque_bootstrap_start(
     try:
         reg_response_bytes = await asyncio.to_thread(
             tusshare_opaque.server_start_registration,
-            setup_bytes, reg_request_bytes, username_bytes,
+            setup_bytes,
+            reg_request_bytes,
+            username_bytes,
         )
     except ValueError as exc:
         logger.warning("OPAQUE bootstrap/start failed: %s", exc)
@@ -1496,7 +1581,14 @@ async def opaque_bootstrap_start(
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
-@router.post("/bootstrap/finish", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 409: {"description": "Conflict"}})
+@router.post(
+    "/bootstrap/finish",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        409: {"description": "Conflict"},
+    },
+)
 async def opaque_bootstrap_finish(
     body: OpaqueBootstrapFinishRequest,
     response: Response,
@@ -1533,8 +1625,7 @@ async def opaque_bootstrap_finish(
     try:
         # Re-validate and consume the token atomically
         cursor = await db.execute(
-            "DELETE FROM admin_settings WHERE key = 'bootstrap_token_hash' AND value = ? "
-            "RETURNING key",
+            "DELETE FROM admin_settings WHERE key = 'bootstrap_token_hash' AND value = ? RETURNING key",
             (token_hash,),
         )
         if await cursor.fetchone() is None:
@@ -1550,11 +1641,19 @@ async def opaque_bootstrap_finish(
             "  x25519_private_wrapped, mlkem768_private_wrapped, asymmetric_key_iv"
             ") VALUES (?, ?, 'opaque', ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                user_id, body.username, reg_record_bytes,
-                body.wrapped_master_key, body.wrapped_master_key_iv,
-                body.recovery_key_wrapped, body.recovery_key_iv, body.recovery_key_hash,
-                body.x25519_public_key, body.mlkem768_public_key,
-                body.x25519_private_wrapped, body.mlkem768_private_wrapped, body.asymmetric_key_iv,
+                user_id,
+                body.username,
+                reg_record_bytes,
+                body.wrapped_master_key,
+                body.wrapped_master_key_iv,
+                body.recovery_key_wrapped,
+                body.recovery_key_iv,
+                body.recovery_key_hash,
+                body.x25519_public_key,
+                body.mlkem768_public_key,
+                body.x25519_private_wrapped,
+                body.mlkem768_private_wrapped,
+                body.asymmetric_key_iv,
             ),
         )
         await grant_role(db, user_id, ROLE_SERVER_ADMIN)
@@ -1592,11 +1691,13 @@ async def opaque_bootstrap_finish(
     set_auth_cookies(response, access_token, raw_refresh, csrf_token)
 
     logger.info("Bootstrap admin registered: %s (id=%s)", user.username, user.id)
-    event_bus.emit(SecurityEvent(
-        event_type="admin.bootstrap.completed",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=user_id, username=body.username),
-        detail={"auth_method": "opaque"},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.bootstrap.completed",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=user_id, username=body.username),
+            detail={"auth_method": "opaque"},
+        )
+    )
     return {"user": user_response_dict(user)}

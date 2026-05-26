@@ -14,13 +14,13 @@ Transport: UDP (default), TCP, or TLS (wraps TCP with ssl.SSLContext).
 The dispatcher reloads its destination list from the DB every 60 seconds so
 admin changes take effect without a restart.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import socket
 import ssl
-import uuid
 from datetime import timezone
 
 from app.schemas.security_event import SecurityEvent
@@ -37,6 +37,7 @@ _dispatcher_task: asyncio.Task | None = None
 # Lifecycle
 # ---------------------------------------------------------------------------
 
+
 def init(db_session_factory) -> None:
     global _db_session_factory
     _db_session_factory = db_session_factory
@@ -44,6 +45,7 @@ def init(db_session_factory) -> None:
 
 def start() -> asyncio.Task:
     from app.services import event_bus
+
     global _dispatcher_task
     _dispatcher_task = asyncio.create_task(_dispatch_loop(event_bus.subscribe()), name="siem_syslog")
     return _dispatcher_task
@@ -53,9 +55,8 @@ def start() -> asyncio.Task:
 # Main dispatch loop
 # ---------------------------------------------------------------------------
 
-async def _dispatch_to_destinations(
-    destinations: list[dict], event: SecurityEvent
-) -> None:
+
+async def _dispatch_to_destinations(destinations: list[dict], event: SecurityEvent) -> None:
     for dest in destinations:
         if not matches_destination_filter(dest, event):
             continue
@@ -99,9 +100,7 @@ async def _load_destinations() -> list[dict]:
         return []
     try:
         async with _db_session_factory() as db:
-            cursor = await db.execute(
-                "SELECT * FROM siem_destinations WHERE type='syslog' AND is_active=1"
-            )
+            cursor = await db.execute("SELECT * FROM siem_destinations WHERE type='syslog' AND is_active=1")
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
     except Exception:
@@ -114,6 +113,7 @@ async def _load_destinations() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 _SEVERITY_TO_SYSLOG = {"info": 6, "warning": 4, "critical": 2}  # syslog severity numbers
+
 
 def _syslog_pri(facility: int, severity: str) -> int:
     sev = _SEVERITY_TO_SYSLOG.get(severity, 6)
@@ -158,24 +158,23 @@ def _format_cef(dest: dict, event: SecurityEvent) -> bytes:
     if event.target:
         ext_parts.append(f"fname={event.target.name or ''}")
     extension = " ".join(ext_parts)
-    msg = (
-        f"<{pri}>CEF:0|tusShare|tusShare|1.0|"
-        f"{event.event_type}|{event.event_type}|{cef_sev}|{extension}"
-    )
+    msg = f"<{pri}>CEF:0|tusShare|tusShare|1.0|{event.event_type}|{event.event_type}|{cef_sev}|{extension}"
     return msg.encode("utf-8")
 
 
 def _format_leef(dest: dict, event: SecurityEvent) -> bytes:
     """IBM QRadar LEEF 1.0 format."""
     pri = _syslog_pri(dest.get("facility", 16), event.severity)
-    attrs = "\t".join([
-        f"devTime={event.timestamp.astimezone(timezone.utc).isoformat()}",
-        f"usrName={event.actor.username or ''}",
-        f"src={event.actor.ip or ''}",
-        f"cat={event.event_type}",
-        f"sev={event.severity}",
-        f"outcome={event.outcome or ''}",
-    ])
+    attrs = "\t".join(
+        [
+            f"devTime={event.timestamp.astimezone(timezone.utc).isoformat()}",
+            f"usrName={event.actor.username or ''}",
+            f"src={event.actor.ip or ''}",
+            f"cat={event.event_type}",
+            f"sev={event.severity}",
+            f"outcome={event.outcome or ''}",
+        ]
+    )
     msg = f"<{pri}>LEEF:1.0|tusShare|tusShare|1.0|{event.event_type}|{attrs}"
     return msg.encode("utf-8")
 
@@ -193,6 +192,7 @@ def _format_event(dest: dict, event: SecurityEvent) -> bytes:
 # Transport
 # ---------------------------------------------------------------------------
 
+
 async def send_one(dest: dict, event: SecurityEvent) -> None:
     """Format and send a single event to a syslog destination (blocking I/O in thread pool)."""
     payload = _format_event(dest, event)
@@ -200,7 +200,7 @@ async def send_one(dest: dict, event: SecurityEvent) -> None:
     host = dest.get("host") or ""
     port = int(dest.get("port") or 514)
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _send_sync, protocol, host, port, payload)
 
 

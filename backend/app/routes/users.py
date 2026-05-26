@@ -10,26 +10,33 @@ and regular user creation cannot escalate to admin.
 
 import asyncio
 import logging
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
-from typing import Literal
 
+import app.storage.manager as storage
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.models.role import FLAG_USERS_VIEW, FLAG_USERS_MANAGE, FLAG_USERS_DELETE, FLAG_ROLES_MANAGE, FLAG_TEAMS_MANAGE
-from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.database import Database, db_session, get_db
-from app.models.role import ADMIN_ROLE_IDS, ROLE_USER, ROLE_TIER, admin_best_tier, grant_role, revoke_role
+from app.middleware.rate_limit import _get_client_ip
+from app.models.role import (
+    ADMIN_ROLE_IDS,
+    FLAG_ROLES_MANAGE,
+    FLAG_TEAMS_MANAGE,
+    FLAG_USERS_DELETE,
+    FLAG_USERS_MANAGE,
+    FLAG_USERS_VIEW,
+    ROLE_TIER,
+    admin_best_tier,
+    grant_role,
+    revoke_role,
+)
+from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
-import app.storage.manager as storage
-from app.models.user import User
-from app.middleware.rate_limit import _get_client_ip
-from app.validation.sanitizers import sanitize_username, validate_base64, validate_uuid
+from app.validation.sanitizers import validate_base64, validate_uuid
 from app.validation.validators import validate_pagination
-from typing import Annotated
-
 
 _ERR_PERM_MANAGE_USERS = "users_manage permission required"
 _ERR_USER_NOT_FOUND = "User not found"
@@ -45,8 +52,10 @@ logger = logging.getLogger(__name__)
 # Request models — separate schemas for users vs admins
 # ---------------------------------------------------------------------------
 
+
 class CreateUserRequest(BaseModel):
     """Regular user — has E2E encryption, quotas, file operations."""
+
     username: str
     disk_quota: int | None = None
     bandwidth_limit: int | None = None
@@ -64,10 +73,14 @@ class CreateUserRequest(BaseModel):
     asymmetric_key_iv: str | None = None
 
     @field_validator(
-        "wrapped_master_key", "wrapped_master_key_iv",
-        "recovery_key_wrapped", "recovery_key_iv",
-        "x25519_public_key", "mlkem768_public_key",
-        "x25519_private_wrapped", "mlkem768_private_wrapped",
+        "wrapped_master_key",
+        "wrapped_master_key_iv",
+        "recovery_key_wrapped",
+        "recovery_key_iv",
+        "x25519_public_key",
+        "mlkem768_public_key",
+        "x25519_private_wrapped",
+        "mlkem768_private_wrapped",
         "asymmetric_key_iv",
     )
     @classmethod
@@ -87,11 +100,13 @@ class CreateUserRequest(BaseModel):
 
 class CreateAdminRequest(BaseModel):
     """Admin-only account — management operations only, no file storage."""
+
     username: str
 
 
 class UpdateUserRequest(BaseModel):
     """Mutable user settings. Role changes use dedicated grant/revoke endpoints."""
+
     is_active: bool | None = None
     disk_quota: int | None = None
     bandwidth_limit: int | None = None
@@ -100,6 +115,7 @@ class UpdateUserRequest(BaseModel):
 
 class GrantRoleRequest(BaseModel):
     """Optional scope for a role grant (omit for a global grant)."""
+
     scope_type: Literal["team"] | None = None
     scope_id: str | None = None
 
@@ -107,6 +123,7 @@ class GrantRoleRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Role grant/revoke validation helpers
 # ---------------------------------------------------------------------------
+
 
 def _validate_role_grant_scope(
     admin: AuthenticatedUser,
@@ -163,6 +180,7 @@ def _validate_role_revoke_scope(
 # Scope helper
 # ---------------------------------------------------------------------------
 
+
 async def _require_user_in_scope(db, admin: AuthenticatedUser, user_id: str) -> None:
     """Raise 403 if a scoped admin (FLAG_USERS_MANAGE) cannot act on this user.
 
@@ -187,6 +205,7 @@ async def _require_user_in_scope(db, admin: AuthenticatedUser, user_id: str) -> 
 # Endpoints
 # ---------------------------------------------------------------------------
 
+
 @router.get("", responses={403: {"description": "Forbidden"}})
 async def list_users(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
@@ -202,7 +221,7 @@ async def list_users(
     # scope: None = org-wide (unrestricted); set = team-scoped IDs.
     # Either manage or view flag satisfies the scope; take the union (None wins = unrestricted).
     _manage_scope = scope_team_ids(admin, FLAG_USERS_MANAGE)
-    _view_scope   = scope_team_ids(admin, FLAG_USERS_VIEW)
+    _view_scope = scope_team_ids(admin, FLAG_USERS_VIEW)
     if _manage_scope is None or _view_scope is None:
         allowed = None  # at least one global grant → org-wide
     else:
@@ -229,8 +248,7 @@ async def list_users(
         )
         rows = await cursor.fetchall()
         count_cursor = await db.execute(
-            f"SELECT COUNT(DISTINCT utk.user_id) FROM user_team_keys utk "
-            f"WHERE utk.team_id IN ({placeholders})",
+            f"SELECT COUNT(DISTINCT utk.user_id) FROM user_team_keys utk WHERE utk.team_id IN ({placeholders})",
             tuple(allowed),
         )
         total = (await count_cursor.fetchone())[0]
@@ -240,18 +258,18 @@ async def list_users(
 
     def _user_dict(r) -> dict:
         return {
-            "id":                       r["id"],
-            "username":                 r["username"],
-            "is_admin":                 bool(r["is_admin"]),
-            "is_active":                bool(r["is_active"]),
-            "auth_method":              r["auth_method"],
-            "identity_provider_id":     r["identity_provider_id"],
-            "wrapped_master_key":       r["wrapped_master_key"],
-            "max_file_size":            r["max_file_size"],
-            "disk_quota":               r["disk_quota"],
-            "bandwidth_limit":          r["bandwidth_limit"],
-            "disk_used":                r["disk_used"],
-            "created_at":               str(r["created_at"]) if r["created_at"] else None,
+            "id": r["id"],
+            "username": r["username"],
+            "is_admin": bool(r["is_admin"]),
+            "is_active": bool(r["is_active"]),
+            "auth_method": r["auth_method"],
+            "identity_provider_id": r["identity_provider_id"],
+            "wrapped_master_key": r["wrapped_master_key"],
+            "max_file_size": r["max_file_size"],
+            "disk_quota": r["disk_quota"],
+            "bandwidth_limit": r["bandwidth_limit"],
+            "disk_used": r["disk_used"],
+            "created_at": str(r["created_at"]) if r["created_at"] else None,
         }
 
     return {
@@ -367,12 +385,12 @@ async def get_user(
     team_rows = await team_cursor.fetchall()
     teams = [
         {
-            "team_id":        r["team_id"],
-            "team_name":      r["team_name"],
-            "team_role_id":   r["role_id"],
+            "team_id": r["team_id"],
+            "team_name": r["team_name"],
+            "team_role_id": r["role_id"],
             "team_role_name": r["role_name"],
-            "key_confirmed":  bool(r["key_confirmed"]),
-            "joined_at":      r["joined_at"],
+            "key_confirmed": bool(r["key_confirmed"]),
+            "joined_at": r["joined_at"],
         }
         for r in team_rows
     ]
@@ -408,38 +426,45 @@ async def get_user(
     recent_audit = [
         {
             "event_type": r["event_type"],
-            "severity":   r["severity"],
-            "outcome":    r["outcome"],
+            "severity": r["severity"],
+            "outcome": r["outcome"],
             "ip_address": r["ip_address"],
-            "timestamp":  str(r["timestamp"]) if r["timestamp"] else None,
+            "timestamp": str(r["timestamp"]) if r["timestamp"] else None,
         }
         for r in audit_rows
     ]
 
     return {
         "user": {
-            "id":              row["id"],
-            "username":        row["username"],
-            "auth_method":     row["auth_method"],
-            "is_admin":        bool(row["is_admin"]),
-            "is_active":       bool(row["is_active"]),
-            "max_file_size":   row["max_file_size"],
-            "disk_quota":      row["disk_quota"],
+            "id": row["id"],
+            "username": row["username"],
+            "auth_method": row["auth_method"],
+            "is_admin": bool(row["is_admin"]),
+            "is_active": bool(row["is_active"]),
+            "max_file_size": row["max_file_size"],
+            "disk_quota": row["disk_quota"],
             "bandwidth_limit": row["bandwidth_limit"],
-            "disk_used":       row["disk_used"],
-            "created_at":      str(row["created_at"]) if row["created_at"] else None,
-            "last_login_at":   last_login_at,
-            "last_login_ip":   last_login_ip,
-            "roles":           roles,
-            "permissions":     permissions,
-            "teams":           teams,
-            "mfa_enabled":     mfa_enabled,
-            "recent_audit":    recent_audit,
+            "disk_used": row["disk_used"],
+            "created_at": str(row["created_at"]) if row["created_at"] else None,
+            "last_login_at": last_login_at,
+            "last_login_ip": last_login_ip,
+            "roles": roles,
+            "permissions": permissions,
+            "teams": teams,
+            "mfa_enabled": mfa_enabled,
+            "recent_audit": recent_audit,
         }
     }
 
 
-@router.post("/{user_id}/lock", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.post(
+    "/{user_id}/lock",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def lock_user(
     request: Request,
     user_id: str,
@@ -453,9 +478,7 @@ async def lock_user(
     await _require_user_in_scope(db, admin, user_id)
     if user_id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot lock your own account")
-    result = await db.execute(
-        "UPDATE users SET is_active = 0, updated_at = NOW() WHERE id = ?", (user_id,)
-    )
+    result = await db.execute("UPDATE users SET is_active = 0, updated_at = NOW() WHERE id = ?", (user_id,))
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
     await _handle_activation_change(db, user_id, False, admin, request)
@@ -474,9 +497,7 @@ async def unlock_user(
         raise HTTPException(status_code=403, detail=_ERR_PERM_MANAGE_USERS)
     user_id = validate_uuid(user_id)
     await _require_user_in_scope(db, admin, user_id)
-    result = await db.execute(
-        "UPDATE users SET is_active = 1, updated_at = NOW() WHERE id = ?", (user_id,)
-    )
+    result = await db.execute("UPDATE users SET is_active = 1, updated_at = NOW() WHERE id = ?", (user_id,))
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
     await db.commit()
@@ -484,7 +505,9 @@ async def unlock_user(
     return {"message": "User unlocked"}
 
 
-@router.post("/{user_id}/reset-password", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.post(
+    "/{user_id}/reset-password", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}}
+)
 async def reset_user_password(
     request: Request,
     user_id: str,
@@ -508,40 +531,50 @@ async def reset_user_password(
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
     await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
     await db.commit()
-    event_bus.emit(SecurityEvent(
-        event_type="admin.user.sessions_revoked",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="user", id=user_id, name=target["username"]),
-        detail={"reason": "admin_password_reset"},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.user.sessions_revoked",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user_id, name=target["username"]),
+            detail={"reason": "admin_password_reset"},
+        )
+    )
     return {
         "message": "All sessions revoked. To complete a password reset, share a new invite link with the user via POST /api/v1/admin/invites.",
     }
 
 
 async def _handle_activation_change(db, user_id: str, is_active, admin: AuthenticatedUser, request: Request) -> None:
-    event_bus.emit(SecurityEvent(
-        event_type="admin.user.deactivated" if not is_active else "admin.user.activated",
-        severity="warning" if not is_active else "info",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="user", id=user_id),
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.user.deactivated" if not is_active else "admin.user.activated",
+            severity="warning" if not is_active else "info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user_id),
+        )
+    )
     if is_active is False:
         await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
         await db.execute("DELETE FROM user_team_keys WHERE user_id = ?", (user_id,))
         await db.execute(
-            "UPDATE shares SET expires_at = NOW() "
-            "WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
+            "UPDATE shares SET expires_at = NOW() WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
             (user_id,),
         )
         await db.commit()
         sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "deactivated"})
 
 
-@router.put("/{user_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.put(
+    "/{user_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def update_user(
     request: Request,
     user_id: str,
@@ -621,19 +654,26 @@ async def list_user_roles(
         "roles": [
             {
                 "assignment_id": r["id"],
-                "role_id":       r["role_id"],
-                "role_name":     r["role_name"],
-                "is_system":     bool(r["is_system"]),
-                "scope_type":    r["scope_type"],
-                "scope_id":      r["scope_id"],
-                "granted_by":    r["granted_by"],
+                "role_id": r["role_id"],
+                "role_name": r["role_name"],
+                "is_system": bool(r["is_system"]),
+                "scope_type": r["scope_type"],
+                "scope_id": r["scope_id"],
+                "granted_by": r["granted_by"],
             }
             for r in rows
         ],
     }
 
 
-@router.post("/{user_id}/roles/{role_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.post(
+    "/{user_id}/roles/{role_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def add_role_to_user(
     request: Request,
     user_id: str,
@@ -659,7 +699,7 @@ async def add_role_to_user(
     user_id = validate_uuid(user_id)
 
     scope_type = body.scope_type if body else None
-    scope_id   = body.scope_id   if body else None
+    scope_id = body.scope_id if body else None
 
     scope_id = _validate_role_grant_scope(admin, scope_type, scope_id, role_id)
 
@@ -682,19 +722,28 @@ async def add_role_to_user(
 
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.role.granted",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="user", id=user_id, name=target_row["username"]),
-        detail={"role_id": role_id, "scope_type": scope_type, "scope_id": scope_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.role.granted",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user_id, name=target_row["username"]),
+            detail={"role_id": role_id, "scope_type": scope_type, "scope_id": scope_id},
+        )
+    )
 
     return {"message": f"Role {role_id} granted to user {user_id}", "scope_type": scope_type, "scope_id": scope_id}
 
 
-@router.delete("/{user_id}/roles/{role_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/{user_id}/roles/{role_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def remove_role_from_user(
     request: Request,
     user_id: str,
@@ -740,19 +789,28 @@ async def remove_role_from_user(
 
     await db.commit()
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.role.revoked",
-        severity="warning",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
-        detail={"role_id": role_id, "scope_type": scope_type, "scope_id": scope_id},
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.role.revoked",
+            severity="warning",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
+            detail={"role_id": role_id, "scope_type": scope_type, "scope_id": scope_id},
+        )
+    )
 
     return {"message": f"Role {role_id} revoked from user {user_id}"}
 
 
-@router.delete("/{user_id}", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/{user_id}",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+    },
+)
 async def delete_user(
     request: Request,
     user_id: str,
@@ -778,9 +836,7 @@ async def delete_user(
     target_row = await cursor.fetchone()
 
     # Collect file id+key pairs before CASCADE deletes the file rows
-    cursor = await db.execute(
-        "SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,)
-    )
+    cursor = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,))
     file_rows = await cursor.fetchall()
 
     result = await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -789,13 +845,15 @@ async def delete_user(
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
-    event_bus.emit(SecurityEvent(
-        event_type="admin.user.deleted",
-        severity="critical",
-        outcome="success",
-        actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-        target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
-    ))
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.user.deleted",
+            severity="critical",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
+        )
+    )
 
     # Best-effort blob cleanup via storage manager (handles all volumes)
     rows_snapshot = list(file_rows)
@@ -809,8 +867,7 @@ async def delete_user(
                 try:
                     # Skip if another files row still shares this storage_key (B5 copy dedup)
                     cur = await _db.execute(
-                        "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?",
-                        (row["storage_key"],)
+                        "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (row["storage_key"],)
                     )
                     cnt = await cur.fetchone()
                     if cnt and cnt["cnt"] > 0:
@@ -829,7 +886,9 @@ async def delete_user(
     return {"message": "User deleted"}
 
 
-@router.delete("/{user_id}/asymmetric-keys", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+@router.delete(
+    "/{user_id}/asymmetric-keys", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}}
+)
 async def clear_user_asymmetric_keys(
     user_id: str,
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
