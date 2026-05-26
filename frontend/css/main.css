@@ -1422,13 +1422,14 @@ input[type="checkbox"] {
     gap: 0;
 }
 .bn-icon-person-head {
-    font-size: 23px;
+    font-size: 24px;
     line-height: 1;
-    margin-bottom: -20px;
+    margin-bottom: -40px;
 }
 .bn-icon-person-body {
-    font-size: 39px;
+    font-size: 43px;
     line-height: 1;
+    margin-bottom: -20px;
 }
 
 /* === Reduced motion === */
