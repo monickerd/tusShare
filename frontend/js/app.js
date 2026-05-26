@@ -1801,11 +1801,23 @@ const App = (() => {
             });
         });
 
+        const bnTransferBtn = Utils.el('button', {
+            className: 'bn-tab',
+            id: 'bn-transfers',
+            'aria-label': 'Transfer progress',
+        });
+        bnTransferBtn.appendChild(Utils.el('span', { className: 'bn-transfer-icon', textContent: '⇅' }));
+        bnTransferBtn.appendChild(Utils.el('span', { className: 'bn-label', textContent: 'Transfers' }));
+        const bnTransferItem = Utils.el('div', { className: 'bn-item' });
+        bnTransferItem.appendChild(bnTransferBtn);
+        TransferManager.setMobileBtn(bnTransferBtn);
+
         const bottomNav = Utils.el('nav', { className: 'mobile-bottom-nav', 'aria-label': 'Mobile navigation' }, [
             _makeBnItem('My Files', '#/files', 'files'),
             bnTeams,
             bnShared,
             _makeBnItem('Favourites', '#/pinned', 'pinned'),
+            bnTransferItem,
         ]);
         bottomNav.appendChild(bnBackdrop);
 

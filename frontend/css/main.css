@@ -1097,6 +1097,22 @@ input[type="checkbox"] {
     .mobile-hidden {
         display: none !important;
     }
+
+    /* Transfer indicator button in bottom nav */
+    .bn-transfer-icon {
+        display: block;
+        font-size: var(--font-size-md);
+        line-height: 1;
+    }
+    .transfer-btn--active .bn-transfer-icon {
+        color: var(--color-primary);
+        animation: transfer-active-pulse 1.5s ease-in-out infinite;
+    }
+}
+
+@keyframes transfer-active-pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.4; }
 }
 
 /* === Responsive: Mobile === */

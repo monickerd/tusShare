@@ -1224,7 +1224,7 @@
 .transfer-row {
     display: grid;
     /* icon | name | progress track | pct | pause btn | stop btn */
-    grid-template-columns: 16px 1fr 72px 28px 20px 20px;
+    grid-template-columns: 16px 1fr 72px 28px 32px 32px;
     align-items: center;
     gap: var(--space-2);
     padding: var(--space-2) var(--space-3);
@@ -1306,8 +1306,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
+    width: 32px;
+    height: 32px;
     padding: 0;
     background: none;
     border: none;
@@ -1317,7 +1317,7 @@
     line-height: 1;
     cursor: pointer;
     transition: color var(--transition-fast), background var(--transition-fast);
-    min-height: unset; /* override global 44px touch target for compact panel */
+    min-height: 32px;
 }
 
 .transfer-row-ctrl:hover:not(:disabled) {
@@ -1333,8 +1333,8 @@
 /* placeholder keeps the grid columns intact when a button is absent */
 .transfer-row-ctrl-placeholder {
     display: block;
-    width: 20px;
-    height: 20px;
+    width: 32px;
+    height: 32px;
 }
 
 /* ── Step-up authentication modal ─────────────────────────────────────── */
@@ -3136,5 +3136,85 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* === Transfer panel: mobile close button (hidden on desktop) === */
+.transfer-panel-close-mobile {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-md);
+    line-height: 1;
+    padding: 2px var(--space-1);
+    border-radius: var(--radius);
+    min-height: unset;
+}
+.transfer-panel-close-mobile:hover {
+    color: var(--color-text);
+    background: var(--color-surface-hover);
+}
+
+/* === Transfer panel: scrim for mobile sheet === */
+.transfer-panel-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    bottom: 56px;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 4999;
+}
+.transfer-panel-backdrop--open {
+    display: block;
+}
+
+/* === Transfer panel: mobile sheet behaviour === */
+@media (max-width: 768px) {
+    .transfer-panel {
+        bottom: 56px;
+        right: 0;
+        left: 0;
+        width: auto;
+        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+        opacity: 1;
+        transform: translateY(calc(100% + 56px));
+    }
+    /* Suppress the desktop auto-show behaviour on mobile */
+    .transfer-panel--visible {
+        opacity: 1;
+        transform: translateY(calc(100% + 56px));
+        pointer-events: none;
+    }
+    /* Only open when the user taps the bottom-nav button */
+    .transfer-panel--visible.transfer-panel--mobile-open {
+        transform: translateY(0);
+        pointer-events: auto;
+    }
+    .transfer-panel-list {
+        max-height: 50vh;
+    }
+    .transfer-panel-min {
+        display: none;
+    }
+    .transfer-panel-close-mobile {
+        display: flex;
+    }
+    /* Wider columns + full touch targets for the control buttons */
+    .transfer-row {
+        grid-template-columns: 20px 1fr 80px 36px 44px 44px;
+    }
+    .transfer-row-ctrl {
+        width: 44px;
+        height: 44px;
+        min-height: 44px;
+        font-size: var(--font-size-md);
+    }
+    .transfer-row-ctrl-placeholder {
+        width: 44px;
+        height: 44px;
+    }
 }
 

@@ -28,6 +28,39 @@ const TransferManager = (() => {
     let _listEl = null;
     let _countEl = null;
     let _minimized = false;
+    let _mobileBtn = null;
+    let _mobileBackdrop = null;
+
+    function _closeMobileSheet() {
+        if (_panel) _panel.classList.remove('transfer-panel--mobile-open');
+        if (_mobileBackdrop) _mobileBackdrop.classList.remove('transfer-panel-backdrop--open');
+        if (_mobileBtn) _mobileBtn.setAttribute('aria-expanded', 'false');
+    }
+
+    function _ensureMobileBackdrop() {
+        if (_mobileBackdrop) return;
+        _mobileBackdrop = Utils.el('div', { className: 'transfer-panel-backdrop' });
+        _mobileBackdrop.addEventListener('click', _closeMobileSheet);
+        document.body.appendChild(_mobileBackdrop);
+    }
+
+    function _toggleMobileSheet() {
+        if (_transfers.size === 0) return;
+        _ensurePanel();
+        _ensureMobileBackdrop();
+        const isOpen = _panel.classList.toggle('transfer-panel--mobile-open');
+        _mobileBackdrop.classList.toggle('transfer-panel-backdrop--open', isOpen);
+        if (_mobileBtn) _mobileBtn.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+    }
+
+    function _updateMobileBtn() {
+        if (!_mobileBtn) return;
+        const activeCount = Array.from(_transfers.values())
+            .filter(t => t.status === 'active' || t.status === 'paused').length;
+        _mobileBtn.classList.toggle('transfer-btn--active', activeCount > 0);
+        const label = _mobileBtn.querySelector('.bn-label');
+        if (label) label.textContent = activeCount > 0 ? `${activeCount} active` : 'Transfers';
+    }
 
     function _ensurePanel() {
         if (_panel) return;
@@ -41,10 +74,19 @@ const TransferManager = (() => {
             onClick: _toggleMinimize,
         });
 
+        const mobileCloseBtn = Utils.el('button', {
+            className: 'transfer-panel-close-mobile',
+            title: 'Close',
+            'aria-label': 'Close transfers',
+            textContent: '×',
+            onClick: _closeMobileSheet,
+        });
+
         const header = Utils.el('div', { className: 'transfer-panel-header' }, [
             Utils.el('span', { className: 'transfer-panel-title', textContent: 'Transfers' }),
             _countEl,
             minBtn,
+            mobileCloseBtn,
         ]);
 
         _listEl = Utils.el('div', { className: 'transfer-panel-list' });
@@ -66,6 +108,8 @@ const TransferManager = (() => {
             .filter(t => t.status === 'active' || t.status === 'paused').length;
         _countEl.textContent = active > 0 ? `${active} active` : '';
         _panel.classList.toggle('transfer-panel--visible', _transfers.size > 0);
+        if (_transfers.size === 0) _closeMobileSheet();
+        _updateMobileBtn();
     }
 
     function _removeTransfer(id, rowEl, delay) {
@@ -251,5 +295,12 @@ const TransferManager = (() => {
         });
     }
 
-    return { start, pauseAll, dismissAll, getAll };
+    function setMobileBtn(el) {
+        _mobileBtn = el;
+        el.addEventListener('click', _toggleMobileSheet);
+        el.setAttribute('aria-haspopup', 'true');
+        el.setAttribute('aria-expanded', 'false');
+    }
+
+    return { start, pauseAll, dismissAll, getAll, setMobileBtn };
 })();
