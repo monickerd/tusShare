@@ -1,7 +1,75 @@
+# ─── EGRESS FILTERING ────────────────────────────────────────────────────────
+# The postgres service is on backend_internal (internal: true), which means
+# Docker refuses to route its traffic to/from external IPs — it can never phone
+# home regardless of what a compromised library does.
+#
+# The app container sits on both networks so it can reach postgres, but also
+# needs outbound internet access for cloud storage, OIDC, etc.  Per-destination
+# egress filtering for the app requires iptables rules applied on the Docker
+# host *after* `docker compose up`.  Example workflow:
+#
+#   # Get the app container's IP on the external bridge:
+#   APP_IP=$(docker inspect tusshare \
+#     --format '{{(index .NetworkSettings.Networks "filexfer_app_external").IPAddress}}')
+#
+#   # Default-deny all outbound from the app container:
+#   iptables -I DOCKER-USER -s "$APP_IP" -j DROP
+#
+#   # Allow established/related replies back in:
+#   iptables -I DOCKER-USER -s "$APP_IP" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+#
+#   # Always required — postgres (Docker assigns the IP; adjust if you pin it):
+#   PG_IP=$(docker inspect tusshare_postgres \
+#     --format '{{(index .NetworkSettings.Networks "filexfer_backend_internal").IPAddress}}')
+#   iptables -I DOCKER-USER -s "$APP_IP" -d "$PG_IP" -p tcp --dport 5432 -j ACCEPT
+#
+# Uncomment blocks below for each optional integration you enable:
+#
+#   # Redis (if you add a Redis service for caching/sessions):
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d <redis-ip>/32 -p tcp --dport 6379 -j ACCEPT
+#
+#   # LDAP / LDAPS:
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d <ldap-host>/32 -p tcp --dport 389 -j ACCEPT
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d <ldap-host>/32 -p tcp --dport 636 -j ACCEPT
+#
+#   # OIDC provider (e.g. Okta, Azure AD, Dex) — HTTPS only:
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d <oidc-host>/32 -p tcp --dport 443 -j ACCEPT
+#
+#   # SMTP relay (for email notifications):
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d <smtp-relay>/32 -p tcp --dport 587 -j ACCEPT
+#
+#   # AWS S3 (adjust prefix list for your region — these cover us-east-1):
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d 52.216.0.0/15 -p tcp --dport 443 -j ACCEPT
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d 54.231.0.0/17 -p tcp --dport 443 -j ACCEPT
+#
+#   # Azure Blob Storage:
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d 52.239.0.0/16 -p tcp --dport 443 -j ACCEPT
+#
+#   # Google Cloud Storage:
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d 142.250.0.0/15 -p tcp --dport 443 -j ACCEPT
+#
+#   # SIEM / webhook endpoint:
+#   # iptables -I DOCKER-USER -s "$APP_IP" -d <siem-host>/32 -p tcp --dport 443 -j ACCEPT
+#
+# Note: Docker's embedded DNS (127.0.0.11) is handled inside the container's
+# network namespace and is not subject to DOCKER-USER chain rules.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  # postgres lives here and nowhere else — no internet route.
+  backend_internal:
+    internal: true
+  # app sits on both networks; apply iptables egress rules above to restrict
+  # outbound from the app container to only the destinations it legitimately needs.
+  app_external:
+    driver: bridge
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: tusshare_postgres
+    networks:
+      - backend_internal
     environment:
       POSTGRES_DB: tusshare
       # postgres is the cluster superuser — used only for bootstrap/admin tasks.
@@ -24,10 +92,24 @@ services:
   tusshare:
     build: .
     container_name: tusshare
+    networks:
+      - backend_internal
+      - app_external
     ports:
       - "127.0.0.1:9050:8080"
     volumes:
       - tusshare_data:/data
+    tmpfs:
+      # Read-only root filesystem (below) still needs writable scratch space.
+      # Python uses /tmp for temp files; /var/tmp for longer-lived scratch.
+      - /tmp:mode=1777,size=64m
+      - /var/tmp:mode=1777,size=16m
+    read_only: true
+    cap_drop:
+      - ALL
+      # No capabilities are re-added: the app runs as a non-root user (tusshare)
+      # on port 8080 (> 1024, so NET_BIND_SERVICE is not required).
+      # If you ever move to port 80/443 inside the container, add NET_BIND_SERVICE.
     environment:
       # First-run bootstrap: set TUSSHARE_SUPERUSER_URL in .env to create the
       # sensitive_config schema automatically on startup. Must use the postgres

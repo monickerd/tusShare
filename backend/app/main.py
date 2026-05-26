@@ -1,5 +1,9 @@
 """tusShare — FastAPI application entry point."""
 
+# Must be the first import from this package: installs the socket.connect
+# audit hook before any networking library finishes initializing.
+from app.util import egress_monitor as _egress_monitor
+
 import asyncio
 import logging
 import re
@@ -64,6 +68,10 @@ def _configure_logging() -> None:
 
 _configure_logging()
 logger = logging.getLogger(__name__)
+
+# Phase 1 egress allowlist: postgres + redis from env vars. The hook was
+# installed at import time; this seeds it now that settings are available.
+_egress_monitor.build_initial_allowlist(settings)
 
 
 def _actor_from_request(request: Request) -> EventActor:
@@ -223,6 +231,11 @@ async def lifespan(app: FastAPI):
     async with db_session() as db:
         storage_manager = await storage.init(db, db_session)
 
+    # Phase 2 egress allowlist: extend with all DB-configured endpoints now
+    # that sensitive_config and storage volumes are loaded and decrypted.
+    async with db_session() as db:
+        await _egress_monitor.update_allowlist_from_db(db)
+
     # Warn if non-local volumes exist but STORAGE_ENCRYPTION_KEY is absent.
     await _warn_unencrypted_volumes(db_session)
 
@@ -244,6 +257,7 @@ async def lifespan(app: FastAPI):
 
     event_bus.init(db_session)
     event_bus_task = event_bus.start()
+    _egress_monitor.mark_event_bus_ready()
 
     op_bus.init(db_session)
     op_bus_task = op_bus.start()
