@@ -1415,6 +1415,7 @@ input[type="checkbox"] {
 .bn-tab svg {
     display: block;
     flex-shrink: 0;
+    overflow: visible;
 }
 
 /* === Reduced motion === */
