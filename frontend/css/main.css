@@ -509,16 +509,19 @@ button:focus-visible {
     align-items: center;
     justify-content: center;
     padding: var(--space-1) var(--space-2);
+    margin-left: var(--space-3);
     border-radius: var(--radius);
     background: none;
     border: none;
     color: var(--color-text);
-    font-size: var(--font-size-lg);
+    font-size: var(--font-size-xl);
+    -webkit-text-stroke: 0.6px currentColor;
     cursor: pointer;
     transition: color var(--transition-fast), background var(--transition-fast);
 }
 .breadcrumb-pin-btn:hover {
     color: #f5c518;
+    -webkit-text-stroke: 0.6px #f5c518;
     background: var(--color-surface-hover);
 }
 
@@ -1107,21 +1110,74 @@ input[type="checkbox"] {
         display: none !important;
     }
 
-    /* Transfer indicator button in bottom nav */
-    .bn-transfer-icon {
-        display: block;
-        font-size: var(--font-size-md);
+    /* Transfer indicator — split up/down arrows with directional fill animation */
+    .bn-transfer-arrows {
+        position: relative;
+        display: inline-flex;
+        gap: 1px;
+        align-items: center;
         line-height: 1;
     }
-    .transfer-btn--active .bn-transfer-icon {
-        color: var(--color-primary);
-        animation: transfer-active-pulse 1.5s ease-in-out infinite;
+    .bn-transfer-up,
+    .bn-transfer-down {
+        display: block;
+        font-size: var(--font-size-md);
+        color: var(--color-text-muted);
+        transition: opacity 0.2s ease;
+    }
+    .bn-transfer-arrows.bn-transfer-flashing .bn-transfer-up,
+    .bn-transfer-arrows.bn-transfer-flashing .bn-transfer-down {
+        opacity: 0;
+    }
+    .bn-transfer-flash {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: var(--font-size-md);
+        font-weight: 700;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+        pointer-events: none;
+    }
+    .bn-transfer-flash--show {
+        opacity: 1;
+    }
+    .bn-transfer-up.bn-transfer--active {
+        background-image: linear-gradient(to top,
+            var(--color-primary) 50%,
+            var(--color-text-muted) 50%);
+        background-size: 100% 200%;
+        background-position: 0 100%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: bn-upload-fill 1.2s ease-in-out infinite;
+    }
+    .bn-transfer-down.bn-transfer--active {
+        background-image: linear-gradient(to bottom,
+            var(--color-primary) 50%,
+            var(--color-text-muted) 50%);
+        background-size: 100% 200%;
+        background-position: 0 0%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        animation: bn-download-fill 1.2s ease-in-out infinite;
     }
 }
 
-@keyframes transfer-active-pulse {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.4; }
+@keyframes bn-upload-fill {
+    0%   { background-position: 0 100%; }
+    50%  { background-position: 0 0%; }
+    100% { background-position: 0 100%; }
+}
+
+@keyframes bn-download-fill {
+    0%   { background-position: 0 0%; }
+    50%  { background-position: 0 100%; }
+    100% { background-position: 0 0%; }
 }
 
 /* === Responsive: Mobile === */

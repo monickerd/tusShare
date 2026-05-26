@@ -1869,7 +1869,11 @@ const App = (() => {
             id: 'bn-transfers',
             'aria-label': 'Transfer progress',
         });
-        bnTransferBtn.appendChild(Utils.el('span', { className: 'bn-transfer-icon', textContent: '⇅' }));
+        const bnTransferArrows = Utils.el('span', { className: 'bn-transfer-arrows' });
+        bnTransferArrows.appendChild(Utils.el('span', { className: 'bn-transfer-up',   textContent: '↑' }));
+        bnTransferArrows.appendChild(Utils.el('span', { className: 'bn-transfer-down', textContent: '↓' }));
+        bnTransferArrows.appendChild(Utils.el('span', { className: 'bn-transfer-flash' }));
+        bnTransferBtn.appendChild(bnTransferArrows);
         bnTransferBtn.appendChild(Utils.el('span', { className: 'bn-label', textContent: 'Transfers' }));
         const bnTransferItem = Utils.el('div', { className: 'bn-item' });
         bnTransferItem.appendChild(bnTransferBtn);

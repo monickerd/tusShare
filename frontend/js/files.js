@@ -392,7 +392,7 @@ const Files = (() => {
             const pinBtn = Utils.el('button', {
                 className: 'breadcrumb-pin-btn',
                 title: 'Add to Favourites',
-                textContent: '★',
+                textContent: '☆',
             });
             pinBtn.addEventListener('click', () => {
                 const hash = _isTeamView

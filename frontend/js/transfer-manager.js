@@ -58,11 +58,33 @@ const TransferManager = (() => {
 
     function _updateMobileBtn() {
         if (!_mobileBtn) return;
-        const activeCount = Array.from(_transfers.values())
-            .filter(t => t.status === 'active' || t.status === 'paused').length;
-        _mobileBtn.classList.toggle('transfer-btn--active', activeCount > 0);
+        const transfers = Array.from(_transfers.values());
+        const activeUploads   = transfers.filter(t => (t.status === 'active' || t.status === 'paused') && t.type === 'upload').length;
+        const activeDownloads = transfers.filter(t => (t.status === 'active' || t.status === 'paused') && t.type === 'download').length;
+        const totalActive = activeUploads + activeDownloads;
+
+        const upEl   = _mobileBtn.querySelector('.bn-transfer-up');
+        const downEl = _mobileBtn.querySelector('.bn-transfer-down');
+        if (upEl)   upEl.classList.toggle('bn-transfer--active', activeUploads > 0);
+        if (downEl) downEl.classList.toggle('bn-transfer--active', activeDownloads > 0);
+
         const label = _mobileBtn.querySelector('.bn-label');
-        if (label) label.textContent = activeCount > 0 ? `${activeCount} active` : 'Transfers';
+        if (label) label.textContent = totalActive > 0 ? `${totalActive} active` : 'Transfers';
+    }
+
+    function _flashStatus(symbol, isSuccess) {
+        if (!_mobileBtn) return;
+        const arrowsEl = _mobileBtn.querySelector('.bn-transfer-arrows');
+        const flashEl  = _mobileBtn.querySelector('.bn-transfer-flash');
+        if (!arrowsEl || !flashEl) return;
+        flashEl.textContent = symbol;
+        flashEl.style.color = isSuccess ? 'var(--color-success, #16a34a)' : 'var(--color-danger, #dc2626)';
+        arrowsEl.classList.add('bn-transfer-flashing');
+        flashEl.classList.add('bn-transfer-flash--show');
+        setTimeout(() => {
+            flashEl.classList.remove('bn-transfer-flash--show');
+            arrowsEl.classList.remove('bn-transfer-flashing');
+        }, 1200);
     }
 
     function _ensurePanel() {
@@ -196,7 +218,7 @@ const TransferManager = (() => {
         _listEl.appendChild(rowEl);
         // Store onLogout so pauseAll() can signal this transfer without the stop
         // button's delete-on-server semantics.  Falls back to onStop if not provided.
-        _transfers.set(id, { rowEl, status: 'active', onLogout: onLogout ?? onStop });
+        _transfers.set(id, { rowEl, status: 'active', type, onLogout: onLogout ?? onStop });
         _refreshVisibility();
 
         /** Shared teardown for complete / cancelled / fail. Guards against double-calls. */
@@ -208,6 +230,8 @@ const TransferManager = (() => {
             pctEl.textContent = pctText;
             if (pauseBtn) pauseBtn.style.display = 'none';
             if (stopBtn)  stopBtn.style.display  = 'none';
+            if (cssClass === 'transfer-row--done')   _flashStatus('✓', true);
+            if (cssClass === 'transfer-row--failed') _flashStatus('!', false);
             _refreshVisibility();
             _removeTransfer(id, rowEl, delay);
         }
