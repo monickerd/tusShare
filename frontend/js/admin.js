@@ -2158,7 +2158,7 @@ const Admin = (() => {
             ? Utils.el('span', { className: 'badge badge-team', textContent: 'team' })
             : Utils.el('span', { className: 'badge badge-org', textContent: 'org' });
 
-        // E4b: escrow badge + toggle button in header
+        // Escrow badge + toggle button in header
         const escrowBadge = policy.escrow_enabled
             ? Utils.el('span', { className: 'badge badge-escrow', textContent: 'escrow' })
             : null;
@@ -2510,7 +2510,7 @@ const Admin = (() => {
         scopeTypeEl.addEventListener('change', () => {
             scopeIdWrap.style.display = scopeTypeEl.value === 'team' ? '' : 'none';
         });
-        // E4b: escrow_enabled toggle
+        // Escrow toggle
         const escrowEl = Utils.el('input', { type: 'checkbox' });
         const escrowRow = Utils.el('div', { className: 'policy-strict-row' }, [
             escrowEl,

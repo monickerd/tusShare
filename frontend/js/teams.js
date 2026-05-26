@@ -1358,7 +1358,7 @@ const Teams = (() => {
                         sk_bytes, myPubs.x25519_public_key, myPubs.mlkem768_public_key
                     );
 
-                    // E4b: fetch escrow agents and pre-wrap sk_team for each
+                    // Fetch escrow agents and pre-wrap sk_team for each
                     let escrow_members = [];
                     try {
                         const agentsResp = await Api.get(`${_api}/teams/escrow-agents`);

@@ -1470,7 +1470,7 @@
     color: var(--color-danger);
 }
 
-/* ── Generic content modal (E1 Roles & Permissions) ─────────────────────── */
+/* ── Generic content modal ───────────────────────────────────────────────── */
 
 .content-modal {
     max-width: 680px;
@@ -1883,7 +1883,7 @@
     box-sizing: border-box;
 }
 
-/* ===== E2: Team Custom Roles ===== */
+/* ===== Team Custom Roles ===== */
 
 .team-roles-add-btn {
     margin-bottom: var(--space-3);
@@ -1930,7 +1930,7 @@
     margin-top: var(--space-2);
 }
 
-/* ===== E3: Policy Engine ===== */
+/* ===== Policy Engine ===== */
 
 .policy-subsection {
     margin-bottom: var(--space-6);

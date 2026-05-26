@@ -140,7 +140,7 @@ class CreateTeamRequest(BaseModel):
     kem_ciphertext: str
     encrypted_sk: str
     sk_iv: str
-    # E4b: optional pre-wrapped key slots for escrow agents.
+    # Optional pre-wrapped key slots for escrow agents.
     # Client fetches GET /teams/escrow-agents, wraps sk_team for each, and includes here.
     # Each entry must identify a user holding can_act_as_escrow.
     escrow_members: list[_MemberKeyIn] = []
@@ -448,7 +448,7 @@ async def _require_team_role(db, team_id: str, user: AuthenticatedUser, min_role
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Escrow agents (E4b)
+# Escrow agents
 # ---------------------------------------------------------------------------
 
 
@@ -557,7 +557,7 @@ async def create_team(
         "VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
         (utk_id, team_id, user.id, body.ephemeral_x25519_pub, body.kem_ciphertext, body.encrypted_sk, body.sk_iv),
     )
-    # E4b: write escrow agent key slots and team membership if provided
+    # Write escrow agent key slots and team membership if provided
     for em in body.escrow_members:
         ea_ur_id = str(uuid.uuid4())
         ea_utk_id = str(uuid.uuid4())
@@ -1530,7 +1530,7 @@ async def confirm_team_key(
 
 
 # ---------------------------------------------------------------------------
-# E4a — Pending key grants (policy-granted members awaiting sk_team delivery)
+# Pending key grants (policy-granted members awaiting sk_team delivery)
 # ---------------------------------------------------------------------------
 
 
@@ -1709,7 +1709,7 @@ async def complete_pending_key_grants(
 
 
 # ---------------------------------------------------------------------------
-# E4c — Ephemeral invite slots
+# Ephemeral invite slots
 # ---------------------------------------------------------------------------
 
 # Default slot lifetime in hours (configurable per-request up to this cap)

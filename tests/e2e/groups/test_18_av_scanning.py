@@ -1,5 +1,5 @@
 """
-Group 18 — AV scanning gate (F5).
+Group 18 — AV scanning gate.
 
 Tests the av_require_clean download gate, batch-move gate, admin AV status
 endpoint, and bulk-rescan endpoint.

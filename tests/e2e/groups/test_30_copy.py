@@ -1,5 +1,5 @@
 """
-Group 30 — File copy (B5).
+Group 30 — File copy.
 
 Tests the POST /files/batch-copy endpoint across all five crypto paths, the
 copy_boundary admin policy, the FLAG_COPY_FILES permission gate, access-control

@@ -1,7 +1,7 @@
 """
-Group 19 — Escrow by Default (E5).
+Group 19 — Escrow by Default.
 
-Tests cover the full E5 lifecycle:
+Tests cover the full escrow-by-default lifecycle:
   A. Org-level settings & initial state
   B. Effective-agent resolution (org default, replace, merge, none, inheritance)
   C. Team creation enforcement (require_coverage)
@@ -12,10 +12,10 @@ Tests cover the full E5 lifecycle:
   H. Folder deletion cascades to policy
 
 Design note on "rotation" (tests 19-21 to 19-22):
-  E5 does NOT automatically rotate existing team keys when the default changes.
+  Escrow-by-default does NOT automatically rotate existing team keys when the default changes.
   Old teams remain covered only as long as their current escrow member still holds
   the escrow_agent role.  The coverage report surfaces teams that have lost coverage.
-  Admins trigger backfill via the pending-key-grants flow (E4).
+  Admins trigger backfill via the pending-key-grants flow.
 
 Tests
 -----
@@ -472,7 +472,7 @@ async def test_19_21_changing_org_default_updates_new_resolutions(admin_client: 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_19_22_old_team_stays_covered_after_default_change(admin_client: AdminClient):
-    """E5 has no automatic key rotation: old team with e1 in user_team_keys stays covered.
+    """No automatic key rotation: old team with e1 in user_team_keys stays covered.
 
     Even though the org default is now e2, e1 still holds escrow_agent, so
     the coverage query finds e1 in that team's user_team_keys — team not flagged.
@@ -481,7 +481,7 @@ async def test_19_22_old_team_stays_covered_after_default_change(admin_client: A
     reported = {t["team_id"] for t in report["teams"]}
     assert _protected_team_id not in reported, (
         "Existing team with e1 escrow member must remain covered "
-        "after org default changes to e2 — no automatic rotation in E5"
+        "after org default changes to e2 — no automatic rotation on default change"
     )
 
     # Restore e1 as org default for remaining tests

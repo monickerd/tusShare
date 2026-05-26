@@ -865,7 +865,7 @@ async def delete_user(
         async with db_session() as _db:
             for row in rows_snapshot:
                 try:
-                    # Skip if another files row still shares this storage_key (B5 copy dedup)
+                    # Skip if another files row still shares this storage_key (copy dedup)
                     cur = await _db.execute(
                         "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (row["storage_key"],)
                     )

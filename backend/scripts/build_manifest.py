@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the artifact integrity manifest (C2).
+"""Generate the artifact integrity manifest.
 
 Run this from the project root after any change to a tracked file, before
 building or deploying:

@@ -336,7 +336,7 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
         """)
 
     # ---------------------------------------------------------------------------
-    # Flag rename + split migration (G1) — idempotent; safe to run on every boot.
+    # Permission flag rename + split migration — idempotent; safe to run on every boot.
     #
     # Strategy:
     #   1. INSERT new flag definitions (ON CONFLICT DO NOTHING).

@@ -148,12 +148,12 @@ class CreatePolicyRequest(BaseModel):
     name: str
     scope_type: str = "org"  # 'org' | 'team'
     scope_id: str | None = None  # team_id for team-scoped
-    escrow_enabled: bool = False  # E4b: write escrow grants for covered teams
+    escrow_enabled: bool = False  # write escrow grants for covered teams
 
 
 class UpdatePolicyRequest(BaseModel):
     name: str | None = None
-    escrow_enabled: bool | None = None  # E4b
+    escrow_enabled: bool | None = None
 
 
 class CreateConditionRequest(BaseModel):

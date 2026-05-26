@@ -351,7 +351,7 @@ class AdminClient:
         return r.json()
 
     # ------------------------------------------------------------------ #
-    #  Identity Providers (E6)                                            #
+    #  Identity Providers                                                  #
     # ------------------------------------------------------------------ #
 
     async def list_idp_providers(self) -> list[dict]:
@@ -403,7 +403,7 @@ class AdminClient:
         return r.json()
 
     # ------------------------------------------------------------------ #
-    #  Emergency revocation (F2)                                          #
+    #  Emergency revocation                                               #
     # ------------------------------------------------------------------ #
 
     async def emergency_revoke(
@@ -422,7 +422,7 @@ class AdminClient:
         return r.json()
 
     # ------------------------------------------------------------------ #
-    #  Audit log + SIEM (E7)                                              #
+    #  Audit log + SIEM                                                   #
     # ------------------------------------------------------------------ #
 
     async def query_audit_logs(self, **params: Any) -> dict:
@@ -462,7 +462,7 @@ class AdminClient:
         return r.json()
 
     # ------------------------------------------------------------------ #
-    #  Storage volumes (F3)                                               #
+    #  Storage volumes                                                    #
     # ------------------------------------------------------------------ #
 
     async def list_storage_volumes(self) -> list[dict]:
@@ -491,7 +491,7 @@ class AdminClient:
         return r.json()
 
     # ------------------------------------------------------------------ #
-    #  Escrow by default (E5)                                             #
+    #  Escrow settings                                                    #
     # ------------------------------------------------------------------ #
 
     async def get_escrow_settings(self) -> dict:

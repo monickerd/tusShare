@@ -1,15 +1,15 @@
 """
-Group 35 — Security audit event emission (G20, G24).
+Group 35 — Security audit event emission.
 
-Verifies SIEM events introduced during the May 2026 nation-state security audit
+Verifies SIEM events for sharing rule mutations and login failure attribution
 that are not exercised by any existing test group.
 
 Tests
 -----
-  35-01  G24: Failed OPAQUE login finish emits auth.login.failure with username + reason
-  35-02  G20: Create sharing rule emits admin.sharing_rule.created
-  35-03  G20: Update sharing rule emits admin.sharing_rule.updated
-  35-04  G20: Delete sharing rule emits admin.sharing_rule.deleted
+  35-01  Failed OPAQUE login finish emits auth.login.failure with username + reason
+  35-02  Create sharing rule emits admin.sharing_rule.created
+  35-03  Update sharing rule emits admin.sharing_rule.updated
+  35-04  Delete sharing rule emits admin.sharing_rule.deleted
   35-05  SIEM manifest assertion
 
 Notes

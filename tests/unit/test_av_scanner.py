@@ -1,5 +1,5 @@
 """
-Unit tests for the AV scanner service (F5).
+Unit tests for the AV scanner service.
 
 Covers webhook HMAC signing, verdict parsing, retry logic, and early-exit
 conditions (no endpoint, no escrow key, no escrow material on file).

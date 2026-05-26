@@ -1,7 +1,7 @@
 """
 Group 14 — Audit trail + SIEM.
 
-Structural tests for the E7 audit subsystem.  All tests run against the live
+Structural tests for the audit subsystem.  All tests run against the live
 application via the API; no browser is needed here.
 
 World layout

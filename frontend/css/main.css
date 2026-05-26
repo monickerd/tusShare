@@ -96,13 +96,13 @@ button:focus-visible {
     object-fit: contain;
 }
 
-/* === Theme-toggleable UI elements (D2) ===
+/* === Theme-toggleable UI elements ===
  *
  * Pattern: boolean flags from theme.json["ui"] are applied as
  * data-ui-<flag-name>="true"/"false" on <body> at startup.
  * Use body[data-ui-<flag>="false"] selectors to suppress elements.
  *
- * Example (E5 admin transparency banner will use this):
+ * Example (admin transparency banner uses this pattern):
  *
  *   body[data-ui-admin-transparency-banner="false"] .admin-transparency-banner {
  *       display: none;
@@ -877,7 +877,7 @@ input[type="number"]:out-of-range {
     opacity: 1;
 }
 
-/* === Admin transparency banner (E5) ===
+/* === Admin transparency banner ===
  * Visible when escrow_active=true on /me response (escrow covers a user's team).
  * Theme-suppressed via: body[data-ui-admin-transparency-banner="false"] selector.
  */
