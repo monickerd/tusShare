@@ -524,6 +524,14 @@ button:focus-visible {
     -webkit-text-stroke: 0.6px #f5c518;
     background: var(--color-surface-hover);
 }
+.breadcrumb-pin-btn--active {
+    color: #f5c518;
+    -webkit-text-stroke: 0px;
+}
+.breadcrumb-pin-btn--active:hover {
+    color: #d4aa0f;
+    background: var(--color-surface-hover);
+}
 
 /* === Upload progress bar === */
 .upload-progress {
@@ -1125,7 +1133,7 @@ input[type="checkbox"] {
     .bn-transfer-up,
     .bn-transfer-down {
         display: block;
-        font-size: var(--font-size-md);
+        font-size: 22px;
         color: var(--color-text-muted);
         transition: opacity 0.2s ease;
     }
@@ -1414,12 +1422,12 @@ input[type="checkbox"] {
     gap: 0;
 }
 .bn-icon-person-head {
-    font-size: 30px;
+    font-size: 18px;
     line-height: 1;
-    margin-bottom: -3px;
+    margin-bottom: -10px;
 }
 .bn-icon-person-body {
-    font-size: 22px;
+    font-size: 34px;
     line-height: 1;
 }
 

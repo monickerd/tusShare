@@ -388,23 +388,29 @@ const Files = (() => {
                 textContent: currentFolder.name,
             }));
 
-            // Star icon at end of breadcrumb trail (add to Favourites)
+            // Star icon at end of breadcrumb trail (toggle Favourites)
+            const _folderPinned = typeof App !== 'undefined' && App.isPinned?.(currentFolder.id);
             const pinBtn = Utils.el('button', {
-                className: 'breadcrumb-pin-btn',
-                title: 'Add to Favourites',
-                textContent: '☆',
+                className: 'breadcrumb-pin-btn' + (_folderPinned ? ' breadcrumb-pin-btn--active' : ''),
+                title: _folderPinned ? 'Remove from Favourites' : 'Add to Favourites',
+                textContent: _folderPinned ? '★' : '☆',
             });
             pinBtn.addEventListener('click', () => {
                 const hash = _isTeamView
                     ? `#/team-folders/${currentFolder.id}`
                     : `#/files/${currentFolder.id}`;
-                if (typeof App !== 'undefined' && App.pinCurrentFolder) {
-                    const root = _isTeamView ? 'Team Folders' : 'My Files';
-                    const pathParts = [root, ...ancestors.map(a => a.name), currentFolder.name];
-                    const path = pathParts.join(' / ');
-                    App.pinCurrentFolder(currentFolder.id, currentFolder.name, hash,
-                        _currentTeamId, _currentTeamName, path);
-                    Utils.showToast(`Added "${currentFolder.name}" to Favourites`, 'success');
+                if (typeof App !== 'undefined') {
+                    if (_folderPinned) {
+                        App.unpinCurrentFolder?.(currentFolder.id);
+                        Utils.showToast(`Removed "${currentFolder.name}" from Favourites`, 'info');
+                    } else {
+                        const root = _isTeamView ? 'Team Folders' : 'My Files';
+                        const pathParts = [root, ...ancestors.map(a => a.name), currentFolder.name];
+                        App.pinCurrentFolder?.(currentFolder.id, currentFolder.name, hash,
+                            _currentTeamId, _currentTeamName, pathParts.join(' / '));
+                        Utils.showToast(`Added "${currentFolder.name}" to Favourites`, 'success');
+                    }
+                    _renderBreadcrumbs(ancestors, currentFolder);
                 }
             });
             el.appendChild(pinBtn);

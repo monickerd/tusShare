@@ -569,9 +569,16 @@ const App = (() => {
         _applyView();
     }
 
-    // Expose pinFolder so files.js can call it
     function pinCurrentFolder(id, name, hash, teamId, teamName, path) {
         _pinFolder(id, name, hash, teamId, teamName, path);
+    }
+
+    function unpinCurrentFolder(id) {
+        _unpinFolder(id);
+    }
+
+    function isPinned(id) {
+        return _getPinnedFolders().some(p => p.id === id);
     }
 
     async function _routeSearch(container) {
@@ -2037,5 +2044,5 @@ const App = (() => {
         init();
     }
 
-    return { init, pinCurrentFolder, reloadTheme: _loadTheme };
+    return { init, pinCurrentFolder, unpinCurrentFolder, isPinned, reloadTheme: _loadTheme };
 })();
