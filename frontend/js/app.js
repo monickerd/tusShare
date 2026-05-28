@@ -1892,17 +1892,29 @@ const App = (() => {
         const _iconShare = () => _mkSvg('<path fill="currentColor" d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/>');
         const _iconStar  = () => _mkSvg('<polygon fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>');
         // Three-person team icon.
-        // Front body: circle at (12,20) r=8, arc (4,20)→(20,20).
-        // Left/right back bodies: circle at (5,20)/(19,20) r=5, each truncated at the
-        // intersection with the front body arc ((5.71,15.05) and (18.29,15.05)).
-        // All arcs use sweep=0 (upper/counterclockwise) so they curve upward.
+        // Front body: cubic bezier with steep sides and flat apex — avoids the deep-U
+        // of a circular arc. Control points give nearly vertical tangents at the base
+        // and a horizontal tangent at the peak (~y=12).
+        // Back bodies: same bezier shape, shifted left/right. A clipPath defined by the
+        // front body's closed region automatically hides wherever the back arcs pass
+        // "behind" the front person — no intersection math required.
         const _iconPerson = () => _mkSvg(
-            '<path stroke-width="1.5" stroke-linecap="round" d="M 0 20 A 5 5 0 0 0 5.71 15.05"/>' +
-            '<circle cx="3" cy="5.5" r="1.9" stroke-width="1.5"/>' +
-            '<path stroke-width="1.5" stroke-linecap="round" d="M 18.29 15.05 A 5 5 0 0 0 24 20"/>' +
-            '<circle cx="21" cy="5.5" r="1.9" stroke-width="1.5"/>' +
-            '<path stroke-width="2" stroke-linecap="round" d="M 4 20 A 8 8 0 0 0 20 20"/>' +
-            '<circle cx="12" cy="8" r="2.5" stroke-width="2"/>',
+            '<defs><clipPath id="tcb">' +
+            '<path clip-rule="evenodd" d="M-5-5H30V30H-5Z ' +
+            'M3 22C3 13 7 12 12 12C17 12 21 13 21 22L21 28L3 28Z"/>' +
+            '</clipPath></defs>' +
+            // Left person body (clipped where it overlaps the front person)
+            '<path stroke-width="1.5" stroke-linecap="round" clip-path="url(#tcb)"' +
+            ' d="M-2 22C-2 14 1 13 5 13C9 13 11 15 11 22"/>' +
+            '<circle cx="4" cy="5.5" r="2.2" stroke-width="1.5"/>' +
+            // Right person body (clipped, mirror)
+            '<path stroke-width="1.5" stroke-linecap="round" clip-path="url(#tcb)"' +
+            ' d="M13 22C13 15 15 13 19 13C23 13 26 14 26 22"/>' +
+            '<circle cx="20" cy="5.5" r="2.2" stroke-width="1.5"/>' +
+            // Front person body (full, drawn on top)
+            '<path stroke-width="2" stroke-linecap="round"' +
+            ' d="M3 22C3 13 7 12 12 12C17 12 21 13 21 22"/>' +
+            '<circle cx="12" cy="7.5" r="3" stroke-width="2"/>',
             { fill: 'none', stroke: 'currentColor', overflow: 'visible' }
         );
 
