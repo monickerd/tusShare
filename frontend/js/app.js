@@ -1906,11 +1906,11 @@ const App = (() => {
             // Left person body — outer edge raised to y=19, apex at y=10, wider spread
             '<path stroke-width="1.2" stroke-linecap="round" clip-path="url(#tcb)"' +
             ' d="M-4 19C-4 11 0 10 5 10C9 10 11 14 11 22"/>' +
-            '<circle cx="4" cy="5.5" r="2.2" stroke-width="1.5"/>' +
+            '<circle cx="3" cy="5.5" r="2.2" stroke-width="1.5"/>' +
             // Right person body (mirror)
             '<path stroke-width="1.2" stroke-linecap="round" clip-path="url(#tcb)"' +
             ' d="M13 22C13 14 15 10 19 10C24 10 28 11 28 19"/>' +
-            '<circle cx="20" cy="5.5" r="2.2" stroke-width="1.5"/>' +
+            '<circle cx="21" cy="5.5" r="2.2" stroke-width="1.5"/>' +
             // Front person body (full, drawn on top)
             '<path stroke-width="2" stroke-linecap="round"' +
             ' d="M3 22C3 13 7 12 12 12C17 12 21 13 21 22"/>' +
