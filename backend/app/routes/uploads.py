@@ -486,12 +486,25 @@ async def _record_upload_folder_activity(user_id: str, folder_id: str) -> None:
 
         async with db_session() as db:
             cur = await db.execute(
-                "SELECT f.name, tf.team_id, t.name AS team_name "
-                "FROM folders f "
-                "LEFT JOIN team_folders tf ON tf.folder_id = f.id "
-                "LEFT JOIN teams t ON t.id = tf.team_id "
-                "WHERE f.id = ?",
-                (folder_id,),
+                """
+                WITH RECURSIVE ancestors AS (
+                    SELECT id, parent_id FROM folders WHERE id = ?
+                    UNION ALL
+                    SELECT f.id, f.parent_id FROM folders f JOIN ancestors a ON f.id = a.parent_id
+                ),
+                owning_team AS (
+                    SELECT tf.team_id, t.name AS team_name
+                    FROM   ancestors a
+                    JOIN   team_folders tf ON tf.folder_id = a.id
+                    JOIN   teams t ON t.id = tf.team_id
+                    LIMIT  1
+                )
+                SELECT f.name, ot.team_id, ot.team_name
+                FROM   folders f
+                LEFT   JOIN owning_team ot ON TRUE
+                WHERE  f.id = ?
+                """,
+                (folder_id, folder_id),
             )
             row = await cur.fetchone()
             if row:
