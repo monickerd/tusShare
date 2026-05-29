@@ -157,7 +157,7 @@ async def test_27_02_preview_diff_before_apply(admin_client: AdminClient):
     keys = {d["key"] for d in diff}
     assert "admin_setting.escrow_require_coverage"     in keys, f"Missing escrow_require_coverage in diff: {keys}"
     assert "admin_setting.notify_escrow_on_revocation" in keys, f"Missing notify_escrow_on_revocation in diff: {keys}"
-    assert "role_flag.role_user.can_create_link_shares" in keys, f"Missing link_shares flag in diff: {keys}"
+    assert "role_flag.role_user.shares_link_create" in keys, f"Missing link_shares flag in diff: {keys}"
 
     # At least some items should be marked as changed (fresh DB has no profile applied)
     changed = [d for d in diff if d["changed"]]
@@ -178,10 +178,10 @@ async def test_27_03_apply_high_security(admin_client: AdminClient):
 
     # Verify role_user sharing flags
     perms = await admin_client.get_role_permissions("role_user")
-    assert perms.get("can_create_link_shares",   {}).get("value") == "0", "link shares should be OFF"
-    assert perms.get("can_create_user_shares",   {}).get("value") == "1", "user shares should be ON"
-    assert perms.get("can_create_upload_grants", {}).get("value") == "1", "upload grants should be ON"
-    assert perms.get("can_share_folders",        {}).get("value") == "0", "share folders should be OFF"
+    assert perms.get("shares_link_create",   {}).get("value") == "0", "link shares should be OFF"
+    assert perms.get("shares_user_create",   {}).get("value") == "1", "user shares should be ON"
+    assert perms.get("shares_upload_grant_create", {}).get("value") == "0", "upload grants should be OFF"
+    assert perms.get("shares_folder_create",        {}).get("value") == "0", "share folders should be OFF"
 
     # Verify sharing rule was created
     rules_data = await admin_client.list_sharing_rules()
@@ -197,7 +197,7 @@ async def test_27_03_apply_high_security(admin_client: AdminClient):
 async def test_27_04_high_security_settings_locked(admin_client: AdminClient):
     """High Security: role_user flags and sharing rules are locked at tier 1."""
     perms = await admin_client.get_role_permissions("role_user")
-    for flag in ("can_create_link_shares", "can_share_folders"):
+    for flag in ("shares_link_create", "shares_folder_create"):
         fp = perms.get(flag, {})
         assert fp.get("is_locked") is True,   f"{flag} should be locked"
         assert fp.get("locked_min_tier") == 1, f"{flag} should be locked at tier 1, got: {fp}"
@@ -224,8 +224,8 @@ async def test_27_05_apply_recommended(admin_client: AdminClient):
     assert settings.get("notify_escrow_on_revocation") == "1", "Recommended: notify on revocation ON"
 
     perms = await admin_client.get_role_permissions("role_user")
-    for flag in ("can_create_link_shares", "can_create_user_shares",
-                 "can_create_upload_grants", "can_share_folders"):
+    for flag in ("shares_link_create", "shares_user_create",
+                 "shares_upload_grant_create", "shares_folder_create"):
         fp = perms.get(flag, {})
         assert fp.get("value") == "1",          f"Recommended: {flag} should be ON"
         assert fp.get("is_locked") is True,     f"Recommended: {flag} should be locked"
@@ -251,8 +251,8 @@ async def test_27_06_apply_open(admin_client: AdminClient):
     assert settings.get("escrow_require_coverage") == "0", "Open: escrow_require_coverage should be 0"
 
     perms = await admin_client.get_role_permissions("role_user")
-    for flag in ("can_create_link_shares", "can_create_user_shares",
-                 "can_create_upload_grants", "can_share_folders"):
+    for flag in ("shares_link_create", "shares_user_create",
+                 "shares_upload_grant_create", "shares_folder_create"):
         fp = perms.get(flag, {})
         assert fp.get("value") == "1",         f"Open: {flag} should be ON"
         assert fp.get("is_locked") is False,   f"Open: {flag} should NOT be locked"
@@ -286,8 +286,8 @@ async def test_27_07_export_structure(admin_client: AdminClient):
     )
 
     role_flags = export["role_flag_overrides"].get("role_user", {})
-    assert "can_create_link_shares" in role_flags, (
-        f"can_create_link_shares missing from role_flag_overrides.role_user: {list(role_flags)}"
+    assert "shares_link_create" in role_flags, (
+        f"shares_link_create missing from role_flag_overrides.role_user: {list(role_flags)}"
     )
 
     assert isinstance(export["sharing_rules"], list), "sharing_rules should be a list"
@@ -351,7 +351,7 @@ async def test_27_09_import_replace_restores_settings(admin_client: AdminClient)
     )
 
     perms = await admin_client.get_role_permissions("role_user")
-    for flag in ("can_create_link_shares", "can_share_folders"):
+    for flag in ("shares_link_create", "shares_folder_create"):
         fp = perms.get(flag, {})
         assert fp.get("value") == "1",       f"After import: {flag} should be ON"
         assert fp.get("is_locked") is False, f"After import: {flag} should be unlocked"

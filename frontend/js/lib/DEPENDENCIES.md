@@ -143,11 +143,11 @@ All values (`registrationRequest`, `startLoginRequest`, `registrationRecord`, `f
 
 | Field        | Value |
 |--------------|-------|
-| Package      | `@noble/curves@1.8.1` |
+| Package      | `@noble/curves@2.2.0` |
 | Source file  | `node_modules/@noble/curves/bls12-381.js` |
-| Bundle date  | 2026-04-01 |
-| SHA-256      | `18076e6ce8ebb8f5bb7513a9eb5496e6a6c5e6e82437536ef2bbaf43e8394f4a` |
-| npm integrity (sha512) | `sha512-warwspo+UYUPep0Q+vtdVB4Ugn8GGQj8iyB3gnRWsztmUHTI3S1nhdiWNsPUGL0vud7JlRRk1XEu7Lq1KGTnMQ==` |
+| Bundle date  | 2026-05-28 |
+| SHA-256      | `3bef1e101aebcfec3fdd1e2196652db2c24ede687908be8f05cf19e1f2d74781` |
+| npm integrity (sha512) | `sha512-T/BoHgFXirb0ENSPBquzX0rcjXeM6Lo892a2jlYJkqk83LqZx0l1Of7DzlKJ6jkpvMrkHSnAcgb5JegL8SeIkQ==` |
 | Exports      | `bls12_381` |
 
 ### What it is
@@ -162,13 +162,10 @@ re-downloading or re-uploading any encrypted file content.
 Run from the project root (requires Node.js):
 
 ```
-npm install @noble/curves@1.8.1
-# The source is CJS, so we need a wrapper to produce a named ESM export.
-printf 'export { bls12_381 } from "./node_modules/@noble/curves/bls12-381.js";\n' > bls-entry.tmp.js
-npx esbuild --bundle --format=esm --minify --platform=browser \
-  bls-entry.tmp.js \
+npm install @noble/curves@2.2.0
+npx esbuild --bundle --format=esm --minify \
+  node_modules/@noble/curves/bls12-381.js \
   --outfile=frontend/js/lib/noble-curves-bls12381.js
-rm bls-entry.tmp.js
 ```
 
 Then verify and record the bundle hash:
@@ -190,7 +187,7 @@ comment to the bundle file (see `noble-post-quantum.js` for the format).
 ### Update process
 
 1. Check release notes for API changes — specifically the `bls12_381` export shape,
-   `G1.ProjectivePoint`, `G2.ProjectivePoint`, `pairing()`, and `fields.Fp12.toBytes`.
+   `G1.Point`, `G2.Point`, `pairing()`, and `fields.Fp12.toBytes`.
 2. Install:
    ```
    npm install @noble/curves@<new-version>

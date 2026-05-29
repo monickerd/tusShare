@@ -48,13 +48,13 @@ A. Initial state & access control
   20-03  Admin with can_view_admin_panel but without can_manage_sharing gets 403
 
 B. Layer 1 — one-off flag disabling
-  20-04  Disable can_create_link_shares on role_user → link share returns 403;
+  20-04  Disable shares_link_create on role_user → link share returns 403;
          user-share capability is unaffected (passes flag check, may fail later)
-  20-05  Disable can_create_user_shares → user share returns 403;
+  20-05  Disable shares_user_create → user share returns 403;
          link-share capability is unaffected
-  20-06  Disable can_create_upload_grants → share with allow_upload=True returns 403;
+  20-06  Disable shares_upload_grant_create → share with allow_upload=True returns 403;
          plain link share (allow_upload=False) is unaffected
-  20-07  Disable can_share_folders → upload-only folder share (empty items + target_folder_id)
+  20-07  Disable shares_folder_create → upload-only folder share (empty items + target_folder_id)
          returns 403; plain link share is still permitted
 
 C. Layer 1 — step-up gate
@@ -62,7 +62,7 @@ C. Layer 1 — step-up gate
 
 D. Layer 1 — custom roles with sharing capability flags
   20-09  Disable all 4 flags on role_user; assign custom role granting only
-         can_create_link_shares to _custom → _custom can create link shares, not user shares
+         shares_link_create to _custom → _custom can create link shares, not user shares
   20-10  _plain (role_user only, all flags disabled) cannot create any share type
   20-11  Restore all 4 flags on role_user → both _plain and _custom can create link shares
 
@@ -314,15 +314,15 @@ async def setup(browser: Browser, admin_client: AdminClient):
 
     # _no_mgr: can_view_admin_panel only
     no_mgr_role = await admin_client.create_role("no_mgr_role_20")
-    await admin_client.set_role_permissions(no_mgr_role["id"], {"can_view_admin_panel": True})
+    await admin_client.set_role_permissions(no_mgr_role["id"], {"admin_panel_view": True})
     await admin_client.grant_role(_no_mgr["id"], no_mgr_role["id"])
     _setup_roles.append("no_mgr_role_20")
 
     # _sharing_mgr: can_view_admin_panel + can_manage_sharing
     mgr_role = await admin_client.create_role("shr_mgr_role_20")
     await admin_client.set_role_permissions(mgr_role["id"], {
-        "can_view_admin_panel": True,
-        "can_manage_sharing":   True,
+        "admin_panel_view": True,
+        "sharing_manage":   True,
     })
     await admin_client.grant_role(_sharing_mgr["id"], mgr_role["id"])
     _setup_roles.append("shr_mgr_role_20")
@@ -331,8 +331,8 @@ async def setup(browser: Browser, admin_client: AdminClient):
     await admin_client.grant_role(_op_admin["id"], "operational_admin")
     op_share_role = await admin_client.create_role("op_shr_role_20")
     await admin_client.set_role_permissions(op_share_role["id"], {
-        "can_view_admin_panel": True,
-        "can_manage_sharing":   True,
+        "admin_panel_view": True,
+        "sharing_manage":   True,
     })
     await admin_client.grant_role(_op_admin["id"], op_share_role["id"])
     _setup_roles.append("op_shr_role_20")
@@ -364,10 +364,10 @@ async def setup(browser: Browser, admin_client: AdminClient):
     # Restore role_user sharing flags in case any test left them modified
     tok = _step_up(_admin_id)
     for flag in (
-        "can_create_link_shares",
-        "can_create_user_shares",
-        "can_create_upload_grants",
-        "can_share_folders",
+        "shares_link_create",
+        "shares_user_create",
+        "shares_upload_grant_create",
+        "shares_folder_create",
     ):
         try:
             await admin_client.update_sharing_flags("role_user", {flag: True}, tok)
@@ -395,10 +395,10 @@ async def test_20_01_flags_endpoint_shows_all_four_enabled(admin_client: AdminCl
     data = await admin_client.get_sharing_flags()
 
     expected_flags = {
-        "can_create_link_shares",
-        "can_create_user_shares",
-        "can_create_upload_grants",
-        "can_share_folders",
+        "shares_link_create",
+        "shares_user_create",
+        "shares_upload_grant_create",
+        "shares_folder_create",
     }
     assert set(data["sharing_flags"]) == expected_flags
 
@@ -432,11 +432,11 @@ async def test_20_03_admin_without_manage_sharing_gets_403():
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_20_04_disable_link_flag_blocks_link_share_only(admin_client: AdminClient):
-    """Disabling can_create_link_shares blocks link shares.
+    """Disabling shares_link_create blocks link shares.
     User-share capability (different flag) is unaffected by this change.
     """
     tok = _step_up(_admin_id)
-    await admin_client.update_sharing_flags("role_user", {"can_create_link_shares": False}, tok)
+    await admin_client.update_sharing_flags("role_user", {"shares_link_create": False}, tok)
     try:
         # Link share → must be blocked
         r = await _link_share(_plain["api"], _plain_file_id)
@@ -451,7 +451,7 @@ async def test_20_04_disable_link_flag_blocks_link_share_only(admin_client: Admi
                 f"User share should not fail with link-share flag error; got: {detail}"
             )
     finally:
-        await admin_client.update_sharing_flags("role_user", {"can_create_link_shares": True}, tok)
+        await admin_client.update_sharing_flags("role_user", {"shares_link_create": True}, tok)
 
     # Verify flag is restored — link share works again
     r3 = await _link_share(_plain["api"], _plain_file_id)
@@ -461,9 +461,9 @@ async def test_20_04_disable_link_flag_blocks_link_share_only(admin_client: Admi
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_20_05_disable_user_share_flag_blocks_user_share_only(admin_client: AdminClient):
-    """Disabling can_create_user_shares blocks user shares; link shares unaffected."""
+    """Disabling shares_user_create blocks user shares; link shares unaffected."""
     tok = _step_up(_admin_id)
-    await admin_client.update_sharing_flags("role_user", {"can_create_user_shares": False}, tok)
+    await admin_client.update_sharing_flags("role_user", {"shares_user_create": False}, tok)
     try:
         # User share → must be blocked
         r = await _user_share(_plain["api"], _plain_file_id, _plain2["username"])
@@ -477,16 +477,16 @@ async def test_20_05_disable_user_share_flag_blocks_user_share_only(admin_client
         )
         await _plain["api"].delete(f"/shares/{r2.json()['id']}")
     finally:
-        await admin_client.update_sharing_flags("role_user", {"can_create_user_shares": True}, tok)
+        await admin_client.update_sharing_flags("role_user", {"shares_user_create": True}, tok)
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_20_06_disable_upload_grants_flag_blocks_upload_share_only(
     admin_client: AdminClient,
 ):
-    """Disabling can_create_upload_grants blocks allow_upload shares; plain link unaffected."""
+    """Disabling shares_upload_grant_create blocks allow_upload shares; plain link unaffected."""
     tok = _step_up(_admin_id)
-    await admin_client.update_sharing_flags("role_user", {"can_create_upload_grants": False}, tok)
+    await admin_client.update_sharing_flags("role_user", {"shares_upload_grant_create": False}, tok)
     try:
         # Link share with allow_upload=True → must be blocked
         r = await _link_share(_plain["api"], _plain_file_id, allow_upload=True)
@@ -500,16 +500,16 @@ async def test_20_06_disable_upload_grants_flag_blocks_upload_share_only(
         )
         await _plain["api"].delete(f"/shares/{r2.json()['id']}")
     finally:
-        await admin_client.update_sharing_flags("role_user", {"can_create_upload_grants": True}, tok)
+        await admin_client.update_sharing_flags("role_user", {"shares_upload_grant_create": True}, tok)
 
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_20_07_disable_share_folders_flag_blocks_folder_share_only(
     admin_client: AdminClient,
 ):
-    """Disabling can_share_folders blocks upload-only folder shares; link shares unaffected."""
+    """Disabling shares_folder_create blocks upload-only folder shares; link shares unaffected."""
     tok = _step_up(_admin_id)
-    await admin_client.update_sharing_flags("role_user", {"can_share_folders": False}, tok)
+    await admin_client.update_sharing_flags("role_user", {"shares_folder_create": False}, tok)
     try:
         # Upload-only folder share: no items, target_folder_id set
         fake_folder_id = str(uuid.uuid4())
@@ -531,7 +531,7 @@ async def test_20_07_disable_share_folders_flag_blocks_folder_share_only(
         )
         await _plain["api"].delete(f"/shares/{r2.json()['id']}")
     finally:
-        await admin_client.update_sharing_flags("role_user", {"can_share_folders": True}, tok)
+        await admin_client.update_sharing_flags("role_user", {"shares_folder_create": True}, tok)
 
 
 # ===========================================================================
@@ -543,7 +543,7 @@ async def test_20_08_flag_update_without_stepup_returns_403(admin_client: AdminC
     """PUT /admin/sharing/flags without X-Step-Up-Token is rejected with step_up_required."""
     r = await admin_client._client.put(
         f"{API}/admin/sharing/flags",
-        json={"role_id": "role_user", "flags": {"can_create_link_shares": False}},
+        json={"role_id": "role_user", "flags": {"shares_link_create": False}},
     )
     assert r.status_code == 403, f"Expected 403 (step-up required), got {r.status_code}"
     body = r.json()
@@ -562,10 +562,10 @@ async def test_20_08_flag_update_without_stepup_returns_403(admin_client: AdminC
 async def test_20_09_custom_role_grants_link_only_while_role_user_has_none(
     admin_client: AdminClient,
 ):
-    """Disable all 4 flags on role_user; give _custom a custom role with just can_create_link_shares.
+    """Disable all 4 flags on role_user; give _custom a custom role with just shares_link_create.
 
     _custom should be able to create link shares (from the custom role) but not user shares
-    (which require can_create_user_shares — not granted by the custom role, and role_user
+    (which require shares_user_create — not granted by the custom role, and role_user
     has that flag disabled for the duration of this test).
     """
     global _setup_roles
@@ -573,16 +573,16 @@ async def test_20_09_custom_role_grants_link_only_while_role_user_has_none(
 
     # Disable all 4 flags on role_user
     await admin_client.update_sharing_flags("role_user", {
-        "can_create_link_shares":   False,
-        "can_create_user_shares":   False,
-        "can_create_upload_grants": False,
-        "can_share_folders":        False,
+        "shares_link_create":   False,
+        "shares_user_create":   False,
+        "shares_upload_grant_create": False,
+        "shares_folder_create":        False,
     }, tok)
 
     # Custom role: link shares only
     link_role = await admin_client.create_role("link_only_role_20")
     await admin_client.update_sharing_flags(
-        "link_only_role_20", {"can_create_link_shares": True}, tok
+        "link_only_role_20", {"shares_link_create": True}, tok
     )
     await admin_client.grant_role(_custom["id"], "link_only_role_20")
     _setup_roles.append("link_only_role_20")
@@ -606,10 +606,10 @@ async def test_20_09_custom_role_grants_link_only_while_role_user_has_none(
     finally:
         # Restore role_user flags
         await admin_client.update_sharing_flags("role_user", {
-            "can_create_link_shares":   True,
-            "can_create_user_shares":   True,
-            "can_create_upload_grants": True,
-            "can_share_folders":        True,
+            "shares_link_create":   True,
+            "shares_user_create":   True,
+            "shares_upload_grant_create": True,
+            "shares_folder_create":        True,
         }, tok)
         await admin_client.revoke_role(_custom["id"], "link_only_role_20")
 
@@ -627,10 +627,10 @@ async def test_20_10_role_user_with_all_flags_disabled_cannot_share(admin_client
     """With all 4 sharing flags disabled on role_user, _plain cannot create any share type."""
     tok = _step_up(_admin_id)
     await admin_client.update_sharing_flags("role_user", {
-        "can_create_link_shares":   False,
-        "can_create_user_shares":   False,
-        "can_create_upload_grants": False,
-        "can_share_folders":        False,
+        "shares_link_create":   False,
+        "shares_user_create":   False,
+        "shares_upload_grant_create": False,
+        "shares_folder_create":        False,
     }, tok)
     try:
         r1 = await _link_share(_plain["api"], _plain_file_id)
@@ -640,10 +640,10 @@ async def test_20_10_role_user_with_all_flags_disabled_cannot_share(admin_client
         assert r2.status_code == 403
     finally:
         await admin_client.update_sharing_flags("role_user", {
-            "can_create_link_shares":   True,
-            "can_create_user_shares":   True,
-            "can_create_upload_grants": True,
-            "can_share_folders":        True,
+            "shares_link_create":   True,
+            "shares_user_create":   True,
+            "shares_upload_grant_create": True,
+            "shares_folder_create":        True,
         }, tok)
 
 
@@ -1283,8 +1283,8 @@ async def test_20_33_revoking_manage_sharing_immediately_blocks_access(
     """Revoking can_manage_sharing from _sharing_mgr's role immediately blocks access."""
     # Disable can_manage_sharing on the sharing_mgr role
     await admin_client.set_role_permissions("shr_mgr_role_20", {
-        "can_view_admin_panel": True,
-        "can_manage_sharing":   False,
+        "admin_panel_view": True,
+        "sharing_manage":   False,
     })
 
     mgr_admin = AdminClient.from_session(_sharing_mgr["session"])
@@ -1300,8 +1300,8 @@ async def test_20_33_revoking_manage_sharing_immediately_blocks_access(
         await mgr_admin.aclose()
         # Restore the flag for clean teardown
         await admin_client.set_role_permissions("shr_mgr_role_20", {
-            "can_view_admin_panel": True,
-            "can_manage_sharing":   True,
+            "admin_panel_view": True,
+            "sharing_manage":   True,
         })
 
 

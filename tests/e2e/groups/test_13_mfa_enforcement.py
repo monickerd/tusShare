@@ -4,7 +4,7 @@ Group 13 — MFA enforcement.
 Tests the full MFA enforcement surface:
   - API-level enforcement via require_user_role (backend security gate)
   - Enrollment endpoints remain reachable when enforcement blocks file access
-  - TOTP enrollment flow (start → finish with pyotp-generated code)
+  - TOTP enrollment flow (start → finish with stdlib-generated code)
   - MFA status and admin MFA info endpoints
   - Admin step-up requirement on destructive MFA operations
   - Optional enforcement allows file access for unenrolled users
@@ -31,12 +31,12 @@ Tests
 from __future__ import annotations
 
 import pytest
-import pyotp
 from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.auth  import register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.totp  import totp_now
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -215,7 +215,7 @@ async def test_13_06_totp_enroll_finish():
     if not _alice_totp.get("secret_b32"):
         pytest.skip("TOTP enroll/start did not complete successfully")
 
-    totp_code = pyotp.TOTP(_alice_totp["secret_b32"]).now()
+    totp_code = totp_now(_alice_totp["secret_b32"])
 
     async with _alice["client"] as api:
         r = await api.post("/auth/totp/enroll/finish", json={
@@ -360,7 +360,7 @@ async def test_13_12_second_user_enrolls_and_accesses_folders():
     _bob_totp["cred_id"]    = body["cred_id"]
 
     # Enroll finish
-    totp_code = pyotp.TOTP(_bob_totp["secret_b32"]).now()
+    totp_code = totp_now(_bob_totp["secret_b32"])
     async with _bob["client"] as api:
         r = await api.post("/auth/totp/enroll/finish", json={
             "cred_id":   _bob_totp["cred_id"],

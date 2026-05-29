@@ -22,7 +22,7 @@
  *
  * BLS12-381 library: @noble/curves, self-hosted at /js/lib/noble-curves-bls12381.js.
  * Bundle command (run from project root):
- *   npm install @noble/curves@1.8.1
+ *   npm install @noble/curves@2.2.0
  *   npx esbuild --bundle --format=esm --minify \
  *     node_modules/@noble/curves/bls12-381.js \
  *     --outfile=frontend/js/lib/noble-curves-bls12381.js
@@ -127,7 +127,7 @@ const Teams = (() => {
         const bls = await _getBLS();
         const rand = crypto.getRandomValues(new Uint8Array(32));
         const sk   = bls.fields.Fr.create(BigInt('0x' + _bytesToHex(rand)));
-        const pk   = bls.G2.ProjectivePoint.BASE.multiply(sk);
+        const pk   = bls.G2.Point.BASE.multiply(sk);
         return {
             sk_bigint: sk,
             sk_bytes:  _bigintTo32Bytes(sk),
@@ -148,11 +148,11 @@ const Teams = (() => {
         const r    = bls.fields.Fr.create(BigInt('0x' + _bytesToHex(rand)));
 
         // C1 = r * G1 (48 bytes compressed)
-        const C1      = bls.G1.ProjectivePoint.BASE.multiply(r);
+        const C1      = bls.G1.Point.BASE.multiply(r);
         const C1bytes = C1.toRawBytes(true);
 
         // pk_team as G2 point
-        const pkPoint = bls.G2.ProjectivePoint.fromHex(_b64ToBytes(pkTeamB64));
+        const pkPoint = bls.G2.Point.fromHex(_b64ToBytes(pkTeamB64));
 
         // GT = pairing(C1, pk_team) = e(G1,G2)^{r * sk_team}
         const gt      = bls.pairing(C1, pkPoint);
@@ -183,9 +183,9 @@ const Teams = (() => {
         const bls = await _getBLS();
 
         // GT = pairing(sk_team * C1, G2_base) = e(G1,G2)^{sk_team * r}
-        const C1     = bls.G1.ProjectivePoint.fromHex(_b64ToBytes(pre_c1_b64));
+        const C1     = bls.G1.Point.fromHex(_b64ToBytes(pre_c1_b64));
         const C1sc   = C1.multiply(skBigInt);
-        const gt     = bls.pairing(C1sc, bls.G2.ProjectivePoint.BASE);
+        const gt     = bls.pairing(C1sc, bls.G2.Point.BASE);
         const gtBytes= bls.fields.Fp12.toBytes(gt);
 
         const wrapKey = await _keyFromGT(gtBytes);
@@ -207,7 +207,7 @@ const Teams = (() => {
      */
     async function applyPRERotation(pre_c1_b64, rkBigInt) {
         const bls   = await _getBLS();
-        const C1    = bls.G1.ProjectivePoint.fromHex(_b64ToBytes(pre_c1_b64));
+        const C1    = bls.G1.Point.fromHex(_b64ToBytes(pre_c1_b64));
         const C1new = C1.multiply(rkBigInt);
         return _bytesToB64(C1new.toRawBytes(true));
     }
@@ -239,7 +239,7 @@ const Teams = (() => {
      */
     async function _computeRkPoint(rkBigInt) {
         const bls = await _getBLS();
-        return _bytesToB64(bls.G1.ProjectivePoint.BASE.multiply(rkBigInt).toRawBytes(true));
+        return _bytesToB64(bls.G1.Point.BASE.multiply(rkBigInt).toRawBytes(true));
     }
 
     /**
@@ -264,8 +264,8 @@ const Teams = (() => {
      */
     async function _generateDleqProof(rkBigInt, c1OldB64, rkPointB64, c1NewB64) {
         const bls    = await _getBLS();
-        const G1base = bls.G1.ProjectivePoint.BASE;
-        const C1old  = bls.G1.ProjectivePoint.fromHex(_b64ToBytes(c1OldB64));
+        const G1base = bls.G1.Point.BASE;
+        const C1old  = bls.G1.Point.fromHex(_b64ToBytes(c1OldB64));
 
         // Random blinding scalar r ∈ Fr
         const rRaw = crypto.getRandomValues(new Uint8Array(32));
@@ -1779,7 +1779,7 @@ const Teams = (() => {
         );
 
         const bls    = await _getBLS();
-        const G2base = bls.G2.ProjectivePoint.BASE;
+        const G2base = bls.G2.Point.BASE;
 
         // r ∈ Fr (random)
         const rRaw = crypto.getRandomValues(new Uint8Array(32));

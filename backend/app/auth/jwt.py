@@ -7,7 +7,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import jwt
+from app.util import jwt_impl as jwt
 
 from app.conf.auth import CSRF_TOKEN_BYTES, REFRESH_TOKEN_BYTES
 from app.config import settings

@@ -5475,7 +5475,7 @@ const Admin = (() => {
         const rolesSec = Utils.el('div', { style: 'margin-bottom:var(--space-5)' });
         rolesSec.appendChild(Utils.el('p', { style: 'font-weight:600;font-size:var(--font-size-sm);margin-bottom:var(--space-2)', textContent: 'Default Escrow Roles' }));
         rolesSec.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-xs);margin-bottom:var(--space-2)', textContent: 'Roles whose members automatically act as escrow agents for all teams.' }));
-        let rolesTableWrap = Utils.el('div');
+        const rolesTableWrap = Utils.el('div');
         rolesTableWrap.appendChild(_buildEscrowPickerTable(roleItems, id => {
             const i = roleItems.findIndex(r => r.id === id);
             if (i !== -1) roleItems.splice(i, 1);
@@ -5526,7 +5526,7 @@ const Admin = (() => {
         const usersSec = Utils.el('div', { style: 'margin-bottom:var(--space-5)' });
         usersSec.appendChild(Utils.el('p', { style: 'font-weight:600;font-size:var(--font-size-sm);margin-bottom:var(--space-2)', textContent: 'Default Escrow Users' }));
         usersSec.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-xs);margin-bottom:var(--space-2)', textContent: 'Specific users who automatically act as escrow agents for all teams.' }));
-        let usersTableWrap = Utils.el('div');
+        const usersTableWrap = Utils.el('div');
         usersTableWrap.appendChild(_buildEscrowPickerTable(userItems, id => {
             const i = userItems.findIndex(u => u.id === id);
             if (i !== -1) userItems.splice(i, 1);

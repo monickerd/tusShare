@@ -580,7 +580,7 @@ async def test_16_14_can_view_admin_panel_without_manage_policies_is_blocked(
     """
     await admin_client.set_role_permissions(
         _restricted_role["id"],
-        {"can_view_admin_panel": True, "can_manage_policies": False},
+        {"admin_panel_view": True, "policies_manage": False},
     )
     await admin_client.grant_role(_opaque_user["id"], _restricted_role["id"])
 
@@ -623,7 +623,7 @@ async def test_16_15_manage_policies_flag_enables_and_revoking_blocks(
     """
     await admin_client.set_role_permissions(
         _restricted_role["id"],
-        {"can_view_admin_panel": True, "can_manage_policies": True},
+        {"admin_panel_view": True, "policies_manage": True},
     )
 
     created_policy_id: str = ""
@@ -641,7 +641,7 @@ async def test_16_15_manage_policies_flag_enables_and_revoking_blocks(
 
         # Revoke the flag — checked on the next request without a session change
         await admin_client.set_role_permissions(
-            _restricted_role["id"], {"can_manage_policies": False}
+            _restricted_role["id"], {"policies_manage": False}
         )
 
         r_blocked = await api.post(

@@ -31,7 +31,7 @@ import time
 import uuid
 
 import bcrypt
-import pyotp
+from app.util import totp_impl as pyotp
 
 from app.auth.mfa import decrypt_credential, encrypt_credential
 

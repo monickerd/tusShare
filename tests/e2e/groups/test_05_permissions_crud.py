@@ -114,7 +114,7 @@ async def test_05_01_no_flag_blocks_admin_settings():
 @pytest.mark.asyncio(loop_scope="session")
 async def test_05_02_can_view_admin_panel_flag_grants_access(admin_client: AdminClient):
     await admin_client.set_role_permissions(
-        _test_role["id"], {"can_view_admin_panel": True}
+        _test_role["id"], {"admin_panel_view": True}
     )
     await admin_client.grant_role(_test_user["id"], _test_role["id"])
 
@@ -125,7 +125,7 @@ async def test_05_02_can_view_admin_panel_flag_grants_access(admin_client: Admin
 @pytest.mark.asyncio(loop_scope="session")
 async def test_05_03_revoking_flag_blocks_again(admin_client: AdminClient):
     await admin_client.set_role_permissions(
-        _test_role["id"], {"can_view_admin_panel": False}
+        _test_role["id"], {"admin_panel_view": False}
     )
     r_status = await _check(_test_user["session"], "get", "/admin/settings")
     assert r_status == 403, f"After flag revoked, should be blocked again"
@@ -139,7 +139,7 @@ async def test_05_03_revoking_flag_blocks_again(admin_client: AdminClient):
 async def test_05_04_can_manage_users_flag(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_users": True},
+        {"admin_panel_view": True, "users_manage": True},
     )
     r_status = await _check(_test_user["session"], "get", "/admin/users")
     assert r_status == 200, "User with can_manage_users should list users"
@@ -149,7 +149,7 @@ async def test_05_04_can_manage_users_flag(admin_client: AdminClient):
 async def test_05_05_removing_manage_users_blocks(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_users": False},
+        {"admin_panel_view": True, "users_manage": False},
     )
     r_status = await _check(_test_user["session"], "get", "/admin/users")
     assert r_status == 403, "Without can_manage_users should be blocked"
@@ -163,7 +163,7 @@ async def test_05_05_removing_manage_users_blocks(admin_client: AdminClient):
 async def test_05_06_can_manage_roles_flag(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_roles": True},
+        {"admin_panel_view": True, "roles_manage": True},
     )
     r_status = await _check(_test_user["session"], "get", "/admin/roles")
     assert r_status == 200, "User with can_manage_roles should list roles"
@@ -173,7 +173,7 @@ async def test_05_06_can_manage_roles_flag(admin_client: AdminClient):
 async def test_05_07_removing_manage_roles_blocks(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_roles": False},
+        {"admin_panel_view": True, "roles_manage": False},
     )
     r_status = await _check(_test_user["session"], "get", "/admin/roles")
     assert r_status == 403
@@ -187,7 +187,7 @@ async def test_05_07_removing_manage_roles_blocks(admin_client: AdminClient):
 async def test_05_08_can_create_invites_flag(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_invites": True},
+        {"admin_panel_view": True, "users_invite_manage": True},
     )
     api = ApiClient.from_session(_test_user["session"])
     async with api:
@@ -211,7 +211,7 @@ async def test_05_09_can_manage_teams_flag(admin_client: AdminClient):
     """can_manage_teams gates GET /admin/teams."""
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_teams": True},
+        {"admin_panel_view": True, "teams_manage": True},
     )
     r_status = await _check(_test_user["session"], "get", "/admin/teams")
     assert r_status == 200, "User with can_manage_teams should list admin teams"
@@ -221,7 +221,7 @@ async def test_05_09_can_manage_teams_flag(admin_client: AdminClient):
 async def test_05_09b_removing_manage_teams_blocks(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_teams": False},
+        {"admin_panel_view": True, "teams_manage": False},
     )
     r_status = await _check(_test_user["session"], "get", "/admin/teams")
     assert r_status == 403, "Without can_manage_teams should be blocked from admin teams"
@@ -236,7 +236,7 @@ async def test_05_10_can_create_roles_flag(admin_client: AdminClient):
     """can_create_roles gates POST /admin/roles (distinct from can_manage_roles)."""
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_create_roles": True},
+        {"admin_panel_view": True, "roles_create": True},
     )
     api = ApiClient.from_session(_test_user["session"])
     async with api:
@@ -254,7 +254,7 @@ async def test_05_10_can_create_roles_flag(admin_client: AdminClient):
 async def test_05_10b_removing_create_roles_blocks(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_create_roles": False},
+        {"admin_panel_view": True, "roles_create": False},
     )
     api = ApiClient.from_session(_test_user["session"])
     async with api:
@@ -276,7 +276,7 @@ async def test_05_11_can_manage_org_settings_flag(admin_client: AdminClient):
     """can_manage_org_settings gates PUT /admin/settings/locks."""
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_org_settings": True},
+        {"admin_panel_view": True, "org_settings_manage": True},
     )
     api = ApiClient.from_session(_test_user["session"])
     async with api:
@@ -293,7 +293,7 @@ async def test_05_11_can_manage_org_settings_flag(admin_client: AdminClient):
 async def test_05_11b_removing_org_settings_blocks(admin_client: AdminClient):
     await admin_client.set_role_permissions(
         _test_role["id"],
-        {"can_view_admin_panel": True, "can_manage_org_settings": False},
+        {"admin_panel_view": True, "org_settings_manage": False},
     )
     api = ApiClient.from_session(_test_user["session"])
     async with api:
@@ -334,7 +334,7 @@ async def test_05_12_plain_user_blocked_from_all_admin(
 async def test_05_13_grant_revoke_cycle(admin_client: AdminClient):
     """Grant → verify access → revoke → verify blocked (full cycle)."""
     await admin_client.set_role_permissions(
-        _test_role["id"], {"can_view_admin_panel": True}
+        _test_role["id"], {"admin_panel_view": True}
     )
     assert await _check(_test_user["session"], "get", "/admin/settings") == 200
 

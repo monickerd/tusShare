@@ -19,7 +19,7 @@ from fastapi import HTTPException
 
 # Ensure settings can be imported with minimal env (JWT_SECRET has a default of "")
 # No other vars are needed for _validate_endpoint_url.
-from app.routes.admin_storage import _validate_endpoint_url
+from app.util.ssrf import validate_endpoint_url as _validate_endpoint_url
 
 
 # ---------------------------------------------------------------------------

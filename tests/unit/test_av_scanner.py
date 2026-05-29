@@ -41,6 +41,9 @@ _SETTINGS_NO_ENDPOINT = [
     {"key": "av_scan_retry_attempts", "value": "3"},
 ]
 
+# Stub return value for resolve_validated_endpoint — bypasses DNS + SSRF check in unit tests.
+_PINNED = ("av.local", "1.2.3.4")
+
 _FILE_WITH_ESCROW = {
     "id":                   _FILE_ID,
     "storage_key":          f"files/{_FILE_ID}",
@@ -128,12 +131,18 @@ class TestWebhookSigning:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
 
-        with patch("app.services.av_scanner.httpx.AsyncClient") as MockCls:
+        with (
+            patch("app.services.av_scanner.httpx.AsyncHTTPTransport", return_value=MagicMock()),
+            patch("app.services.av_scanner.httpx.AsyncClient") as MockCls,
+        ):
             MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockCls.return_value.__aexit__ = AsyncMock(return_value=None)
 
             from app.services.av_scanner import _call_webhook
-            result = await _call_webhook(_ENDPOINT, _SECRET, _PLAINTEXT, _FILE_ID, _NAME, _MIME)
+            result = await _call_webhook(
+                _ENDPOINT, _SECRET, [_PLAINTEXT], _FILE_ID, _NAME, _MIME,
+                pinned_hostname=_PINNED[0], pinned_ip=_PINNED[1],
+            )
 
         _, kwargs = mock_client.post.call_args
         header_val = kwargs["headers"]["X-Signature"]
@@ -157,12 +166,18 @@ class TestWebhookSigning:
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
 
-        with patch("app.services.av_scanner.httpx.AsyncClient") as MockCls:
+        with (
+            patch("app.services.av_scanner.httpx.AsyncHTTPTransport", return_value=MagicMock()),
+            patch("app.services.av_scanner.httpx.AsyncClient") as MockCls,
+        ):
             MockCls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
             MockCls.return_value.__aexit__ = AsyncMock(return_value=None)
 
             from app.services.av_scanner import _call_webhook
-            result = await _call_webhook(_ENDPOINT, _SECRET, b"EICAR", _FILE_ID, "eicar.txt", "text/plain")
+            result = await _call_webhook(
+                _ENDPOINT, _SECRET, [b"EICAR"], _FILE_ID, "eicar.txt", "text/plain",
+                pinned_hostname=_PINNED[0], pinned_ip=_PINNED[1],
+            )
 
         assert result["verdict"] == "infected"
         assert result["detail"] == "EICAR"
@@ -182,14 +197,20 @@ class TestScanFileEarlyExit:
 
     async def test_no_escrow_key_returns_without_writing_status(self):
         db = _make_db(_SETTINGS_OK)
-        with patch("app.services.av_scanner._load_escrow_private_key", return_value=None):
+        with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
+            patch("app.services.av_scanner._load_escrow_private_key", return_value=None),
+        ):
             from app.services.av_scanner import scan_file
             await scan_file(db, _FILE_ID)
         assert not _update_calls(db), "Expected no UPDATE calls when escrow key absent"
 
     async def test_file_not_found_returns_without_writing_status(self):
         db = _make_db(_SETTINGS_OK, file_row=None)
-        with patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()):
+        with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
+            patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
+        ):
             from app.services.av_scanner import scan_file
             await scan_file(db, _FILE_ID)
         assert not _update_calls(db), "Expected no UPDATE calls when file row not found"
@@ -202,7 +223,10 @@ class TestScanFileEarlyExit:
 class TestScanFileNoEscrowMaterial:
     async def test_sets_status_error_when_escrow_material_absent(self):
         db = _make_db(_SETTINGS_OK, file_row=_FILE_NO_ESCROW)
-        with patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()):
+        with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
+            patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
+        ):
             from app.services.av_scanner import scan_file
             await scan_file(db, _FILE_ID)
 
@@ -227,6 +251,7 @@ class TestScanFileVerdicts:
         db = _make_db(_SETTINGS_OK, file_row=_FILE_WITH_ESCROW, chunk_rows=[])
 
         with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
             patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
             patch("app.services.av_scanner._derive_file_key", return_value=b"\x00" * 32),
             patch("app.services.av_scanner._decrypt_chunks_sync", return_value=_PLAINTEXT),
@@ -247,6 +272,7 @@ class TestScanFileVerdicts:
         db = _make_db(_SETTINGS_OK, file_row=_FILE_WITH_ESCROW, chunk_rows=[])
 
         with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
             patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
             patch("app.services.av_scanner._derive_file_key", return_value=b"\x00" * 32),
             patch("app.services.av_scanner._decrypt_chunks_sync", return_value=_PLAINTEXT),
@@ -266,6 +292,7 @@ class TestScanFileVerdicts:
         db = _make_db(_SETTINGS_OK, file_row=_FILE_WITH_ESCROW, chunk_rows=[])
 
         with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
             patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
             patch("app.services.av_scanner._derive_file_key", return_value=b"\x00" * 32),
             patch("app.services.av_scanner._decrypt_chunks_sync", return_value=_PLAINTEXT),
@@ -298,6 +325,7 @@ class TestScanFileRetry:
             return {"verdict": "clean"}
 
         with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
             patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
             patch("app.services.av_scanner._derive_file_key", return_value=b"\x00" * 32),
             patch("app.services.av_scanner._decrypt_chunks_sync", return_value=_PLAINTEXT),
@@ -325,6 +353,7 @@ class TestScanFileRetry:
             raise RuntimeError("webhook permanently down")
 
         with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
             patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
             patch("app.services.av_scanner._derive_file_key", return_value=b"\x00" * 32),
             patch("app.services.av_scanner._decrypt_chunks_sync", return_value=_PLAINTEXT),
@@ -356,6 +385,7 @@ class TestScanFileRetry:
             return {"verdict": "clean"}
 
         with (
+            patch("app.services.av_scanner.resolve_validated_endpoint", return_value=_PINNED),
             patch("app.services.av_scanner._load_escrow_private_key", return_value=MagicMock()),
             patch("app.services.av_scanner._derive_file_key", return_value=b"\x00" * 32),
             patch("app.services.av_scanner._decrypt_chunks_sync", return_value=_PLAINTEXT),

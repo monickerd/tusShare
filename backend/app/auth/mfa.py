@@ -30,7 +30,7 @@ import time
 import uuid
 from typing import Any
 
-import jwt
+from app.util import jwt_impl as jwt
 
 from app.auth.stepup import hkdf_sha256
 from app.config import settings

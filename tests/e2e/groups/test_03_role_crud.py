@@ -110,13 +110,13 @@ async def test_03_06_admin_can_set_permission_flags(admin_client: AdminClient):
     result = await admin_client.set_role_permissions(
         _custom_role["id"],
         flags={
-            "can_view_admin_panel": True,
-            "can_manage_users":     False,
+            "admin_panel_view": True,
+            "users_manage":     False,
         },
     )
     # The response should reflect the flags we set
-    assert result.get("can_view_admin_panel") is True
-    assert result.get("can_manage_users")     is False
+    assert result.get("admin_panel_view") is True
+    assert result.get("users_manage")     is False
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -220,7 +220,7 @@ async def test_03_15_can_create_roles_required(
     mgr_role = await admin_client.create_role(name="manage_only_role_03")
     await admin_client.set_role_permissions(
         mgr_role["id"],
-        {"can_view_admin_panel": True, "can_manage_roles": True, "can_create_roles": False},
+        {"admin_panel_view": True, "roles_manage": True, "roles_create": False},
     )
     await admin_client.grant_role(mgr["id"], mgr_role["id"])
 
@@ -265,7 +265,7 @@ async def test_03_16_inheritance_cap_blocks_unowned_flag(
     la_role = await admin_client.create_role(name="limited_creator_role_03")
     await admin_client.set_role_permissions(
         la_role["id"],
-        {"can_view_admin_panel": True, "can_create_roles": True},
+        {"admin_panel_view": True, "roles_create": True},
     )
     await admin_client.grant_role(la["id"], la_role["id"])
 
@@ -276,7 +276,7 @@ async def test_03_16_inheritance_cap_blocks_unowned_flag(
             json={
                 "id":          "escalation_attempt_03",
                 "name":        "Escalation Attempt",
-                "permissions": {"can_access_all_files": "1"},
+                "permissions": {"files_access_all_read": "1"},
             },
         )
         assert r.status_code == 403, (

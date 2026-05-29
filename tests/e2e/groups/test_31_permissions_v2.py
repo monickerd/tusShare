@@ -326,7 +326,7 @@ async def test_31_13_server_admin_can_grant_all_flags(admin_client: AdminClient)
     body = r.json()
     flags = set(body["grantable_flags"])
     # A server admin should be able to grant at least these core flags
-    for flag in ("can_manage_users", "can_manage_roles", "can_view_admin_panel"):
+    for flag in ("users_manage", "roles_manage", "admin_panel_view"):
         assert flag in flags, f"Server admin should be able to grant '{flag}'"
 
 

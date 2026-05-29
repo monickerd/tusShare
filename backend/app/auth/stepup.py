@@ -29,7 +29,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-import jwt
+from app.util import jwt_impl as jwt
 
 from app.conf.auth import STEP_UP_TIMESTAMP_TOLERANCE
 from app.config import settings

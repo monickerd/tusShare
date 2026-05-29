@@ -80,7 +80,7 @@ def _actor_from_request(request: Request) -> EventActor:
     Reads from the httpOnly access-token cookie or Authorization Bearer header,
     falling back to IP-only if the token is absent or invalid.
     """
-    import jwt as _pyjwt
+    from app.util import jwt_impl as _pyjwt
 
     from app.auth.jwt import verify_access_token
     from app.conf.auth import COOKIE_ACCESS

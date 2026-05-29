@@ -288,7 +288,7 @@ async def test_30_06_flag_copy_files_revoked(admin_client: AdminClient):
         role_user = next(r for r in roles if r["id"] == "role_user")
         perms = {k: (v["value"] == "1" if isinstance(v, dict) else v == "1")
                  for k, v in role_user.get("permissions", {}).items()}
-        perms["can_copy_files"] = False
+        perms["files_copy"] = False
         await admin_client.set_role_permissions(role_user["id"], perms)
 
         r = await api.post("/files/batch-copy", json={
@@ -299,7 +299,7 @@ async def test_30_06_flag_copy_files_revoked(admin_client: AdminClient):
             f"Expected 403 when FLAG_COPY_FILES is revoked, got {r.status_code}: {r.text}"
         )
     finally:
-        perms["can_copy_files"] = True
+        perms["files_copy"] = True
         await admin_client.set_role_permissions(role_user["id"], perms)
 
 

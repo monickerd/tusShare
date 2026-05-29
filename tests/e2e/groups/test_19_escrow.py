@@ -152,13 +152,13 @@ async def setup(browser: Browser, admin_client: AdminClient):
 
     # _mgr: can_view_admin_panel only (no can_manage_escrow)
     no_esc = await admin_client.create_role("no_escrow_adm_19")
-    await admin_client.set_role_permissions(no_esc["id"], {"can_view_admin_panel": True})
+    await admin_client.set_role_permissions(no_esc["id"], {"admin_panel_view": True})
     await admin_client.grant_role(_mgr["id"], no_esc["id"])
 
     # _op_admin: operational_admin (tier 3) + can_manage_escrow via helper role
     await admin_client.grant_role(_op_admin["id"], "operational_admin")
     helper = await admin_client.create_role("op_esc_helper_19")
-    await admin_client.set_role_permissions(helper["id"], {"can_manage_escrow": True})
+    await admin_client.set_role_permissions(helper["id"], {"escrow_manage": True})
     await admin_client.grant_role(_op_admin["id"], helper["id"])
 
     yield

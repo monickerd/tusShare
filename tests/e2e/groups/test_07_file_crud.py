@@ -50,11 +50,20 @@ _file:        dict = {}
 # ---------------------------------------------------------------------------
 # SIEM manifest — events this group's actions must produce
 #
-# File upload, rename, move, download, and delete routes do not emit SIEM
-# events in the current implementation.  Quota enforcement returns 400/413,
-# not 403, so no auth.forbidden is generated.
+# File upload and download do not emit SIEM events.  All folder operations
+# (create, rename, move, delete) and file mutation operations (rename, move,
+# delete) do.  Quota enforcement returns 400/413, not 403, so no
+# auth.forbidden is generated.
 # ---------------------------------------------------------------------------
-_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("file.folder.created", outcome="success", severity="info",    tier=1),
+    ExpectedSiemEvent("file.folder.renamed", outcome="success", severity="info",    tier=1),
+    ExpectedSiemEvent("file.folder.moved",   outcome="success", severity="info",    tier=1),
+    ExpectedSiemEvent("file.folder.deleted", outcome="success", severity="warning", tier=1),
+    ExpectedSiemEvent("file.rename",         outcome="success", severity="info",    tier=1),
+    ExpectedSiemEvent("file.move",           outcome="success", severity="info",    tier=2),
+    ExpectedSiemEvent("file.delete",         outcome="success", severity="warning", tier=2),
+]
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -260,3 +269,23 @@ async def test_07_15_quota_enforcement(admin_client: AdminClient):
 async def test_07_16_siem_manifest():
     """Verify expected SIEM events appeared in the capture file during this test group."""
     assert_manifest(_SIEM_MANIFEST)
+
+
+# ---------------------------------------------------------------------------
+# 07-17  Folder names with special characters (regression: comma support)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_07_17_folder_name_with_comma_accepted():
+    """Folder names containing commas must be accepted (regression: commit 3c251d7).
+
+    Before the fix, FOLDER_NAME_PATTERN rejected commas, returning 400 for
+    valid names like 'Reports, Q2 2026'.
+    """
+    api = ApiClient.from_session(_user["session"])
+    async with api:
+        folder = await create_folder(api, "Reports, Q2 2026")
+        assert folder["name"] == "Reports, Q2 2026", (
+            f"Folder with comma in name not created correctly: {folder}"
+        )
+        await delete_folder(api, folder["id"])

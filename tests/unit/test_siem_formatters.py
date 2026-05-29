@@ -14,15 +14,13 @@ import hashlib
 import hmac
 from datetime import datetime, timezone
 
-# Import the private formatting helpers and signing function directly.
-# They are pure functions with no side effects, so importing them here is safe.
 from app.services.siem_syslog import (
     _format_rfc5424,
     _format_cef,
     _format_leef,
     _syslog_pri,
 )
-from app.services.siem_webhook import _sign
+from app.util.crypto import hmac_sha256_hex as _sign
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 
 

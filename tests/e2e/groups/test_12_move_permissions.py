@@ -39,6 +39,7 @@ from tests.e2e.helpers.auth   import register_via_invite
 from tests.e2e.helpers.files  import (
     create_folder, can_get_file_meta, move_file_to_root,
     upload_file_api, batch_move_files,
+    rename_file, delete_file,
 )
 from tests.e2e.helpers.shares import (
     create_link_share, resolve_share_public,
@@ -60,10 +61,15 @@ _owner_share:  dict = {}  # share created by User A (owner) — should always re
 # ---------------------------------------------------------------------------
 # SIEM manifest — events this group's actions must produce
 #
-# File move and share access routes do not emit SIEM events.
+# File moves (test_12_04/08), rename (test_12_11), and delete (test_12_12)
+# emit events.  Share resolution routes do not.
 # No deny rules active so share.blocked does not fire.
 # ---------------------------------------------------------------------------
-_SIEM_MANIFEST: list[ExpectedSiemEvent] = []
+_SIEM_MANIFEST: list[ExpectedSiemEvent] = [
+    ExpectedSiemEvent("file.move",   outcome="success", severity="info",    tier=2),
+    ExpectedSiemEvent("file.rename", outcome="success", severity="info",    tier=1),
+    ExpectedSiemEvent("file.delete", outcome="success", severity="warning", tier=2),
+]
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -257,10 +263,73 @@ async def test_12_08_member_share_restores_when_file_moved_back():
 
 
 # ---------------------------------------------------------------------------
-# 12-09  SIEM manifest
+# 12-10  can_manage flag in folder share listing for write-level members
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio(loop_scope="session")
-async def test_12_09_siem_manifest():
+async def test_12_10_member_can_manage_is_true_on_folder_shares():
+    """Write-level team members must receive can_manage=True in GET /folders/{id}/shares.
+
+    Regression: commit 3f11f0c (Fix can_manage discrepancy) — team members with
+    write access received can_manage: False, inconsistent with their ability to
+    call PUT/DELETE on those share objects.
+    """
+    api = ApiClient.from_session(_member["session"])
+    async with api:
+        r = await api.get(f"/folders/{_team_folder['id']}/shares")
+    assert r.status_code == 200, (
+        f"Member should be able to list team folder shares; got {r.status_code}: {r.text}"
+    )
+    data = r.json()
+    assert isinstance(data, list) and len(data) > 0, (
+        f"Expected a non-empty list of shares; got: {data!r}"
+    )
+    assert all(s.get("can_manage") is True for s in data), (
+        f"Write-level team member must have can_manage=True on all shares; got: {data}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 12-11/12  Non-owner team member can rename and delete team files
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_12_11_non_owner_member_can_rename_team_file():
+    """A team member who did not upload a file must still be able to rename it.
+
+    Regression: commit 0cbd465 (Fix team file ownership) — delete_file and
+    update_file checked owner_id instead of team write+ membership, blocking
+    non-owner team members from renaming or deleting files they had access to.
+    """
+    api = ApiClient.from_session(_member["session"])
+    async with api:
+        renamed = await rename_file(api, _file["id"], "passwords_renamed.txt")
+    assert renamed["original_name"] == "passwords_renamed.txt", (
+        f"Non-owner member must be able to rename team file; got: {renamed}"
+    )
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_12_12_non_owner_member_can_delete_team_file():
+    """A team member who did not upload a file must still be able to delete it.
+
+    Regression: same as test_12_11 (commit 0cbd465).
+    """
+    api = ApiClient.from_session(_member["session"])
+    async with api:
+        await delete_file(api, _file["id"])
+    # Verify it's gone — owner should get 404 now
+    owner_api = ApiClient.from_session(_owner["session"])
+    async with owner_api:
+        still_accessible = await can_get_file_meta(owner_api, _file["id"])
+    assert not still_accessible, "File should be deleted; owner can still access it"
+
+
+# ---------------------------------------------------------------------------
+# 12-13  SIEM manifest (runs last — after rename and delete tests that emit events)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_12_13_siem_manifest():
     """Verify expected SIEM events appeared in the capture file during this test group."""
     assert_manifest(_SIEM_MANIFEST)
