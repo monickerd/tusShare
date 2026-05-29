@@ -313,6 +313,12 @@ const Files = (() => {
 
             _renderBreadcrumbs(data.breadcrumbs || [], data.folder);
             _renderFolderContents(listEl, data.child_folders, data.files, data.pending_uploads || []);
+            const _mc = document.getElementById('main-content');
+            const _savedScroll = sessionStorage.getItem('scroll:' + (globalThis.location.hash || ''));
+            if (_mc && _savedScroll) {
+                requestAnimationFrame(() => { _mc.scrollTop = parseInt(_savedScroll, 10); });
+                sessionStorage.removeItem('scroll:' + (globalThis.location.hash || ''));
+            }
             _startLive(folderId);
             _loadFolderShareBanner(folderId);
         } catch (err) {
@@ -1999,7 +2005,13 @@ const Files = (() => {
         }
     }
 
+    function _isSystemFile(name) {
+        const lower = name.toLowerCase();
+        return name.startsWith('.') || lower === 'thumbs.db' || lower === 'desktop.ini';
+    }
+
     async function _uploadFolderFiles(files) {
+        files = files.filter(f => !_isSystemFile(f.name));
         if (files.length > Config.upload.bulkWarnThreshold) {
             if (!await _showBulkUploadWarning(files.length)) return;
         }
@@ -2529,10 +2541,16 @@ const Files = (() => {
 
     // Send one batch POST and record per-file results into ctx.
     async function _executeBatchUpload(batch, folderId, batcher, ctx) {
+        const label = batch.length === 1 ? batch[0].file.name : `Uploading ${batch.length} files`;
+        const overlay  = _showUploadOverlay(label);
+        const transfer = TransferManager.start(label, 'upload', {});
+
         let form;
         try {
             form = await _buildBatchFormData(batch, folderId);
         } catch (err) {
+            overlay.remove();
+            transfer.cancelled();
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(`Batch preparation failed: ${err.message}`, 'error');
             return;
@@ -2555,12 +2573,16 @@ const Files = (() => {
                 resp = await makeReq();
             }
         } catch (err) {
+            overlay.remove();
+            transfer.cancelled();
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(err.message || 'Batch upload network error', 'error');
             return;
         }
 
         if (!resp.ok) {
+            overlay.remove();
+            transfer.cancelled();
             const body = await resp.json().catch(() => ({}));
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(body.detail || `Batch upload failed (${resp.status})`, 'error');
@@ -2568,6 +2590,8 @@ const Files = (() => {
         }
 
         const { results } = await resp.json();
+        overlay.remove();
+        transfer.complete();
         for (const result of results) {
             const { file, prepared } = batch[result.index];
             if (result.status === 'ok' && result.file_id) {
@@ -2710,6 +2734,7 @@ const Files = (() => {
     async function _countEntries(entries) {
         let count = 0;
         for (const entry of entries) {
+            if (_isSystemFile(entry.name)) continue;
             count++;
             if (entry.isDirectory) {
                 const children = await _readAllDirEntries(entry.createReader());
@@ -2824,6 +2849,7 @@ const Files = (() => {
         }
 
         for (const entry of entries) {
+            if (_isSystemFile(entry.name)) continue;
             if (entry.isFile) {
                 const file = await new Promise((res, rej) => entry.file(res, rej));
                 await _uploadFiles([file], parentFolderId, _ctx);

@@ -138,6 +138,34 @@ async def consume_pending_token(db, token: str) -> tuple[str, bool] | None:
     return user_id, bool(row["is_public_device"])
 
 
+async def peek_pending_token(db, token: str) -> tuple[str, bool] | None:
+    """Validate a pending token and return (user_id, is_public_device) WITHOUT consuming it.
+
+    Returns None if the token is invalid or expired.  The row remains in the DB
+    so the caller can retry after a failed MFA check.  Always pair with a
+    subsequent consume_pending_token call once the MFA check passes.
+    """
+    payload = _decode_pending_token(token)
+    if payload is None:
+        return None
+
+    jti = payload.get("jti")
+    user_id = payload.get("sub")
+    if not jti or not user_id:
+        return None
+
+    now = int(time.time())
+    cursor = await db.execute(
+        "SELECT is_public_device FROM mfa_pending_tokens WHERE jti = ? AND user_id = ? AND expires_at > ?",
+        (jti, user_id, now),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+
+    return user_id, bool(row["is_public_device"])
+
+
 async def store_pending_token(db, jti: str, user_id: str, is_public_device: bool) -> None:
     """Insert the jti row that backs an issued pending token."""
     now = int(time.time())

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
-from app.models.role import FLAG_FILES_ACCESS_ALL_WRITE
+from app.models.role import FLAG_FILES_ACCESS_ALL_WRITE, ROLE_TEAM_ADMIN, ROLE_TEAM_MANAGER
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus, sse_broker
 from app.services.trash import get_trash_settings, purge_file
@@ -336,6 +336,39 @@ async def empty_trash(
 # ---------------------------------------------------------------------------
 
 
+async def _find_team_for_folder(db, folder_id: str) -> str | None:
+    """Walk the ancestor chain to find the team_id that owns this folder, or None."""
+    cursor = await db.execute(
+        """
+        WITH RECURSIVE ancestors AS (
+            SELECT id, parent_id FROM folders WHERE id = ?
+            UNION ALL
+            SELECT f.id, f.parent_id FROM folders f JOIN ancestors a ON f.id = a.parent_id
+        )
+        SELECT tf.team_id FROM ancestors a
+        JOIN team_folders tf ON tf.folder_id = a.id
+        LIMIT 1
+        """,
+        (folder_id,),
+    )
+    row = await cursor.fetchone()
+    return row["team_id"] if row else None
+
+
+async def _user_is_team_admin_or_manager(db, user_id: str, team_id: str) -> bool:
+    """Return True if the user holds team_admin or team_manager role for this team."""
+    cursor = await db.execute(
+        """
+        SELECT 1 FROM user_roles
+        WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?
+          AND role_id IN (?, ?)
+        LIMIT 1
+        """,
+        (user_id, team_id, ROLE_TEAM_ADMIN, ROLE_TEAM_MANAGER),
+    )
+    return await cursor.fetchone() is not None
+
+
 async def _restore_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None:
     cursor = await db.execute(
         "SELECT id, owner_id, folder_id FROM files WHERE id = ? AND deleted_at IS NOT NULL",
@@ -347,7 +380,9 @@ async def _restore_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None
             status_code=404, detail="File not found in trash"
         )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE):
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
+        team_id = await _find_team_for_folder(db, row["folder_id"]) if row["folder_id"] else None
+        if not team_id or not await _user_is_team_admin_or_manager(db, str(user.id), team_id):
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
     new_folder_id = row["folder_id"]
     if new_folder_id:
@@ -385,7 +420,9 @@ async def _restore_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> 
             status_code=404, detail="Folder not found in trash"
         )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
+        team_id = await _find_team_for_folder(db, folder_id)
+        if not team_id or not await _user_is_team_admin_or_manager(db, str(user.id), team_id):
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
     new_parent_id = row["parent_id"]
     if new_parent_id:
@@ -444,7 +481,7 @@ async def _restore_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> 
 
 async def _purge_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None:
     cursor = await db.execute(
-        "SELECT id, owner_id, storage_key, encrypted_size FROM files WHERE id = ? AND deleted_at IS NOT NULL",
+        "SELECT id, owner_id, folder_id, storage_key, encrypted_size FROM files WHERE id = ? AND deleted_at IS NOT NULL",
         (file_id,),
     )
     row = await cursor.fetchone()
@@ -453,7 +490,9 @@ async def _purge_file_by_id(db, file_id: str, user: AuthenticatedUser) -> None:
             status_code=404, detail="File not found in trash"
         )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE):
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
+        team_id = await _find_team_for_folder(db, row["folder_id"]) if row["folder_id"] else None
+        if not team_id or not await _user_is_team_admin_or_manager(db, str(user.id), team_id):
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
     await purge_file(db, row["id"], row["storage_key"], row["encrypted_size"], row["owner_id"])
 
 
@@ -468,7 +507,9 @@ async def _purge_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> No
             status_code=404, detail="Folder not found in trash"
         )  # NOSONAR — documented in calling route handler
     if row["owner_id"] != user.id and not user.is_admin:
-        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
+        team_id = await _find_team_for_folder(db, folder_id)
+        if not team_id or not await _user_is_team_admin_or_manager(db, str(user.id), team_id):
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)  # NOSONAR — documented in calling route handler
 
     cursor = await db.execute(
         """

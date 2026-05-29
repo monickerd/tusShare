@@ -1033,8 +1033,10 @@ const Admin = (() => {
             onClick: () => _createInvite(container),
         });
 
-        // Pending invites only in main list; used invites shown in a collapsed sub-section
-        const pending = data.invites.filter(i => !i.used_at);
+        // Pending invites only in main list; used invites shown in a collapsed sub-section.
+        // Expired (and unused) invites are excluded — they can no longer be used.
+        const now = new Date().toISOString();
+        const pending = data.invites.filter(i => !i.used_at && i.expires_at > now);
         const used    = data.invites.filter(i =>  i.used_at);
 
         const pendingRows = pending.length === 0
@@ -1047,7 +1049,7 @@ const Admin = (() => {
                 tbody.appendChild(Utils.el('tr', { className: 'row-used' }, [
                     Utils.el('td', { textContent: i.created_at ? i.created_at.slice(0, 10) : '—' }),
                     Utils.el('td', { textContent: i.expires_at ? i.expires_at.slice(0, 10) : '—' }),
-                    Utils.el('td', { textContent: i.used_at    ? new Date(i.used_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—' }),
+                    Utils.el('td', { textContent: i.used_at ? i.used_at.slice(0, 10) : '—' }),
                     Utils.el('td', { textContent: i.used_by_username || '—' }),
                 Utils.el('td', { textContent: i.used_by_ip || '—' }),
                 ]));
@@ -1079,7 +1081,7 @@ const Admin = (() => {
     }
 
     function _buildInviteRow(invite, refreshFn) {
-        const expiresDate = invite.expires_at ? new Date(invite.expires_at).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—';
+        const expiresDate = invite.expires_at ? invite.expires_at.slice(0, 10) : '—';
         const createdDate = invite.created_at ? invite.created_at.slice(0, 10) : '—';
 
         const revokeBtn = Utils.el('button', {

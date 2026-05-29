@@ -63,7 +63,9 @@ const Api = (() => {
         });
 
         // 401 → attempt token refresh then retry
-        if (resp.status === 401 && !path.includes('/auth/refresh') && !path.includes('/auth/login')) {
+        // MFA challenge endpoints use a pending_token, not a session cookie — skip refresh.
+        const _isMfaPath = path.includes('/auth/totp/') || path.includes('/auth/mfa/') || path.includes('/auth/webauthn/authenticate');
+        if (resp.status === 401 && !path.includes('/auth/refresh') && !path.includes('/auth/login') && !_isMfaPath) {
             const refreshed = await _tryRefresh();
             if (refreshed) {
                 if (headers['X-CSRF-Token']) {

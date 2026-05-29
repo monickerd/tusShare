@@ -40,6 +40,7 @@ from app.auth.mfa import (
     consume_pending_token,
     get_active_methods,
     list_active_credentials,
+    peek_pending_token,
 )
 from app.auth.stepup import log_security_event
 from app.auth.totp import enroll_finish, enroll_start, verify_recovery_code, verify_totp
@@ -203,7 +204,9 @@ async def totp_verify(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Verify a TOTP code after OPAQUE login. Issues session cookies on success."""
-    result = await consume_pending_token(db, body.pending_token)
+    # Peek first so a wrong code doesn't consume (and destroy) the pending token,
+    # which would lock the user out of all retry attempts.
+    result = await peek_pending_token(db, body.pending_token)
     if result is None:
         raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
@@ -211,7 +214,12 @@ async def totp_verify(
 
     ok = await verify_totp(db, user_id, body.totp_code)
     if not ok:
-        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+        raise HTTPException(status_code=401, detail="This code isn't valid")
+
+    # TOTP accepted — now atomically consume the pending token.
+    consumed = await consume_pending_token(db, body.pending_token)
+    if consumed is None:
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
     await _issue_session(db, response, user_id, is_public_device)
 
@@ -401,7 +409,7 @@ async def verify_recovery(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Verify a recovery code after OPAQUE login. Issues session cookies on success."""
-    result = await consume_pending_token(db, body.pending_token)
+    result = await peek_pending_token(db, body.pending_token)
     if result is None:
         raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
@@ -409,7 +417,11 @@ async def verify_recovery(
 
     ok = await verify_recovery_code(db, user_id, body.recovery_code)
     if not ok:
-        raise HTTPException(status_code=401, detail="Invalid recovery code")
+        raise HTTPException(status_code=401, detail="This code isn't valid")
+
+    consumed = await consume_pending_token(db, body.pending_token)
+    if consumed is None:
+        raise HTTPException(status_code=401, detail=_ERR_INVALID_MFA_TOKEN)
 
     await _issue_session(db, response, user_id, is_public_device)
 

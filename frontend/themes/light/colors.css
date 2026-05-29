@@ -7,10 +7,10 @@
 
 :root {
     /* --- Core backgrounds --- */
-    --color-bg:             #f5f6f8;
-    --color-surface:        #ffffff;
-    --color-surface-hover:  #f0f1f3;
-    --color-surface-active: #e6e8ec;
+    --color-bg:             #ffffff;
+    --color-surface:        #f5f6f8;
+    --color-surface-hover:  #eceef2;
+    --color-surface-active: #e2e4ea;
 
     /* --- Borders --- */
     --color-border:         #d8dbe3;
@@ -48,7 +48,7 @@
     --color-overlay-blur:   4px;
 
     /* --- Scrollbar --- */
-    --color-scrollbar-track: #f5f6f8;
+    --color-scrollbar-track: #ffffff;
     --color-scrollbar-thumb: #d8dbe3;
     --color-scrollbar-hover: #b0b5c3;
 

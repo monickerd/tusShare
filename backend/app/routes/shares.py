@@ -282,6 +282,23 @@ async def _get_share_for_manage(db, share_id: str, user: AuthenticatedUser):
     return row
 
 
+async def _can_view_share(db, share: dict, user: AuthenticatedUser) -> bool:
+    """True if user may read this share's details.
+
+    Broader than manage: any team member (regardless of level) may view shares
+    on folders they can access.
+    """
+    if share["created_by"] == user.id or user.is_admin:
+        return True
+    if share["target_folder_id"]:
+        team_id = await get_folder_team_id(db, share["target_folder_id"])
+        if team_id:
+            level = await _team_level_for_user(db, team_id, user.id)
+            if level is not None:
+                return True
+    return False
+
+
 async def _can_manage_share(db, share: dict, user: AuthenticatedUser) -> bool:
     """True if user may update or delete this share.
 
@@ -946,7 +963,9 @@ async def get_share(
     with write+ access to the share's target folder.
     """
     share_id = validate_uuid(share_id)
-    share = await _get_share_for_manage(db, share_id, user)
+    share = await _fetch_share_or_404(db, share_id)
+    if not await _can_view_share(db, share, user):
+        raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     items = await _get_items_with_files(db, share_id, share["target_folder_id"] or None)
     sl_cursor = await db.execute("SELECT slug, expires_at FROM short_links WHERE share_id = ?", (share_id,))

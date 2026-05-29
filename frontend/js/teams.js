@@ -131,7 +131,7 @@ const Teams = (() => {
         return {
             sk_bigint: sk,
             sk_bytes:  _bigintTo32Bytes(sk),
-            pk_bytes:  pk.toRawBytes(true),   // 96 bytes, compressed G2
+            pk_bytes:  pk.toBytes(true),   // 96 bytes, compressed G2
         };
     }
 
@@ -149,10 +149,10 @@ const Teams = (() => {
 
         // C1 = r * G1 (48 bytes compressed)
         const C1      = bls.G1.Point.BASE.multiply(r);
-        const C1bytes = C1.toRawBytes(true);
+        const C1bytes = C1.toBytes(true);
 
         // pk_team as G2 point
-        const pkPoint = bls.G2.Point.fromHex(_b64ToBytes(pkTeamB64));
+        const pkPoint = bls.G2.Point.fromBytes(_b64ToBytes(pkTeamB64));
 
         // GT = pairing(C1, pk_team) = e(G1,G2)^{r * sk_team}
         const gt      = bls.pairing(C1, pkPoint);
@@ -183,7 +183,7 @@ const Teams = (() => {
         const bls = await _getBLS();
 
         // GT = pairing(sk_team * C1, G2_base) = e(G1,G2)^{sk_team * r}
-        const C1     = bls.G1.Point.fromHex(_b64ToBytes(pre_c1_b64));
+        const C1     = bls.G1.Point.fromBytes(_b64ToBytes(pre_c1_b64));
         const C1sc   = C1.multiply(skBigInt);
         const gt     = bls.pairing(C1sc, bls.G2.Point.BASE);
         const gtBytes= bls.fields.Fp12.toBytes(gt);
@@ -207,9 +207,9 @@ const Teams = (() => {
      */
     async function applyPRERotation(pre_c1_b64, rkBigInt) {
         const bls   = await _getBLS();
-        const C1    = bls.G1.Point.fromHex(_b64ToBytes(pre_c1_b64));
+        const C1    = bls.G1.Point.fromBytes(_b64ToBytes(pre_c1_b64));
         const C1new = C1.multiply(rkBigInt);
-        return _bytesToB64(C1new.toRawBytes(true));
+        return _bytesToB64(C1new.toBytes(true));
     }
 
     /**
@@ -239,7 +239,7 @@ const Teams = (() => {
      */
     async function _computeRkPoint(rkBigInt) {
         const bls = await _getBLS();
-        return _bytesToB64(bls.G1.Point.BASE.multiply(rkBigInt).toRawBytes(true));
+        return _bytesToB64(bls.G1.Point.BASE.multiply(rkBigInt).toBytes(true));
     }
 
     /**
@@ -265,18 +265,18 @@ const Teams = (() => {
     async function _generateDleqProof(rkBigInt, c1OldB64, rkPointB64, c1NewB64) {
         const bls    = await _getBLS();
         const G1base = bls.G1.Point.BASE;
-        const C1old  = bls.G1.Point.fromHex(_b64ToBytes(c1OldB64));
+        const C1old  = bls.G1.Point.fromBytes(_b64ToBytes(c1OldB64));
 
         // Random blinding scalar r ∈ Fr
         const rRaw = crypto.getRandomValues(new Uint8Array(32));
         const r    = BigInt('0x' + _bytesToHex(rRaw)) % _BLS_ORDER;
 
         // R1 = r × G1,  R2 = r × C1_old
-        const R1bytes = G1base.multiply(r).toRawBytes(true);
-        const R2bytes = C1old.multiply(r).toRawBytes(true);
+        const R1bytes = G1base.multiply(r).toBytes(true);
+        const R2bytes = C1old.multiply(r).toBytes(true);
 
         // Fiat-Shamir challenge — concatenate all six G1 points (48 bytes each)
-        const parts = [G1base.toRawBytes(true), _b64ToBytes(c1OldB64),
+        const parts = [G1base.toBytes(true), _b64ToBytes(c1OldB64),
                        _b64ToBytes(rkPointB64), _b64ToBytes(c1NewB64), R1bytes, R2bytes];
         const msg = new Uint8Array(6 * 48);
         let off = 0;
@@ -1786,7 +1786,7 @@ const Teams = (() => {
         const r    = BigInt('0x' + _bytesToHex(rRaw)) % _BLS_ORDER;
 
         // R = r × G2  (96 bytes compressed)
-        const RBytes = G2base.multiply(r).toRawBytes(true);
+        const RBytes = G2base.multiply(r).toBytes(true);
 
         // pk_new raw bytes (96 bytes)
         const pkNewBytes = _b64ToBytes(pkNewB64);

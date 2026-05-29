@@ -181,7 +181,14 @@ const App = (() => {
             return;
         }
 
-        globalThis.addEventListener('hashchange', _onHashChange);
+        globalThis.addEventListener('hashchange', (e) => {
+            const mc = document.getElementById('main-content');
+            if (mc && mc.scrollTop > 0) {
+                const oldHash = new URL(e.oldURL).hash || '#/';
+                sessionStorage.setItem('scroll:' + oldHash, String(mc.scrollTop));
+            }
+            _onHashChange();
+        });
 
         const hasSession = await Auth.checkSession();
         if (!hasSession) {
@@ -1495,7 +1502,10 @@ const App = (() => {
         _renderTrashPage(document.getElementById('main-content'), teamId);
     }
 
+    let _trashRenderGen = 0;
+
     async function _renderTrashPage(container, teamId) {
+        const gen = ++_trashRenderGen;
         container.innerHTML = '<p class="text-muted" style="padding:24px">Loading trash…</p>';
         const api = Config.app.apiPrefix;
         const url = teamId ? `${api}/trash/teams/${teamId}` : `${api}/trash`;
@@ -1504,11 +1514,13 @@ const App = (() => {
         try {
             data = await Api.get(url);
         } catch (err) {
+            if (gen !== _trashRenderGen) return;
             container.innerHTML = '';
             container.appendChild(Utils.el('p', { className: 'text-muted', style: 'padding:24px', textContent: 'Failed to load trash: ' + err.message }));
             return;
         }
 
+        if (gen !== _trashRenderGen) return;
         container.innerHTML = '';
 
         // Header
@@ -1597,7 +1609,7 @@ const App = (() => {
             });
 
             deleteItemBtn.addEventListener('click', async () => {
-                if (!confirm(`Permanently delete "${item.name}"? This cannot be undone.`)) return;
+                if (!confirm(`Permanently delete "${item.original_name || item.name}"? This cannot be undone.`)) return;
                 deleteItemBtn.disabled = true;
                 try {
                     const endpoint = item._kind === 'file'
@@ -1614,7 +1626,7 @@ const App = (() => {
 
             const tr = Utils.el('tr', {}, [
                 Utils.el('td', {}, [chk]),
-                Utils.el('td', { textContent: item.name || item.id }),
+                Utils.el('td', { textContent: item.original_name || item.name || item.id }),
                 Utils.el('td', { textContent: item._kind }),
                 Utils.el('td', { textContent: _fmtDate(item.deleted_at) }),
                 Utils.el('td', { textContent: _fmtDate(item.permanent_delete_at) }),
