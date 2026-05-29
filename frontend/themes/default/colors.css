@@ -89,8 +89,8 @@
    ========================================================= */
 :root[data-theme="light"] {
     /* --- Core backgrounds --- */
-    --color-bg:             #e0d6cc;
-    --color-surface:        #ede8e2;
+    --color-bg:             #ede8e2;
+    --color-surface:        #e0d6cc;
     --color-surface-hover:  #d8cfc5;
     --color-surface-active: #cec4ba;
 
@@ -148,7 +148,7 @@
     --color-overlay-blur:   4px;
 
     /* --- Scrollbar --- */
-    --color-scrollbar-track: #e0d6cc;
+    --color-scrollbar-track: #ede8e2;
     --color-scrollbar-thumb: #bfb4a8;
     --color-scrollbar-hover: #796858;
 
@@ -165,8 +165,8 @@
    ========================================================= */
 @media (prefers-color-scheme: light) {
     :root[data-theme="system"] {
-        --color-bg:             #e0d6cc;
-        --color-surface:        #ede8e2;
+        --color-bg:             #ede8e2;
+        --color-surface:        #e0d6cc;
         --color-surface-hover:  #d8cfc5;
         --color-surface-active: #cec4ba;
         --color-border:         #bfb4a8;
@@ -203,7 +203,7 @@
         --color-badge-effect-text: #3a5c18;
         --color-badge-effect-border: #3a5c18;
         --color-overlay:        rgba(44, 32, 24, 0.4);
-        --color-scrollbar-track: #e0d6cc;
+        --color-scrollbar-track: #ede8e2;
         --color-scrollbar-thumb: #bfb4a8;
         --color-scrollbar-hover: #796858;
         --shadow-toast:         0 4px 12px rgba(60, 40, 20, 0.14);

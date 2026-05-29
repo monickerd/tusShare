@@ -132,11 +132,11 @@ const Download = (() => {
      * @param {function}    onProgress - Called with (chunksDecrypted, totalChunks).
      * @param {AbortSignal} [signal]   - Optional AbortSignal to cancel the download.
      */
-    async function downloadFile(fileId, masterKey, onProgress, signal = null) {
+    async function downloadFile(fileId, masterKey, onProgress, signal = null, teamId = null) {
         if (_opfsAvailable()) {
-            return _downloadWithOpfs(fileId, masterKey, onProgress, signal);
+            return _downloadWithOpfs(fileId, masterKey, onProgress, signal, teamId);
         }
-        return _downloadInMemory(fileId, masterKey, onProgress, signal);
+        return _downloadInMemory(fileId, masterKey, onProgress, signal, teamId);
     }
 
     /**
@@ -198,7 +198,14 @@ const Download = (() => {
         }
     }
 
-    async function _downloadWithOpfs(fileId, masterKey, onProgress, signal) {
+    async function _resolveFileKey(manifest, masterKey, teamId, fileId) {
+        if (teamId) {
+            return Teams.decryptTeamFileKey(fileId, teamId);
+        }
+        return Crypto.decryptFileKey(manifest.encrypted_file_key, manifest.key_iv, masterKey);
+    }
+
+    async function _downloadWithOpfs(fileId, masterKey, onProgress, signal, teamId = null) {
         const db  = await _openDb();
         const dir = await _getOpfsDir();
 
@@ -231,11 +238,7 @@ const Download = (() => {
         if (done.size > 0 && onProgress) onProgress(done.size, totalChunks);
 
         // 3. Decrypt the per-file key
-        const fileKey = await Crypto.decryptFileKey(
-            manifest.encrypted_file_key,
-            manifest.key_iv,
-            masterKey,
-        );
+        const fileKey = await _resolveFileKey(manifest, masterKey, teamId, fileId);
 
         // 4. Fetch + decrypt + write each chunk not yet persisted to OPFS
         await _fetchAndCacheChunks(dir, db, fileId, totalChunks, manifest.chunks, fileKey, { done, onProgress, signal });
@@ -272,7 +275,7 @@ const Download = (() => {
     // In-memory fallback (original behaviour for browsers without OPFS)
     // ------------------------------------------------------------------
 
-    async function _downloadInMemory(fileId, masterKey, onProgress, signal) {
+    async function _downloadInMemory(fileId, masterKey, onProgress, signal, teamId = null) {
         const manifest = await _fetchManifest(fileId);
 
         if (manifest.chunks.length !== manifest.total_chunks) {
@@ -281,11 +284,7 @@ const Download = (() => {
             );
         }
 
-        const fileKey = await Crypto.decryptFileKey(
-            manifest.encrypted_file_key,
-            manifest.key_iv,
-            masterKey,
-        );
+        const fileKey = await _resolveFileKey(manifest, masterKey, teamId, fileId);
 
         const totalChunks     = manifest.chunks.length;
         const decryptedChunks = [];
@@ -654,9 +653,9 @@ const Download = (() => {
      * @param {function}    onProgress  - (doneCount, totalCount) called per-file completion
      * @param {AbortSignal} [signal]
      */
-    async function downloadBatch(items, masterKey, onProgress, signal = null) {
+    async function downloadBatch(items, masterKey, onProgress, signal = null, teamId = null) {
         if (!_opfsAvailable()) {
-            return _downloadBatchInMemory(items, masterKey, onProgress, signal);
+            return _downloadBatchInMemory(items, masterKey, onProgress, signal, teamId);
         }
 
         const ts      = _nowTs();
@@ -668,7 +667,7 @@ const Download = (() => {
 
         // Single file → just download normally (no ZIP)
         if (fileEntries.length === 1) {
-            return downloadFile(fileEntries[0].fileId, masterKey, onProgress, signal);
+            return downloadFile(fileEntries[0].fileId, masterKey, onProgress, signal, teamId);
         }
 
         const batchId = fileEntries.map(e => e.fileId).sort((a, b) => a.localeCompare(b)).join(',');
@@ -707,7 +706,7 @@ const Download = (() => {
                 while (active < BATCH_DOWNLOAD_CONCURRENCY && pIdx < pending.length) {
                     const entry = pending[pIdx++];
                     active++;
-                    _downloadFileToBatchOpfs(entry.fileId, masterKey, dir, idb, signal)
+                    _downloadFileToBatchOpfs(entry.fileId, masterKey, dir, idb, signal, teamId)
                         .then(() => { // NOSONAR — closure inside while/startNext/Promise; unavoidable nesting
                             doneSet.add(entry.fileId);
                             state.done = [...doneSet];
@@ -764,7 +763,7 @@ const Download = (() => {
         await _batchDel(idb, batchId);
     }
 
-    async function _downloadFileToBatchOpfs(fileId, masterKey, dir, idb, signal) {
+    async function _downloadFileToBatchOpfs(fileId, masterKey, dir, idb, signal, teamId = null) {
         // Reuse the per-file OPFS download logic; assembly happens later in batch flow
         const manifest   = await _fetchManifest(fileId);
         const totalChunks = manifest.total_chunks;
@@ -779,11 +778,7 @@ const Download = (() => {
         const done = new Set(state ? state.done : []);
         if (!state) await _idbPut(idb, { fileId, totalChunks, done: [] });
 
-        const fileKey = await Crypto.decryptFileKey(
-            manifest.encrypted_file_key,
-            manifest.key_iv,
-            masterKey,
-        );
+        const fileKey = await _resolveFileKey(manifest, masterKey, teamId, fileId);
 
         for (let i = 0; i < totalChunks; i++) {
             if (signal?.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' });
@@ -821,7 +816,7 @@ const Download = (() => {
     // In-memory batch fallback (for browsers without OPFS)
     // ------------------------------------------------------------------
 
-    async function _downloadBatchInMemory(items, masterKey, onProgress, signal) {
+    async function _downloadBatchInMemory(items, masterKey, onProgress, signal, teamId = null) {
         const ts      = _nowTs();
         const zipName = _zipName(items, {}, ts);
 
@@ -829,7 +824,7 @@ const Download = (() => {
         if (fileEntries.length === 0) throw new Error('No files to download');
 
         if (fileEntries.length === 1) {
-            return _downloadInMemory(fileEntries[0].fileId, masterKey, onProgress, signal);
+            return _downloadInMemory(fileEntries[0].fileId, masterKey, onProgress, signal, teamId);
         }
 
         const zipEntries = [];
@@ -838,9 +833,7 @@ const Download = (() => {
         for (const entry of fileEntries) {
             if (signal?.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' });
             const manifest = await _fetchManifest(entry.fileId);
-            const fileKey  = await Crypto.decryptFileKey(
-                manifest.encrypted_file_key, manifest.key_iv, masterKey,
-            );
+            const fileKey  = await _resolveFileKey(manifest, masterKey, teamId, entry.fileId);
             const chunks = [];
             for (let i = 0; i < manifest.chunks.length; i++) {
                 const plain = await _fetchDecryptChunk(entry.fileId, manifest.chunks[i], i, manifest.chunks.length, fileKey, signal);

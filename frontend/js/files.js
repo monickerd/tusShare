@@ -781,7 +781,7 @@ const Files = (() => {
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 overlay.update(pct, file.original_name);
                 transfer.update(pct);
-            }, abortCtrl.signal);
+            }, abortCtrl.signal, _currentTeamId);
             overlay.remove();
             transfer.complete();
             Utils.showToast(`"${file.original_name}" downloaded`, 'success');
@@ -1233,6 +1233,7 @@ const Files = (() => {
                     transfer.update(Math.round(done / total * 100));
                 },
                 abortCtrl.signal,
+                _currentTeamId,
             );
             transfer.complete();
             Utils.showToast(`${annotated.length} ${annotated.length === 1 ? 'item' : 'items'} downloaded`, 'success');

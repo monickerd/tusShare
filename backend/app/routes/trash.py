@@ -119,7 +119,7 @@ async def list_team_trash(
 
     if not user.has_flag(FLAG_FILES_ACCESS_ALL_WRITE):
         cursor = await db.execute(
-            "SELECT 1 FROM team_role_assignments WHERE user_id = ? AND team_id = ?",
+            "SELECT 1 FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ? LIMIT 1",
             (user.id, team_id),
         )
         if await cursor.fetchone() is None:
