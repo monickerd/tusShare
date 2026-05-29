@@ -594,6 +594,7 @@ def create_app() -> FastAPI:
     from app.routes.teams import router as teams_router
     from app.routes.theme import router as theme_router
     from app.routes.trash import router as trash_router
+    from app.routes.batch_upload import router as batch_upload_router
     from app.routes.uploads import router as uploads_router
     from app.routes.users import router as users_router
 
@@ -605,6 +606,7 @@ def create_app() -> FastAPI:
     app.include_router(folders_router, prefix="/api/v1/folders", tags=["folders"])
     app.include_router(files_router, prefix="/api/v1/files", tags=["files"])
     app.include_router(uploads_router, prefix="/api/v1/uploads", tags=["uploads"])
+    app.include_router(batch_upload_router, prefix="/api/v1/uploads", tags=["uploads"])
     app.include_router(shares_router, tags=["shares"])
     app.include_router(teams_router, tags=["teams"])
     app.include_router(team_roles_router, prefix="/api/v1/teams", tags=["team-roles"])

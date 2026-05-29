@@ -2223,16 +2223,33 @@ const Files = (() => {
             }
         }
 
-        // Phase 2: bounded crypto pre-warm + gated network uploads.
-        // A pre-warm semaphore (2× upload cap) limits how many files load chunk
-        // data into memory at once — prevents OOM on large or numerous files.
-        // Crypto starts as soon as a pre-warm slot is free; the upload slot is
-        // claimed next, then the pre-warm slot is released so the next file can
-        // start its crypto.
+        // Phase 2: route single-chunk files through the batch POST path; multi-chunk
+        // files use the existing semaphore-gated tus path.
+        const chunkThreshold = Upload.getChunkSize();
+        const smallResolved  = resolved.filter(({ file }) => file.size > 0 && file.size <= chunkThreshold);
+        const largeResolved  = resolved.filter(({ file }) => file.size === 0 || file.size > chunkThreshold);
+
         const prewarmSem = _makeTransferSemaphore(Config.upload.maxConcurrent * 2);
         const batcher    = _makeFinishBatcher(Config.upload.finishIntervalMs, folderId);
 
-        const uploads = resolved.map(async ({ file, index, deletedForReplace }) => {
+        // Small files: prepare crypto concurrently (bounded by prewarm semaphore) then
+        // pack into budget-sized multipart batches and POST each batch in sequence.
+        if (smallResolved.length > 0) {
+            const preparedSmall = await Promise.all(
+                smallResolved.map(async ({ file }) => {
+                    await prewarmSem.acquire();
+                    const prepared = await Upload.prepareUpload(file, folderId, masterKey);
+                    prewarmSem.release();
+                    return { prepared, file };
+                })
+            );
+            for (const batch of _groupIntoBatches(preparedSmall, _BATCH_BUDGET_BYTES)) {
+                await _executeBatchUpload(batch, folderId, batcher, _ctx);
+            }
+        }
+
+        // Large files: existing bounded tus path (unchanged).
+        const uploads = largeResolved.map(async ({ file, index, deletedForReplace }) => {
             await prewarmSem.acquire();
             const preparedPromise = Upload.prepareUpload(file, folderId, masterKey);
 
@@ -2244,8 +2261,6 @@ const Files = (() => {
                 const outcome = await _executeFileUploadPrepared(
                     await preparedPromise, file, folderId, _ctx, files, index, deletedForReplace,
                 );
-                // Push to time-based batcher; flushes every finishIntervalMs so teammates
-                // see files incrementally rather than only after the entire batch finishes.
                 if (outcome?.fileId) batcher.push({ fileId: outcome.fileId, fileKeyBytes: outcome.fileKeyBytes });
             } finally {
                 _uploadSemaphore.release();
@@ -2456,6 +2471,113 @@ const Files = (() => {
             file = _renameWithSuffix(file, existingByName);
         }
         return { skip: false, file, deletedForReplace: false };
+    }
+
+    // Maximum encrypted bytes to pack into a single batch POST.
+    // The client tracks ciphertext bytes (binary); multipart framing overhead is small.
+    const _BATCH_BUDGET_BYTES = 5 * 1024 * 1024;
+
+    // Split an array of {prepared, file} entries into groups that each fit within budgetBytes.
+    function _groupIntoBatches(entries, budgetBytes) {
+        const batches = [];
+        let current = [];
+        let accumulated = 0;
+        for (const entry of entries) {
+            const size = entry.prepared.totalEncryptedSize;
+            if (current.length > 0 && accumulated + size > budgetBytes) {
+                batches.push(current);
+                current = [];
+                accumulated = 0;
+            }
+            current.push(entry);
+            accumulated += size;
+        }
+        if (current.length > 0) batches.push(current);
+        return batches;
+    }
+
+    // Build a multipart/form-data body for a batch of single-chunk prepared files.
+    // Metadata part comes first (JSON array), then one binary 'file_N' part per file.
+    async function _buildBatchFormData(batch, folderId) {
+        const metadataArr = [];
+        const ciphertexts = [];
+        for (const { prepared, file } of batch) {
+            const { ciphertext, ivB64: chunkIvB64 } = await prepared.firstEncrypted;
+            const chunkHash = await Upload.sha256Hex(ciphertext);
+            metadataArr.push({
+                filename:           file.name,
+                filetype:           file.type || 'application/octet-stream',
+                folder_id:          folderId || '',
+                original_size:      String(file.size),
+                encrypted_size:     String(prepared.totalEncryptedSize),
+                encrypted_file_key: prepared.encryptedKeyB64,
+                key_iv:             prepared.keyIvB64,
+                chunk_iv:           chunkIvB64,
+                chunk_hash:         `sha256:${chunkHash}`,
+                last_modified_ms:   String(file.lastModified),
+                ...prepared.escrowMeta,
+            });
+            ciphertexts.push(ciphertext);
+        }
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadataArr)], { type: 'application/json' }));
+        for (let i = 0; i < ciphertexts.length; i++) {
+            form.append(`file_${i}`, new Blob([ciphertexts[i]], { type: 'application/octet-stream' }));
+        }
+        return form;
+    }
+
+    // Send one batch POST and record per-file results into ctx.
+    async function _executeBatchUpload(batch, folderId, batcher, ctx) {
+        let form;
+        try {
+            form = await _buildBatchFormData(batch, folderId);
+        } catch (err) {
+            for (const { file } of batch) ctx.results.failed.push(file.name);
+            Utils.showToast(`Batch preparation failed: ${err.message}`, 'error');
+            return;
+        }
+
+        const csrf = Utils.parseCookie(Config.auth.cookieCsrfName) || '';
+        const makeReq = () => fetch(`${Config.app.apiPrefix}/uploads/batch`, {
+            method: 'POST',
+            body: form,
+            credentials: 'same-origin',
+            headers: { 'X-CSRF-Token': csrf },
+        });
+
+        let resp;
+        try {
+            resp = await makeReq();
+            if (resp.status === 401) {
+                const refreshed = await Api.refreshTokens();
+                if (!refreshed) throw new Error('Session expired — please log in again.');
+                resp = await makeReq();
+            }
+        } catch (err) {
+            for (const { file } of batch) ctx.results.failed.push(file.name);
+            Utils.showToast(err.message || 'Batch upload network error', 'error');
+            return;
+        }
+
+        if (!resp.ok) {
+            const body = await resp.json().catch(() => ({}));
+            for (const { file } of batch) ctx.results.failed.push(file.name);
+            Utils.showToast(body.detail || `Batch upload failed (${resp.status})`, 'error');
+            return;
+        }
+
+        const { results } = await resp.json();
+        for (const result of results) {
+            const { file, prepared } = batch[result.index];
+            if (result.status === 'ok' && result.file_id) {
+                ctx.results.ok++;
+                if (!ctx.results.firstName) ctx.results.firstName = file.name;
+                batcher.push({ fileId: result.file_id, fileKeyBytes: prepared.fileKeyBytes });
+            } else {
+                ctx.results.failed.push(file.name);
+            }
+        }
     }
 
     // Executes the network phase of a queued upload using pre-warmed prepared data.

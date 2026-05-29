@@ -106,7 +106,11 @@ const Upload = (() => {
         // so the first PATCH can fire immediately after the POST returns.
         const firstEncrypted = totalChunks > 0 ? _encryptChunk(file, 0, chunkSize, fileKey) : null;
 
-        return { fileKey, fileKeyBytes, meta, totalEncryptedSize, firstEncrypted, chunkSize, totalChunks };
+        return {
+            fileKey, fileKeyBytes, meta, totalEncryptedSize, firstEncrypted, chunkSize, totalChunks,
+            // Raw crypto fields for the batch upload path (avoids re-parsing the tus metadata string).
+            encryptedKeyB64, keyIvB64, escrowMeta,
+        };
     }
 
     /**
@@ -580,6 +584,8 @@ const Upload = (() => {
         resumeUpload,
         fetchAndSetChunkSize,
         setServerChunkSize,
+        getChunkSize: _getChunkSize,
+        sha256Hex: _sha256Hex,
         AbortedError: UploadAbortedError,
     };
 })();
