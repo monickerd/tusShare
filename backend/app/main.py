@@ -18,7 +18,9 @@ from fastapi.staticfiles import StaticFiles
 
 import app.sensitive_config as sensitive_config
 import app.storage.manager as storage
+from app.auth.api_key import run_last_used_flush as run_api_key_last_used_flush
 from app.auth.jwt import run_token_cleanup
+from app.auth.service_account import run_last_used_flush as run_sa_last_used_flush
 from app.conf.auth import ALLOWED_JWT_ALGORITHMS
 from app.config import settings
 from app.database import Database, close_db, db_session, get_db, init_db
@@ -246,6 +248,8 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     rate_limit_task = asyncio.create_task(run_rate_limit_cleanup())
     token_cleanup_task = asyncio.create_task(run_token_cleanup(db_session))
+    api_key_last_used_task = asyncio.create_task(run_api_key_last_used_flush(db_session))
+    sa_last_used_task = asyncio.create_task(run_sa_last_used_flush(db_session))
     upload_cleanup_task = asyncio.create_task(run_upload_cleanup(db_session))
     trash_cleanup_task = asyncio.create_task(run_trash_cleanup(db_session))
     redis_sse_task = asyncio.create_task(run_redis_listener())
@@ -312,6 +316,8 @@ async def lifespan(app: FastAPI):
     for task in (
         rate_limit_task,
         token_cleanup_task,
+        api_key_last_used_task,
+        sa_last_used_task,
         upload_cleanup_task,
         trash_cleanup_task,
         redis_sse_task,

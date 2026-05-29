@@ -50,13 +50,47 @@ from app.validation.sanitizers import sanitize_username, validate_base64, valida
 _ERR_INVALID_TOKEN = "Invalid token"
 _ERR_INVALID_REG_REQUEST = "Invalid registration request"
 _ERR_INVALID_REG_UPLOAD = "Invalid registration upload"
+# Generous upper bound on bytes that any native OPAQUE call should produce.
+# Exists only to catch pathological library regressions — not a tight format check.
+_OPAQUE_MAX_NATIVE_BYTES = 4096
 _ERR_INVALID_CREDENTIALS = "Invalid credentials"
 _SQL_COUNT_USERS = "SELECT COUNT(*) FROM users"
 _EVT_LOGIN_FAILURE = "auth.login.failure"
 
 _bg_tasks: set = set()
+# user_ids with a policy-eval task already in flight — prevents spawning duplicates
+# during concurrent logins for the same user (e.g. multiple browser tabs).
+_pending_policy_evals: set[str] = set()
 
 logger = logging.getLogger(__name__)
+
+
+def _spawn_policy_eval(user_id: str) -> None:
+    """Fire-and-forget background policy evaluation. Never raises.
+
+    No-ops if an eval for this user_id is already queued or running.
+    """
+    if user_id in _pending_policy_evals:
+        return
+    _pending_policy_evals.add(user_id)
+    try:
+        from app.database import db_session as _db_session
+        from app.models.policy import evaluate_user_policies as _eval_policies
+
+        async def _bg() -> None:
+            try:
+                async with _db_session() as _bg_db:
+                    await _eval_policies(_bg_db, user_id)
+            except Exception:
+                pass
+            finally:
+                _pending_policy_evals.discard(user_id)
+
+        _t = asyncio.create_task(_bg())
+        _bg_tasks.add(_t)
+        _t.add_done_callback(_bg_tasks.discard)
+    except Exception:
+        _pending_policy_evals.discard(user_id)
 
 router = APIRouter()
 
@@ -348,6 +382,10 @@ async def opaque_register_start(
         logger.warning("OPAQUE register/start failed: %s", exc)
         raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_REQUEST)
 
+    if len(reg_response_bytes) > _OPAQUE_MAX_NATIVE_BYTES:
+        logger.error("OPAQUE register/start produced unexpectedly large response (%d bytes)", len(reg_response_bytes))
+        raise HTTPException(status_code=500, detail="Internal error")
+
     return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
 
 
@@ -380,6 +418,10 @@ async def opaque_register_finish(
     except ValueError as exc:
         logger.warning("OPAQUE register/finish failed: %s", exc)
         raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_UPLOAD)
+
+    if len(reg_record_bytes) > _OPAQUE_MAX_NATIVE_BYTES:
+        logger.error("OPAQUE register/finish produced unexpectedly large record (%d bytes)", len(reg_record_bytes))
+        raise HTTPException(status_code=500, detail="Internal error")
 
     # Atomically consume invite + create user in a single transaction.
     # Rolling back here also reverts the invite consumption, so a failed
@@ -473,24 +515,7 @@ async def opaque_register_finish(
 
     # Run policy evaluation in background so team-membership and other policies
     # fire immediately on registration, without waiting for a separate login.
-    try:
-        from app.database import db_session as _db_session
-        from app.models.policy import evaluate_user_policies as _eval_policies
-
-        _reg_uid = user_id
-
-        async def _bg_reg_eval() -> None:
-            try:
-                async with _db_session() as _bg_db:
-                    await _eval_policies(_bg_db, _reg_uid)
-            except Exception:
-                pass
-
-        _t = asyncio.create_task(_bg_reg_eval())
-        _bg_tasks.add(_t)
-        _t.add_done_callback(_bg_tasks.discard)
-    except Exception:
-        pass  # policy engine must not block registration
+    _spawn_policy_eval(user_id)
 
     # Tell the client if they need to enroll MFA before accessing resources.
     # New users never have credentials, so only the enforcement mode matters.
@@ -575,24 +600,7 @@ async def _maybe_issue_mfa_response(db, user, body, active_methods, mfa_reset_re
         sorted(active_methods),
         mfa_reset_required,
     )
-    try:
-        from app.database import db_session as _db_session_mfa
-        from app.models.policy import evaluate_user_policies as _eval_mfa_policies
-
-        _mfa_uid = user.id
-
-        async def _bg_mfa_eval() -> None:
-            try:
-                async with _db_session_mfa() as _bg_db:
-                    await _eval_mfa_policies(_bg_db, _mfa_uid)
-            except Exception:
-                pass
-
-        _t = asyncio.create_task(_bg_mfa_eval())
-        _bg_tasks.add(_t)
-        _t.add_done_callback(_bg_tasks.discard)
-    except Exception:
-        pass
+    _spawn_policy_eval(user.id)
     return {
         "mfa_required": True,
         "methods": sorted(active_methods),
@@ -761,24 +769,7 @@ async def opaque_login_finish(
     # connection.  Passing the request connection to a background task is unsafe:
     # get_db() releases it to the pool when this handler returns, and another
     # request could acquire the same connection while the task is still using it.
-    try:
-        from app.database import db_session as _db_session
-        from app.models.policy import evaluate_user_policies as _eval_policies
-
-        _uid = user.id
-
-        async def _bg_eval() -> None:
-            try:
-                async with _db_session() as _bg_db:
-                    await _eval_policies(_bg_db, _uid)
-            except Exception:
-                pass
-
-        _t = asyncio.create_task(_bg_eval())
-        _bg_tasks.add(_t)
-        _t.add_done_callback(_bg_tasks.discard)
-    except Exception:
-        pass  # policy engine must not block authentication
+    _spawn_policy_eval(user.id)
 
     resp_body = {"user": user_response_dict(user)}
     if mfa_enrollment_required:

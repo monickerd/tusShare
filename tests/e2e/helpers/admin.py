@@ -55,6 +55,13 @@ class AdminClient:
         """Call /auth/refresh to rotate the refresh token and obtain a fresh access token."""
         r = await self._client.post(f"{API}/auth/refresh")
         r.raise_for_status()
+        # Re-inject cookies without the Secure attribute so they are sent on subsequent
+        # HTTP requests in the test environment.  Python's CookieJar withholds Secure=True
+        # cookies from http:// requests; the Set-Cookie response sets Secure=True because
+        # the app always does, but the test server is http://localhost — so we must manually
+        # promote the new cookie values into the jar without that flag.
+        for name, value in r.cookies.items():
+            self._client.cookies.set(name, value)
 
     async def get(self, path: str, **kwargs: Any) -> httpx.Response:
         return await self._client.get(f"{API}{path}", **kwargs)

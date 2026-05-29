@@ -100,13 +100,12 @@ router = APIRouter(
 # ---------------------------------------------------------------------------
 
 
-class _MemberKeyIn(BaseModel):
-    """KEM-wrapped team key fields for a single escrow member."""
+class _KemWrappedKeyMixin(BaseModel):
+    """Base for any model that carries a KEM-wrapped sk_team envelope."""
 
-    user_id: str
     ephemeral_x25519_pub: str
     kem_ciphertext: str
-    encrypted_sk: str
+    encrypted_sk: str  # 32-byte sk_team + 16-byte GCM tag = 48 bytes → 64 base64 chars
     sk_iv: str
 
     @field_validator("ephemeral_x25519_pub")
@@ -122,7 +121,6 @@ class _MemberKeyIn(BaseModel):
     @field_validator("encrypted_sk")
     @classmethod
     def validate_encrypted_sk(cls, v: str) -> str:
-        # 32-byte sk_team + 16-byte GCM tag = 48 bytes → 64 base64 chars
         return validate_base64(v, max_length=68)
 
     @field_validator("sk_iv")
@@ -131,15 +129,16 @@ class _MemberKeyIn(BaseModel):
         return validate_base64(v, max_length=20)
 
 
-class CreateTeamRequest(BaseModel):
+class _MemberKeyIn(_KemWrappedKeyMixin):
+    """KEM-wrapped team key fields for a single escrow member."""
+
+    user_id: str
+
+
+class CreateTeamRequest(_KemWrappedKeyMixin):
     name: str
     description: str = ""
     pre_public_key: str  # G2 point (96 bytes, base64)
-    # Owner's own wrapped team key (they become the first member automatically)
-    ephemeral_x25519_pub: str
-    kem_ciphertext: str
-    encrypted_sk: str
-    sk_iv: str
     # Optional pre-wrapped key slots for escrow agents.
     # Client fetches GET /teams/escrow-agents, wraps sk_team for each, and includes here.
     # Each entry must identify a user holding can_act_as_escrow.
@@ -162,26 +161,6 @@ class CreateTeamRequest(BaseModel):
     def validate_pk(cls, v: str) -> str:
         return validate_g2_point(v)
 
-    @field_validator("ephemeral_x25519_pub")
-    @classmethod
-    def validate_x25519(cls, v: str) -> str:
-        return validate_base64(v, max_length=60)
-
-    @field_validator("kem_ciphertext")
-    @classmethod
-    def validate_kem(cls, v: str) -> str:
-        return validate_base64(v, max_length=1500)
-
-    @field_validator("encrypted_sk")
-    @classmethod
-    def validate_encrypted_sk(cls, v: str) -> str:
-        return validate_base64(v, max_length=68)
-
-    @field_validator("sk_iv")
-    @classmethod
-    def validate_sk_iv(cls, v: str) -> str:
-        return validate_base64(v, max_length=20)
-
 
 class UpdateTeamRequest(BaseModel):
     name: str | None = None
@@ -202,14 +181,9 @@ class UpdateTeamRequest(BaseModel):
         return v
 
 
-class InviteMemberRequest(BaseModel):
+class InviteMemberRequest(_KemWrappedKeyMixin):
     username: str
     role: str = TEAM_ROLE_MEMBER
-    # KEM-wrapped team key for the new member
-    ephemeral_x25519_pub: str
-    kem_ciphertext: str
-    encrypted_sk: str
-    sk_iv: str
 
     @field_validator("username")
     @classmethod
@@ -222,26 +196,6 @@ class InviteMemberRequest(BaseModel):
         if v not in ASSIGNABLE_ROLES:
             raise ValueError(f"Role must be one of: {', '.join(sorted(ASSIGNABLE_ROLES))}")
         return v
-
-    @field_validator("ephemeral_x25519_pub")
-    @classmethod
-    def validate_x25519(cls, v: str) -> str:
-        return validate_base64(v, max_length=60)
-
-    @field_validator("kem_ciphertext")
-    @classmethod
-    def validate_kem(cls, v: str) -> str:
-        return validate_base64(v, max_length=1500)
-
-    @field_validator("encrypted_sk")
-    @classmethod
-    def validate_encrypted_sk(cls, v: str) -> str:
-        return validate_base64(v, max_length=68)
-
-    @field_validator("sk_iv")
-    @classmethod
-    def validate_sk_iv(cls, v: str) -> str:
-        return validate_base64(v, max_length=20)
 
 
 class UpdateMemberRoleRequest(BaseModel):
@@ -330,39 +284,15 @@ class _RotatedFileKeyIn(BaseModel):
         return validate_base64(v, max_length=68)
 
 
-class _RotatedMemberIn(BaseModel):
+class _RotatedMemberIn(_KemWrappedKeyMixin):
     """New wrapped team key for a single remaining member."""
 
     user_id: str
-    ephemeral_x25519_pub: str
-    kem_ciphertext: str
-    encrypted_sk: str
-    sk_iv: str
 
     @field_validator("user_id")
     @classmethod
     def validate_uid(cls, v: str) -> str:
         return validate_uuid(v)
-
-    @field_validator("ephemeral_x25519_pub")
-    @classmethod
-    def validate_x25519(cls, v: str) -> str:
-        return validate_base64(v, max_length=60)
-
-    @field_validator("kem_ciphertext")
-    @classmethod
-    def validate_kem(cls, v: str) -> str:
-        return validate_base64(v, max_length=1500)
-
-    @field_validator("encrypted_sk")
-    @classmethod
-    def validate_encrypted_sk(cls, v: str) -> str:
-        return validate_base64(v, max_length=68)
-
-    @field_validator("sk_iv")
-    @classmethod
-    def validate_sk_iv(cls, v: str) -> str:
-        return validate_base64(v, max_length=20)
 
 
 class RotateKeysRequest(BaseModel):
@@ -1534,40 +1464,16 @@ async def confirm_team_key(
 # ---------------------------------------------------------------------------
 
 
-class _CompleteKeyGrantIn(BaseModel):
+class _CompleteKeyGrantIn(_KemWrappedKeyMixin):
     """Wrapped sk_team for a single policy-granted user."""
 
     grant_id: str
     user_id: str
-    ephemeral_x25519_pub: str
-    kem_ciphertext: str
-    encrypted_sk: str
-    sk_iv: str
 
     @field_validator("grant_id", "user_id")
     @classmethod
     def validate_ids(cls, v: str) -> str:
         return validate_uuid(v)
-
-    @field_validator("ephemeral_x25519_pub")
-    @classmethod
-    def validate_x25519(cls, v: str) -> str:
-        return validate_base64(v, max_length=60)
-
-    @field_validator("kem_ciphertext")
-    @classmethod
-    def validate_kem(cls, v: str) -> str:
-        return validate_base64(v, max_length=1500)
-
-    @field_validator("encrypted_sk")
-    @classmethod
-    def validate_encrypted_sk(cls, v: str) -> str:
-        return validate_base64(v, max_length=68)
-
-    @field_validator("sk_iv")
-    @classmethod
-    def validate_sk_iv(cls, v: str) -> str:
-        return validate_base64(v, max_length=20)
 
 
 class CompleteKeyGrantsRequest(BaseModel):

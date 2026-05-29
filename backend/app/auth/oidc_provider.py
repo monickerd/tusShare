@@ -109,7 +109,11 @@ async def _get_oidc_client(cfg: dict[str, Any]):
     async with httpx.AsyncClient(follow_redirects=False) as discovery_http:
         resp = await discovery_http.get(discovery_url, timeout=10)
         resp.raise_for_status()
+        if len(resp.content) > 1_048_576:
+            raise ValueError("OIDC discovery document exceeds 1 MiB")
         metadata = resp.json()
+    if not isinstance(metadata, dict):
+        raise ValueError("OIDC discovery document is not a JSON object")
 
     scopes = cfg.get("scopes", ["openid", "email", "profile"])
     client = AsyncOAuth2Client(
@@ -285,7 +289,11 @@ def _validate_id_token(
     # Fetch JWKS synchronously (runs in thread pool); redirects disabled (RT-02).
     resp = httpx.get(jwks_uri, timeout=10, follow_redirects=False)
     resp.raise_for_status()
+    if len(resp.content) > 1_048_576:
+        raise ValueError("OIDC JWKS response exceeds 1 MiB")
     jwks = resp.json()
+    if not isinstance(jwks, dict):
+        raise ValueError("OIDC JWKS response is not a JSON object")
 
     # Validate iss against the issuer in the discovery document (the exact string the
     # IdP embeds in tokens). Fall back to cfg["issuer_url"] if metadata omits it.
@@ -317,7 +325,12 @@ async def _fetch_userinfo(userinfo_endpoint: str, access_token: str) -> dict[str
             timeout=10,
         )
         resp.raise_for_status()
-        return resp.json()
+        if len(resp.content) > 1_048_576:
+            raise ValueError("OIDC UserInfo response exceeds 1 MiB")
+        data = resp.json()
+    if not isinstance(data, dict):
+        raise ValueError("OIDC UserInfo response is not a JSON object")
+    return data
 
 
 # ---------------------------------------------------------------------------

@@ -25,8 +25,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import urllib.parse
-import urllib.request
 import uuid as _uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -372,7 +370,7 @@ async def _resolve_provider_fields(db, user_id: str, fields: set) -> dict[str, s
             "FROM users u "
             "LEFT JOIN identity_provider_users ipu ON ipu.user_id = u.id "
             "LEFT JOIN identity_providers ip ON ip.id = ipu.provider_id "
-            "WHERE u.id = ?",
+            "WHERE u.id = ? LIMIT 1",
             (user_id,),
         )
         row = await cursor.fetchone()
@@ -1086,41 +1084,57 @@ async def _fetch_oidc_userinfo(row) -> dict:
 
         from app.auth.idp_crypto import decrypt_idp_config, decrypt_token
 
+        from app.config import settings as _s
+        from app.services import live_settings as _ls
+        from app.util.ssrf import validate_endpoint_url
+
+        import httpx as _httpx
+
         cfg = decrypt_idp_config(row["config_enc"])
         refresh_token = decrypt_token(refresh_token_enc)
         issuer_url = cfg["issuer_url"].rstrip("/")
         client_id = cfg["client_id"]
         client_secret = cfg["client_secret"]
 
-        def _exchange_and_fetch():
-            # Exchange refresh token for access token
-            token_data = urllib.parse.urlencode(
-                {
+        allow_http = _ls.get_bool("allow_http_idp", _s.ALLOW_HTTP_IDP)
+        token_url = f"{issuer_url}/token"
+        userinfo_url = f"{issuer_url}/userinfo"
+        await validate_endpoint_url(token_url, allow_http=allow_http, allow_private=allow_http)
+        await validate_endpoint_url(userinfo_url, allow_http=allow_http, allow_private=allow_http)
+
+        async with _httpx.AsyncClient(follow_redirects=False) as _client:
+            token_resp = await _client.post(
+                token_url,
+                data={
                     "grant_type": "refresh_token",
                     "refresh_token": refresh_token,
                     "client_id": client_id,
                     "client_secret": client_secret,
-                }
-            ).encode()
-            req = urllib.request.Request(
-                f"{issuer_url}/token",
-                data=token_data,
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                },
+                timeout=5,
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                token_resp = json.loads(resp.read())
-            access_token = token_resp.get("access_token")
+            token_resp.raise_for_status()
+            if len(token_resp.content) > 1_048_576:
+                raise ValueError("Token response body too large")
+            token_json = token_resp.json()
+            if not isinstance(token_json, dict):
+                return {}
+            access_token = token_json.get("access_token")
             if not access_token:
                 return {}
 
-            ui_req = urllib.request.Request(
-                f"{issuer_url}/userinfo",
+            ui_resp = await _client.get(
+                userinfo_url,
                 headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5,
             )
-            with urllib.request.urlopen(ui_req, timeout=5) as resp:
-                return json.loads(resp.read())
-
-        return await asyncio.to_thread(_exchange_and_fetch)
+            ui_resp.raise_for_status()
+            if len(ui_resp.content) > 1_048_576:
+                raise ValueError("UserInfo response body too large")
+            claims = ui_resp.json()
+            if not isinstance(claims, dict):
+                return {}
+            return claims
     except Exception as exc:
         logger.warning("policy: OIDC UserInfo fetch error: %s", exc)
         return {}

@@ -193,6 +193,22 @@ def _matches_security_filter(event_type: str, filters: list[str]) -> bool:
     return False
 
 
+def _parse_event_filter(raw: str | None) -> list[str]:
+    """Parse an event_filter JSON column value into a validated list of strings.
+
+    Returns [] if the value is absent, malformed, or not a list of strings.
+    Non-string elements are dropped rather than raising, so a misconfigured
+    admin-set filter degrades gracefully to no filter.
+    """
+    try:
+        parsed = json.loads(raw or "[]")
+        if not isinstance(parsed, list):
+            return []
+        return [f for f in parsed if isinstance(f, str)]
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
 def _security_to_op(sec_event) -> dict:
     return {
         "event_id": sec_event.event_id,
@@ -243,7 +259,7 @@ def _event_to_dict(event: OperationalEvent) -> dict:
 
 def _needs_security_subscription(channels) -> bool:
     return any(
-        any(f.startswith(_SECURITY_PREFIX) for f in json.loads(ch["event_filter"] or "[]"))
+        any(f.startswith(_SECURITY_PREFIX) for f in _parse_event_filter(ch["event_filter"]))
         for ch in channels
         if ch["enabled"]
     )
@@ -364,7 +380,7 @@ async def _forward_security_events(
                 ch = ch_map.get(ch_id)
                 if ch and _matches_security_filter(
                     sec_event.event_type,
-                    json.loads(ch["event_filter"] or "[]"),
+                    _parse_event_filter(ch["event_filter"]),
                 ):
                     try:
                         q.put_nowait(event_dict)
@@ -398,7 +414,7 @@ def _append_if_matches(item, filters: list[str], accumulated: list) -> None:
 async def _channel_loop(channel: dict, q: asyncio.Queue) -> None:
     batch_size = channel.get("batch_size")
     interval_s = channel.get("batch_interval_s")
-    filters = json.loads(channel.get("event_filter") or "[]")
+    filters = _parse_event_filter(channel.get("event_filter"))
     accumulated: list = []
     last_flush = time.monotonic()
 

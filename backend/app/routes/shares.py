@@ -232,12 +232,17 @@ class CreateShortLinkRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-async def _get_share_for_owner(db, share_id: str, user: AuthenticatedUser):
-    """Fetch a share by ID, verifying the requester is the owner or an admin."""
+async def _fetch_share_or_404(db, share_id: str):
     cursor = await db.execute(_SQL_GET_SHARE_BY_ID, (share_id,))
     row = await cursor.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND_SIMPLE)
+    return row
+
+
+async def _get_share_for_owner(db, share_id: str, user: AuthenticatedUser):
+    """Fetch a share by ID, verifying the requester is the owner or an admin."""
+    row = await _fetch_share_or_404(db, share_id)
     if row["created_by"] != user.id and not user.is_admin:
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
     return row
@@ -271,10 +276,7 @@ async def _check_share_expiry_cap(db, expires_at: str | None, share_type: str) -
 
 async def _get_share_for_manage(db, share_id: str, user: AuthenticatedUser):
     """Fetch a share by ID, verifying the requester may manage it (owner, admin, or team supervisor+)."""
-    cursor = await db.execute(_SQL_GET_SHARE_BY_ID, (share_id,))
-    row = await cursor.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail=_ERR_SHARE_NOT_FOUND_SIMPLE)
+    row = await _fetch_share_or_404(db, share_id)
     if not await _can_manage_share(db, row, user):
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
     return row

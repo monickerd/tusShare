@@ -24,24 +24,38 @@ from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
 from app.util.crypto import sha256_hex
 
-_bg_tasks: set = set()
-
 logger = logging.getLogger(__name__)
 
 _PREFIX = "sa_"
 _MIN_LEN = len(_PREFIX) + 20  # prefix + at least 20 chars of entropy
 
+# Pending last_used_at timestamps — flushed in bulk by run_last_used_flush.
+_last_used_pending: dict[str, datetime] = {}
+
 
 async def _update_last_used(key_id: str) -> None:
-    try:
-        async with db_session() as db:
-            await db.execute(
-                "UPDATE service_account_keys SET last_used_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), key_id),
-            )
-            await db.commit()
-    except Exception:
-        logger.debug("service_account: failed to update last_used_at for key %s", key_id)
+    _last_used_pending[key_id] = datetime.now(timezone.utc)
+
+
+async def run_last_used_flush(db_factory, interval: float = 60.0) -> None:
+    """Periodic flush: write coalesced last_used_at values to the DB in one transaction."""
+    global _last_used_pending
+    while True:
+        await asyncio.sleep(interval)
+        if not _last_used_pending:
+            continue
+        pending = _last_used_pending
+        _last_used_pending = {}
+        try:
+            async with db_factory() as db:
+                for key_id, ts in pending.items():
+                    await db.execute(
+                        "UPDATE service_account_keys SET last_used_at = ? WHERE id = ?",
+                        (ts.isoformat(), key_id),
+                    )
+                await db.commit()
+        except Exception:
+            logger.debug("service_account: failed to flush last_used_at for %d key(s)", len(pending))
 
 
 async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
@@ -115,9 +129,7 @@ async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
         )
     )
 
-    _t = asyncio.create_task(_update_last_used(row["key_id"]))
-    _bg_tasks.add(_t)
-    _t.add_done_callback(_bg_tasks.discard)
+    await _update_last_used(row["key_id"])
 
     return AuthenticatedUser(
         id=row["user_id"],

@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 # than letting it grow without bound and OOM the process.
 _SUBSCRIBER_MAXSIZE = 2000
 
+# Maximum number of persist-flagged events batched into a single INSERT+COMMIT.
+_PERSIST_BATCH_MAX = 100
+
 # Module-level queue: emitters put (event, should_persist) tuples here.
 # should_persist=False is used when the caller already wrote the DB row inline
 # and only wants fan-out to SSE/syslog/webhook subscribers.
@@ -133,13 +136,29 @@ async def _flush_remaining_events() -> None:
 
 
 async def _drain_loop() -> None:
-    """Drain the write queue: optionally persist each event then fan out to subscribers."""
+    """Drain the write queue: persist events in batches then fan out to subscribers."""
     while True:
         try:
+            # Block on the first event, then greedily drain the rest without blocking.
             event, should_persist = await _write_queue.get()
+            batch_persist: list[SecurityEvent] = []
             if should_persist:
-                await _persist(event)
+                batch_persist.append(event)
             _fanout(event)
+
+            while len(batch_persist) < _PERSIST_BATCH_MAX:
+                try:
+                    ev2, sp2 = _write_queue.get_nowait()
+                    if sp2:
+                        batch_persist.append(ev2)
+                    _fanout(ev2)
+                except asyncio.QueueEmpty:
+                    break
+
+            if len(batch_persist) == 1:
+                await _persist(batch_persist[0])
+            elif batch_persist:
+                await _persist_batch(batch_persist)
         except asyncio.CancelledError:
             await _flush_remaining_events()
             raise
@@ -187,6 +206,49 @@ async def _persist(event: SecurityEvent) -> None:
             await db.commit()
     except Exception:
         logger.exception("Event bus: failed to persist event %s", event.event_type)
+
+
+async def _persist_batch(events: list[SecurityEvent]) -> None:
+    """Write multiple security events in a single INSERT+COMMIT."""
+    if _db_session_factory is None:
+        logger.warning("Event bus: db_session_factory not set — %d events not persisted", len(events))
+        return
+    try:
+        async with _db_session_factory() as db:
+            for event in events:
+                ts = event.timestamp.astimezone(timezone.utc).isoformat()
+                detail_json = json.dumps(event.detail) if event.detail else None
+                await db.execute(
+                    """
+                    INSERT INTO security_events
+                        (id, user_id, actor_username, actor_auth_method, ip_address, user_agent,
+                         event_type, severity, outcome, actor_session_id,
+                         target_type, target_id, target_name,
+                         admin_actor_id, detail, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        event.actor.user_id,
+                        event.actor.username,
+                        event.actor.auth_method,
+                        event.actor.ip or "",
+                        None,
+                        event.event_type,
+                        event.severity,
+                        event.outcome,
+                        event.actor.session_id,
+                        event.target.type if event.target else None,
+                        event.target.id if event.target else None,
+                        event.target.name if event.target else None,
+                        event.admin_actor_id,
+                        detail_json,
+                        ts,
+                    ),
+                )
+            await db.commit()
+    except Exception:
+        logger.exception("Event bus: failed to persist batch of %d events", len(events))
 
 
 def _fanout(event: SecurityEvent) -> None:

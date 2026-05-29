@@ -33,6 +33,8 @@ from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
 
 _bg_tasks: set = set()
+# Limit concurrent AV webhook calls so a burst of uploads cannot saturate the scanner.
+_av_scan_sem: asyncio.Semaphore | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -857,12 +859,16 @@ async def list_pending_uploads(
 
 async def _maybe_scan_file(file_id: str) -> None:
     """Background task: run AV scan if configured. Errors are logged, not raised."""
+    global _av_scan_sem
+    if _av_scan_sem is None:
+        _av_scan_sem = asyncio.Semaphore(4)
     try:
         from app.database import db_session
         from app.services.av_scanner import scan_file
 
-        async with db_session() as _db:
-            await scan_file(_db, file_id)
+        async with _av_scan_sem:
+            async with db_session() as _db:
+                await scan_file(_db, file_id)
     except Exception as exc:
         logger.warning("Background AV scan failed for file %s: %s", file_id, exc)
 

@@ -31,23 +31,44 @@ from fastapi import Header, HTTPException
 from app.database import db_session
 from app.util.crypto import sha256_hex
 
-_bg_tasks: set = set()
-
 logger = logging.getLogger(__name__)
 
 _PREFIX = "tss_"
 
+# Pending last_used_at timestamps — flushed in bulk by run_last_used_flush.
+# The dict swap in the flush is GIL-safe in CPython: each key/value write from
+# _update_last_used and the dict replacement in the flush are single bytecodes.
+_last_used_pending: dict[str, datetime] = {}
+
 
 async def _update_last_used(key_id: str) -> None:
-    try:
-        async with db_session() as db:
-            await db.execute(
-                "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), key_id),
-            )
-            await db.commit()
-    except Exception:
-        logger.debug("api_key: failed to update last_used_at for %s", key_id)
+    _last_used_pending[key_id] = datetime.now(timezone.utc)
+
+
+async def run_last_used_flush(db_factory, interval: float = 60.0) -> None:
+    """Periodic flush: write coalesced last_used_at values to the DB in one transaction.
+
+    Replaces the per-request fire-and-forget pattern with a single batched write
+    every `interval` seconds.  last_used_at is informational-only and is not used
+    for expiry checks, so up to 60 s of staleness is acceptable.
+    """
+    global _last_used_pending
+    while True:
+        await asyncio.sleep(interval)
+        if not _last_used_pending:
+            continue
+        pending = _last_used_pending
+        _last_used_pending = {}
+        try:
+            async with db_factory() as db:
+                for key_id, ts in pending.items():
+                    await db.execute(
+                        "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+                        (ts.isoformat(), key_id),
+                    )
+                await db.commit()
+        except Exception:
+            logger.debug("api_key: failed to flush last_used_at for %d key(s)", len(pending))
 
 
 async def _check_key(raw_key: str, accepted_scopes: tuple[str, ...]) -> dict:
@@ -75,9 +96,7 @@ async def _check_key(raw_key: str, accepted_scopes: tuple[str, ...]) -> dict:
         needed = ", ".join(sorted(accepted_scopes))
         raise HTTPException(status_code=403, detail=f"API key requires one of: {needed}")
 
-    _t = asyncio.create_task(_update_last_used(row["id"]))
-    _bg_tasks.add(_t)
-    _t.add_done_callback(_bg_tasks.discard)
+    await _update_last_used(row["id"])
     return dict(row)
 
 
