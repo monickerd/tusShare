@@ -893,7 +893,7 @@ const Admin = (() => {
                 if (!confirm(`Delete team "${t.name}"? This will remove all member access and cannot be undone.`)) return;
                 deleteBtn.disabled = true;
                 try {
-                    await Api.delete(`${_api()}/admin/teams/${t.id}`);
+                    await Api.del(`${_api()}/admin/teams/${t.id}`);
                     Utils.showToast(`Team "${t.name}" deleted`, 'success');
                     refreshFn();
                 } catch (err) {

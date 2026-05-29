@@ -681,13 +681,11 @@ const Teams = (() => {
     function _appendOwnerActionsSection(container, team, teamId) {
         const actionsSection = Utils.el('section', { className: 'team-section' });
         actionsSection.appendChild(Utils.el('h3', { textContent: 'Key Management' }));
-        if (team.rotation_pending) {
-            actionsSection.appendChild(Utils.el('button', {
-                className: 'btn btn-primary',
-                textContent: 'Rotate Keys Now',
-                onClick: () => _triggerRotation(teamId, team, container),
-            }));
-        }
+        actionsSection.appendChild(Utils.el('button', {
+            className: team.rotation_pending ? 'btn btn-primary' : 'btn btn-secondary',
+            textContent: team.rotation_pending ? 'Rotate Keys Now' : 'Rotate Team Keys',
+            onClick: () => _triggerRotation(teamId, team, container),
+        }));
         actionsSection.appendChild(Utils.el('hr'));
         actionsSection.appendChild(Utils.el('button', {
             className: 'btn btn-danger',

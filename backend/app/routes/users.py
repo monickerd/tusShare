@@ -558,7 +558,18 @@ async def _handle_activation_change(db, user_id: str, is_active, admin: Authenti
     )
     if is_active is False:
         await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+        team_cursor = await db.execute(
+            "SELECT DISTINCT team_id FROM user_team_keys WHERE user_id = ?", (user_id,)
+        )
+        team_rows = await team_cursor.fetchall()
         await db.execute("DELETE FROM user_team_keys WHERE user_id = ?", (user_id,))
+        if team_rows:
+            placeholders = ",".join("?" * len(team_rows))
+            await db.execute(
+                f"UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
+                f"WHERE id IN ({placeholders})",
+                [r["team_id"] for r in team_rows],
+            )
         await db.execute(
             "UPDATE shares SET expires_at = NOW() WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
             (user_id,),
@@ -835,11 +846,24 @@ async def delete_user(
     cursor = await db.execute(_SQL_USERNAME_BY_ID, (user_id,))
     target_row = await cursor.fetchone()
 
-    # Collect file id+key pairs before CASCADE deletes the file rows
+    # Collect file id+key pairs and team memberships before CASCADE deletes those rows
     cursor = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,))
     file_rows = await cursor.fetchall()
+    team_cursor = await db.execute(
+        "SELECT DISTINCT team_id FROM user_team_keys WHERE user_id = ?", (user_id,)
+    )
+    team_ids = [r["team_id"] for r in await team_cursor.fetchall()]
 
     result = await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    if team_ids:
+        placeholders = ",".join("?" * len(team_ids))
+        await db.execute(
+            f"UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
+            f"WHERE id IN ({placeholders})",
+            team_ids,
+        )
+
     await db.commit()
 
     if result.rowcount == 0:
