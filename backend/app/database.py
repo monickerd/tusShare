@@ -236,8 +236,9 @@ async def init_db() -> None:
 
     _pool = await asyncpg.create_pool(
         settings.DATABASE_URL,
-        min_size=2,
-        max_size=10,
+        min_size=5,
+        max_size=50,
+        statement_cache_size=0,   # required for PgBouncer transaction-mode pooling
     )
 
     async with _pool.acquire() as conn:
