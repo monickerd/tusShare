@@ -1843,12 +1843,14 @@ const Auth = (() => {
                 const name = document.getElementById('webauthn-key-name').value.trim() || 'Security Key';
                 const btn = e.target.querySelector('button[type="submit"]');
                 btn.disabled = true;
+                // Phase 1: key interaction
                 let credential;
                 try {
                     const beginData = await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/begin`);
                     credential = await navigator.credentials.create({
                         publicKey: _webAuthnOptionsFromServer(beginData.options),
                     });
+                    // Phase 2: server verification
                     await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/finish`, {
                         challenge_id: beginData.challenge_id,
                         attestation: _serializeAttestation(credential),
@@ -1860,14 +1862,13 @@ const Auth = (() => {
                         msg = 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.';
                     } else if (err.name === 'NotAllowedError') {
                         msg = 'Registration was cancelled or timed out.';
-                    } else if (!credential && (err.name === 'AbortError' || (err.message && /transient/i.test(err.message)))) {
-                        // credential is null/undefined here means navigator.credentials.create() itself threw —
-                        // the Android FIDO2 UI completed but the browser failed to pass the result back.
-                        msg = 'Your browser could not complete the key handoff after the device reported success. Try again, or use Chrome on Android for NFC registration.';
+                    } else if (!credential) {
+                        // navigator.credentials.create() threw — key interaction failed before any data reached the server
+                        msg = `Key interaction failed [${err.name}]: ${err.message || 'no detail'}`;
                     } else if (err.status >= 400) {
-                        msg = err.message || 'Server rejected the registration. Check server logs for details.';
+                        msg = `Server rejected the registration: ${err.message || 'check server logs'}`;
                     } else {
-                        msg = err.message || 'Registration failed.';
+                        msg = `Registration failed [${err.name}]: ${err.message || 'no detail'}`;
                     }
                     Utils.showToast(msg, 'error');
                     btn.disabled = false;
@@ -1927,6 +1928,10 @@ const Auth = (() => {
     }
 
     function _serializeAttestation(cred) {
+        let transports = [];
+        try {
+            if (cred.response.getTransports) transports = cred.response.getTransports();
+        } catch (_) { /* some Android browsers throw here after a successful NFC exchange */ }
         return {
             id: cred.id,
             rawId: _bytesToB64url(cred.rawId),
@@ -1934,7 +1939,7 @@ const Auth = (() => {
             response: {
                 attestationObject: _bytesToB64url(cred.response.attestationObject),
                 clientDataJSON: _bytesToB64url(cred.response.clientDataJSON),
-                transports: cred.response.getTransports ? cred.response.getTransports() : [],
+                transports,
             },
         };
     }

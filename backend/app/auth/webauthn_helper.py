@@ -38,7 +38,6 @@ from webauthn.helpers import (
 )
 from webauthn.helpers.structs import (
     AttestationConveyancePreference,
-    AuthenticatorAttachment,
     AuthenticatorSelectionCriteria,
     AuthenticatorTransport,
     PublicKeyCredentialDescriptor,
@@ -142,7 +141,6 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
         user_display_name=username,
         attestation=AttestationConveyancePreference.NONE,
         authenticator_selection=AuthenticatorSelectionCriteria(
-            authenticator_attachment=AuthenticatorAttachment.CROSS_PLATFORM,
             resident_key=ResidentKeyRequirement.DISCOURAGED,
             user_verification=UserVerificationRequirement.PREFERRED,
         ),
