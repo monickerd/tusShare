@@ -2015,6 +2015,40 @@ const Files = (() => {
             || lower === 'desktop.ini';
     }
 
+    // Shared engine used by both upload paths.
+    // Phase 1: BFS folder creation — siblings created serially to prevent concurrent
+    //          merge-conflict modals; independent branches proceed in parallel via BFS.
+    // Phase 2: All file uploads start concurrently once every folder ID is known.
+    //          The module-level _uploadSemaphore caps actual network concurrency.
+    async function _uploadFromDirMap(dirMap, rootServerId, ctx) {
+        const serverIdMap = new Map([['', rootServerId]]);
+        let bfsLevel = [''];
+        while (bfsLevel.length > 0) {
+            const nextLevel = [];
+            for (const dirPath of bfsLevel) {
+                const entry = dirMap.get(dirPath);
+                if (!entry) continue;
+                const parentServerId = serverIdMap.get(dirPath);
+                for (const subPath of entry.subdirs) {
+                    const newId = await _createOrResolveFolder(subPath.split('/').pop(), parentServerId, ctx);
+                    if (newId !== null) {
+                        serverIdMap.set(subPath, newId);
+                        nextLevel.push(subPath);
+                    }
+                }
+            }
+            bfsLevel = nextLevel;
+        }
+        const uploadTasks = [];
+        for (const [dirPath, entry] of dirMap) {
+            if (!entry.files.length) continue;
+            const serverId = serverIdMap.get(dirPath);
+            if (serverId === undefined) continue;
+            uploadTasks.push(_uploadFiles(entry.files, serverId, ctx));
+        }
+        await Promise.allSettled(uploadTasks);
+    }
+
     async function _uploadFolderFiles(files) {
         files = files.filter(f => !_isSystemFile(f.name));
         if (files.length > Config.upload.bulkWarnThreshold) {
@@ -2027,8 +2061,7 @@ const Files = (() => {
             fileCache: new Map(),
             lastUploadMs: null,
         };
-
-        // Build a directory tree from webkitRelativePath values
+        // Build dirMap from webkitRelativePath strings — all File objects are already resolved.
         const dirMap = new Map([['', { files: [], subdirs: new Set() }]]);
         for (const file of files) {
             const parts = file.webkitRelativePath.split('/');
@@ -2038,22 +2071,9 @@ const Files = (() => {
                 if (!dirMap.has(path)) dirMap.set(path, { files: [], subdirs: new Set() });
                 dirMap.get(parent).subdirs.add(path);
             }
-            const dirPath = parts.slice(0, -1).join('/');
-            dirMap.get(dirPath).files.push(file);
+            dirMap.get(parts.slice(0, -1).join('/')).files.push(file);
         }
-
-        async function processDir(dirPath, parentServerId) {
-            const entry = dirMap.get(dirPath);
-            if (!entry) return;
-            if (entry.files.length) await _uploadFiles(entry.files, parentServerId, ctx);
-            for (const subPath of entry.subdirs) {
-                const name = subPath.split('/').pop();
-                const newId = await _createOrResolveFolder(name, parentServerId, ctx);
-                if (newId) await processDir(subPath, newId);
-            }
-        }
-
-        await processDir('', _currentFolderId);
+        await _uploadFromDirMap(dirMap, _currentFolderId, ctx);
         _reportUploadResults(ctx);
         _reloadCurrentView();
     }
@@ -2757,18 +2777,29 @@ const Files = (() => {
         return all;
     }
 
-    async function _countEntries(entries) {
-        let count = 0;
-        for (const entry of entries) {
-            if (_isSystemFile(entry.name)) continue;
-            if (entry.isFile) {
-                count++;
-            } else if (entry.isDirectory) {
-                const children = await _readAllDirEntries(entry.createReader());
-                count += await _countEntries(children);
+    // Traverse a FileSystemEntry tree into the same dirMap structure used by
+    // _uploadFolderFiles, resolving File objects eagerly.  Returns the map and
+    // a total file count so callers need only one tree walk.
+    async function _buildDirMapFromEntries(entries) {
+        const dirMap = new Map([['', { files: [], subdirs: new Set() }]]);
+        let totalFiles = 0;
+        async function traverse(entries, dirPath) {
+            for (const entry of entries) {
+                if (_isSystemFile(entry.name)) continue;
+                if (entry.isFile) {
+                    const file = await new Promise((res, rej) => entry.file(res, rej));
+                    dirMap.get(dirPath).files.push(file);
+                    totalFiles++;
+                } else if (entry.isDirectory) {
+                    const childPath = dirPath ? `${dirPath}/${entry.name}` : entry.name;
+                    dirMap.set(childPath, { files: [], subdirs: new Set() });
+                    dirMap.get(dirPath).subdirs.add(childPath);
+                    await traverse(await _readAllDirEntries(entry.createReader()), childPath);
+                }
             }
         }
-        return count;
+        await traverse(entries, '');
+        return { dirMap, totalFiles };
     }
 
     function _showBulkUploadWarning(count) {
@@ -2827,68 +2858,21 @@ const Files = (() => {
         });
     }
 
-    /**
-     * Recursively upload a list of FileSystemEntry objects (files and/or folders).
-     * Folders are created on the server first, then their contents are uploaded.
-     */
-    async function _resolveNewFolderId(entry, parentFolderId, ctx) {
-        try {
-            const created = await Api.post(`${Config.app.apiPrefix}/folders`, {
-                name: entry.name,
-                parent_id: parentFolderId || null,
-            });
-            return created.folder.id;
-        } catch (err) {
-            if (err.status === 409 && err.existingFolderId) {
-                let action = ctx.mergeState.decision;
-                if (!action) {
-                    const choice = await _showFolderMergeModal(entry.name);
-                    if (choice.applyToAll) ctx.mergeState.decision = choice.action;
-                    action = choice.action;
-                }
-                return action === 'merge' ? err.existingFolderId : null;
-            }
-            ctx.results.failed.push(entry.name);
-            return null;
+    async function _uploadEntries(entries, parentFolderId) {
+        const { dirMap, totalFiles } = await _buildDirMapFromEntries(entries);
+        if (totalFiles > Config.upload.bulkWarnThreshold) {
+            if (!await _showBulkUploadWarning(totalFiles)) return;
         }
-    }
-
-    async function _initEntriesUploadCtx(entries) {
-        const totalCount = await _countEntries(entries);
-        if (totalCount > Config.upload.bulkWarnThreshold) {
-            const confirmed = await _showBulkUploadWarning(totalCount);
-            if (!confirmed) return null;
-        }
-        return {
+        const ctx = {
             results: { ok: 0, failed: [], firstName: null },
             mergeState: { decision: null },
             conflictState: { decisionDifferent: null, decisionIdentical: null },
             fileCache: new Map(),
             lastUploadMs: null,
         };
-    }
-
-    async function _uploadEntries(entries, parentFolderId, _ctx = null) {
-        const isTopLevel = _ctx === null;
-        if (isTopLevel) {
-            _ctx = await _initEntriesUploadCtx(entries);
-            if (!_ctx) return;
-        }
-
-        for (const entry of entries) {
-            if (_isSystemFile(entry.name)) continue;
-            if (entry.isFile) {
-                const file = await new Promise((res, rej) => entry.file(res, rej));
-                await _uploadFiles([file], parentFolderId, _ctx);
-            } else if (entry.isDirectory) {
-                const newFolderId = await _resolveNewFolderId(entry, parentFolderId, _ctx);
-                if (newFolderId === null) continue;
-                const children = await _readAllDirEntries(entry.createReader());
-                if (children.length > 0) await _uploadEntries(children, newFolderId, _ctx);
-            }
-        }
-
-        if (isTopLevel) _reportUploadResults(_ctx);
+        await _uploadFromDirMap(dirMap, parentFolderId, ctx);
+        _reportUploadResults(ctx);
+        _reloadCurrentView();
     }
 
     /**
