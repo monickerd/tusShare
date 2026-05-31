@@ -96,29 +96,29 @@ services:
       start_period: 10s
 
   pgbouncer:
-    image: bitnami/pgbouncer:latest
+    image: edoburu/pgbouncer:latest
     container_name: tusshare_pgbouncer
     networks:
       - backend_internal
     environment:
-      POSTGRESQL_HOST: postgres
-      POSTGRESQL_PORT: "5432"
-      POSTGRESQL_DATABASE: tusshare
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: tusshare
       # Must match the app user created by init-app-user.sh (TUSSHARE_APP_USER,
       # defaults to "tusshare").
-      POSTGRESQL_USERNAME: tusshare
-      POSTGRESQL_PASSWORD: ${TUSSHARE_PG_PASSWORD:-changeme}
-      PGBOUNCER_PORT: "6432"
-      PGBOUNCER_POOL_MODE: transaction
-      PGBOUNCER_DEFAULT_POOL_SIZE: "25"
-      PGBOUNCER_MAX_CLIENT_CONN: "200"
-      PGBOUNCER_AUTH_TYPE: md5
+      DB_USER: tusshare
+      DB_PASSWORD: ${TUSSHARE_PG_PASSWORD:-changeme}
+      LISTEN_PORT: "6432"
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: "25"
+      MAX_CLIENT_CONN: "200"
+      AUTH_TYPE: md5
     depends_on:
       postgres:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U tusshare"]
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 6432"]
       interval: 10s
       timeout: 5s
       retries: 5
