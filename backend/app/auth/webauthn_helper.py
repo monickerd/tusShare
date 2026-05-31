@@ -141,7 +141,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
         user_display_name=username,
         attestation=AttestationConveyancePreference.NONE,
         authenticator_selection=AuthenticatorSelectionCriteria(
-            resident_key=ResidentKeyRequirement.PREFERRED,
+            resident_key=ResidentKeyRequirement.DISCOURAGED,
             user_verification=UserVerificationRequirement.PREFERRED,
         ),
         exclude_credentials=exclude_ids,

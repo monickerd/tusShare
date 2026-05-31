@@ -1850,6 +1850,7 @@ const Auth = (() => {
                     credential = await navigator.credentials.create({
                         publicKey: _webAuthnOptionsFromServer(beginData.options),
                     });
+                    await new Promise(r => setTimeout(r, 500));
                     // Phase 2: server verification
                     await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/finish`, {
                         challenge_id: beginData.challenge_id,
