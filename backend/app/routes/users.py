@@ -17,6 +17,7 @@ from pydantic import BaseModel, field_validator
 
 import app.storage.manager as storage
 from app.auth.dependencies import require_admin
+from app.services.trash import get_trash_settings
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, db_session, get_db
 from app.middleware.rate_limit import _get_client_ip
@@ -270,6 +271,7 @@ async def list_users(
             "bandwidth_limit": r["bandwidth_limit"],
             "disk_used": r["disk_used"],
             "created_at": str(r["created_at"]) if r["created_at"] else None,
+            "scheduled_delete_at": str(r["scheduled_delete_at"]) if r["scheduled_delete_at"] else None,
         }
 
     return {
@@ -363,21 +365,20 @@ async def get_user(
     perm_rows = await perm_cursor.fetchall()
     permissions = {r["flag"]: bool(r["granted"]) for r in perm_rows}
 
-    # Team memberships — use user_team_keys as the authoritative membership source,
-    # join user_roles (scope_type='team') for the built-in role name.
+    # Team memberships — use user_roles as the authoritative source for membership,
+    # join user_team_keys for key delivery/confirmation state.
     team_cursor = await db.execute(
         """
         SELECT t.id AS team_id, t.name AS team_name,
                r.id AS role_id, r.name AS role_name,
-               utk.key_confirmed,
-               to_char(to_timestamp(utk.created_at), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS joined_at
-        FROM user_team_keys utk
-        JOIN teams t ON t.id = utk.team_id
-        LEFT JOIN user_roles ur ON ur.user_id = utk.user_id
-                                AND ur.scope_type = 'team'
-                                AND ur.scope_id = utk.team_id
+               COALESCE(utk.key_confirmed, 0) AS key_confirmed,
+               CASE WHEN utk.id IS NULL THEN 1 ELSE 0 END AS key_delivery_pending,
+               to_char(ur.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS joined_at
+        FROM user_roles ur
+        JOIN teams t ON t.id = ur.scope_id
+        LEFT JOIN user_team_keys utk ON utk.team_id = ur.scope_id AND utk.user_id = ur.user_id
         LEFT JOIN roles r ON r.id = ur.role_id
-        WHERE utk.user_id = ?
+        WHERE ur.user_id = ? AND ur.scope_type = 'team'
         ORDER BY t.name
         """,
         (user_id,),
@@ -390,6 +391,7 @@ async def get_user(
             "team_role_id": r["role_id"],
             "team_role_name": r["role_name"],
             "key_confirmed": bool(r["key_confirmed"]),
+            "key_delivery_pending": bool(r["key_delivery_pending"]),
             "joined_at": r["joined_at"],
         }
         for r in team_rows
@@ -830,8 +832,12 @@ async def delete_user(
 ):
     """Delete a user and all their data.
 
-    Collects file storage keys before deleting (CASCADE removes DB rows),
-    then cleans up blobs from disk in a background thread.
+    When trash/soft-delete is enabled the user is scheduled for deletion after
+    the retention window instead of being hard-deleted immediately.  Access is
+    blocked right away (is_active=0) and all their shares are expired.
+
+    When trash is disabled (or the scheduled window has already passed in the
+    background purge), the user row is CASCADE-deleted and blobs are removed.
     """
     if not admin.has_flag(FLAG_USERS_DELETE):
         raise HTTPException(status_code=403, detail="users_delete permission required")
@@ -842,13 +848,61 @@ async def delete_user(
     if user_id == admin.id:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
 
-    # Fetch username before deletion for the audit event
-    cursor = await db.execute(_SQL_USERNAME_BY_ID, (user_id,))
+    cursor = await db.execute(
+        "SELECT username, is_active, scheduled_delete_at FROM users WHERE id = ?", (user_id,)
+    )
     target_row = await cursor.fetchone()
+    if target_row is None:
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
 
-    # Collect file id+key pairs and team memberships before CASCADE deletes those rows
-    cursor = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,))
-    file_rows = await cursor.fetchall()
+    if target_row["scheduled_delete_at"] is not None:
+        raise HTTPException(status_code=409, detail="User is already scheduled for deletion")
+
+    trash_enabled, retention_days = await get_trash_settings(db)
+
+    if trash_enabled:
+        # Soft-delete: block login, schedule purge, expire shares, remove team keys
+        team_cursor = await db.execute(
+            "SELECT DISTINCT team_id FROM user_team_keys WHERE user_id = ?", (user_id,)
+        )
+        team_ids = [r["team_id"] for r in await team_cursor.fetchall()]
+
+        await db.execute(
+            "UPDATE users SET is_active = 0, "
+            "scheduled_delete_at = NOW() + (? || ' days')::INTERVAL, "
+            "updated_at = NOW() WHERE id = ?",
+            (str(retention_days), user_id),
+        )
+        await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+        await db.execute("DELETE FROM user_team_keys WHERE user_id = ?", (user_id,))
+        if team_ids:
+            placeholders = ",".join("?" * len(team_ids))
+            await db.execute(
+                f"UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
+                f"WHERE id IN ({placeholders})",
+                team_ids,
+            )
+        await db.execute(
+            "UPDATE shares SET expires_at = NOW() WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
+            (user_id,),
+        )
+        await db.commit()
+        sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "deactivated"})
+        event_bus.emit(
+            SecurityEvent(
+                event_type="admin.user.delete_scheduled",
+                severity="warning",
+                outcome="success",
+                actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+                target=EventTarget(type="user", id=user_id, name=target_row["username"]),
+                detail={"retention_days": retention_days},
+            )
+        )
+        return {"message": "User scheduled for deletion", "scheduled_delete_at": f"+{retention_days} days"}
+
+    # Hard delete: collect blobs before CASCADE wipes the rows
+    file_cursor = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,))
+    file_rows = await file_cursor.fetchall()
     team_cursor = await db.execute(
         "SELECT DISTINCT team_id FROM user_team_keys WHERE user_id = ?", (user_id,)
     )
@@ -875,11 +929,10 @@ async def delete_user(
             severity="critical",
             outcome="success",
             actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
-            target=EventTarget(type="user", id=user_id, name=target_row["username"] if target_row else None),
+            target=EventTarget(type="user", id=user_id, name=target_row["username"]),
         )
     )
 
-    # Best-effort blob cleanup via storage manager (handles all volumes)
     rows_snapshot = list(file_rows)
     uid_snapshot = user_id
 
@@ -889,7 +942,6 @@ async def delete_user(
         async with db_session() as _db:
             for row in rows_snapshot:
                 try:
-                    # Skip if another files row still shares this storage_key (copy dedup)
                     cur = await _db.execute(
                         "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (row["storage_key"],)
                     )
@@ -908,6 +960,54 @@ async def delete_user(
     _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "User deleted"}
+
+
+@router.post(
+    "/{user_id}/recover",
+    responses={
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+    },
+)
+async def recover_user(
+    request: Request,
+    user_id: str,
+    admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Cancel a pending soft-delete and restore the user's access."""
+    if not admin.has_flag(FLAG_USERS_DELETE):
+        raise HTTPException(status_code=403, detail="users_delete permission required")
+
+    user_id = validate_uuid(user_id)
+    await _require_user_in_scope(db, admin, user_id)
+
+    cursor = await db.execute(
+        "SELECT username, scheduled_delete_at FROM users WHERE id = ?", (user_id,)
+    )
+    target_row = await cursor.fetchone()
+    if target_row is None:
+        raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
+    if target_row["scheduled_delete_at"] is None:
+        raise HTTPException(status_code=409, detail="User is not scheduled for deletion")
+
+    await db.execute(
+        "UPDATE users SET is_active = 1, scheduled_delete_at = NULL, updated_at = NOW() WHERE id = ?",
+        (user_id,),
+    )
+    await db.commit()
+    sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "activated"})
+    event_bus.emit(
+        SecurityEvent(
+            event_type="admin.user.delete_cancelled",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+            target=EventTarget(type="user", id=user_id, name=target_row["username"]),
+        )
+    )
+    return {"message": "User deletion cancelled", "username": target_row["username"]}
 
 
 @router.delete(

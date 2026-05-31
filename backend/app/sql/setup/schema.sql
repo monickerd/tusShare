@@ -101,11 +101,15 @@ CREATE TABLE users (
     -- Human-readable description (used primarily for service accounts)
     description              TEXT DEFAULT NULL,
 
+    -- Soft-delete / scheduled purge (set by admin delete when trash is enabled)
+    scheduled_delete_at      TIMESTAMPTZ DEFAULT NULL,
+
     created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_users_username  ON users(username);
+CREATE INDEX idx_users_username           ON users(username);
+CREATE INDEX idx_users_scheduled_delete   ON users(scheduled_delete_at) WHERE scheduled_delete_at IS NOT NULL;
 CREATE INDEX idx_users_has_pq_keys ON users(x25519_public_key)
     WHERE x25519_public_key IS NOT NULL;
 CREATE INDEX idx_users_idp ON users(identity_provider_id)
@@ -528,13 +532,16 @@ CREATE TABLE teams (
     description      TEXT NOT NULL DEFAULT '',
     owner_id         TEXT NOT NULL REFERENCES users(id),
     pre_public_key   TEXT NOT NULL,
-    rotation_pending INTEGER NOT NULL DEFAULT 0,
-    created_at       BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()))::BIGINT,
-    updated_at       BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()))::BIGINT,
+    rotation_pending    INTEGER NOT NULL DEFAULT 0,
+    -- Soft-delete / scheduled purge (set by admin delete when trash is enabled)
+    scheduled_delete_at TIMESTAMPTZ DEFAULT NULL,
+    created_at          BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()))::BIGINT,
+    updated_at          BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW()))::BIGINT,
     UNIQUE(owner_id, name)
 );
 
-CREATE INDEX idx_teams_owner ON teams(owner_id);
+CREATE INDEX idx_teams_owner            ON teams(owner_id);
+CREATE INDEX idx_teams_scheduled_delete ON teams(scheduled_delete_at) WHERE scheduled_delete_at IS NOT NULL;
 
 -------------------------------------------------
 -- PER-FILE PRE CIPHERTEXT (proxy re-encryption for team file sharing)

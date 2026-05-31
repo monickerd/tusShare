@@ -802,20 +802,41 @@ const Admin = (() => {
             },
         });
 
-        const deleteBtn = isSelf ? null : Utils.el('button', {
-            className: 'btn btn-danger btn-xs',
-            textContent: 'Delete',
-            onClick: async () => {
-                if (!confirm(`Delete user "${u.username}" and all their files? This cannot be undone.`)) return;
-                try {
-                    await Api.del(`${_api()}/admin/users/${u.id}`);
-                    Utils.showToast(`Deleted ${u.username}`, 'success');
-                    refreshFn();
-                } catch (err) {
-                    Utils.showToast('Delete failed: ' + err.message, 'error');
-                }
-            },
-        });
+        let deleteBtn = null;
+        if (!isSelf) {
+            if (u.scheduled_delete_at) {
+                const deleteDate = u.scheduled_delete_at.slice(0, 10);
+                deleteBtn = Utils.el('button', {
+                    className: 'btn btn-warning btn-xs',
+                    textContent: `Recover (deletes ${deleteDate})`,
+                    onClick: async () => {
+                        if (!confirm(`Cancel scheduled deletion of "${u.username}" and restore their access?`)) return;
+                        try {
+                            await Api.post(`${_api()}/admin/users/${u.id}/recover`);
+                            Utils.showToast(`Restored ${u.username}`, 'success');
+                            refreshFn();
+                        } catch (err) {
+                            Utils.showToast('Recover failed: ' + err.message, 'error');
+                        }
+                    },
+                });
+            } else {
+                deleteBtn = Utils.el('button', {
+                    className: 'btn btn-danger btn-xs',
+                    textContent: 'Delete',
+                    onClick: async () => {
+                        if (!confirm(`Delete user "${u.username}" and all their files? This cannot be undone.`)) return;
+                        try {
+                            await Api.del(`${_api()}/admin/users/${u.id}`);
+                            Utils.showToast(`Deleted ${u.username}`, 'success');
+                            refreshFn();
+                        } catch (err) {
+                            Utils.showToast('Delete failed: ' + err.message, 'error');
+                        }
+                    },
+                });
+            }
+        }
 
         const detailBtn = Utils.el('button', {
             className: 'btn btn-secondary btn-xs',
@@ -886,22 +907,43 @@ const Admin = (() => {
             onClick: () => _showTeamDetailModal(t.id, t.name),
         });
 
-        const deleteBtn = Utils.el('button', {
-            className: 'btn btn-sm btn-danger',
-            textContent: 'Delete',
-            onClick: async () => {
-                if (!confirm(`Delete team "${t.name}"? This will remove all member access and cannot be undone.`)) return;
-                deleteBtn.disabled = true;
-                try {
-                    await Api.del(`${_api()}/admin/teams/${t.id}`);
-                    Utils.showToast(`Team "${t.name}" deleted`, 'success');
-                    refreshFn();
-                } catch (err) {
-                    Utils.showToast('Delete failed: ' + err.message, 'error');
-                    deleteBtn.disabled = false;
-                }
-            },
-        });
+        let actionBtn;
+        if (t.scheduled_delete_at) {
+            const deleteDate = t.scheduled_delete_at.slice(0, 10);
+            actionBtn = Utils.el('button', {
+                className: 'btn btn-sm btn-warning',
+                textContent: `Recover (deletes ${deleteDate})`,
+                onClick: async () => {
+                    if (!confirm(`Cancel scheduled deletion of team "${t.name}" and restore member access?`)) return;
+                    actionBtn.disabled = true;
+                    try {
+                        await Api.post(`${_api()}/admin/teams/${t.id}/recover`);
+                        Utils.showToast(`Team "${t.name}" restored`, 'success');
+                        refreshFn();
+                    } catch (err) {
+                        Utils.showToast('Recover failed: ' + err.message, 'error');
+                        actionBtn.disabled = false;
+                    }
+                },
+            });
+        } else {
+            actionBtn = Utils.el('button', {
+                className: 'btn btn-sm btn-danger',
+                textContent: 'Delete',
+                onClick: async () => {
+                    if (!confirm(`Delete team "${t.name}"? This will remove all member access and cannot be undone.`)) return;
+                    actionBtn.disabled = true;
+                    try {
+                        await Api.del(`${_api()}/admin/teams/${t.id}`);
+                        Utils.showToast(`Team "${t.name}" deleted`, 'success');
+                        refreshFn();
+                    } catch (err) {
+                        Utils.showToast('Delete failed: ' + err.message, 'error');
+                        actionBtn.disabled = false;
+                    }
+                },
+            });
+        }
 
         const created = t.created_at ? t.created_at.replace('T', ' ').slice(0, 10) : '—';
 
@@ -911,7 +953,7 @@ const Admin = (() => {
             Utils.el('td', { textContent: String(t.member_count) }),
             Utils.el('td', { textContent: created }),
             Utils.el('td', {}, [
-                Utils.el('div', { style: 'display:flex;gap:6px' }, [detailBtn, deleteBtn]),
+                Utils.el('div', { style: 'display:flex;gap:6px' }, [detailBtn, actionBtn]),
             ]),
         ]);
     }
@@ -921,9 +963,12 @@ const Admin = (() => {
         wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Loading…' }));
         Utils.showModal(`Team: ${teamName || teamId}`, wrap);
 
-        let team, members;
+        let team, members, customRolesData;
         try {
-            ({ team, members } = await Api.get(`${_api()}/admin/teams/${teamId}`));
+            [{ team, members }, customRolesData] = await Promise.all([
+                Api.get(`${_api()}/admin/teams/${teamId}`),
+                Api.get(`${_api()}/admin/teams/${teamId}/custom-roles`).catch(() => ({ roles: [], flags: [] })),
+            ]);
         } catch (e) {
             wrap.innerHTML = '';
             wrap.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load: ' + e.message }));
@@ -945,9 +990,61 @@ const Admin = (() => {
         if (team.description) _row('Description', team.description);
         wrap.appendChild(grid);
 
+        // ---- Members header + Add Member form ----
         wrap.appendChild(Utils.el('h6', { textContent: 'Members', style: 'margin:12px 0 6px;font-size:var(--font-size-sm);font-weight:600' }));
 
         const membersArr = members.slice();
+
+        // Add Member inline form
+        const addMemberForm = Utils.el('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap' });
+        const addUsernameInput = Utils.el('input', {
+            type: 'text', placeholder: 'Username…',
+            className: 'input-sm',
+            style: 'width:160px',
+        });
+        const addRoleSel = Utils.el('select', { className: 'input-sm', style: 'width:130px' });
+        [['team_member', 'Member'], ['team_manager', 'Supervisor'], ['team_admin', 'Owner']].forEach(([val, label]) => {
+            addRoleSel.appendChild(Utils.el('option', { value: val, textContent: label }));
+        });
+        const addBtn = Utils.el('button', {
+            className: 'btn btn-sm btn-primary',
+            textContent: 'Add',
+            onClick: async () => {
+                const uname = addUsernameInput.value.trim();
+                if (!uname) { Utils.showToast('Enter a username', 'warning'); return; }
+                addBtn.disabled = true;
+                try {
+                    const result = await Api.post(`${_api()}/admin/teams/${teamId}/members`, {
+                        username: uname,
+                        role: addRoleSel.value,
+                    });
+                    Utils.showToast(`${result.username} added to team`, 'success');
+                    addUsernameInput.value = '';
+                    membersArr.push({
+                        id: result.user_id,
+                        username: result.username,
+                        is_active: true,
+                        key_confirmed: false,
+                        key_delivery_pending: true,
+                        joined_at: new Date().toISOString(),
+                        role_id: result.role,
+                        role_name: addRoleSel.options[addRoleSel.selectedIndex].textContent,
+                    });
+                    _renderMemberTable();
+                } catch (err) {
+                    Utils.showToast('Add failed: ' + err.message, 'error');
+                } finally {
+                    addBtn.disabled = false;
+                }
+            },
+        });
+        addMemberForm.append(addUsernameInput, addRoleSel, addBtn);
+        wrap.appendChild(addMemberForm);
+
+        const _keyStatus = (m) => {
+            if (m.key_delivery_pending) return 'No key yet';
+            return m.key_confirmed ? 'Confirmed' : 'Pending';
+        };
 
         const _buildMemberRow = (m) => {
             const removeBtn = Utils.el('button', {
@@ -974,7 +1071,7 @@ const Admin = (() => {
             return Utils.el('tr', {}, [
                 Utils.el('td', { textContent: m.username }),
                 Utils.el('td', { textContent: m.role_name || '—' }),
-                Utils.el('td', { textContent: m.key_confirmed ? 'Confirmed' : 'Pending' }),
+                Utils.el('td', { textContent: _keyStatus(m) }),
                 Utils.el('td', { textContent: m.joined_at ? m.joined_at.slice(0, 10) : '—' }),
                 Utils.el('td', {}, [removeBtn]),
             ]);
@@ -1010,6 +1107,145 @@ const Admin = (() => {
         };
 
         _renderMemberTable();
+
+        // ---- Custom Roles section ----
+        wrap.appendChild(Utils.el('h6', {
+            textContent: 'Custom Roles',
+            style: 'margin:18px 0 6px;font-size:var(--font-size-sm);font-weight:600',
+        }));
+
+        const customRoles = (customRolesData.roles || []);
+
+        if (customRoles.length === 0) {
+            wrap.appendChild(Utils.el('p', {
+                className: 'text-muted',
+                style: 'font-size:var(--font-size-sm)',
+                textContent: 'No custom roles defined for this team.',
+            }));
+        } else {
+            const customRolesContainer = Utils.el('div', { className: 'custom-roles-container' });
+
+            // Build flag label map from metadata
+            const flagLabels = {};
+            for (const f of (customRolesData.flags || [])) flagLabels[f.flag] = f.label;
+
+            for (const role of customRoles) {
+                // Permissions summary (only enabled flags)
+                const enabledFlags = Object.entries(role.permissions || {})
+                    .filter(([, v]) => v === '1')
+                    .map(([k]) => flagLabels[k] || k);
+                const permSummary = enabledFlags.length
+                    ? enabledFlags.join(', ')
+                    : 'No extra permissions';
+
+                const roleCard = Utils.el('div', {
+                    style: 'border:1px solid var(--color-border);border-radius:6px;padding:10px 12px;margin-bottom:10px',
+                });
+
+                roleCard.appendChild(Utils.el('div', { style: 'display:flex;align-items:baseline;gap:8px;margin-bottom:4px' }, [
+                    Utils.el('strong', { style: 'font-size:var(--font-size-sm)', textContent: role.name }),
+                    Utils.el('span', { style: 'font-size:11px;color:var(--color-text-muted)', textContent: permSummary }),
+                ]));
+                if (role.description) {
+                    roleCard.appendChild(Utils.el('p', {
+                        style: 'font-size:11px;color:var(--color-text-muted);margin:0 0 6px',
+                        textContent: role.description,
+                    }));
+                }
+
+                // Current assignees list
+                const assignmentsArr = (role.assignments || []).slice();
+                const assignList = Utils.el('div', { style: 'display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px' });
+
+                const _rebuildAssignList = () => {
+                    assignList.innerHTML = '';
+                    if (assignmentsArr.length === 0) {
+                        assignList.appendChild(Utils.el('span', {
+                            style: 'font-size:11px;color:var(--color-text-muted)',
+                            textContent: 'No members assigned',
+                        }));
+                        return;
+                    }
+                    for (const a of assignmentsArr) {
+                        const chip = Utils.el('span', {
+                            style: 'display:inline-flex;align-items:center;gap:4px;background:var(--color-bg-secondary);border:1px solid var(--color-border);border-radius:4px;padding:1px 6px;font-size:11px',
+                        });
+                        chip.appendChild(Utils.el('span', { textContent: a.username }));
+                        const revokeX = Utils.el('button', {
+                            style: 'background:none;border:none;cursor:pointer;color:var(--color-text-muted);padding:0;line-height:1;font-size:13px',
+                            textContent: '×',
+                            title: `Remove ${a.username} from ${role.name}`,
+                        });
+                        revokeX.addEventListener('click', async () => {
+                            if (!confirm(`Remove ${a.username} from custom role "${role.name}"?`)) return;
+                            revokeX.disabled = true;
+                            try {
+                                await Api.del(`${_api()}/admin/teams/${teamId}/custom-roles/${role.id}/assignments/${a.user_id}`);
+                                const idx = assignmentsArr.findIndex(x => x.user_id === a.user_id);
+                                if (idx !== -1) assignmentsArr.splice(idx, 1);
+                                _rebuildAssignList();
+                                _rebuildAssignDropdown();
+                            } catch (err) {
+                                Utils.showToast('Revoke failed: ' + err.message, 'error');
+                                revokeX.disabled = false;
+                            }
+                        });
+                        chip.appendChild(revokeX);
+                        assignList.appendChild(chip);
+                    }
+                };
+
+                // Assign dropdown (team members not yet assigned this role)
+                const assignSel = Utils.el('select', { className: 'input-sm', style: 'width:160px' });
+                const assignBtn = Utils.el('button', {
+                    className: 'btn btn-xs btn-secondary',
+                    textContent: 'Assign',
+                    onClick: async () => {
+                        if (!assignSel.value) return;
+                        assignBtn.disabled = true;
+                        try {
+                            await Api.post(
+                                `${_api()}/admin/teams/${teamId}/custom-roles/${role.id}/assignments`,
+                                { user_id: assignSel.value },
+                            );
+                            const username = assignSel.options[assignSel.selectedIndex].textContent;
+                            assignmentsArr.push({ user_id: assignSel.value, username });
+                            _rebuildAssignList();
+                            _rebuildAssignDropdown();
+                        } catch (err) {
+                            Utils.showToast('Assign failed: ' + err.message, 'error');
+                        } finally {
+                            assignBtn.disabled = false;
+                        }
+                    },
+                });
+
+                const _rebuildAssignDropdown = () => {
+                    const assignedIds = new Set(assignmentsArr.map(a => a.user_id));
+                    assignSel.innerHTML = '';
+                    const eligible = membersArr.filter(m => !assignedIds.has(m.id));
+                    if (eligible.length === 0) {
+                        assignSel.appendChild(Utils.el('option', { value: '', textContent: 'All members assigned', disabled: true }));
+                        assignBtn.disabled = true;
+                    } else {
+                        assignSel.appendChild(Utils.el('option', { value: '', textContent: '— assign member —', disabled: true, selected: true }));
+                        for (const m of eligible) {
+                            assignSel.appendChild(Utils.el('option', { value: m.id, textContent: m.username }));
+                        }
+                        assignBtn.disabled = false;
+                    }
+                };
+
+                _rebuildAssignList();
+                _rebuildAssignDropdown();
+
+                roleCard.appendChild(assignList);
+                roleCard.appendChild(Utils.el('div', { style: 'display:flex;gap:6px;align-items:center' }, [assignSel, assignBtn]));
+                customRolesContainer.appendChild(roleCard);
+            }
+
+            wrap.appendChild(customRolesContainer);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -3651,7 +3887,10 @@ const Admin = (() => {
         });
 
         // ---- Tab: Team Membership ----
-        const _filterTeamMember = (t, text) => t.team_name.toLowerCase().includes(text);
+        const _tmKeyStatus = (t) => {
+            if (t.key_delivery_pending) return 'No key yet';
+            return t.key_confirmed ? 'Confirmed' : 'Pending';
+        };
 
         const _buildTeamMemberRow = (teamsArr, renderFn, t) => {
             const removeBtn = Utils.el('button', {
@@ -3678,38 +3917,97 @@ const Admin = (() => {
             return Utils.el('tr', {}, [
                 Utils.el('td', { textContent: t.team_name }),
                 Utils.el('td', { textContent: t.team_role_name || '—' }),
-                Utils.el('td', { textContent: t.key_confirmed ? 'Confirmed' : 'Pending' }),
+                Utils.el('td', { textContent: _tmKeyStatus(t) }),
                 Utils.el('td', { textContent: t.joined_at ? t.joined_at.slice(0, 10) : '—' }),
                 Utils.el('td', {}, [removeBtn]),
             ]);
         };
 
-        _makePaneTab('Team Membership', (pane) => {
+        _makePaneTab('Team Membership', async (pane) => {
             const teamsArr = (user.teams || []).slice();
-            if (!teamsArr.length) {
-                pane.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'Not a member of any teams.' }));
-                return;
+
+            // Add to Team form — always visible
+            const addForm = Utils.el('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap' });
+            const teamSel = Utils.el('select', { className: 'input-sm', style: 'width:180px' });
+            teamSel.appendChild(Utils.el('option', { value: '', textContent: 'Loading teams…', disabled: true, selected: true }));
+            const roleSel = Utils.el('select', { className: 'input-sm', style: 'width:130px' });
+            [['team_member', 'Member'], ['team_manager', 'Supervisor'], ['team_admin', 'Owner']].forEach(([val, label]) => {
+                roleSel.appendChild(Utils.el('option', { value: val, textContent: label }));
+            });
+            const addBtn = Utils.el('button', {
+                className: 'btn btn-sm btn-primary',
+                textContent: 'Add to Team',
+                onClick: async () => {
+                    if (!teamSel.value) { Utils.showToast('Select a team', 'warning'); return; }
+                    addBtn.disabled = true;
+                    try {
+                        await Api.post(`${_api()}/admin/teams/${teamSel.value}/members`, {
+                            username: user.username,
+                            role: roleSel.value,
+                        });
+                        const teamName = teamSel.options[teamSel.selectedIndex].textContent;
+                        Utils.showToast(`Added to ${teamName}`, 'success');
+                        teamsArr.push({
+                            team_id: teamSel.value,
+                            team_name: teamName,
+                            team_role_id: roleSel.value,
+                            team_role_name: roleSel.options[roleSel.selectedIndex].textContent,
+                            key_confirmed: false,
+                            key_delivery_pending: true,
+                            joined_at: new Date().toISOString(),
+                        });
+                        // Remove this team from the dropdown so it can't be added twice
+                        const opt = teamSel.querySelector(`option[value="${teamSel.value}"]`);
+                        if (opt) opt.remove();
+                        teamSel.value = '';
+                        _renderTeamMembershipTable();
+                    } catch (err) {
+                        Utils.showToast('Add failed: ' + err.message, 'error');
+                    } finally {
+                        addBtn.disabled = false;
+                    }
+                },
+            });
+            addForm.append(teamSel, roleSel, addBtn);
+            pane.appendChild(addForm);
+
+            // Populate team dropdown (exclude teams user already belongs to)
+            try {
+                const { teams: allTeams } = await Api.get(`${_api()}/admin/teams`);
+                const memberTeamIds = new Set(teamsArr.map(t => t.team_id));
+                teamSel.innerHTML = '';
+                teamSel.appendChild(Utils.el('option', { value: '', textContent: '— select team —', disabled: true, selected: true }));
+                allTeams
+                    .filter(t => !memberTeamIds.has(t.id))
+                    .forEach(t => teamSel.appendChild(Utils.el('option', { value: t.id, textContent: t.name })));
+            } catch {
+                teamSel.innerHTML = '';
+                teamSel.appendChild(Utils.el('option', { value: '', textContent: 'Failed to load teams', disabled: true }));
             }
 
             const _renderTeamMembershipTable = () => {
                 const existing = pane.querySelector('.team-membership-table-wrap');
                 if (existing) existing.remove();
                 const tableWrap = Utils.el('div', { className: 'team-membership-table-wrap' });
-                const widget = _makeSortablePagedTable({
-                    columns: [
-                        { label: 'Team',      key: 'team_name' },
-                        { label: 'Role',      key: 'team_role_name' },
-                        { label: 'Key',       key: 'key_confirmed' },
-                        { label: 'Joined',    key: 'joined_at' },
-                        { label: 'Actions',   key: null, sortable: false },
-                    ],
-                    items:    teamsArr,
-                    pageSize: 10,
-                    filterFn: _filterTeamMember,
-                    buildRow: _buildTeamMemberRow.bind(null, teamsArr, _renderTeamMembershipTable),
-                });
-                widget.querySelector('table').style.fontSize = '12px';
-                tableWrap.appendChild(widget);
+                if (teamsArr.length === 0) {
+                    tableWrap.appendChild(Utils.el('p', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'Not a member of any teams.' }));
+                } else {
+                    const widget = _makeSortablePagedTable({
+                        columns: [
+                            { label: 'Team',    key: 'team_name' },
+                            { label: 'Role',    key: 'team_role_name' },
+                            { label: 'Key',     key: 'key_confirmed' },
+                            { label: 'Joined',  key: 'joined_at' },
+                            { label: 'Actions', key: null, sortable: false },
+                        ],
+                        items:    teamsArr,
+                        pageSize: 10,
+                        filterFn: (t, text) => t.team_name.toLowerCase().includes(text),
+                        buildRow: _buildTeamMemberRow.bind(null, teamsArr, _renderTeamMembershipTable),
+                    });
+                    widget.querySelector('table').style.fontSize = '12px';
+                    tableWrap.appendChild(widget);
+                }
                 pane.appendChild(tableWrap);
             };
             _renderTeamMembershipTable();

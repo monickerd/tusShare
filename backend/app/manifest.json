@@ -1,8 +1,8 @@
 {
-  "generated": "2026-05-29T07:22:17.105042+00:00",
+  "generated": "2026-05-31T00:37:20.718946+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-UJ63WcVg2yntKE2pJ7VPTSJpEmo27LCz8LyqFCw3UX0=",
-    "frontend/js/admin.js": "sha256-Zm6eWLQ6G5/4HfrVoG7Xta51F8iPoshJyFFfpCT1asE=",
+    "frontend/js/admin.js": "sha256-p3PeMeXn1qzHQYMZ4VOUSElZ2UV9dGXqaS0Pnp+0GC4=",
     "frontend/js/api.js": "sha256-OU+FFS9SDp0f+L+wPsnWrIxf280ZKBd/UNICi09gtF0=",
     "frontend/js/app.js": "sha256-JcdjEBLeVc5icM3bVkoi1FTPZLqphyqPtF8NoVtfzgc=",
     "frontend/js/auth.js": "sha256-8W+dQzva5C2FNFR48LWtlU6HczWDS0r25FfqwieeSaE=",

@@ -15,6 +15,7 @@ class Team:
     rotation_pending: bool
     created_at: int
     updated_at: int
+    scheduled_delete_at: str | None = None
 
     @classmethod
     def from_row(cls, row) -> "Team":
@@ -27,6 +28,7 @@ class Team:
             rotation_pending=bool(row["rotation_pending"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            scheduled_delete_at=str(row["scheduled_delete_at"]) if row["scheduled_delete_at"] else None,
         )
 
     def to_dict(self) -> dict:
@@ -39,6 +41,7 @@ class Team:
             "rotation_pending": self.rotation_pending,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "scheduled_delete_at": self.scheduled_delete_at,
         }
 
 

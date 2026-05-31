@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 
 import app.storage.manager as storage
 from app.database import db_session
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
+from app.services import event_bus
 
 _bg_tasks: set = set()
 
@@ -76,6 +78,89 @@ async def _purge_expired(db) -> None:
     await db.commit()
 
 
+async def _purge_expired_users(db) -> None:
+    """Hard-delete users whose scheduled_delete_at window has elapsed."""
+    cursor = await db.execute(
+        "SELECT id, username FROM users WHERE scheduled_delete_at IS NOT NULL AND scheduled_delete_at < NOW()"
+    )
+    expired = await cursor.fetchall()
+
+    for row in expired:
+        user_id, username = row["id"], row["username"]
+        try:
+            fc = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,))
+            file_rows = await fc.fetchall()
+
+            await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            await db.commit()
+
+            event_bus.emit(
+                SecurityEvent(
+                    event_type="system.user.purged",
+                    severity="critical",
+                    outcome="success",
+                    actor=EventActor(user_id="system", username="system"),
+                    target=EventTarget(type="user", id=user_id, name=username),
+                )
+            )
+
+            rows_snapshot = list(file_rows)
+
+            async def _cleanup(rows=rows_snapshot, uid=user_id):
+                mgr = storage.get_manager()
+                async with db_session() as _db:
+                    for r in rows:
+                        try:
+                            cur = await _db.execute(
+                                "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (r["storage_key"],)
+                            )
+                            cnt = await cur.fetchone()
+                            if cnt and cnt["cnt"] > 0:
+                                continue
+                            await mgr.delete_blob(_db, r["id"], r["storage_key"])
+                        except Exception as exc:
+                            logger.warning("Failed to delete blob %s for purged user %s: %s", r["storage_key"], uid, exc)
+
+            _t = asyncio.create_task(_cleanup())
+            _bg_tasks.add(_t)
+            _t.add_done_callback(_bg_tasks.discard)
+        except Exception:
+            logger.exception("Failed to purge soft-deleted user %s", user_id)
+
+
+async def _purge_expired_teams(db) -> None:
+    """Hard-delete teams whose scheduled_delete_at window has elapsed."""
+    cursor = await db.execute(
+        "SELECT id, name FROM teams WHERE scheduled_delete_at IS NOT NULL AND scheduled_delete_at < NOW()"
+    )
+    expired = await cursor.fetchall()
+
+    for row in expired:
+        team_id, team_name = row["id"], row["name"]
+        try:
+            # Collect team folder IDs before cascade wipes team_folders
+            fc = await db.execute("SELECT folder_id FROM team_folders WHERE team_id = ?", (team_id,))
+            folder_ids = [r["folder_id"] for r in await fc.fetchall()]
+
+            await db.execute("DELETE FROM user_roles WHERE scope_type = 'team' AND scope_id = ?", (team_id,))
+            await db.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+            for fid in folder_ids:
+                await db.execute("DELETE FROM folders WHERE id = ?", (fid,))
+            await db.commit()
+
+            event_bus.emit(
+                SecurityEvent(
+                    event_type="system.team.purged",
+                    severity="warning",
+                    outcome="success",
+                    actor=EventActor(user_id="system", username="system"),
+                    target=EventTarget(type="team", id=team_id, name=team_name),
+                )
+            )
+        except Exception:
+            logger.exception("Failed to purge soft-deleted team %s", team_id)
+
+
 async def run_trash_cleanup(db_factory, interval: float = 3600.0) -> None:
     """Periodic background task — purges items past their trash retention window."""
     while True:
@@ -83,5 +168,7 @@ async def run_trash_cleanup(db_factory, interval: float = 3600.0) -> None:
         try:
             async with db_factory() as db:
                 await _purge_expired(db)
+                await _purge_expired_users(db)
+                await _purge_expired_teams(db)
         except Exception:
             logger.exception("Trash cleanup task failed")

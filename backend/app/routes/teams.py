@@ -354,7 +354,7 @@ def _role_rank(role: str) -> int:
 
 async def _get_team_or_404(db, team_id: str):
     team = await get_team(db, team_id)
-    if not team:
+    if not team or team.scheduled_delete_at is not None:
         raise HTTPException(status_code=404, detail="Team not found")  # NOSONAR — helper; 404 documented in callers
     return team
 

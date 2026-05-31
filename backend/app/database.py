@@ -597,6 +597,17 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                 ON CONFLICT (key) DO NOTHING;
         """)
 
+    # Soft-delete columns for users and teams — idempotent; added on every startup.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS scheduled_delete_at TIMESTAMPTZ DEFAULT NULL;
+            CREATE INDEX IF NOT EXISTS idx_users_scheduled_delete
+                ON users(scheduled_delete_at) WHERE scheduled_delete_at IS NOT NULL;
+            ALTER TABLE teams ADD COLUMN IF NOT EXISTS scheduled_delete_at TIMESTAMPTZ DEFAULT NULL;
+            CREATE INDEX IF NOT EXISTS idx_teams_scheduled_delete
+                ON teams(scheduled_delete_at) WHERE scheduled_delete_at IS NOT NULL;
+        """)
+
     # Recent folder activity — added as idempotent block so existing DBs gain the table.
     async with conn.transaction():
         await conn.execute("""
