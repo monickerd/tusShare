@@ -59,7 +59,11 @@ const Files = (() => {
         };
     }
 
-    const _uploadSemaphore = _makeTransferSemaphore(Config.upload.maxConcurrent);
+    const _uploadSemaphore  = _makeTransferSemaphore(Config.upload.maxConcurrent);
+    // Shared across ALL concurrent _uploadFiles calls so the total number of
+    // simultaneous prepareUpload (escrow-key + AES keygen) operations is bounded
+    // even when _uploadFromDirMap fires many _uploadFiles calls in parallel.
+    const _prewarmSemaphore = _makeTransferSemaphore(Config.upload.maxConcurrent * 2);
 
     function _runTeamKeyBatch(batch, folderId) {
         const teamKeys = _batchRegisterTeamFileKeys(batch)
@@ -2039,6 +2043,21 @@ const Files = (() => {
             }
             bfsLevel = nextLevel;
         }
+
+        // One aggregate progress overlay for the whole operation replaces the
+        // per-batch overlays that _executeBatchUpload would otherwise create.
+        // ctx._bulkOnBatchDone is the signal _executeBatchUpload checks.
+        const totalFiles = [...dirMap.values()].reduce((s, e) => s + e.files.length, 0);
+        let doneFiles = 0;
+        const bulkOverlay = _showUploadOverlay(`Uploading 0 / ${totalFiles} files`);
+        ctx._bulkOnBatchDone = (n) => {
+            doneFiles += n;
+            bulkOverlay.update(
+                Math.round(doneFiles / totalFiles * 100),
+                `Uploading ${doneFiles} / ${totalFiles} files`,
+            );
+        };
+
         const uploadTasks = [];
         for (const [dirPath, entry] of dirMap) {
             if (!entry.files.length) continue;
@@ -2047,6 +2066,9 @@ const Files = (() => {
             uploadTasks.push(_uploadFiles(entry.files, serverId, ctx));
         }
         await Promise.allSettled(uploadTasks);
+
+        bulkOverlay.remove();
+        delete ctx._bulkOnBatchDone;
     }
 
     async function _uploadFolderFiles(files) {
@@ -2270,8 +2292,7 @@ const Files = (() => {
         const smallResolved  = resolved.filter(({ file }) => file.size > 0 && file.size <= chunkThreshold);
         const largeResolved  = resolved.filter(({ file }) => file.size === 0 || file.size > chunkThreshold);
 
-        const prewarmSem = _makeTransferSemaphore(Config.upload.maxConcurrent * 2);
-        const batcher    = _makeFinishBatcher(Config.upload.finishIntervalMs, folderId);
+        const batcher = _makeFinishBatcher(Config.upload.finishIntervalMs, folderId);
 
         // Small files: group by approximate encrypted size before any crypto runs, so
         // each group can prepare and send independently without waiting for the full
@@ -2286,9 +2307,9 @@ const Files = (() => {
                 _groupByFileSize(smallResolved, _BATCH_BUDGET_BYTES).map(async (group) => {
                     const batch = await Promise.all(
                         group.map(async ({ file }) => {
-                            await prewarmSem.acquire();
+                            await _prewarmSemaphore.acquire();
                             const prepared = await Upload.prepareUpload(file, folderId, masterKey);
-                            prewarmSem.release();
+                            _prewarmSemaphore.release();
                             return { prepared, file };
                         })
                     );
@@ -2303,11 +2324,11 @@ const Files = (() => {
 
         // Large files: existing bounded tus path (unchanged).
         const uploads = largeResolved.map(async ({ file, index, deletedForReplace }) => {
-            await prewarmSem.acquire();
+            await _prewarmSemaphore.acquire();
             const preparedPromise = Upload.prepareUpload(file, folderId, masterKey);
 
             await _uploadSemaphore.acquire();
-            prewarmSem.release(); // crypto done + upload slot secured; next file can pre-warm
+            _prewarmSemaphore.release(); // crypto done + upload slot secured; next file can pre-warm
             await _paceUploadIfNeeded(_ctx);
             _ctx.lastUploadMs = Date.now();
             try {
@@ -2588,7 +2609,10 @@ const Files = (() => {
     // Send one batch POST and record per-file results into ctx.
     async function _executeBatchUpload(batch, folderId, batcher, ctx) {
         const label = batch.length === 1 ? batch[0].file.name : `Uploading ${batch.length} files`;
-        const overlay  = _showUploadOverlay(label);
+        // When a bulk overlay owns the banner, suppress individual per-batch overlays
+        // so the screen doesn't fill with dozens of progress bars.
+        const _noop = { update: () => {}, remove: () => {} };
+        const overlay  = ctx._bulkOnBatchDone ? _noop : _showUploadOverlay(label);
         const transfer = TransferManager.start(label, 'upload', {});
 
         let form;
@@ -2599,6 +2623,7 @@ const Files = (() => {
             transfer.cancelled();
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(`Batch preparation failed: ${err.message}`, 'error');
+            ctx._bulkOnBatchDone?.(batch.length);
             return;
         }
 
@@ -2623,6 +2648,7 @@ const Files = (() => {
             transfer.cancelled();
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(err.message || 'Batch upload network error', 'error');
+            ctx._bulkOnBatchDone?.(batch.length);
             return;
         }
 
@@ -2632,6 +2658,7 @@ const Files = (() => {
             const body = await resp.json().catch(() => ({}));
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(body.detail || `Batch upload failed (${resp.status})`, 'error');
+            ctx._bulkOnBatchDone?.(batch.length);
             return;
         }
 
@@ -2648,6 +2675,7 @@ const Files = (() => {
                 ctx.results.failed.push(file.name);
             }
         }
+        ctx._bulkOnBatchDone?.(batch.length);
     }
 
     // Executes the network phase of a queued upload using pre-warmed prepared data.
