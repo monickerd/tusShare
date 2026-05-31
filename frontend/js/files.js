@@ -2755,8 +2755,9 @@ const Files = (() => {
         let count = 0;
         for (const entry of entries) {
             if (_isSystemFile(entry.name)) continue;
-            count++;
-            if (entry.isDirectory) {
+            if (entry.isFile) {
+                count++;
+            } else if (entry.isDirectory) {
                 const children = await _readAllDirEntries(entry.createReader());
                 count += await _countEntries(children);
             }
