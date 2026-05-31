@@ -511,12 +511,13 @@ async def _write_one(index: int, data: bytes, meta: _FileMeta, user_id: str) -> 
 # Route
 # ---------------------------------------------------------------------------
 
-async def _consume_stream(request: Request, state: _MultipartState, parser: MultipartParser) -> None:
-    """Feed request bytes into the multipart parser and collect completed parts."""
-    async for raw_chunk in request.stream():
-        parser.write(raw_chunk)
-        if state.error:
-            return
+async def _verify_and_write(index: int, data: bytes, meta: _FileMeta, user_id: str) -> dict:
+    """Hash-verify then store one file. Runs as a concurrent task during streaming."""
+    err = await asyncio.to_thread(_verify_file_hash_and_size, index, data, meta)
+    if err:
+        logger.warning("Batch upload: file %d rejected — %s", index, err)  # NOSONAR
+        return {"index": index, "file_id": None, "status": "error", "detail": err}
+    return await _write_one(index, data, meta, user_id)
 
 
 @router.post(
@@ -554,51 +555,76 @@ async def batch_upload(
     state = _MultipartState(max_file_bytes=_MAX_FILE_ENCRYPTED_BYTES)
     parser = MultipartParser(boundary, _make_callbacks(state))
 
-    await _consume_stream(request, state, parser)
+    file_metas: list[_FileMeta] | None = None
+    write_tasks: list[asyncio.Task] = []
+
+    # Stream the request body.  As each part ends:
+    #   - metadata part → validate immediately (it always arrives first)
+    #   - file parts    → launch a concurrent verify+write task
+    # This overlaps network receive time with hash checking and disk writes.
+    async for raw_chunk in request.stream():
+        parser.write(raw_chunk)
+        if state.error:
+            break
+
+        # Metadata validation can await because no write tasks have started yet
+        # (file parts always come after the metadata part in the multipart stream).
+        if state.metadata_ready is not None and file_metas is None:
+            file_metas = await _parse_and_validate_metadata(
+                state.metadata_ready, user.id, db, admin_chunk_size
+            )
+
+        # Drain any file parts that just completed and start their write tasks.
+        while state.file_ready_queue and not state.error:
+            index, data = state.file_ready_queue.pop(0)
+            if file_metas is None or index >= len(file_metas):
+                state.error = f"file part {index} received before metadata was validated"
+                break
+            write_tasks.append(
+                asyncio.create_task(_verify_and_write(index, data, file_metas[index], user.id))
+            )
+
+        if state.error:
+            break
+
+    async def _cancel_and_wait() -> None:
+        for t in write_tasks:
+            t.cancel()
+        await asyncio.gather(*write_tasks, return_exceptions=True)
 
     if state.error:
+        await _cancel_and_wait()
         raise HTTPException(status_code=400, detail=f"Malformed batch: {state.error}")
 
     try:
         parser.finalize()
     except Exception:
+        await _cancel_and_wait()
         raise HTTPException(status_code=400, detail="Malformed batch: incomplete multipart body")
 
     if not state.stream_ended:
+        await _cancel_and_wait()
         raise HTTPException(status_code=400, detail="Malformed batch: terminal boundary not reached")
 
-    if state.metadata_ready is None:
+    if file_metas is None:
         raise HTTPException(status_code=400, detail="No metadata part received")
 
-    file_metas = await _parse_and_validate_metadata(state.metadata_ready, user.id, db, admin_chunk_size)
-
-    if len(state.file_ready_queue) != len(file_metas):
+    if len(write_tasks) != len(file_metas):
+        await _cancel_and_wait()
         raise HTTPException(
             status_code=400,
-            detail=f"Expected {len(file_metas)} file parts, received {len(state.file_ready_queue)}",
+            detail=f"Expected {len(file_metas)} file parts, received {len(write_tasks)}",
         )
 
-    for index, _ in state.file_ready_queue:
-        if index >= len(file_metas):
-            raise HTTPException(status_code=400, detail=f"File part index {index} out of range")
-
-    # Phase 1: verify all hashes in parallel (SHA-256 is CPU-bound; to_thread releases the GIL).
-    verify_errors: list[str | None] = await asyncio.gather(*[
-        asyncio.to_thread(_verify_file_hash_and_size, index, data, file_metas[index])
-        for index, data in state.file_ready_queue
-    ])
-
-    # Phase 2: write files whose hashes passed, each using its own pooled DB connection
-    # so blob writes and DB inserts can proceed concurrently across files.
-    write_coros = []
-    error_results = []
-    for i, (index, data) in enumerate(state.file_ready_queue):
-        err = verify_errors[i]
-        if err:
-            logger.warning("Batch upload: file %d rejected — %s", index, err)  # NOSONAR
-            error_results.append({"index": index, "file_id": None, "status": "error", "detail": err})
+    # All file parts received; gather any still-running write tasks.
+    # Tasks started early in the stream are likely already done by now.
+    raw_results = await asyncio.gather(*write_tasks, return_exceptions=True)
+    results = []
+    for i, r in enumerate(raw_results):
+        if isinstance(r, BaseException):
+            logger.error("Batch upload: task %d raised unexpectedly: %s", i, r)  # NOSONAR
+            results.append({"index": i, "file_id": None, "status": "error", "detail": "internal error"})
         else:
-            write_coros.append(_write_one(index, data, file_metas[index], user.id))
+            results.append(r)
 
-    write_results: list[dict] = list(await asyncio.gather(*write_coros)) if write_coros else []
-    return {"results": sorted(error_results + write_results, key=lambda r: r["index"])}
+    return {"results": sorted(results, key=lambda r: r["index"])}

@@ -2257,6 +2257,11 @@ const Files = (() => {
         // each group can prepare and send independently without waiting for the full
         // small-file set. Groups are sent concurrently via the upload semaphore.
         if (smallResolved.length > 0) {
+            // Fire batches as fast as they are ready; collect responses separately.
+            // The upload semaphore gates how many fetches start in rapid succession,
+            // but is released immediately after firing so the next batch can start
+            // without waiting for the server to finish writing the current one.
+            const _batchCollectors = [];
             await Promise.allSettled(
                 _groupByFileSize(smallResolved, _BATCH_BUDGET_BYTES).map(async (group) => {
                     const batch = await Promise.all(
@@ -2268,13 +2273,12 @@ const Files = (() => {
                         })
                     );
                     await _uploadSemaphore.acquire();
-                    try {
-                        await _executeBatchUpload(batch, folderId, batcher, _ctx);
-                    } finally {
-                        _uploadSemaphore.release();
-                    }
+                    _batchCollectors.push(_executeBatchUpload(batch, folderId, batcher, _ctx));
+                    _uploadSemaphore.release();
                 })
             );
+            // All fetches fired; wait for every response before moving to large files / batcher flush.
+            await Promise.allSettled(_batchCollectors);
         }
 
         // Large files: existing bounded tus path (unchanged).
