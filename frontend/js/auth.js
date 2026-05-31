@@ -1843,9 +1843,10 @@ const Auth = (() => {
                 const name = document.getElementById('webauthn-key-name').value.trim() || 'Security Key';
                 const btn = e.target.querySelector('button[type="submit"]');
                 btn.disabled = true;
+                let credential;
                 try {
                     const beginData = await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/begin`);
-                    const credential = await navigator.credentials.create({
+                    credential = await navigator.credentials.create({
                         publicKey: _webAuthnOptionsFromServer(beginData.options),
                     });
                     await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/finish`, {
@@ -1853,23 +1854,28 @@ const Auth = (() => {
                         attestation: _serializeAttestation(credential),
                         name,
                     });
-                    Utils.showToast('Security key registered!', 'success');
-                    const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
-                    _renderMfaSettingsContent(wrapRef, updated);
                 } catch (err) {
                     let msg;
                     if (err.name === 'SecurityError') {
                         msg = 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.';
                     } else if (err.name === 'NotAllowedError') {
                         msg = 'Registration was cancelled or timed out.';
-                    } else if (err.name === 'AbortError' || (err.message && /transient/i.test(err.message))) {
-                        msg = 'NFC connection lost during registration. After entering your PIN, keep the key pressed firmly against your phone until the operation completes, then try again.';
+                    } else if (!credential && (err.name === 'AbortError' || (err.message && /transient/i.test(err.message)))) {
+                        // credential is null/undefined here means navigator.credentials.create() itself threw —
+                        // the Android FIDO2 UI completed but the browser failed to pass the result back.
+                        msg = 'Your browser could not complete the key handoff after the device reported success. Try again, or use Chrome on Android for NFC registration.';
+                    } else if (err.status >= 400) {
+                        msg = err.message || 'Server rejected the registration. Check server logs for details.';
                     } else {
                         msg = err.message || 'Registration failed.';
                     }
                     Utils.showToast(msg, 'error');
                     btn.disabled = false;
+                    return;
                 }
+                Utils.showToast('Security key registered!', 'success');
+                const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
+                _renderMfaSettingsContent(wrapRef, updated);
             },
         }, [
             Utils.el('p', { className: 'text-muted', style: 'margin-bottom:8px',
