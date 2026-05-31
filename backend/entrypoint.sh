@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 # Copy staged frontend files into the tmpfs mount on every container start.
 # This ensures the running container always reflects the current image build
 # without requiring named-volume management on the host.
