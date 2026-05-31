@@ -32,6 +32,7 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routes.uploads import run_upload_cleanup
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus, live_settings, notification_emitter, op_bus, siem_syslog, siem_webhook
+from app.services.maintenance import run_daily_maintenance
 from app.services.sse_broker import run_redis_listener
 from app.services.trash import run_trash_cleanup
 from app.util.integrity import check_integrity, verify_file_integrity
@@ -258,6 +259,7 @@ async def lifespan(app: FastAPI):
     oidc_state_cleanup_task = asyncio.create_task(_run_oidc_state_cleanup(db_session))
     storage_tiering_task = asyncio.create_task(storage_manager.run_tiering_task())
     storage_reconcile_task = asyncio.create_task(storage_manager.run_reconciliation_task())
+    daily_maintenance_task = asyncio.create_task(run_daily_maintenance(db_session))
 
     event_bus.init(db_session)
     event_bus_task = event_bus.start()
@@ -331,6 +333,7 @@ async def lifespan(app: FastAPI):
         siem_webhook_task,
         storage_tiering_task,
         storage_reconcile_task,
+        daily_maintenance_task,
     ):
         task.cancel()
         try:

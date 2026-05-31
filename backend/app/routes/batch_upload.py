@@ -22,7 +22,7 @@ from multipart.multipart import MultipartParser
 import app.storage.manager as storage
 from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
-from app.database import Database, get_db
+from app.database import Database, db_session, get_db
 from app.middleware.rate_limit import check_upload_rate_limit
 from app.routes._access import check_data_permission, copy_folder_permissions
 from app.routes.uploads import _maybe_scan_file, _record_upload_folder_activity
@@ -489,18 +489,19 @@ def _fire_background_tasks(file_id: str, user_id: str, folder_id: str | None) ->
         t2.add_done_callback(_bg_tasks.discard)
 
 
-async def _process_file_part(index: int, data: bytes, meta: _FileMeta, user_id: str, db) -> dict:
-    """Verify and store one file. Returns a per-file result dict."""
-    err = _verify_file_hash_and_size(index, data, meta)
-    if err:
-        logger.warning("Batch upload: file %d rejected — %s", index, err)  # NOSONAR
-        return {"index": index, "file_id": None, "status": "error", "detail": err}
-    try:
-        file_id = await _store_file(db, user_id, meta, data)
-    except Exception as exc:
-        logger.error("Batch upload: store failed for file %d: %s", index, exc)  # NOSONAR
-        return {"index": index, "file_id": None, "status": "error", "detail": "storage error"}
+async def _write_one(index: int, data: bytes, meta: _FileMeta, user_id: str) -> dict:
+    """Store one pre-verified file using its own pooled connection. Returns result dict.
 
+    Each call acquires a separate connection so all files in a batch can write
+    concurrently.  Postgres row-level locking serialises the disk_used UPDATE
+    per user, so concurrent increments are always consistent.
+    """
+    async with db_session() as own_db:
+        try:
+            file_id = await _store_file(own_db, user_id, meta, data)
+        except Exception as exc:
+            logger.error("Batch upload: store failed for file %d: %s", index, exc)  # NOSONAR
+            return {"index": index, "file_id": None, "status": "error", "detail": "storage error"}
     _emit_file_events(file_id, user_id, meta.encrypted_size, meta.folder_id)
     _fire_background_tasks(file_id, user_id, meta.folder_id)
     return {"index": index, "file_id": file_id, "status": "ok"}
@@ -553,9 +554,6 @@ async def batch_upload(
     state = _MultipartState(max_file_bytes=_MAX_FILE_ENCRYPTED_BYTES)
     parser = MultipartParser(boundary, _make_callbacks(state))
 
-    file_metas: list[_FileMeta] | None = None
-    results: list[dict] = []
-
     await _consume_stream(request, state, parser)
 
     if state.error:
@@ -569,23 +567,38 @@ async def batch_upload(
     if not state.stream_ended:
         raise HTTPException(status_code=400, detail="Malformed batch: terminal boundary not reached")
 
-    # Metadata part must have arrived and can now be validated.
     if state.metadata_ready is None:
         raise HTTPException(status_code=400, detail="No metadata part received")
 
     file_metas = await _parse_and_validate_metadata(state.metadata_ready, user.id, db, admin_chunk_size)
 
-    # Process all file parts collected during streaming.
     if len(state.file_ready_queue) != len(file_metas):
         raise HTTPException(
             status_code=400,
             detail=f"Expected {len(file_metas)} file parts, received {len(state.file_ready_queue)}",
         )
 
-    for index, data in state.file_ready_queue:
+    for index, _ in state.file_ready_queue:
         if index >= len(file_metas):
             raise HTTPException(status_code=400, detail=f"File part index {index} out of range")
-        result = await _process_file_part(index, data, file_metas[index], user.id, db)
-        results.append(result)
 
-    return {"results": results}
+    # Phase 1: verify all hashes in parallel (SHA-256 is CPU-bound; to_thread releases the GIL).
+    verify_errors: list[str | None] = await asyncio.gather(*[
+        asyncio.to_thread(_verify_file_hash_and_size, index, data, file_metas[index])
+        for index, data in state.file_ready_queue
+    ])
+
+    # Phase 2: write files whose hashes passed, each using its own pooled DB connection
+    # so blob writes and DB inserts can proceed concurrently across files.
+    write_coros = []
+    error_results = []
+    for i, (index, data) in enumerate(state.file_ready_queue):
+        err = verify_errors[i]
+        if err:
+            logger.warning("Batch upload: file %d rejected — %s", index, err)  # NOSONAR
+            error_results.append({"index": index, "file_id": None, "status": "error", "detail": err})
+        else:
+            write_coros.append(_write_one(index, data, file_metas[index], user.id))
+
+    write_results: list[dict] = list(await asyncio.gather(*write_coros)) if write_coros else []
+    return {"results": sorted(error_results + write_results, key=lambda r: r["index"])}

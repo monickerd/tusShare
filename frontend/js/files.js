@@ -2505,6 +2505,8 @@ const Files = (() => {
     // Maximum encrypted bytes to pack into a single batch POST.
     // The client tracks ciphertext bytes (binary); multipart framing overhead is small.
     const _BATCH_BUDGET_BYTES = 5 * 1024 * 1024;
+    // Must stay in sync with _MAX_FILES_PER_BATCH in backend/app/routes/batch_upload.py.
+    const _MAX_BATCH_FILES = 50;
 
     // Group resolved small files by approximate encrypted size (file.size + 16 AES-GCM tag).
     // Called before crypto prep so each group can start uploading as soon as its own
@@ -2515,7 +2517,7 @@ const Files = (() => {
         let accumulated = 0;
         for (const entry of entries) {
             const approx = entry.file.size + 16;
-            if (current.length > 0 && accumulated + approx > budgetBytes) {
+            if (current.length > 0 && (accumulated + approx > budgetBytes || current.length >= _MAX_BATCH_FILES)) {
                 groups.push(current);
                 current = [];
                 accumulated = 0;
