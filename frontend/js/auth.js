@@ -1862,6 +1862,8 @@ const Auth = (() => {
                         msg = 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.';
                     } else if (err.name === 'NotAllowedError') {
                         msg = 'Registration was cancelled or timed out.';
+                    } else if (err.name === 'AbortError' || (err.message && /transient/i.test(err.message))) {
+                        msg = 'NFC connection lost during registration. After entering your PIN, keep the key pressed firmly against your phone until the operation completes, then try again.';
                     } else {
                         msg = err.message || 'Registration failed.';
                     }
@@ -1871,7 +1873,7 @@ const Auth = (() => {
             },
         }, [
             Utils.el('p', { className: 'text-muted', style: 'margin-bottom:8px',
-                textContent: 'Insert your security key or use biometrics (Touch ID, Windows Hello, etc.) when prompted.' }),
+                textContent: 'Insert your security key or use biometrics (Touch ID, Windows Hello, etc.) when prompted. Using NFC on mobile: tap your key, complete any PIN prompt, then keep the key held against the phone until registration finishes.' }),
             Utils.el('div', { className: 'form-group' }, [
                 Utils.el('label', { for: 'webauthn-key-name', textContent: 'Key Name (optional)' }),
                 Utils.el('input', {

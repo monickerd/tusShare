@@ -149,6 +149,9 @@ async def finish_registration(db, user_id: str, challenge_id: str, attestation_d
     Returns the new credential row ID.
     Raises ValueError on verification failure.
     """
+    logger.debug("WebAuthn registration finish: user=%s challenge=%s transports=%s",
+                 user_id, challenge_id, attestation_dict.get("response", {}).get("transports", []))
+
     challenge_bytes = await _consume_challenge(db, challenge_id, user_id, "registration")
     if challenge_bytes is None:
         raise ValueError("Challenge not found, expired, or already consumed")
@@ -164,6 +167,7 @@ async def finish_registration(db, user_id: str, challenge_id: str, attestation_d
             require_user_verification=False,
         )
     except Exception as exc:
+        logger.warning("WebAuthn registration verification failed for user %s: %s", user_id, exc)
         raise ValueError(f"WebAuthn registration verification failed: {exc}") from exc
 
     cred_id = str(uuid.uuid4())
