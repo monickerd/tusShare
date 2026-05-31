@@ -2008,7 +2008,11 @@ const Files = (() => {
 
     function _isSystemFile(name) {
         const lower = name.toLowerCase();
-        return name.startsWith('.') || lower === 'thumbs.db' || lower === 'desktop.ini';
+        return name.startsWith('.')
+            || name.startsWith('~$')          // Office temp files
+            || lower === 'thumbs.db'
+            || lower === 'ehthumbs.db'
+            || lower === 'desktop.ini';
     }
 
     async function _uploadFolderFiles(files) {
@@ -2220,6 +2224,10 @@ const Files = (() => {
 
         const isStandalone = _ctx === null;
         if (isStandalone) {
+            // Strip system/hidden files before showing the count — this path is
+            // called from the file picker and drag-and-drop fallback, both of
+            // which may include Thumbs.db, desktop.ini, ~$ Office temps, etc.
+            files = files.filter(f => !_isSystemFile(f.name));
             _ctx = await _initStandaloneUploadCtx(files.length);
             if (!_ctx) return;
         }
@@ -2245,20 +2253,28 @@ const Files = (() => {
         const prewarmSem = _makeTransferSemaphore(Config.upload.maxConcurrent * 2);
         const batcher    = _makeFinishBatcher(Config.upload.finishIntervalMs, folderId);
 
-        // Small files: prepare crypto concurrently (bounded by prewarm semaphore) then
-        // pack into budget-sized multipart batches and POST each batch in sequence.
+        // Small files: group by approximate encrypted size before any crypto runs, so
+        // each group can prepare and send independently without waiting for the full
+        // small-file set. Groups are sent concurrently via the upload semaphore.
         if (smallResolved.length > 0) {
-            const preparedSmall = await Promise.all(
-                smallResolved.map(async ({ file }) => {
-                    await prewarmSem.acquire();
-                    const prepared = await Upload.prepareUpload(file, folderId, masterKey);
-                    prewarmSem.release();
-                    return { prepared, file };
+            await Promise.allSettled(
+                _groupByFileSize(smallResolved, _BATCH_BUDGET_BYTES).map(async (group) => {
+                    const batch = await Promise.all(
+                        group.map(async ({ file }) => {
+                            await prewarmSem.acquire();
+                            const prepared = await Upload.prepareUpload(file, folderId, masterKey);
+                            prewarmSem.release();
+                            return { prepared, file };
+                        })
+                    );
+                    await _uploadSemaphore.acquire();
+                    try {
+                        await _executeBatchUpload(batch, folderId, batcher, _ctx);
+                    } finally {
+                        _uploadSemaphore.release();
+                    }
                 })
             );
-            for (const batch of _groupIntoBatches(preparedSmall, _BATCH_BUDGET_BYTES)) {
-                await _executeBatchUpload(batch, folderId, batcher, _ctx);
-            }
         }
 
         // Large files: existing bounded tus path (unchanged).
@@ -2490,52 +2506,55 @@ const Files = (() => {
     // The client tracks ciphertext bytes (binary); multipart framing overhead is small.
     const _BATCH_BUDGET_BYTES = 5 * 1024 * 1024;
 
-    // Split an array of {prepared, file} entries into groups that each fit within budgetBytes.
-    function _groupIntoBatches(entries, budgetBytes) {
-        const batches = [];
+    // Group resolved small files by approximate encrypted size (file.size + 16 AES-GCM tag).
+    // Called before crypto prep so each group can start uploading as soon as its own
+    // crypto is done, without waiting for the full set of small files.
+    function _groupByFileSize(entries, budgetBytes) {
+        const groups = [];
         let current = [];
         let accumulated = 0;
         for (const entry of entries) {
-            const size = entry.prepared.totalEncryptedSize;
-            if (current.length > 0 && accumulated + size > budgetBytes) {
-                batches.push(current);
+            const approx = entry.file.size + 16;
+            if (current.length > 0 && accumulated + approx > budgetBytes) {
+                groups.push(current);
                 current = [];
                 accumulated = 0;
             }
             current.push(entry);
-            accumulated += size;
+            accumulated += approx;
         }
-        if (current.length > 0) batches.push(current);
-        return batches;
+        if (current.length > 0) groups.push(current);
+        return groups;
     }
 
     // Build a multipart/form-data body for a batch of single-chunk prepared files.
     // Metadata part comes first (JSON array), then one binary 'file_N' part per file.
+    // Encryptions and hashes are awaited in parallel since they are independent.
     async function _buildBatchFormData(batch, folderId) {
-        const metadataArr = [];
-        const ciphertexts = [];
-        for (const { prepared, file } of batch) {
-            const { ciphertext, ivB64: chunkIvB64 } = await prepared.firstEncrypted;
-            const chunkHash = await Upload.sha256Hex(ciphertext);
-            metadataArr.push({
-                filename:           file.name,
-                filetype:           file.type || 'application/octet-stream',
-                folder_id:          folderId || '',
-                original_size:      String(file.size),
-                encrypted_size:     String(prepared.totalEncryptedSize),
-                encrypted_file_key: prepared.encryptedKeyB64,
-                key_iv:             prepared.keyIvB64,
-                chunk_iv:           chunkIvB64,
-                chunk_hash:         `sha256:${chunkHash}`,
-                last_modified_ms:   String(file.lastModified),
-                ...prepared.escrowMeta,
-            });
-            ciphertexts.push(ciphertext);
-        }
+        const processed = await Promise.all(
+            batch.map(async ({ prepared, file }) => {
+                const { ciphertext, ivB64: chunkIvB64 } = await prepared.firstEncrypted;
+                const chunkHash = await Upload.sha256Hex(ciphertext);
+                return { file, prepared, ciphertext, chunkIvB64, chunkHash };
+            })
+        );
+        const metadataArr = processed.map(({ file, prepared, chunkIvB64, chunkHash }) => ({
+            filename:           file.name,
+            filetype:           file.type || 'application/octet-stream',
+            folder_id:          folderId || '',
+            original_size:      String(file.size),
+            encrypted_size:     String(prepared.totalEncryptedSize),
+            encrypted_file_key: prepared.encryptedKeyB64,
+            key_iv:             prepared.keyIvB64,
+            chunk_iv:           chunkIvB64,
+            chunk_hash:         `sha256:${chunkHash}`,
+            last_modified_ms:   String(file.lastModified),
+            ...prepared.escrowMeta,
+        }));
         const form = new FormData();
         form.append('metadata', new Blob([JSON.stringify(metadataArr)], { type: 'application/json' }));
-        for (let i = 0; i < ciphertexts.length; i++) {
-            form.append(`file_${i}`, new Blob([ciphertexts[i]], { type: 'application/octet-stream' }));
+        for (let i = 0; i < processed.length; i++) {
+            form.append(`file_${i}`, new Blob([processed[i].ciphertext], { type: 'application/octet-stream' }));
         }
         return form;
     }
