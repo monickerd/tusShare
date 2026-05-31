@@ -179,7 +179,7 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
     """
     cursor = await db.execute(
         "SELECT t.id, t.name, t.description, t.owner_id, t.pre_public_key, "
-        "       t.rotation_pending, t.created_at, t.updated_at, "
+        "       t.rotation_pending, t.created_at, t.updated_at, t.scheduled_delete_at, "
         "       array_agg(ur.role_id) AS my_roles, "
         "       COALESCE(MAX(utk.key_confirmed), 0) AS my_key_confirmed, "
         "       CASE WHEN EXISTS("
@@ -191,7 +191,7 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
         "JOIN user_roles ur ON ur.scope_id = t.id AND ur.scope_type = 'team' AND ur.user_id = ? "
         "LEFT JOIN user_team_keys utk ON utk.team_id = t.id AND utk.user_id = ? "
         "GROUP BY t.id, t.name, t.description, t.owner_id, t.pre_public_key, "
-        "         t.rotation_pending, t.created_at, t.updated_at "
+        "         t.rotation_pending, t.created_at, t.updated_at, t.scheduled_delete_at "
         "ORDER BY t.name",
         (user_id, user_id),
     )
