@@ -120,7 +120,16 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
     for cr in cred_rows:
         try:
             payload = decrypt_credential(cr["credential"])
-            exclude_ids.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(payload["credential_id"])))
+            typed_transports: list[AuthenticatorTransport] = []
+            for t in payload.get("transports", []):
+                try:
+                    typed_transports.append(AuthenticatorTransport(t))
+                except ValueError:
+                    pass
+            exclude_ids.append(PublicKeyCredentialDescriptor(
+                id=base64url_to_bytes(payload["credential_id"]),
+                transports=typed_transports or None,
+            ))
         except Exception:
             pass
 
@@ -131,7 +140,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
         user_id=user_id.encode(),
         user_name=username,
         user_display_name=username,
-        attestation=AttestationConveyancePreference.DIRECT,
+        attestation=AttestationConveyancePreference.NONE,
         authenticator_selection=AuthenticatorSelectionCriteria(
             authenticator_attachment=AuthenticatorAttachment.CROSS_PLATFORM,
             resident_key=ResidentKeyRequirement.DISCOURAGED,
