@@ -45,12 +45,14 @@ RUN pip install --no-cache-dir /tmp/*.whl && rm /tmp/*.whl
 
 # Copy application code
 COPY backend/app ./app
-COPY frontend ./frontend
+COPY backend/entrypoint.sh ./entrypoint.sh
+COPY frontend ./frontend-src
 
 # Create data directories and non-root user
 RUN mkdir -p /data/files /data/uploads \
     && addgroup -S tusshare && adduser -S -G tusshare -h /app tusshare \
-    && chown -R tusshare:tusshare /app /data
+    && chown -R tusshare:tusshare /app /data \
+    && chmod +x /app/entrypoint.sh
 USER tusshare
 
 EXPOSE 8080
@@ -58,4 +60,4 @@ EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=5s --retries=6 --start-period=30s \
     CMD wget -qO- http://127.0.0.1:8080/api/v1/health || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--forwarded-allow-ips=*"]
+CMD ["/app/entrypoint.sh"]

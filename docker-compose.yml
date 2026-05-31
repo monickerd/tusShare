@@ -134,19 +134,18 @@ services:
       - "127.0.0.1:9050:8080"
     volumes:
       - tusshare_data:/data
-      # SRI injection rewrites frontend/index.html at every startup, so the
-      # frontend directory must be writable despite read_only: true below.
-      # Docker populates this named volume from the image on first creation
-      # but will NOT overwrite it on subsequent rebuilds — use update.sh
-      # (in the project root) to rebuild, which removes the stale volume so
-      # Docker repopulates it from the new image before restarting the stack.
-      # Do NOT use "docker compose down -v" — that also removes tusshare_data.
-      - tusshare_frontend:/app/frontend
+      # frontend-src (baked into the image) is copied into a tmpfs-backed
+      # /app/frontend by the entrypoint on every container start.  SRI injection
+      # then rewrites index.html in that tmpfs.  No named volume is needed, so
+      # plain "docker compose down && docker compose up --build -d" is sufficient
+      # to pick up frontend changes.
     tmpfs:
       # Read-only root filesystem (below) still needs writable scratch space.
       # Python uses /tmp for temp files; /var/tmp for longer-lived scratch.
       - /tmp:mode=1777,size=64m
       - /var/tmp:mode=1777,size=16m
+      # frontend files are copied here by the entrypoint on every start.
+      - /app/frontend:mode=0755,size=32m
     read_only: true
     cap_drop:
       - ALL
@@ -190,8 +189,6 @@ services:
 
 volumes:
   tusshare_data:
-    driver: local
-  tusshare_frontend:
     driver: local
   postgres_data:
     driver: local
