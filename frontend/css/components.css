@@ -3142,6 +3142,26 @@
     white-space: nowrap;
 }
 
+/* === Recent activity: desktop inline layout === */
+@media (min-width: 769px) {
+    .recent-activity-section {
+        display: flex;
+        flex-direction: row;
+        align-items: stretch;
+    }
+    .recent-activity-header {
+        flex-shrink: 0;
+        justify-content: flex-start;
+        gap: var(--space-2);
+    }
+    .recent-activity-body {
+        flex: 1;
+        border-top: none;
+        border-left: 1px solid var(--color-border);
+        min-width: 0;
+    }
+}
+
 /* === Transfer panel: mobile close button (hidden on desktop) === */
 .transfer-panel-close-mobile {
     display: none;

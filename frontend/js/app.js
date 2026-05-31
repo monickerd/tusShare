@@ -671,7 +671,8 @@ const App = (() => {
 
     function _makeRecentActivitySection() {
         const stored = localStorage.getItem(_RA_LS_KEY);
-        const expanded = stored === null ? true : stored === '1';
+        const isMobile = window.innerWidth <= 768;
+        const expanded = stored !== null ? stored === '1' : !isMobile;
 
         const section = Utils.el('div', { className: 'recent-activity-section' });
         const header  = Utils.el('div', { className: 'recent-activity-header' });
