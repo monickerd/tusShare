@@ -315,6 +315,42 @@ const App = (() => {
     }
 
     // -----------------------------------------------------------------------
+    // Sidebar resize
+    // -----------------------------------------------------------------------
+
+    const _SIDEBAR_W_KEY = 'tus_sidebar_width';
+    const _SIDEBAR_MIN_W = 150;
+    const _SIDEBAR_MAX_W = 480;
+
+    function _initSidebarResize(sidebar, resizer) {
+        const stored = parseInt(localStorage.getItem(_SIDEBAR_W_KEY), 10);
+        if (stored >= _SIDEBAR_MIN_W && stored <= _SIDEBAR_MAX_W) {
+            sidebar.style.width = stored + 'px';
+        }
+        resizer.addEventListener('mousedown', e => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = sidebar.getBoundingClientRect().width;
+            resizer.classList.add('is-dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            function onMove(e) {
+                sidebar.style.width = Math.min(_SIDEBAR_MAX_W, Math.max(_SIDEBAR_MIN_W, startW + e.clientX - startX)) + 'px';
+            }
+            function onUp() {
+                resizer.classList.remove('is-dragging');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                localStorage.setItem(_SIDEBAR_W_KEY, Math.round(sidebar.getBoundingClientRect().width));
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            }
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    }
+
+    // -----------------------------------------------------------------------
     // Pinned Folders — DB-backed (ui_prefs.pinned_folders)
     // -----------------------------------------------------------------------
 
@@ -370,9 +406,9 @@ const App = (() => {
             row.appendChild(Utils.el('a', {
                 href: pin.hash || `#/files/${pin.id}`,
                 className: 'sidebar-link sidebar-sublink pinned-folder-link',
-                textContent: pin.name,
-                style: 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap',
-            }));
+                title: pin.name,
+                style: 'flex:1',
+            }, [Utils.el('span', { className: 'sidebar-link-text', textContent: pin.name })]));
             const unpinBtn = Utils.el('button', {
                 className: 'pinned-unpin-btn',
                 title: 'Remove from Favourites',
@@ -1640,19 +1676,21 @@ const App = (() => {
             textContent: '\u2630',
         });
 
+        const _slt = text => Utils.el('span', { className: 'sidebar-link-text', textContent: text });
+
         const nav = Utils.el('nav', { className: 'sidebar-nav' }, [
-            Utils.el('a', { href: '#/files', className: 'sidebar-link', id: 'nav-files', textContent: 'My Files' }),
+            Utils.el('a', { href: '#/files', className: 'sidebar-link', id: 'nav-files', title: 'My Files' }, [_slt('My Files')]),
 
             Utils.el('div', { className: 'sidebar-section-label', textContent: 'Teams' }),
             Utils.el('div', { className: 'sidebar-submenu' }, [
-                Utils.el('a', { href: '#/team-folders', className: 'sidebar-link sidebar-sublink', id: 'nav-team-folders', textContent: 'Team Folders' }),
-                Utils.el('a', { href: '#/teams',        className: 'sidebar-link sidebar-sublink', id: 'nav-teams',        textContent: 'Manage Teams' }),
+                Utils.el('a', { href: '#/team-folders', className: 'sidebar-link sidebar-sublink', id: 'nav-team-folders', title: 'Team Folders' }, [_slt('Team Folders')]),
+                Utils.el('a', { href: '#/teams',        className: 'sidebar-link sidebar-sublink', id: 'nav-teams',        title: 'Manage Teams'  }, [_slt('Manage Teams')]),
             ]),
 
             Utils.el('div', { className: 'sidebar-section-label', textContent: 'Shared' }),
             Utils.el('div', { className: 'sidebar-submenu' }, [
-                Utils.el('a', { href: '#/shares',          className: 'sidebar-link sidebar-sublink', id: 'nav-shares',   textContent: 'Shared From Me' }),
-                Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', textContent: 'Shared To Me' }),
+                Utils.el('a', { href: '#/shares',          className: 'sidebar-link sidebar-sublink', id: 'nav-shares',   title: 'Shared From Me' }, [_slt('Shared From Me')]),
+                Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', title: 'Shared To Me'   }, [_slt('Shared To Me')]),
             ]),
 
             Utils.el('div', { className: 'sidebar-section-label', textContent: 'Recent' }),
@@ -1661,8 +1699,8 @@ const App = (() => {
         ]);
         if (user?.is_admin) {
             nav.appendChild(Utils.el('a', {
-                href: '#/admin', className: 'sidebar-link sidebar-admin', id: 'nav-admin', textContent: 'Admin Dashboard',
-            }));
+                href: '#/admin', className: 'sidebar-link sidebar-admin', id: 'nav-admin', title: 'Admin Dashboard',
+            }, [_slt('Admin Dashboard')]));
         }
 
         const unreadDot = Utils.el('span', { className: 'header-unread-dot' });
@@ -1897,8 +1935,7 @@ const App = (() => {
                             href: item.hash,
                             className: 'sidebar-link sidebar-sublink',
                             title: item.folder_name,
-                            textContent: item.folder_name,
-                        }));
+                        }, [Utils.el('span', { className: 'sidebar-link-text', textContent: item.folder_name })]));
                     }
                 }
             }
@@ -2003,16 +2040,17 @@ const App = (() => {
         const pinnedSection = Utils.el('div', { id: 'pinned-folders-sidebar', className: 'pinned-folders-sidebar' });
         _renderPinnedSidebar(pinnedSection);
 
+        const sidebarEl = Utils.el('aside', { className: 'sidebar', id: 'folder-sidebar' }, [nav, pinnedSection]);
+        const resizerEl = Utils.el('div', { className: 'sidebar-resizer', 'aria-hidden': 'true' });
         shellChildren.push(
             Utils.el('div', { className: 'app-body' }, [
-                Utils.el('aside', { className: 'sidebar', id: 'folder-sidebar' }, [
-                    nav,
-                    pinnedSection,
-                ]),
+                sidebarEl,
+                resizerEl,
                 Utils.el('div', { id: 'main-content', className: 'app-main' }),
             ]),
             bottomNav,
         );
+        _initSidebarResize(sidebarEl, resizerEl);
 
         const shell = Utils.el('div', { className: 'app-shell' }, shellChildren);
 
