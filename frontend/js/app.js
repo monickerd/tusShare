@@ -414,9 +414,6 @@ const App = (() => {
         page.innerHTML = '';
         const pins = _getPinnedFolders();
 
-        // Recent Activity section at top of Favourites page
-        page.appendChild(_makeRecentActivitySection());
-
         const savedView = localStorage.getItem('tus_pinned_view') || 'tile';
         let view = savedView;
 
@@ -663,76 +660,10 @@ const App = (() => {
         if (q) _doSearch(q);
     }
 
-    // -----------------------------------------------------------------------
-    // Recent Activity — collapsible section injected at top of root-level pages
-    // -----------------------------------------------------------------------
-
-    const _RA_LS_KEY = 'tus_recent_expanded';
-
-    function _makeRecentActivitySection() {
-        const stored = localStorage.getItem(_RA_LS_KEY);
-        const isMobile = window.innerWidth <= 768;
-        const expanded = stored !== null ? stored === '1' : !isMobile;
-
-        const section = Utils.el('div', { className: 'recent-activity-section' });
-        const header  = Utils.el('div', { className: 'recent-activity-header' });
-        const chevron = Utils.el('span', { className: 'recent-activity-chevron', textContent: expanded ? '▾' : '▸' });
-        header.appendChild(Utils.el('span', { className: 'recent-activity-title', textContent: 'Recent' }));
-        header.appendChild(chevron);
-        section.appendChild(header);
-
-        const body = Utils.el('div', {
-            className: 'recent-activity-body',
-            style: expanded ? '' : 'display:none',
-        });
-        body.appendChild(Utils.el('span', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'Loading…' }));
-        section.appendChild(body);
-
-        header.addEventListener('click', () => {
-            const isOpen = body.style.display !== 'none';
-            body.style.display = isOpen ? 'none' : '';
-            chevron.textContent = isOpen ? '▸' : '▾';
-            localStorage.setItem(_RA_LS_KEY, isOpen ? '0' : '1');
-        });
-
-        Api.get(`${Config.app.apiPrefix}/auth/me/recent-folders`).then(data => {
-            body.innerHTML = '';
-            const items = (data.recent_folders || []);
-            if (!items.length) {
-                body.appendChild(Utils.el('span', { className: 'text-muted', style: 'font-size:var(--font-size-sm)', textContent: 'No recent activity yet.' }));
-                return;
-            }
-            const grid = Utils.el('div', { className: 'recent-activity-grid' });
-            for (const item of items) {
-                const card = Utils.el('a', {
-                    href: item.hash,
-                    className: 'recent-activity-card',
-                    title: item.folder_name,
-                });
-                card.appendChild(Utils.el('div', { className: 'recent-activity-card-name', textContent: item.folder_name }));
-                const meta = item.team_name ? `Team: ${item.team_name}` : 'Personal';
-                card.appendChild(Utils.el('div', { className: 'recent-activity-card-meta', textContent: meta }));
-                grid.appendChild(card);
-            }
-            body.appendChild(grid);
-        }).catch(() => {
-            body.innerHTML = '';
-        });
-
-        return section;
-    }
-
-    function _injectRecentActivity(parentEl) {
-        const section = _makeRecentActivitySection();
-        parentEl.insertBefore(section, parentEl.firstChild);
-    }
-
     function _routeFiles(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
         Files.renderFileBrowser(main);
-        // renderFileBrowser clears main first, so inject after it returns
-        _injectRecentActivity(main);
     }
 
     function _routeFolder(container, folderId) {
@@ -775,7 +706,6 @@ const App = (() => {
         _renderShell(container);
         const main = document.getElementById('main-content');
         await Teams.renderTeamFoldersPage(main);
-        _injectRecentActivity(main);
     }
 
     function _routeTeams(container) {
@@ -1725,6 +1655,9 @@ const App = (() => {
                 Utils.el('a', { href: '#/shares/received', className: 'sidebar-link sidebar-sublink', id: 'nav-received', textContent: 'Shared To Me' }),
             ]),
 
+            Utils.el('div', { className: 'sidebar-section-label', textContent: 'Recent' }),
+            Utils.el('div', { className: 'sidebar-submenu', id: 'sidebar-recent-submenu' }, []),
+
         ]);
         if (user?.is_admin) {
             nav.appendChild(Utils.el('a', {
@@ -1904,6 +1837,11 @@ const App = (() => {
         const _iconHome  = () => _mkSvg('<path fill="currentColor" d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>');
         const _iconShare = () => _mkSvg('<path fill="currentColor" d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/>');
         const _iconStar  = () => _mkSvg('<polygon fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>');
+        const _iconClock = () => _mkSvg(
+            '<circle cx="12" cy="12" r="9" stroke-width="1.5"/>' +
+            '<path stroke-linecap="round" stroke-width="1.5" d="M12 7v5l3.5 3.5"/>',
+            { fill: 'none', stroke: 'currentColor' }
+        );
         // Three-person team icon.
         // Front body: cubic bezier with steep sides and flat apex — avoids the deep-U
         // of a circular arc. Control points give nearly vertical tangents at the base
@@ -1939,12 +1877,37 @@ const App = (() => {
         bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares',          className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared By Me' }));
         bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares/received', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared To Me' }));
 
+        const { item: bnRecent, submenu: bnRecentMenu } = _makeBnSubmenuItem(_iconClock(), 'recent', 'Recent');
+
         // Close submenu when a submenu link is clicked
         [bnTeamsMenu, bnSharedMenu].forEach(menu => {
             menu.querySelectorAll('.bn-submenu-link').forEach(link => {
                 link.addEventListener('click', _closeBnSubmenus);
             });
         });
+
+        // Populate Recent in both sidebar and bottom nav from a single fetch
+        Api.get(`${Config.app.apiPrefix}/auth/me/recent-folders`).then(data => {
+            const items = (data.recent_folders || []).slice(0, 4);
+            const sidebarSlot = document.getElementById('sidebar-recent-submenu');
+            if (sidebarSlot) {
+                if (items.length) {
+                    for (const item of items) {
+                        sidebarSlot.appendChild(Utils.el('a', {
+                            href: item.hash,
+                            className: 'sidebar-link sidebar-sublink',
+                            title: item.folder_name,
+                            textContent: item.folder_name,
+                        }));
+                    }
+                }
+            }
+            for (const item of items) {
+                const link = Utils.el('a', { href: item.hash, className: 'bn-submenu-link', role: 'menuitem', textContent: item.folder_name });
+                link.addEventListener('click', _closeBnSubmenus);
+                bnRecentMenu.appendChild(link);
+            }
+        }).catch(() => {});
 
         const bnTransferBtn = Utils.el('button', {
             className: 'bn-tab',
@@ -1964,6 +1927,7 @@ const App = (() => {
             _makeBnItem(_iconHome(), '#/files', 'files', 'My Files'),
             bnTeams,
             bnShared,
+            bnRecent,
             _makeBnItem(_iconStar(), '#/pinned', 'pinned', 'Favourites'),
             bnTransferItem,
         ]);
