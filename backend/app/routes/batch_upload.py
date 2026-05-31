@@ -47,6 +47,14 @@ _CONTENT_DISP_NAME_RE = re.compile(rb';\s*name="([^"]+)"')
 _bg_tasks: set = set()
 
 
+class _BatchFileError(Exception):
+    """Raised when a specific file causes a batch transaction failure."""
+    def __init__(self, index: int, detail: str) -> None:
+        self.index = index
+        self.detail = detail
+        super().__init__(detail)
+
+
 # ---------------------------------------------------------------------------
 # Per-file metadata (parsed + validated)
 # ---------------------------------------------------------------------------
@@ -398,71 +406,105 @@ def _verify_file_hash_and_size(index: int, data: bytes, meta: _FileMeta) -> str 
     return None
 
 
-async def _store_file(db, user_id: str, meta: _FileMeta, data: bytes) -> str:
-    """Write blob and insert all DB records for one file. Returns file_id."""
-    file_id = str(uuid.uuid4())
-    storage_key = str(uuid.uuid4())
-    chunk_id = str(uuid.uuid4())
-
-    await db.execute("BEGIN")
-    try:
+async def _insert_file_in_tx(
+    db,
+    user_id: str,
+    meta: _FileMeta,
+    data: bytes,
+    file_id: str,
+    storage_key: str,
+    chunk_id: str,
+) -> None:
+    """Insert all DB records and blob for one file. Caller owns the open transaction."""
+    await db.execute(
+        """
+        INSERT INTO files (
+            id, original_name, sanitized_name, storage_key, folder_id, owner_id,
+            mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
+            encrypted_file_key, key_iv, upload_complete,
+            escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
+            last_modified_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?, ?, ?)
+        """,
+        (
+            file_id, meta.filename, meta.sanitized_name, storage_key,
+            meta.folder_id, user_id, meta.filetype,
+            meta.original_size, meta.encrypted_size, meta.chunk_size,
+            meta.encrypted_file_key, meta.key_iv,
+            meta.escrow_ephemeral_pk, meta.escrow_encrypted_key, meta.escrow_key_iv,
+            meta.last_modified_ms,
+        ),
+    )
+    if meta.folder_id:
+        await copy_folder_permissions(db, meta.folder_id, "file", file_id)
+    await db.execute(
+        """
+        INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset")
+        VALUES (?, ?, 0, ?, ?, 0)
+        """,
+        (chunk_id, file_id, meta.chunk_iv, meta.encrypted_size),
+    )
+    await db.execute(
+        "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
+        (meta.encrypted_size, user_id),
+    )
+    if meta.folder_id:
         await db.execute(
             """
-            INSERT INTO files (
-                id, original_name, sanitized_name, storage_key, folder_id, owner_id,
-                mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
-                encrypted_file_key, key_iv, upload_complete,
-                escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
-                last_modified_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?, ?, ?)
+            INSERT INTO pending_share_keying (id, share_id, file_id, folder_id)
+            SELECT gen_random_uuid()::text, s.id, ?, ?
+            FROM shares s
+            WHERE s.target_folder_id = ?
+              AND s.key_type = 'hkdf-v1'
+              AND s.is_active = 1
+              AND (s.expires_at IS NULL OR s.expires_at > NOW())
+            ON CONFLICT (share_id, file_id) DO NOTHING
             """,
-            (
-                file_id, meta.filename, meta.sanitized_name, storage_key,
-                meta.folder_id, user_id, meta.filetype,
-                meta.original_size, meta.encrypted_size, meta.chunk_size,
-                meta.encrypted_file_key, meta.key_iv,
-                meta.escrow_ephemeral_pk, meta.escrow_encrypted_key, meta.escrow_key_iv,
-                meta.last_modified_ms,
-            ),
+            (file_id, meta.folder_id, meta.folder_id),
         )
-        if meta.folder_id:
-            await copy_folder_permissions(db, meta.folder_id, "file", file_id)
-        await db.execute(
-            """
-            INSERT INTO file_chunks (id, file_id, chunk_index, iv, size_bytes, "offset")
-            VALUES (?, ?, 0, ?, ?, 0)
-            """,
-            (chunk_id, file_id, meta.chunk_iv, meta.encrypted_size),
-        )
-        await db.execute(
-            "UPDATE users SET disk_used = disk_used + ? WHERE id = ?",
-            (meta.encrypted_size, user_id),
-        )
-        if meta.folder_id:
-            await db.execute(
-                """
-                INSERT INTO pending_share_keying (id, share_id, file_id, folder_id)
-                SELECT gen_random_uuid()::text, s.id, ?, ?
-                FROM shares s
-                WHERE s.target_folder_id = ?
-                  AND s.key_type = 'hkdf-v1'
-                  AND s.is_active = 1
-                  AND (s.expires_at IS NULL OR s.expires_at > NOW())
-                ON CONFLICT (share_id, file_id) DO NOTHING
-                """,
-                (file_id, meta.folder_id, meta.folder_id),
-            )
-        # write_blob does the physical storage write + file_storage_locations insert.
-        # It runs last: if any earlier DB step fails we roll back cleanly.
-        # If the commit below fails after write_blob succeeds, the blob is orphaned
-        # (same risk as the tus finalization path).
-        await storage.get_manager().write_blob(db, file_id, storage_key, data)
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise
+    # write_blob writes the physical blob + inserts file_storage_locations.
+    # Runs last: if any earlier step fails the transaction rolls back cleanly.
+    await storage.get_manager().write_blob(db, file_id, storage_key, data)
 
-    return file_id
+
+async def _write_batch(
+    user_id: str,
+    items: list[tuple[int, bytes, "_FileMeta"]],
+) -> tuple[dict[int, tuple[str, int, str | None]], int | None, str]:
+    """Store all files in one transaction. Returns (file_id_map, problem_index, problem_detail).
+
+    file_id_map maps each item's index → (file_id, encrypted_size, folder_id).
+    On success problem_index is None.  On a per-file write failure the transaction
+    is fully rolled back and problem_index identifies the offending file so the
+    caller can report it separately and queue siblings for individual retry.
+    """
+    file_id_map: dict[int, tuple[str, int, str | None]] = {}
+    problem_index: int | None = None
+    problem_detail: str = ""
+
+    async with db_session() as db:
+        await db.execute("BEGIN")
+        try:
+            for index, data, meta in items:
+                file_id = str(uuid.uuid4())
+                storage_key = str(uuid.uuid4())
+                chunk_id = str(uuid.uuid4())
+                try:
+                    await _insert_file_in_tx(db, user_id, meta, data, file_id, storage_key, chunk_id)
+                    file_id_map[index] = (file_id, meta.encrypted_size, meta.folder_id)
+                except Exception as exc:
+                    problem_index = index
+                    problem_detail = str(exc)
+                    break
+            if problem_index is None:
+                await db.commit()
+            else:
+                await db.rollback()
+        except Exception:
+            await db.rollback()
+            raise
+
+    return file_id_map, problem_index, problem_detail
 
 
 def _emit_file_events(file_id: str, user_id: str, encrypted_size: int, folder_id: str | None) -> None:
@@ -489,35 +531,9 @@ def _fire_background_tasks(file_id: str, user_id: str, folder_id: str | None) ->
         t2.add_done_callback(_bg_tasks.discard)
 
 
-async def _write_one(index: int, data: bytes, meta: _FileMeta, user_id: str) -> dict:
-    """Store one pre-verified file using its own pooled connection. Returns result dict.
-
-    Each call acquires a separate connection so all files in a batch can write
-    concurrently.  Postgres row-level locking serialises the disk_used UPDATE
-    per user, so concurrent increments are always consistent.
-    """
-    async with db_session() as own_db:
-        try:
-            file_id = await _store_file(own_db, user_id, meta, data)
-        except Exception as exc:
-            logger.error("Batch upload: store failed for file %d: %s", index, exc)  # NOSONAR
-            return {"index": index, "file_id": None, "status": "error", "detail": "storage error"}
-    _emit_file_events(file_id, user_id, meta.encrypted_size, meta.folder_id)
-    _fire_background_tasks(file_id, user_id, meta.folder_id)
-    return {"index": index, "file_id": file_id, "status": "ok"}
-
-
 # ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
-
-async def _verify_and_write(index: int, data: bytes, meta: _FileMeta, user_id: str) -> dict:
-    """Hash-verify then store one file. Runs as a concurrent task during streaming."""
-    err = await asyncio.to_thread(_verify_file_hash_and_size, index, data, meta)
-    if err:
-        logger.warning("Batch upload: file %d rejected — %s", index, err)  # NOSONAR
-        return {"index": index, "file_id": None, "status": "error", "detail": err}
-    return await _write_one(index, data, meta, user_id)
 
 
 @router.post(
@@ -556,41 +572,41 @@ async def batch_upload(
     parser = MultipartParser(boundary, _make_callbacks(state))
 
     file_metas: list[_FileMeta] | None = None
-    write_tasks: list[asyncio.Task] = []
+    verify_tasks: list[asyncio.Task] = []
+    file_data: dict[int, bytes] = {}
 
-    # Stream the request body.  As each part ends:
-    #   - metadata part → validate immediately (it always arrives first)
-    #   - file parts    → launch a concurrent verify+write task
-    # This overlaps network receive time with hash checking and disk writes.
+    # Stream the request body. As each file part completes, launch its hash
+    # verification concurrently in a thread pool. File bytes are buffered here
+    # and committed to the DB in a single transaction after all parts arrive.
     async for raw_chunk in request.stream():
         parser.write(raw_chunk)
         if state.error:
             break
 
-        # Metadata validation can await because no write tasks have started yet
-        # (file parts always come after the metadata part in the multipart stream).
         if state.metadata_ready is not None and file_metas is None:
             file_metas = await _parse_and_validate_metadata(
                 state.metadata_ready, user.id, db, admin_chunk_size
             )
 
-        # Drain any file parts that just completed and start their write tasks.
         while state.file_ready_queue and not state.error:
             index, data = state.file_ready_queue.pop(0)
             if file_metas is None or index >= len(file_metas):
                 state.error = f"file part {index} received before metadata was validated"
                 break
-            write_tasks.append(
-                asyncio.create_task(_verify_and_write(index, data, file_metas[index], user.id))
+            file_data[index] = data
+            verify_tasks.append(
+                asyncio.create_task(
+                    asyncio.to_thread(_verify_file_hash_and_size, index, data, file_metas[index])
+                )
             )
 
         if state.error:
             break
 
     async def _cancel_and_wait() -> None:
-        for t in write_tasks:
+        for t in verify_tasks:
             t.cancel()
-        await asyncio.gather(*write_tasks, return_exceptions=True)
+        await asyncio.gather(*verify_tasks, return_exceptions=True)
 
     if state.error:
         await _cancel_and_wait()
@@ -609,22 +625,57 @@ async def batch_upload(
     if file_metas is None:
         raise HTTPException(status_code=400, detail="No metadata part received")
 
-    if len(write_tasks) != len(file_metas):
+    if len(verify_tasks) != len(file_metas):
         await _cancel_and_wait()
         raise HTTPException(
             status_code=400,
-            detail=f"Expected {len(file_metas)} file parts, received {len(write_tasks)}",
+            detail=f"Expected {len(file_metas)} file parts, received {len(verify_tasks)}",
         )
 
-    # All file parts received; gather any still-running write tasks.
-    # Tasks started early in the stream are likely already done by now.
-    raw_results = await asyncio.gather(*write_tasks, return_exceptions=True)
-    results = []
-    for i, r in enumerate(raw_results):
-        if isinstance(r, BaseException):
-            logger.error("Batch upload: task %d raised unexpectedly: %s", i, r)  # NOSONAR
-            results.append({"index": i, "file_id": None, "status": "error", "detail": "internal error"})
+    # Gather hash results (ran concurrently with the tail of the request stream).
+    verify_results = await asyncio.gather(*verify_tasks, return_exceptions=True)
+    hash_errors: dict[int, str] = {}
+    verified_items: list[tuple[int, bytes, _FileMeta]] = []
+    for task_idx, vr in enumerate(verify_results):
+        if isinstance(vr, BaseException):
+            hash_errors[task_idx] = f"verification error: {vr}"
+        elif vr is not None:                  # error string from _verify_file_hash_and_size
+            hash_errors[task_idx] = vr
         else:
-            results.append(r)
+            verified_items.append((task_idx, file_data[task_idx], file_metas[task_idx]))
+
+    # Write all hash-passed files in a single transaction (one WAL flush).
+    # If one file's write fails, the entire transaction rolls back and
+    # problem_index identifies it so siblings can be queued for individual retry.
+    file_id_map: dict[int, tuple[str, int, str | None]] = {}
+    problem_index: int | None = None
+    problem_detail: str = ""
+    if verified_items:
+        try:
+            file_id_map, problem_index, problem_detail = await _write_batch(user.id, verified_items)
+        except Exception as exc:
+            logger.error("Batch upload: write_batch raised unexpectedly: %s", exc)  # NOSONAR
+            for idx, _, _ in verified_items:
+                hash_errors[idx] = "internal storage error"
+
+    # Build per-file result list.
+    # "rolled_back" tells the client the file itself had no issue but was caught
+    # in a sibling's rollback — it should retry individually rather than be
+    # reported as a permanent failure.
+    results = []
+    for meta in file_metas:
+        idx = meta.index
+        if idx in hash_errors:
+            results.append({"index": idx, "file_id": None, "status": "error", "detail": hash_errors[idx]})
+        elif problem_index is None:
+            file_id, enc_size, folder_id = file_id_map[idx]
+            _emit_file_events(file_id, user.id, enc_size, folder_id)
+            _fire_background_tasks(file_id, user.id, folder_id)
+            results.append({"index": idx, "file_id": file_id, "status": "ok"})
+        elif idx == problem_index:
+            results.append({"index": idx, "file_id": None, "status": "error", "detail": problem_detail})
+        else:
+            results.append({"index": idx, "file_id": None, "status": "rolled_back",
+                            "detail": "rolled back due to sibling failure"})
 
     return {"results": sorted(results, key=lambda r: r["index"])}

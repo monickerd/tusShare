@@ -2295,14 +2295,13 @@ const Files = (() => {
         const batcher = _makeFinishBatcher(Config.upload.finishIntervalMs, folderId);
 
         // Small files: group by approximate encrypted size before any crypto runs, so
-        // each group can prepare and send independently without waiting for the full
-        // small-file set. Groups are sent concurrently via the upload semaphore.
+        // each group can prepare independently.  The upload semaphore limits how many
+        // batch POSTs are in-flight at once; it is held until the server responds so
+        // the server is never handed more work than it can queue at one time.
+        // _prewarmSemaphore ensures the NEXT group's crypto runs while the current
+        // batch is uploading, hiding crypto latency inside network latency.
         if (smallResolved.length > 0) {
-            // Fire batches as fast as they are ready; collect responses separately.
-            // The upload semaphore gates how many fetches start in rapid succession,
-            // but is released immediately after firing so the next batch can start
-            // without waiting for the server to finish writing the current one.
-            const _batchCollectors = [];
+            const allRetryItems = [];
             await Promise.allSettled(
                 _groupByFileSize(smallResolved, _BATCH_BUDGET_BYTES).map(async (group) => {
                     const batch = await Promise.all(
@@ -2314,12 +2313,35 @@ const Files = (() => {
                         })
                     );
                     await _uploadSemaphore.acquire();
-                    _batchCollectors.push(_executeBatchUpload(batch, folderId, batcher, _ctx));
-                    _uploadSemaphore.release();
+                    try {
+                        const retryItems = await _executeBatchUpload(batch, folderId, batcher, _ctx);
+                        allRetryItems.push(...retryItems);
+                    } finally {
+                        _uploadSemaphore.release();
+                    }
                 })
             );
-            // All fetches fired; wait for every response before moving to large files / batcher flush.
-            await Promise.allSettled(_batchCollectors);
+
+            // Sequential retry pass: each deferred file is re-prepared fresh from disk
+            // and submitted as a single-file batch. noRetry=true prevents further deferral.
+            for (const { file, folderId: retryFolderId } of allRetryItems) {
+                let prepared;
+                try {
+                    await _prewarmSemaphore.acquire();
+                    prepared = await Upload.prepareUpload(file, retryFolderId, masterKey);
+                    _prewarmSemaphore.release();
+                } catch (err) {
+                    _prewarmSemaphore.release();
+                    _ctx.results.failed.push(file.name);
+                    continue;
+                }
+                await _uploadSemaphore.acquire();
+                try {
+                    await _executeBatchUpload([{ prepared, file }], retryFolderId, batcher, _ctx, true);
+                } finally {
+                    _uploadSemaphore.release();
+                }
+            }
         }
 
         // Large files: existing bounded tus path (unchanged).
@@ -2607,7 +2629,10 @@ const Files = (() => {
     }
 
     // Send one batch POST and record per-file results into ctx.
-    async function _executeBatchUpload(batch, folderId, batcher, ctx) {
+    // Returns an array of {file, folderId} items that need a fresh individual retry
+    // (status "rolled_back" = collateral from a sibling failure; "error" = causal file).
+    // Pass noRetry=true on retry attempts to treat all failures as permanent.
+    async function _executeBatchUpload(batch, folderId, batcher, ctx, noRetry = false) {
         const label = batch.length === 1 ? batch[0].file.name : `Uploading ${batch.length} files`;
         // When a bulk overlay owns the banner, suppress individual per-batch overlays
         // so the screen doesn't fill with dozens of progress bars.
@@ -2624,7 +2649,7 @@ const Files = (() => {
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(`Batch preparation failed: ${err.message}`, 'error');
             ctx._bulkOnBatchDone?.(batch.length);
-            return;
+            return [];
         }
 
         const csrf = Utils.parseCookie(Config.auth.cookieCsrfName) || '';
@@ -2649,7 +2674,7 @@ const Files = (() => {
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(err.message || 'Batch upload network error', 'error');
             ctx._bulkOnBatchDone?.(batch.length);
-            return;
+            return [];
         }
 
         if (!resp.ok) {
@@ -2659,23 +2684,28 @@ const Files = (() => {
             for (const { file } of batch) ctx.results.failed.push(file.name);
             Utils.showToast(body.detail || `Batch upload failed (${resp.status})`, 'error');
             ctx._bulkOnBatchDone?.(batch.length);
-            return;
+            return [];
         }
 
         const { results } = await resp.json();
         overlay.remove();
         transfer.complete();
+        const retryItems = [];
         for (const result of results) {
             const { file, prepared } = batch[result.index];
             if (result.status === 'ok' && result.file_id) {
                 ctx.results.ok++;
                 if (!ctx.results.firstName) ctx.results.firstName = file.name;
                 batcher.push({ fileId: result.file_id, fileKeyBytes: prepared.fileKeyBytes });
+            } else if (!noRetry && (result.status === 'rolled_back' || result.status === 'error')) {
+                // Don't count as failed yet — queue for individual retry at end.
+                retryItems.push({ file, folderId });
             } else {
                 ctx.results.failed.push(file.name);
             }
         }
         ctx._bulkOnBatchDone?.(batch.length);
+        return retryItems;
     }
 
     // Executes the network phase of a queued upload using pre-warmed prepared data.
