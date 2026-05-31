@@ -18,7 +18,13 @@
 #   # Allow established/related replies back in:
 #   iptables -I DOCKER-USER -s "$APP_IP" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 #
-#   # Always required — postgres (Docker assigns the IP; adjust if you pin it):
+#   # Always required — pgbouncer (Docker assigns the IP; adjust if you pin it):
+#   PGBOUNCER_IP=$(docker inspect tusshare_pgbouncer \
+#     --format '{{(index .NetworkSettings.Networks "filexfer_backend_internal").IPAddress}}')
+#   iptables -I DOCKER-USER -s "$APP_IP" -d "$PGBOUNCER_IP" -p tcp --dport 6432 -j ACCEPT
+#
+#   # Only needed if TUSSHARE_SUPERUSER_URL is used (bootstrap). The superuser
+#   # URL bypasses pgbouncer and connects directly to postgres as the pg superuser.
 #   PG_IP=$(docker inspect tusshare_postgres \
 #     --format '{{(index .NetworkSettings.Networks "filexfer_backend_internal").IPAddress}}')
 #   iptables -I DOCKER-USER -s "$APP_IP" -d "$PG_IP" -p tcp --dport 5432 -j ACCEPT
@@ -89,6 +95,35 @@ services:
       retries: 5
       start_period: 10s
 
+  pgbouncer:
+    image: bitnami/pgbouncer:latest
+    container_name: tusshare_pgbouncer
+    networks:
+      - backend_internal
+    environment:
+      POSTGRESQL_HOST: postgres
+      POSTGRESQL_PORT: "5432"
+      POSTGRESQL_DATABASE: tusshare
+      # Must match the app user created by init-app-user.sh (TUSSHARE_APP_USER,
+      # defaults to "tusshare").
+      POSTGRESQL_USERNAME: tusshare
+      POSTGRESQL_PASSWORD: ${TUSSHARE_PG_PASSWORD:-changeme}
+      PGBOUNCER_PORT: "6432"
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_DEFAULT_POOL_SIZE: "25"
+      PGBOUNCER_MAX_CLIENT_CONN: "200"
+      PGBOUNCER_AUTH_TYPE: md5
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U tusshare"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   tusshare:
     build: .
     container_name: tusshare
@@ -136,10 +171,14 @@ services:
       #   from app.sensitive_config import _bootstrap; \
       #   asyncio.run(_bootstrap(os.environ['TUSSHARE_SUPERUSER_URL'],'tusshare',Path('/data')))"
       TUSSHARE_SUPERUSER_URL: ${TUSSHARE_SUPERUSER_URL:-}
+      # Route all normal app traffic through pgbouncer (transaction-mode pooling).
+      # TUSSHARE_SUPERUSER_URL above still connects directly to postgres — it is
+      # bootstrap-only and uses session-level operations unsuited to transaction mode.
+      DATABASE_URL: postgresql://tusshare:${TUSSHARE_PG_PASSWORD:-changeme}@pgbouncer:6432/tusshare
     env_file:
       - .env
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
