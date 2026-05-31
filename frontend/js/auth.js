@@ -1864,7 +1864,13 @@ const Auth = (() => {
                         msg = 'Registration was cancelled or timed out.';
                     } else if (!credential) {
                         // navigator.credentials.create() threw — key interaction failed before any data reached the server
-                        msg = `Key interaction failed [${err.name}]: ${err.message || 'no detail'}`;
+                        const isNfcDrop = err.name === 'NotReadableError' || err.name === 'AbortError' ||
+                            (err.message && /transient/i.test(err.message));
+                        if (isNfcDrop) {
+                            msg = 'NFC transfer interrupted. The phone\'s checkmark is premature — the key is still sending data when it appears. Hold the key firmly against the phone until this page shows “Security key registered!”, then try again.';
+                        } else {
+                            msg = `Key interaction failed [${err.name}]: ${err.message || 'no detail'}`;
+                        }
                     } else if (err.status >= 400) {
                         msg = `Server rejected the registration: ${err.message || 'check server logs'}`;
                     } else {
@@ -1880,7 +1886,7 @@ const Auth = (() => {
             },
         }, [
             Utils.el('p', { className: 'text-muted', style: 'margin-bottom:8px',
-                textContent: 'Insert your security key or use biometrics (Touch ID, Windows Hello, etc.) when prompted. Using NFC on mobile: tap your key, complete any PIN prompt, then keep the key held against the phone until registration finishes.' }),
+                textContent: 'Insert your security key or use biometrics (Touch ID, Windows Hello, etc.) when prompted. Using NFC on mobile: tap your key, complete any PIN prompt, then keep the key held firmly against the phone — the phone\'s own checkmark appears before the transfer is done. Only remove the key when this page shows "Security key registered!".' }),
             Utils.el('div', { className: 'form-group' }, [
                 Utils.el('label', { for: 'webauthn-key-name', textContent: 'Key Name (optional)' }),
                 Utils.el('input', {
