@@ -144,7 +144,7 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
             resident_key=ResidentKeyRequirement.DISCOURAGED,
             user_verification=UserVerificationRequirement.PREFERRED,
         ),
-        exclude_credentials=exclude_ids,
+        exclude_credentials=[],
         challenge=challenge_bytes,
     )
 
