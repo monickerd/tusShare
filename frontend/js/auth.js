@@ -1847,9 +1847,10 @@ const Auth = (() => {
                 let credential;
                 try {
                     const beginData = await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/begin`);
-                    credential = await navigator.credentials.create({
-                        publicKey: _webAuthnOptionsFromServer(beginData.options),
-                    });
+                    const pkOptions = _webAuthnOptionsFromServer(beginData.options);
+                    console.log('[WebAuthn] registration options (raw JSON):', JSON.stringify(beginData.options));
+                    console.log('[WebAuthn] parsed options:', pkOptions);
+                    credential = await navigator.credentials.create({ publicKey: pkOptions });
                     await new Promise(r => setTimeout(r, 500));
                     // Phase 2: server verification
                     await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/finish`, {
@@ -1858,6 +1859,7 @@ const Auth = (() => {
                         name,
                     });
                 } catch (err) {
+                    console.error('[WebAuthn] registration error:', err.name, err.message, 'cause:', err.cause, err);
                     let msg;
                     if (err.name === 'SecurityError') {
                         msg = 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.';
@@ -1925,6 +1927,12 @@ const Auth = (() => {
             out.excludeCredentials = out.excludeCredentials.map(c =>
                 ({...c, id: b64ToBytes(c.id)})
             );
+        }
+        // Strip empty extensions object — some Android FIDO2 implementations
+        // reject an extensions field that is present but empty.
+        if (out.extensions !== undefined &&
+            (out.extensions === null || Object.keys(out.extensions).length === 0)) {
+            delete out.extensions;
         }
         return out;
     }
