@@ -40,6 +40,7 @@ from webauthn.helpers.structs import (
     AttestationConveyancePreference,
     AuthenticatorSelectionCriteria,
     AuthenticatorTransport,
+    COSEAlgorithmIdentifier,
     PublicKeyCredentialDescriptor,
     ResidentKeyRequirement,
     UserVerificationRequirement,
@@ -144,6 +145,10 @@ async def begin_registration(db, user_id: str) -> tuple[str, dict]:
             resident_key=ResidentKeyRequirement.DISCOURAGED,
             user_verification=UserVerificationRequirement.PREFERRED,
         ),
+        supported_pub_key_algs=[
+            COSEAlgorithmIdentifier.ECDSA_SHA_256,   # -7  ES256 — universal
+            COSEAlgorithmIdentifier.RSASSA_PKCS1_v1_5_SHA_256,  # -257 RS256 — broad compat
+        ],
         exclude_credentials=[],
         challenge=challenge_bytes,
     )
