@@ -899,6 +899,11 @@
     color: var(--color-text);
     font-size: var(--font-size-sm);
 }
+select.input-sm {
+    width: auto;
+    min-width: 100px;
+    max-width: 360px;
+}
 
 .toolbar-filter {
     max-width: 360px;
@@ -915,6 +920,10 @@
     color: var(--color-text);
     font-size: var(--font-size-xs);
     height: auto;
+}
+select.input-xs {
+    width: auto;
+    min-width: 80px;
 }
 
 /* --- Disk usage --- */
