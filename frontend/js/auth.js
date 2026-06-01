@@ -1886,7 +1886,10 @@ const Auth = (() => {
             },
         }, [
             Utils.el('p', { className: 'text-muted', style: 'margin-bottom:8px',
-                textContent: 'Insert your security key or use biometrics (Touch ID, Windows Hello, etc.) when prompted. Using NFC on mobile: tap your key, complete any PIN prompt, then keep the key held firmly against the phone — the phone\'s own checkmark appears before the transfer is done. Only remove the key when this page shows "Security key registered!".' }),
+                textContent: 'Insert your security key or use biometrics (Touch ID, Windows Hello, etc.) when prompted.' }),
+            Utils.el('p', { style: 'margin-bottom:8px;padding:8px 10px;background:var(--warning-bg,#fff8e1);border-left:3px solid var(--warning-accent,#f5a623);border-radius:4px;font-size:0.875em' },
+                [Utils.el('strong', { textContent: 'NFC token tip: ' }),
+                 document.createTextNode('hold the token against the reader for 2–3 seconds longer than your device indicates — both before and after the PIN prompt. The device checkmark appears before the transfer is complete; only remove the token when this page shows “Security key registered!”')]),
             Utils.el('div', { className: 'form-group' }, [
                 Utils.el('label', { for: 'webauthn-key-name', textContent: 'Key Name (optional)' }),
                 Utils.el('input', {
