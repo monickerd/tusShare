@@ -1847,11 +1847,9 @@ const Auth = (() => {
                 let credential;
                 try {
                     const beginData = await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/begin`);
-                    const pkOptions = _webAuthnOptionsFromServer(beginData.options);
-                    console.log('[WebAuthn] registration options (raw JSON):', JSON.stringify(beginData.options));
-                    console.log('[WebAuthn] parsed options:', pkOptions);
-                    credential = await navigator.credentials.create({ publicKey: pkOptions });
-                    await new Promise(r => setTimeout(r, 500));
+                    credential = await navigator.credentials.create({
+                        publicKey: _webAuthnOptionsFromServer(beginData.options),
+                    });
                     // Phase 2: server verification
                     await Api.post(`${Config.app.apiPrefix}/auth/webauthn/register/finish`, {
                         challenge_id: beginData.challenge_id,
@@ -1859,7 +1857,6 @@ const Auth = (() => {
                         name,
                     });
                 } catch (err) {
-                    console.error('[WebAuthn] registration error:', err.name, err.message, 'cause:', err.cause, err);
                     let msg;
                     if (err.name === 'SecurityError') {
                         msg = 'WebAuthn setup failed: the server\'s rpId does not match this page\'s origin. Ask your administrator to set WEBAUTHN_RP_ID to the correct domain.';
