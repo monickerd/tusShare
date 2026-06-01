@@ -33,8 +33,6 @@ from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
 
 _bg_tasks: set = set()
-# Limit concurrent AV webhook calls so a burst of uploads cannot saturate the scanner.
-_av_scan_sem: asyncio.Semaphore | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -487,24 +485,13 @@ async def _record_upload_folder_activity(user_id: str, folder_id: str) -> None:
         async with db_session() as db:
             cur = await db.execute(
                 """
-                WITH RECURSIVE ancestors AS (
-                    SELECT id, parent_id FROM folders WHERE id = ?
-                    UNION ALL
-                    SELECT f.id, f.parent_id FROM folders f JOIN ancestors a ON f.id = a.parent_id
-                ),
-                owning_team AS (
-                    SELECT tf.team_id, t.name AS team_name
-                    FROM   ancestors a
-                    JOIN   team_folders tf ON tf.folder_id = a.id
-                    JOIN   teams t ON t.id = tf.team_id
-                    LIMIT  1
-                )
-                SELECT f.name, ot.team_id, ot.team_name
+                SELECT f.name, tf.team_id, t.name AS team_name
                 FROM   folders f
-                LEFT   JOIN owning_team ot ON TRUE
+                LEFT   JOIN team_folders tf ON tf.folder_id = f.root_folder_id
+                LEFT   JOIN teams t ON t.id = tf.team_id
                 WHERE  f.id = ?
                 """,
-                (folder_id, folder_id),
+                (folder_id,),
             )
             row = await cur.fetchone()
             if row:
@@ -587,6 +574,9 @@ async def _finalize_completed_upload(
                 (file_id, file_row["folder_id"], file_row["folder_id"]),
             )
         await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
+        # Enqueue AV scan atomically with finalization so no completed file is missed.
+        from app.services.av_scanner import enqueue_scan
+        await enqueue_scan(db, file_id)
         await db.commit()
     except HTTPException:
         raise
@@ -606,10 +596,6 @@ async def _finalize_completed_upload(
 
     _topic = file_row["folder_id"] or f"root:{file_row['owner_id']}"
     sse_broker.publish(_topic, {"type": "change"})
-
-    _t = asyncio.create_task(_maybe_scan_file(file_id))
-    _bg_tasks.add(_t)
-    _t.add_done_callback(_bg_tasks.discard)
 
     if file_row.get("folder_id"):
         _t2 = asyncio.create_task(_record_upload_folder_activity(user_id, file_row["folder_id"]))
@@ -722,7 +708,7 @@ async def patch_upload(
         )
 
     # --- Bandwidth enforcement (checked before disk write) ---
-    await check_bandwidth(db, user.id, chunk_size)
+    await check_bandwidth(db, user.id, chunk_size, user.bandwidth_limit)
 
     # --- Write chunk via storage manager (provider handles seek/multipart internally) ---
     try:
@@ -868,22 +854,6 @@ async def list_pending_uploads(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-async def _maybe_scan_file(file_id: str) -> None:
-    """Background task: run AV scan if configured. Errors are logged, not raised."""
-    global _av_scan_sem
-    if _av_scan_sem is None:
-        _av_scan_sem = asyncio.Semaphore(4)
-    try:
-        from app.database import db_session
-        from app.services.av_scanner import scan_file
-
-        async with _av_scan_sem:
-            async with db_session() as _db:
-                await scan_file(_db, file_id)
-    except Exception as exc:
-        logger.warning("Background AV scan failed for file %s: %s", file_id, exc)
 
 
 # ---------------------------------------------------------------------------

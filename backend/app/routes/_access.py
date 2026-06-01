@@ -286,25 +286,19 @@ async def is_in_shared_tree(db, folder_id: str) -> bool:
 
 
 async def get_folder_team_id(db, folder_id: str) -> str | None:
-    """Walk the folder ancestry to find the team that owns this folder tree.
+    """Return the team_id for the team that owns this folder's tree, or None.
 
-    Returns the team_id if any ancestor (or self) is registered as a team folder,
-    otherwise None.
+    Uses the denormalised root_folder_id to avoid an ancestor walk: team folders
+    are always root-level, so the owning team is found via a single join.
     """
-    visited: set[str] = set()
-    current_id = folder_id
-    while current_id and current_id not in visited:
-        visited.add(current_id)
-        cursor = await db.execute(_SQL_TEAM_FOLDER, (current_id,))
-        tf_row = await cursor.fetchone()
-        if tf_row:
-            return tf_row["team_id"]
-        cursor = await db.execute("SELECT parent_id FROM folders WHERE id = ?", (current_id,))
-        row = await cursor.fetchone()
-        if not row:
-            return None
-        current_id = row["parent_id"]
-    return None
+    cursor = await db.execute(
+        "SELECT tf.team_id FROM folders f "
+        "JOIN team_folders tf ON tf.folder_id = f.root_folder_id "
+        "WHERE f.id = ?",
+        (folder_id,),
+    )
+    row = await cursor.fetchone()
+    return row["team_id"] if row else None
 
 
 async def copy_folder_permissions(db, source_folder_id: str, dest_resource_type: str, dest_resource_id: str) -> None:

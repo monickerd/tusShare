@@ -1207,7 +1207,7 @@ async def get_file_content(
     status_code = 206 if range_header else 200
 
     # --- Bandwidth enforcement (checked before streaming begins) ---
-    await check_bandwidth(db, user.id, content_length)
+    await check_bandwidth(db, user.id, content_length, user.bandwidth_limit)
 
     # --- Access log + last_accessed_at update (on first chunk request) ---
     if not range_header or start == 0:

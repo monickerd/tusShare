@@ -337,18 +337,11 @@ async def empty_trash(
 
 
 async def _find_team_for_folder(db, folder_id: str) -> str | None:
-    """Walk the ancestor chain to find the team_id that owns this folder, or None."""
+    """Return the team_id that owns this folder's tree, or None."""
     cursor = await db.execute(
-        """
-        WITH RECURSIVE ancestors AS (
-            SELECT id, parent_id FROM folders WHERE id = ?
-            UNION ALL
-            SELECT f.id, f.parent_id FROM folders f JOIN ancestors a ON f.id = a.parent_id
-        )
-        SELECT tf.team_id FROM ancestors a
-        JOIN team_folders tf ON tf.folder_id = a.id
-        LIMIT 1
-        """,
+        "SELECT tf.team_id FROM folders f "
+        "JOIN team_folders tf ON tf.folder_id = f.root_folder_id "
+        "WHERE f.id = ?",
         (folder_id,),
     )
     row = await cursor.fetchone()

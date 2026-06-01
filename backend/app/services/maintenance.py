@@ -7,6 +7,7 @@ Auto-fixed (safe deletes):
   - Expired unused registration invites
   - Short-links past their expiry date (normally CASCADE-deleted with the share,
     but catches any survivors from edge cases)
+  - bandwidth_log rows older than op_event_retention_days (default 30 days)
   - pending_share_keying rows older than 90 days (the share is gone or expired;
     these rows will never be fulfilled)
 
@@ -26,6 +27,7 @@ import logging
 
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
+from app.util.db import get_admin_setting
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,16 @@ async def _sweep_stale_short_links(db) -> int:
     but orphaned rows can accumulate if shares are hard-deleted out-of-band.
     """
     result = await db.execute("DELETE FROM short_links WHERE expires_at < NOW()")
+    return result.rowcount
+
+
+async def _sweep_bandwidth_log(db) -> int:
+    """Delete bandwidth_log rows older than op_event_retention_days (default 30)."""
+    retention_days = await get_admin_setting(db, "op_event_retention_days", 30, dtype=int)
+    result = await db.execute(
+        "DELETE FROM bandwidth_log WHERE timestamp < NOW() - (? || ' days')::interval",
+        (str(retention_days),),
+    )
     return result.rowcount
 
 
@@ -201,6 +213,15 @@ async def run_daily_maintenance(db_factory, interval: float = 86400.0) -> None:
                     logger.info("Maintenance: removed %d stale short-link(s)", n)
             except Exception:
                 logger.exception("Maintenance: short-link sweep failed")
+
+        async with db_factory() as db:
+            try:
+                n = await _sweep_bandwidth_log(db)
+                await db.commit()
+                if n:
+                    logger.info("Maintenance: removed %d old bandwidth_log row(s)", n)
+            except Exception:
+                logger.exception("Maintenance: bandwidth_log sweep failed")
 
         async with db_factory() as db:
             try:

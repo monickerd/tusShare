@@ -401,6 +401,92 @@ async def _scan_with_retry(
     return verdict
 
 
+# ---------------------------------------------------------------------------
+# Durable scan queue
+# ---------------------------------------------------------------------------
+
+
+async def enqueue_scan(db, file_id: str) -> None:
+    """Insert a pending scan task.  Idempotent — safe to call inside the upload
+    finalization transaction; ON CONFLICT DO NOTHING handles retried uploads."""
+    await db.execute(
+        "INSERT INTO av_scan_queue (file_id) VALUES (?) ON CONFLICT DO NOTHING",
+        (file_id,),
+    )
+
+
+async def run_av_scan_worker(db_factory, poll_interval: float = 5.0) -> None:
+    """Background worker loop: claims and processes pending AV scan tasks.
+
+    Uses SELECT FOR UPDATE SKIP LOCKED so multiple app instances never process
+    the same file simultaneously.  Stale 'scanning' rows (worker crashed mid-scan)
+    are recovered to 'pending' at the top of each loop iteration.
+    """
+    logger.info("AV scan worker started")
+    while True:
+        try:
+            async with db_factory() as db:
+                # Recover rows stuck in 'scanning' for > 10 min (worker crash recovery).
+                await db.execute(
+                    "UPDATE av_scan_queue SET status = 'pending' "
+                    "WHERE status = 'scanning' AND last_attempted_at < NOW() - INTERVAL '10 minutes'"
+                )
+                await db.commit()
+
+                # Atomically claim one pending row.
+                await db.execute("BEGIN")
+                cursor = await db.execute(
+                    "SELECT file_id, attempts FROM av_scan_queue "
+                    "WHERE status = 'pending' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"
+                )
+                row = await cursor.fetchone()
+                if row is None:
+                    await db.rollback()
+                    await asyncio.sleep(poll_interval * 6)  # idle back-off
+                    continue
+
+                file_id = row["file_id"]
+                current_attempts = row["attempts"]
+                await db.execute(
+                    "UPDATE av_scan_queue "
+                    "SET status = 'scanning', attempts = attempts + 1, last_attempted_at = NOW() "
+                    "WHERE file_id = ?",
+                    (file_id,),
+                )
+                await db.commit()
+
+            # Run outside the claim transaction — scan may take a while.
+            try:
+                async with db_factory() as scan_db:
+                    await scan_file(scan_db, file_id)
+                async with db_factory() as done_db:
+                    await done_db.execute(
+                        "UPDATE av_scan_queue SET status = 'completed' WHERE file_id = ?",
+                        (file_id,),
+                    )
+                    await done_db.commit()
+            except Exception:
+                logger.exception("AV scan failed for file %s", file_id)
+                max_attempts = settings.AV_SCAN_RETRY_ATTEMPTS
+                new_attempts = current_attempts + 1
+                new_status = "failed" if new_attempts >= max_attempts else "pending"
+                async with db_factory() as err_db:
+                    await err_db.execute(
+                        "UPDATE av_scan_queue SET status = ?, attempts = ? WHERE file_id = ?",
+                        (new_status, new_attempts, file_id),
+                    )
+                    await err_db.commit()
+
+            await asyncio.sleep(poll_interval)  # brief pause before next claim
+
+        except asyncio.CancelledError:
+            logger.info("AV scan worker cancelled")
+            raise
+        except Exception:
+            logger.exception("AV scan worker unexpected error")
+            await asyncio.sleep(poll_interval)
+
+
 async def _write_status(db, file_id: str, status: str) -> None:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:

@@ -609,6 +609,39 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                 ON teams(scheduled_delete_at) WHERE scheduled_delete_at IS NOT NULL;
         """)
 
+    # av_scan_queue — durable AV scan task queue replacing fire-and-forget asyncio.create_task.
+    async with conn.transaction():
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS av_scan_queue (
+                file_id           TEXT        NOT NULL PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+                status            TEXT        NOT NULL DEFAULT 'pending'
+                                              CHECK (status IN ('pending', 'scanning', 'completed', 'failed')),
+                attempts          INTEGER     NOT NULL DEFAULT 0,
+                last_attempted_at TIMESTAMPTZ,
+                created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_av_scan_queue_pending
+                ON av_scan_queue(created_at) WHERE status = 'pending';
+        """)
+
+    # root_folder_id on folders — denormalised root pointer for O(1) team lookup.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE folders ADD COLUMN IF NOT EXISTS root_folder_id TEXT REFERENCES folders(id);
+            CREATE INDEX IF NOT EXISTS idx_folders_root_folder ON folders(root_folder_id);
+        """)
+    # Backfill root_folder_id for all existing rows (no-op when already populated).
+    # Runs outside the DDL transaction so the new column is visible.
+    await conn.execute("""
+        WITH RECURSIVE tree AS (
+            SELECT id, id AS root_id FROM folders WHERE parent_id IS NULL
+            UNION ALL
+            SELECT f.id, t.root_id FROM folders f JOIN tree t ON f.parent_id = t.id
+        )
+        UPDATE folders SET root_folder_id = tree.root_id
+        FROM tree WHERE folders.id = tree.id AND folders.root_folder_id IS NULL
+    """)
+
     # Recent folder activity — added as idempotent block so existing DBs gain the table.
     async with conn.transaction():
         await conn.execute("""

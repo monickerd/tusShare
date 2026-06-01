@@ -32,6 +32,8 @@ from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routes.uploads import run_upload_cleanup
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus, live_settings, notification_emitter, op_bus, siem_syslog, siem_webhook
+from app.services.av_scanner import run_av_scan_worker
+from app.services.live_settings import run_settings_invalidation_listener
 from app.services.maintenance import run_daily_maintenance
 from app.services.sse_broker import run_redis_listener
 from app.services.trash import run_trash_cleanup
@@ -254,12 +256,14 @@ async def lifespan(app: FastAPI):
     upload_cleanup_task = asyncio.create_task(run_upload_cleanup(db_session))
     trash_cleanup_task = asyncio.create_task(run_trash_cleanup(db_session))
     redis_sse_task = asyncio.create_task(run_redis_listener())
+    settings_invalidation_task = asyncio.create_task(run_settings_invalidation_listener(db_session))
     opaque_session_cleanup = asyncio.create_task(_run_opaque_session_cleanup(db_session, interval=300))
     mfa_cleanup_task = asyncio.create_task(_run_mfa_cleanup(db_session, interval=300))
     oidc_state_cleanup_task = asyncio.create_task(_run_oidc_state_cleanup(db_session))
     storage_tiering_task = asyncio.create_task(storage_manager.run_tiering_task())
     storage_reconcile_task = asyncio.create_task(storage_manager.run_reconciliation_task())
     daily_maintenance_task = asyncio.create_task(run_daily_maintenance(db_session))
+    av_scan_worker_task = asyncio.create_task(run_av_scan_worker(db_session))
 
     event_bus.init(db_session)
     event_bus_task = event_bus.start()
@@ -334,6 +338,8 @@ async def lifespan(app: FastAPI):
         storage_tiering_task,
         storage_reconcile_task,
         daily_maintenance_task,
+        av_scan_worker_task,
+        settings_invalidation_task,
     ):
         task.cancel()
         try:

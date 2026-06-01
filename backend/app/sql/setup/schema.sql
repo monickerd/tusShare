@@ -334,6 +334,11 @@ CREATE TABLE folders (
     is_shared            INTEGER NOT NULL DEFAULT 0,
     restrict_permissions BOOLEAN NOT NULL DEFAULT FALSE,
 
+    -- Denormalised root pointer: root folders have root_folder_id = id;
+    -- children inherit the parent's value.  Enables O(1) team lookup without
+    -- a recursive ancestor walk.  Maintained on INSERT and on parent_id changes.
+    root_folder_id       TEXT REFERENCES folders(id),
+
     -- Soft-delete / trash
     deleted_at           TIMESTAMPTZ DEFAULT NULL,
     deleted_by           TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL,
@@ -342,9 +347,10 @@ CREATE TABLE folders (
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_folders_parent     ON folders(parent_id);
-CREATE INDEX idx_folders_owner      ON folders(owner_id);
-CREATE INDEX idx_folders_deleted_at ON folders(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_folders_parent      ON folders(parent_id);
+CREATE INDEX idx_folders_owner       ON folders(owner_id);
+CREATE INDEX idx_folders_deleted_at  ON folders(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_folders_root_folder ON folders(root_folder_id);
 CREATE UNIQUE INDEX idx_folders_unique_name ON folders(COALESCE(parent_id, ''), owner_id, name) WHERE deleted_at IS NULL;
 
 -------------------------------------------------
@@ -439,6 +445,24 @@ CREATE TABLE tus_uploads (
 
 CREATE INDEX idx_tus_user    ON tus_uploads(user_id);
 CREATE INDEX idx_tus_expires ON tus_uploads(expires_at);
+
+-------------------------------------------------
+-- AV SCAN QUEUE
+-- Durable replacement for fire-and-forget asyncio.create_task.
+-- Workers claim rows with SELECT ... FOR UPDATE SKIP LOCKED; no row is
+-- processed by two instances simultaneously.
+-- Inserted atomically with upload finalization so no completed file is missed.
+-- status: pending → scanning → completed | failed
+-------------------------------------------------
+CREATE TABLE av_scan_queue (
+    file_id           TEXT        NOT NULL PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+    status            TEXT        NOT NULL DEFAULT 'pending'
+                                  CHECK (status IN ('pending', 'scanning', 'completed', 'failed')),
+    attempts          INTEGER     NOT NULL DEFAULT 0,
+    last_attempted_at TIMESTAMPTZ,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX idx_av_scan_queue_pending ON av_scan_queue(created_at) WHERE status = 'pending';
 
 -------------------------------------------------
 -- SHARES

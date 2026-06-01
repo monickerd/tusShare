@@ -30,6 +30,7 @@ class AuthenticatedUser:
     # Scoped role entries: list of {role_id, scope_type, scope_id, flags} dicts.
     # Populated at auth time; used by has_flag_in_scope and get_team_ids_with_flag.
     scoped_roles: Optional[list[dict]] = None
+    bandwidth_limit: int | None = None
     wrapped_master_key: str | None = None
     wrapped_master_key_iv: str | None = None
     recovery_key_wrapped: str | None = None

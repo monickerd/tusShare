@@ -177,17 +177,19 @@ async def create_folder(
     folder_id = str(uuid.uuid4())
 
     # If parent_id is specified, verify it exists and user has write access
+    root_folder_id = folder_id  # default: this folder is its own root
     if body.parent_id:
         cursor = await db.execute(_SQL_FOLDER_BY_ID, (body.parent_id,))
         parent = await cursor.fetchone()
         if parent is None:
             raise HTTPException(status_code=404, detail="Parent folder not found")
         await _check_parent_write_access(db, parent, user, body.parent_id)
+        root_folder_id = parent["root_folder_id"] or body.parent_id
 
     try:
         await db.execute(
-            "INSERT INTO folders (id, name, parent_id, owner_id) VALUES (?, ?, ?, ?)",
-            (folder_id, body.name, body.parent_id, user.id),
+            "INSERT INTO folders (id, name, parent_id, owner_id, root_folder_id) VALUES (?, ?, ?, ?, ?)",
+            (folder_id, body.name, body.parent_id, user.id, root_folder_id),
         )
         # Inherit recursive permissions from the parent folder (personal root = no-inherit)
         if body.parent_id:
@@ -230,24 +232,13 @@ async def create_folder(
                 async with db_session() as _db:
                     _cur = await _db.execute(
                         """
-                        WITH RECURSIVE ancestors AS (
-                            SELECT id, parent_id FROM folders WHERE id = ?
-                            UNION ALL
-                            SELECT f.id, f.parent_id FROM folders f JOIN ancestors a ON f.id = a.parent_id
-                        ),
-                        owning_team AS (
-                            SELECT tf.team_id, t.name AS team_name
-                            FROM   ancestors a
-                            JOIN   team_folders tf ON tf.folder_id = a.id
-                            JOIN   teams t ON t.id = tf.team_id
-                            LIMIT  1
-                        )
-                        SELECT f.name, ot.team_id, ot.team_name
+                        SELECT f.name, tf.team_id, t.name AS team_name
                         FROM   folders f
-                        LEFT   JOIN owning_team ot ON TRUE
+                        LEFT   JOIN team_folders tf ON tf.folder_id = f.root_folder_id
+                        LEFT   JOIN teams t ON t.id = tf.team_id
                         WHERE  f.id = ?
                         """,
-                        (body.parent_id, body.parent_id),
+                        (body.parent_id,),
                     )
                     _row = await _cur.fetchone()
                     if _row:
@@ -558,6 +549,30 @@ async def _build_folder_update_params(db, folder_id: str, folder_row, body) -> t
     return updates, params
 
 
+async def _update_root_folder_id_on_move(db, folder_id: str, move_to_root: bool, new_parent_id: str | None) -> None:
+    """Cascade root_folder_id to the moved folder and all its descendants."""
+    if not move_to_root and new_parent_id is None:
+        return
+    if move_to_root:
+        new_root = folder_id
+    else:
+        cur = await db.execute("SELECT root_folder_id FROM folders WHERE id = ?", (new_parent_id,))
+        row = await cur.fetchone()
+        new_root = (row["root_folder_id"] if row else None) or new_parent_id
+    await db.execute(
+        """
+        WITH RECURSIVE subtree AS (
+            SELECT id FROM folders WHERE id = ?
+            UNION ALL
+            SELECT f.id FROM folders f JOIN subtree s ON f.parent_id = s.id
+        )
+        UPDATE folders SET root_folder_id = ?
+        WHERE id IN (SELECT id FROM subtree)
+        """,
+        (folder_id, new_root),
+    )
+
+
 async def _update_move_permissions(db, folder_id: str, move_to_root: bool, parent_id: str | None) -> None:
     """Delete stale recursive permissions and copy from new parent after a move."""
     if not move_to_root and parent_id is None:
@@ -656,8 +671,9 @@ async def update_folder(
         params,
     )
 
-    # On a parent change, replace inherited permissions with those from the new parent.
+    # On a parent change, replace inherited permissions and cascade root_folder_id.
     await _update_move_permissions(db, folder_id, body.move_to_root, body.parent_id)
+    await _update_root_folder_id_on_move(db, folder_id, body.move_to_root, body.parent_id)
 
     await db.commit()
 

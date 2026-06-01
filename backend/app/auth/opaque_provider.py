@@ -34,7 +34,7 @@ async def _load_role_data(db, user_id: str) -> tuple[set[str], dict[str, str], l
 
 # Columns shared between all OPAQUE queries
 _USER_COLUMNS = (
-    "id, username, auth_method, is_active, "
+    "id, username, auth_method, is_active, bandwidth_limit, "
     "wrapped_master_key, wrapped_master_key_iv, recovery_key_wrapped, recovery_key_iv, "
     "x25519_public_key, mlkem768_public_key, x25519_private_wrapped, "
     "mlkem768_private_wrapped, asymmetric_key_iv"
@@ -54,6 +54,7 @@ def _row_to_user(
         roles=roles,
         flags=flags,
         scoped_roles=scoped_roles or [],
+        bandwidth_limit=row["bandwidth_limit"],
         wrapped_master_key=row["wrapped_master_key"],
         wrapped_master_key_iv=row["wrapped_master_key_iv"],
         recovery_key_wrapped=row["recovery_key_wrapped"],
