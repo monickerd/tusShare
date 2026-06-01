@@ -25,7 +25,8 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, db_session, get_db
 from app.middleware.rate_limit import check_upload_rate_limit
 from app.routes._access import check_data_permission, copy_folder_permissions
-from app.routes.uploads import _maybe_scan_file, _record_upload_folder_activity
+from app.routes.uploads import _record_upload_folder_activity
+from app.services.av_scanner import enqueue_scan
 from app.schemas.security_event import SecurityEvent
 from app.services import event_bus, sse_broker
 from app.util.db import get_admin_setting
@@ -465,6 +466,7 @@ async def _insert_file_in_tx(
     # write_blob writes the physical blob + inserts file_storage_locations.
     # Runs last: if any earlier step fails the transaction rolls back cleanly.
     await storage.get_manager().write_blob(db, file_id, storage_key, data)
+    await enqueue_scan(db, file_id)
 
 
 async def _write_batch(
@@ -522,13 +524,10 @@ def _emit_file_events(file_id: str, user_id: str, encrypted_size: int, folder_id
 
 
 def _fire_background_tasks(file_id: str, user_id: str, folder_id: str | None) -> None:
-    t = asyncio.create_task(_maybe_scan_file(file_id))
-    _bg_tasks.add(t)
-    t.add_done_callback(_bg_tasks.discard)
     if folder_id:
-        t2 = asyncio.create_task(_record_upload_folder_activity(user_id, folder_id))
-        _bg_tasks.add(t2)
-        t2.add_done_callback(_bg_tasks.discard)
+        t = asyncio.create_task(_record_upload_folder_activity(user_id, folder_id))
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)
 
 
 # ---------------------------------------------------------------------------
