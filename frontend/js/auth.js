@@ -1579,6 +1579,8 @@ const Auth = (() => {
         const meData = await Api.get(`${Config.app.apiPrefix}/auth/me`);
         _currentUser = meData.user;
 
+        startIdentityWatch();
+
         if (_currentUser.is_admin) {
             globalThis.location.hash = '#/admin';
             return;
@@ -2025,15 +2027,37 @@ const Auth = (() => {
 
     let _identitySource = null;
     let _identityReconnectTimer = null;
+    let _identityErrorCount = 0;
+    let _identityChannel = null;
 
     function startIdentityWatch() {
         if (_identitySource) return;
+
+        // Cross-tab account-switch detection: if another tab logs in as a
+        // different user the session cookie changes, making this tab stale.
+        if (!_identityChannel && 'BroadcastChannel' in globalThis) {
+            _identityChannel = new BroadcastChannel('tusshare_auth');
+            _identityChannel.onmessage = (e) => {
+                if (e.data?.type === 'auth' && _currentUser && e.data.userId !== _currentUser.id) {
+                    _identityChannel.close();
+                    _identityChannel = null;
+                    Utils.showToast('You signed in as a different account in another tab.', 'warning');
+                    setTimeout(() => logout(), 1500);
+                }
+            };
+        }
+        if (_identityChannel && _currentUser) {
+            _identityChannel.postMessage({ type: 'auth', userId: _currentUser.id });
+        }
+
         _connectIdentityWatch();
     }
 
     function _connectIdentityWatch() {
         const url = `${Config.app.apiPrefix}/events/identity`;
         const src = new EventSource(url, { withCredentials: true });
+
+        src.onopen = () => { _identityErrorCount = 0; };
 
         src.onmessage = (e) => {
             let event;
@@ -2060,7 +2084,17 @@ const Auth = (() => {
         src.onerror = () => {
             src.close();
             if (!_currentUser) return; // already logged out — don't reconnect
-            // Reconnect after 10 s if the stream drops (network blip, server restart).
+            _identityErrorCount++;
+            if (_identityErrorCount >= 3) {
+                // Three consecutive failures — session may have expired.
+                // Ping /auth/me: the API layer redirects to #/login on 401, so we
+                // only schedule a reconnect if the session is confirmed still alive.
+                _identityErrorCount = 0;
+                Api.get(`${Config.app.apiPrefix}/auth/me`).then(() => {
+                    if (_currentUser) _identityReconnectTimer = setTimeout(_connectIdentityWatch, 10_000);
+                }).catch(() => {}); // 401 handler in Api already redirects
+                return;
+            }
             _identityReconnectTimer = setTimeout(_connectIdentityWatch, 10_000);
         };
 
@@ -2073,6 +2107,11 @@ const Auth = (() => {
             _identitySource = null;
         }
         clearTimeout(_identityReconnectTimer);
+        _identityErrorCount = 0;
+        if (_identityChannel) {
+            _identityChannel.close();
+            _identityChannel = null;
+        }
     }
 
     async function logout() {
