@@ -96,7 +96,7 @@ services:
       start_period: 10s
 
   pgbouncer:
-    image: edoburu/pgbouncer:latest
+    image: edoburu/pgbouncer:v1.25.1-p0
     container_name: tusshare_pgbouncer
     networks:
       - backend_internal

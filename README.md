@@ -101,8 +101,8 @@ everything else is optional.
 ### Quick start
 
 ```bash
-cp .env.example .env
-# Edit .env – at minimum set JWT secret, admin credentials, and DB passwords
+# Download the deployment bundle from the latest release, then:
+python generate-env.py      # generates .env with secure random secrets
 docker compose up -d
 ```
 
@@ -112,19 +112,26 @@ nginx configuration.
 
 On first run, navigate to `/admin/setup` to complete the guided setup wizard.
 
+The image is also available directly from GitHub Container Registry:
+
+```
+docker pull ghcr.io/monickerd/tusshare:latest
+```
+
 ### Configuration
 
-All settings are controlled via environment variables in `.env`. The `.env.example`
-file documents every available option with defaults and guidance.
+All settings are controlled via environment variables in `.env`. Run
+`python generate-env.py` to create a `.env` with all required secrets
+pre-generated. The `.env.example` file documents every available option
+with defaults and guidance.
 
-Key settings to configure before going live:
+Key settings to review before going live:
 
 | Variable | Purpose |
 |---|---|
-| `TUSSHARE_JWT_SECRET` | JWT signing key – generate a random 64-char hex string |
-| `TUSSHARE_ADMIN_USERNAME` | Bootstrap admin account (first run only) |
-| `TUSSHARE_ADMIN_PASSWORD` | Bootstrap admin password (first run only) |
-| `TUSSHARE_PG_PASSWORD` | App database user password |
+| `TUSSHARE_JWT_SECRET` | JWT signing key — generated automatically by `generate-env.py` |
+| `TUSSHARE_WEBAUTHN_RP_ID` | Exact hostname users visit — must match for passkeys to work |
+| `TUSSHARE_PG_PASSWORD` | App database user password — generated automatically |
 | `TUSSHARE_FORCE_HTTPS` | Set `true` when behind a reverse proxy |
 
 ### Storage
