@@ -1982,6 +1982,8 @@ _TEAM_ACTIVITY_EVENT_TYPES = {
     "admin.team_role.deleted",
     "admin.team.delete_scheduled",
     "admin.team.delete_cancelled",
+    "admin.policy.team_effect_added",
+    "admin.policy.team_effect_removed",
 }
 
 

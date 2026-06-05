@@ -43,7 +43,7 @@ from app.models.policy import (
 )
 from app.models.role import FLAG_POLICIES_MANAGE
 from app.routes._access import require_flag
-from app.schemas.security_event import EventActor, SecurityEvent
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
 from app.validation.sanitizers import validate_uuid
 
@@ -714,7 +714,7 @@ async def create_effect(
     """
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
-    await _load_policy(db, policy_id)  # 404 guard
+    policy = await _load_policy(db, policy_id)
 
     if body.effect_type not in ("team_member", "folder_acl", "team_escrow"):
         raise HTTPException(
@@ -742,6 +742,26 @@ async def create_effect(
         ),
     )
     await db.commit()
+
+    # Emit a team-scoped event so team managers can see this in their activity feed.
+    if body.effect_type in ("team_member", "team_escrow"):
+        team_cur = await db.execute("SELECT name FROM teams WHERE id = ?", (target_id,))
+        team_row = await team_cur.fetchone()
+        event_bus.emit(
+            SecurityEvent(
+                event_type="admin.policy.team_effect_added",
+                severity="warning",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                target=EventTarget(type="team", id=target_id, name=team_row["name"] if team_row else None),
+                detail={
+                    "policy_id": policy_id,
+                    "policy_name": policy.name,
+                    "effect_type": body.effect_type,
+                    "role_level": body.role_level,
+                },
+            )
+        )
 
     # Trigger 2 — immediately apply new effect to all currently matching users.
     # For team_escrow effects this re-writes or suppresses escrow grants for the target team.
@@ -772,11 +792,31 @@ async def delete_effect(
     require_flag(user, FLAG_POLICIES_MANAGE, _ERR_PERM_POLICIES)
     policy_id = validate_uuid(policy_id)
     effect_id = validate_uuid(effect_id)
-    await _load_policy(db, policy_id)  # 404 guard
-    await _load_effect(db, policy_id, effect_id)  # 404 guard
+    policy = await _load_policy(db, policy_id)
+    effect = await _load_effect(db, policy_id, effect_id)
 
     await db.execute("DELETE FROM policy_effects WHERE id = ?", (effect_id,))
     await db.commit()
+
+    if effect.effect_type in ("team_member", "team_escrow"):
+        team_cur = await db.execute("SELECT name FROM teams WHERE id = ?", (effect.target_id,))
+        team_row = await team_cur.fetchone()
+        event_bus.emit(
+            SecurityEvent(
+                event_type="admin.policy.team_effect_removed",
+                severity="warning",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                target=EventTarget(type="team", id=effect.target_id, name=team_row["name"] if team_row else None),
+                detail={
+                    "policy_id": policy_id,
+                    "policy_name": policy.name,
+                    "effect_type": effect.effect_type,
+                    "role_level": effect.role_level,
+                },
+            )
+        )
+
     return {"message": "Effect deleted"}
 
 

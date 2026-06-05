@@ -847,6 +847,8 @@ const Teams = (() => {
             'admin.team_role.deleted':             'Custom role deleted',
             'admin.team.delete_scheduled':         'Team deletion scheduled',
             'admin.team.delete_cancelled':         'Team deletion cancelled',
+            'admin.policy.team_effect_added':      'Policy effect added (membership via policy)',
+            'admin.policy.team_effect_removed':    'Policy effect removed (membership via policy)',
         };
 
         const list = Utils.el('ul', { className: 'team-activity-list' });
