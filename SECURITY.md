@@ -59,6 +59,21 @@ TOTP (RFC 6238, 30-second window with replay protection) and WebAuthn (hardware
 keys, passkeys, platform authenticators) are supported. Administrators can
 mandate MFA for all users or specific roles.
 
+### Password recovery
+
+A one-time recovery key is generated client-side at registration and immediately
+wraps the master key using AES-256-GCM. The SHA-256 hash of the recovery key is
+stored server-side for proof-of-possession. Recovery is a two-round flow:
+`recover/start` verifies the hash, `recover/finish` returns the wrapped master
+key for client-side unwrap. The plaintext recovery key is shown once and must be
+saved offline by the user.
+
+**Residual risk:** The recovery key is an alternative path to the master key
+independent of the OPAQUE password. A combination of recovery key file compromise
+and database access yields full file decryption. Users should treat the recovery
+key with the same care as a private key and store it offline or in a password
+manager.
+
 ### SSO / identity providers
 
 LDAP and OIDC/OAuth2 are supported. Identity provider users authenticate via
@@ -69,6 +84,15 @@ same session and step-up rules as local accounts.
 client-derived KEK. IdP users whose accounts were created without going through
 the OPAQUE registration flow do not have a KEK and cannot access encrypted files
 until the admin configures the escrow key grant pathway.
+
+### Machine-to-machine access (API keys)
+
+Long-lived API keys are available for automated and integration access. Keys are
+scoped to specific operations: `audit_read` (log export), `ops_read` (status
+monitoring), `notification_write`. Keys are stored as SHA-256 hashes in the
+database — the plaintext is shown only once at creation. Last-used timestamps
+are updated asynchronously (60-second flush interval) to avoid per-request
+write amplification.
 
 ### Session management
 
@@ -233,18 +257,53 @@ valid credential must be supplied.
 
 ---
 
+## Injection
+
+### SQL
+
+All database queries use parameterised statements with positional placeholders.
+String formatting and f-strings are never used to construct SQL. Input values are
+never interpolated into query strings.
+
+### Filename and input sanitization
+
+File names are sanitized through a dedicated layer (`validation/sanitizers.py`)
+before storage: path traversal sequences are stripped, null bytes are rejected,
+and names are truncated to configured limits. All other user-supplied string
+fields (usernames, team names, share labels) have explicit maximum-length
+constraints enforced in Pydantic request models before the value reaches any
+storage layer.
+
+---
+
 ## SSRF
 
-The application makes outbound HTTP connections in two places:
+The application makes outbound connections to admin-configured destinations only.
+No URL is fetched based on user-supplied input at runtime. The outbound surfaces
+are:
 
-1. **SIEM webhook** — an admin-configured URL that receives security events.
-   Only a server admin can set this URL. Network-level restriction of the
-   webhook target is the operator's responsibility.
-2. **OIDC discovery** — fetches the identity provider's `.well-known/openid-configuration`
-   at startup. The URL is set by a server admin in the environment/config, not
-   user-supplied at runtime.
+1. **SIEM webhook** — security events delivered to an admin-configured HTTPS endpoint
+2. **Notification webhooks** — file-share notifications to admin-configured HTTPS endpoints
+3. **Storage provider endpoints** — S3-compatible, Azure Blob, and GCS APIs
+4. **OIDC discovery** — fetches the IdP's `.well-known/openid-configuration`
+5. **AV scanner webhook** — file scan requests to an admin-configured endpoint
 
-No user-supplied URLs are fetched by the server.
+All admin-configured HTTP(S) URLs are validated at save time by
+`validate_endpoint_url()`, which DNS-resolves the hostname and rejects any
+address in a private or reserved range: loopback (`127.0.0.0/8`), RFC 1918
+(`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), link-local
+(`169.254.0.0/16`), CGNAT (`100.64.0.0/10`), and IPv6 equivalents. Non-HTTP(S)
+schemes are also rejected.
+
+**Residual risk:** DNS rebinding — a hostname that resolves to a public IP at
+validation time could rebind to a private IP before the actual connection. This
+is a known TOCTOU limitation of DNS-based SSRF prevention. Network-level egress
+filtering (see `docker-compose.yml` comments) is the recommended additional
+mitigation for operators with strict isolation requirements.
+
+LDAP connections (admin-configured IdP testing) are TCP, not HTTP, and are not
+subject to URL validation. Operators should restrict the application container's
+outbound network access to known LDAP server addresses at the firewall level.
 
 ---
 
@@ -337,3 +396,5 @@ compromise would still be required).
 | LDAP users and E2E encryption | IdP-authenticated users require an admin-configured escrow path to access encrypted files |
 | Certificate pinning | Not implemented; relies on the operator's PKI |
 | Redis optional | Rate-limit counters, SSE state, and upload-chunk offsets are in-process by default; set `TUSSHARE_REDIS_URL` to share state across workers in a multi-container deployment |
+| Master key in sessionStorage | The unwrapped master key is held in `sessionStorage` for the tab lifetime so the OPFS download pipeline can access raw key bytes without re-running OPAQUE on every operation. An XSS exploit that bypasses CSP during an active session would expose it. WebAuthn PRF binding (hardware-bound key storage that would eliminate this exposure) is not yet implemented. Mitigations in place: strict CSP, SRI on all scripts, all `innerHTML` paths removed. |
+| OPAQUE ServerSetup backup | The `opaque.server_setup` value in `sensitive_config` is the OPRF seed from which all user credential files are derived. Loss of this value makes every OPAQUE-authenticated account permanently inaccessible — there is no recovery path. It must be backed up securely and independently of the database. |
