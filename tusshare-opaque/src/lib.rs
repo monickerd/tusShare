@@ -96,7 +96,7 @@ fn generate_server_setup(py: Python<'_>) -> PyResult<Py<PyBytes>> {
         let setup = ServerSetup::<TusShareCipherSuite>::new(&mut rng);
         setup.serialize().to_vec()
     });
-    Ok(PyBytes::new_bound(py, &raw).unbind())
+    Ok(PyBytes::new(py, &raw).unbind())
 }
 
 /// Registration round 1 (server side).
@@ -133,7 +133,7 @@ fn server_start_registration(
         Ok(result.message.serialize().to_vec())
     }).map_err(PyErr::from)?;
 
-    Ok(PyBytes::new_bound(py, &raw).unbind())
+    Ok(PyBytes::new(py, &raw).unbind())
 }
 
 /// Registration round 2 (server side).
@@ -154,7 +154,7 @@ fn server_finish_registration(py: Python<'_>, reg_upload: &[u8]) -> PyResult<Py<
         Ok(record.serialize().to_vec())
     }).map_err(PyErr::from)?;
 
-    Ok(PyBytes::new_bound(py, &raw).unbind())
+    Ok(PyBytes::new(py, &raw).unbind())
 }
 
 /// Login round 1 (server side).
@@ -218,8 +218,8 @@ fn server_start_login(
         }).map_err(PyErr::from)?;
 
     Ok((
-        PyBytes::new_bound(py, &response_raw).unbind(),
-        PyBytes::new_bound(py, &state_raw).unbind(),
+        PyBytes::new(py, &response_raw).unbind(),
+        PyBytes::new(py, &state_raw).unbind(),
     ))
 }
 
@@ -267,7 +267,7 @@ fn server_finish_login(
             }
         }).map_err(PyErr::from)?;
 
-    Ok(maybe_raw.map(|raw| PyBytes::new_bound(py, &raw).unbind()))
+    Ok(maybe_raw.map(|raw| PyBytes::new(py, &raw).unbind()))
 }
 
 // ---------------------------------------------------------------------------

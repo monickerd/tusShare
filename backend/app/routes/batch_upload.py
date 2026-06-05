@@ -495,8 +495,9 @@ async def _write_batch(
                     await _insert_file_in_tx(db, user_id, meta, data, file_id, storage_key, chunk_id)
                     file_id_map[index] = (file_id, meta.encrypted_size, meta.folder_id)
                 except Exception as exc:
+                    logger.error("Batch upload: file write failed (index=%s): %s", index, exc)
                     problem_index = index
-                    problem_detail = str(exc)
+                    problem_detail = "storage error"
                     break
             if problem_index is None:
                 await db.commit()
