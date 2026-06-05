@@ -9,23 +9,23 @@ Each component is used under its original license.
 
 | Package | Version | License | Project |
 |---|---|---|---|
-| fastapi | 0.115.6 | MIT | https://github.com/fastapi/fastapi |
-| uvicorn | 0.34.0 | BSD-3-Clause | https://github.com/encode/uvicorn |
-| starlette | — | BSD-3-Clause | https://github.com/encode/starlette |
-| asyncpg | 0.29.0 | Apache-2.0 | https://github.com/MagicStack/asyncpg |
-| PyJWT | 2.10.1 | MIT | https://github.com/jpadilla/pyjwt |
-| bcrypt | 4.2.1 | Apache-2.0 | https://github.com/pyca/bcrypt |
-| python-multipart | 0.0.20 | Apache-2.0 | https://github.com/Kludex/python-multipart |
-| pydantic | — | MIT | https://github.com/pydantic/pydantic |
-| pydantic-settings | 2.7.1 | MIT | https://github.com/pydantic/pydantic-settings |
-| aiofiles | 24.1.0 | Apache-2.0 | https://github.com/Tinche/aiofiles |
-| py_ecc | 7.0.0 | MIT | https://github.com/ethereum/py_ecc |
-| cryptography | 44.0.2 | Apache-2.0 / BSD-3-Clause | https://github.com/pyca/cryptography |
-| pyotp | 2.9.0 | MIT | https://github.com/pyauth/pyotp |
-| webauthn | 2.3.0 | BSD-2-Clause | https://github.com/duo-labs/py_webauthn |
-| authlib | 1.3.2 | BSD-3-Clause | https://github.com/lepture/authlib |
+| fastapi | 0.136.3 | MIT | https://github.com/fastapi/fastapi |
+| uvicorn | 0.48.0 | BSD-3-Clause | https://github.com/encode/uvicorn |
+| asyncpg | 0.31.0 | Apache-2.0 | https://github.com/MagicStack/asyncpg |
+| bcrypt | 5.0.0 | Apache-2.0 | https://github.com/pyca/bcrypt |
+| python-multipart | 0.0.29 | Apache-2.0 | https://github.com/Kludex/python-multipart |
+| pydantic-settings | 2.14.1 | MIT | https://github.com/pydantic/pydantic-settings |
+| filetype | 1.2.0 | MIT | https://github.com/h2non/filetype.py |
+| py_ecc | 8.0.0 | MIT | https://github.com/ethereum/py_ecc |
+| cryptography | 48.0.0 | Apache-2.0 / BSD-3-Clause | https://github.com/pyca/cryptography |
+| qrcode | 8.2 | MIT | https://github.com/lincolnloop/python-qrcode |
+| webauthn | 2.7.1 | BSD-2-Clause | https://github.com/duo-labs/py_webauthn |
+| authlib | 1.7.2 | BSD-3-Clause | https://github.com/lepture/authlib |
 | httpx | 0.28.1 | BSD-3-Clause | https://github.com/encode/httpx |
-| aioboto3 | 13.3.0 | Apache-2.0 | https://github.com/terrycain/aioboto3 |
+| aioboto3 | 15.5.0 | Apache-2.0 | https://github.com/terrycain/aioboto3 |
+| redis | 7.4.0 | MIT | https://github.com/redis/redis-py |
+| azure-storage-blob | 12.29.0 | MIT | https://github.com/Azure/azure-sdk-for-python |
+| google-cloud-storage | 3.10.1 | Apache-2.0 | https://github.com/googleapis/python-storage |
 
 ### ldap3 — LGPL-3.0
 
@@ -94,24 +94,27 @@ Full MIT license text for all three noble packages:
 
 ---
 
-## Rust crates (WASM module — tusshare-opaque)
+## Rust crates (backend extension — tusshare-opaque)
 
-The `frontend/js/lib/opaque.js` file is a WebAssembly bundle compiled from the
-`tusshare-opaque` Rust crate, which depends on the following crates:
+The backend uses a native Python extension (`tusshare_opaque.so`) built from the
+`tusshare-opaque` Rust crate using PyO3. It provides the server-side OPAQUE
+protocol implementation. The frontend `opaque.js` is a separate bundle from
+`@serenity-kit/opaque` (listed above under vendored JavaScript libraries) and is
+not built from this crate, though both use the same underlying `opaque-ke` library.
 
-| Crate | License |
-|---|---|
-| opaque-ke | MIT / Apache-2.0 |
-| argon2 | MIT / Apache-2.0 |
-| sha2 | MIT / Apache-2.0 |
-| pyo3 | MIT |
-| rand | MIT / Apache-2.0 |
-| bincode | MIT |
-| serde | MIT / Apache-2.0 |
+| Crate | Version | License |
+|---|---|---|
+| opaque-ke | 4.0.1 | MIT / Apache-2.0 |
+| argon2 | 0.5.3 | MIT / Apache-2.0 |
+| sha2 | 0.10.9 | MIT / Apache-2.0 |
+| pyo3 | 0.24.2 | MIT |
+| rand | 0.8.6 | MIT / Apache-2.0 |
+| bincode | 1.3.3 | MIT |
+| serde | 1.0.228 | MIT / Apache-2.0 |
 
 All Rust crates are used under their MIT license option.
 
-**Security monitoring:** The `opaque-ke` crate (compiled into the WASM bundle)
-should be checked for CVEs whenever `@noble/post-quantum` and `@noble/curves`
-are audited for updates. Compiled WASM bundles do not receive automatic
-dependency scanning and must be reviewed manually.
+**Security monitoring:** The `opaque-ke` and `pyo3` crates are not covered by
+automated dependency scanning (Dependabot covers the Cargo.lock but only flags
+advisories published to the RustSec advisory database). Review the RustSec
+advisories for these crates whenever the backend extension is rebuilt.

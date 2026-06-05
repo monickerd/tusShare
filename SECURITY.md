@@ -336,4 +336,4 @@ compromise would still be required).
 | Metadata not encrypted | File names, sizes, folder structure, and share relationships are stored in plaintext in the database |
 | LDAP users and E2E encryption | IdP-authenticated users require an admin-configured escrow path to access encrypted files |
 | Certificate pinning | Not implemented; relies on the operator's PKI |
-| Redis not yet used | Rate-limit state is in-process; a multi-worker deployment should front with a Redis-backed rate limiter |
+| Redis optional | Rate-limit counters, SSE state, and upload-chunk offsets are in-process by default; set `TUSSHARE_REDIS_URL` to share state across workers in a multi-container deployment |

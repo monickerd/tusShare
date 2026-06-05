@@ -10,7 +10,7 @@ source alone and that took investigation to establish.
 
 | Side     | Library                        | Version       |
 |----------|--------------------------------|---------------|
-| Backend  | `opaque-ke` (Rust, native)     | v4.1.0-pre.2  |
+| Backend  | `opaque-ke` (Rust, native)     | 4.0.1         |
 | Frontend | `@serenity-kit/opaque` (WASM)  | 1.1.0         |
 
 Both compile the same `opaque-ke` Rust crate. Wire format is therefore
@@ -108,8 +108,11 @@ opaque.client.finishLogin({
   | undefined  (undefined = wrong password / MAC failure)
 ```
 
-All string fields are **base64-encoded bytes** (standard base64, not base64url).
-Pass them directly to/from the backend which decodes with `base64.b64decode`.
+All string fields use **base64url encoding with no `=` padding** (`-` and `_`
+instead of `+` and `/`). The backend uses `base64.urlsafe_b64encode` /
+`base64.urlsafe_b64decode` throughout; the JS library emits and accepts the same
+format. Do not use `atob()` / `btoa()` on these values — they handle standard
+base64 only and will throw on `-` / `_` characters.
 
 `exportKey` is the OPRF output, 64 bytes (SHA-512 sized). The server **never**
 sees it. We HKDF it into the KEK.
