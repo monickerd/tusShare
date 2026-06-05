@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # create GitHub Release
+      packages: write     # push to GHCR
+      attestations: write # upload provenance attestation
+      id-token: write     # OIDC token for attestation signing
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # QEMU lets Buildx cross-compile the arm64 image on the amd64 runner.
+      # The Rust compilation step will be slow under emulation (~20 min) but
+      # only runs at release time, not on every push.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Produces tags:
+      #   ghcr.io/monickerd/tusshare:1.2.3
+      #   ghcr.io/monickerd/tusshare:1.2
+      #   ghcr.io/monickerd/tusshare:latest
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/tusshare
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      # Attaches a signed SLSA provenance attestation to the image in GHCR.
+      # Lets users verify the image was built from this exact commit by GitHub
+      # Actions and not tampered with after the fact.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/tusshare
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Create deployment bundle
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/tusshare
+        run: |
+          mkdir -p release-bundle/backend/sql
+
+          # Patch docker-compose.yml: replace the local `build: .` reference
+          # with the published image so users don't need the source tree.
+          python3 -c "
+          import os
+          src = open('docker-compose.yml').read()
+          src = src.replace(
+              '    build: .',
+              '    image: ' + os.environ['IMAGE'] + ':' + os.environ['VERSION']
+          )
+          open('release-bundle/docker-compose.yml', 'w').write(src)
+          "
+
+          cp .env.example release-bundle/
+          cp generate-env.py release-bundle/
+          cp backend/sql/init-app-user.sh release-bundle/backend/sql/
+
+          tar -czf "tusshare-${VERSION}.tar.gz" -C release-bundle .
+          cd release-bundle && zip -r "../tusshare-${VERSION}.zip" .
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            tusshare-${{ steps.meta.outputs.version }}.tar.gz
+            tusshare-${{ steps.meta.outputs.version }}.zip
+          body: |
+            ## Quick start
+
+            1. Download and extract the deployment bundle (`.tar.gz` or `.zip`) below
+            2. Run `python generate-env.py` and enter your domain when prompted
+            3. `docker compose up -d`
+
+            The image is also available directly:
+            ```
+            docker pull ghcr.io/${{ github.repository_owner }}/tusshare:${{ steps.meta.outputs.version }}
+            ```
+
+            See the [README](https://github.com/${{ github.repository }}#readme) for full setup and configuration docs.
