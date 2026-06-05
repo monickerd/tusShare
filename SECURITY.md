@@ -361,6 +361,33 @@ log append-only from the application's perspective. A compromised application
 account cannot silently delete or alter log entries (a superuser-level DB
 compromise would still be required).
 
+### Privilege abuse (rogue admin)
+
+An administrator with sufficient privilege can create a new user account and
+then create or modify a team membership policy to add that account to every team
+folder. The next time a legitimate team member authenticates, the server performs
+the proxy re-encryption step and the rogue account gains read access to those
+team files.
+
+This attack is architecturally constrained to being **highly visible**:
+
+- Every user creation, role grant, and policy change is written to the immutable
+  audit log and triggers SIEM events.
+- Re-encryption key grants require a step-up authentication challenge and are
+  individually logged with the granting admin's identity.
+- Key escrow grants carry DLEQ proofs that can be independently verified; an
+  incorrect grant that silently redirects to the wrong key is detectable.
+- Admin role separation limits which tiers can create users, manage team policies,
+  and approve key grants — a single compromised admin account is less likely to
+  hold all three capabilities simultaneously.
+
+**Residual risk:** No technical control prevents a sufficiently privileged (or
+colluding) admin from executing this attack. Mitigation relies on the audit trail
+being reviewed. Team owners are alerted when their team membership or key
+material changes (see team activity notifications). Operators with strict
+requirements should restrict admin account access and configure SIEM alerting on
+policy and key-grant events.
+
 ---
 
 ## Rate limiting and brute-force protection

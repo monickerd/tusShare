@@ -657,3 +657,16 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_user_folder_recent_user
                 ON user_folder_recent(user_id, interacted_at DESC);
         """)
+
+    # Team last-seen tracking — records when a manager last viewed a team's management page.
+    async with conn.transaction():
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS team_last_seen (
+                team_id  TEXT        NOT NULL REFERENCES teams(id)  ON DELETE CASCADE,
+                user_id  TEXT        NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+                seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (team_id, user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_team_last_seen_user
+                ON team_last_seen(user_id);
+        """)

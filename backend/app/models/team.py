@@ -172,10 +172,13 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
     """Return all teams the user belongs to with roles, key state, and pending flags.
 
     Extra fields per team (beyond Team.to_dict()):
-      my_roles              — list of role IDs the caller holds in this team
-      my_key_confirmed      — True if caller's user_team_keys.key_confirmed = 1
+      my_roles               — list of role IDs the caller holds in this team
+      my_key_confirmed       — True if caller's user_team_keys.key_confirmed = 1
       has_pending_key_grants — True if any policy_team_grants.key_wrapped=0 exist
                                on this team (caller should fulfil them on login)
+      last_seen_at           — ISO timestamp when the caller last viewed this team's
+                               management page, or null if never viewed
+      has_updates            — True for managers: team was modified since last viewed
     """
     cursor = await db.execute(
         "SELECT t.id, t.name, t.description, t.owner_id, t.pre_public_key, "
@@ -186,22 +189,37 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
         "           SELECT 1 FROM policy_team_grants ptg "
         "           JOIN policy_effects pe ON pe.id = ptg.effect_id "
         "           WHERE pe.target_id = t.id AND ptg.key_wrapped = 0"
-        "       ) THEN 1 ELSE 0 END AS has_pending_key_grants "
+        "       ) THEN 1 ELSE 0 END AS has_pending_key_grants, "
+        "       MAX(tls.seen_at) AS my_last_seen "
         "FROM teams t "
         "JOIN user_roles ur ON ur.scope_id = t.id AND ur.scope_type = 'team' AND ur.user_id = ? "
         "LEFT JOIN user_team_keys utk ON utk.team_id = t.id AND utk.user_id = ? "
+        "LEFT JOIN team_last_seen tls ON tls.team_id = t.id AND tls.user_id = ? "
         "GROUP BY t.id, t.name, t.description, t.owner_id, t.pre_public_key, "
         "         t.rotation_pending, t.created_at, t.updated_at, t.scheduled_delete_at "
         "ORDER BY t.name",
-        (user_id, user_id),
+        (user_id, user_id, user_id),
     )
     rows = await cursor.fetchall()
+
+    def _has_updates(r) -> bool:
+        roles = list(r["my_roles"]) if r["my_roles"] else []
+        if not any(role in ("team_admin", "team_manager") for role in roles):
+            return False
+        last_seen = r["my_last_seen"]
+        if last_seen is None:
+            return True
+        # updated_at is a BIGINT epoch (seconds); last_seen is a TIMESTAMPTZ
+        return r["updated_at"] > int(last_seen.timestamp())
+
     return [
         {
             **Team.from_row(r).to_dict(),
             "my_roles": list(r["my_roles"]) if r["my_roles"] else [],
             "my_key_confirmed": bool(r["my_key_confirmed"]),
             "has_pending_key_grants": bool(r["has_pending_key_grants"]),
+            "last_seen_at": r["my_last_seen"].isoformat() if r["my_last_seen"] else None,
+            "has_updates": _has_updates(r),
         }
         for r in rows
     ]

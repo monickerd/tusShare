@@ -1684,7 +1684,7 @@ const App = (() => {
             Utils.el('div', { className: 'sidebar-section-label', textContent: 'Teams' }),
             Utils.el('div', { className: 'sidebar-submenu' }, [
                 Utils.el('a', { href: '#/team-folders', className: 'sidebar-link sidebar-sublink', id: 'nav-team-folders', title: 'Team Folders' }, [_slt('Team Folders')]),
-                Utils.el('a', { href: '#/teams',        className: 'sidebar-link sidebar-sublink', id: 'nav-teams',        title: 'Manage Teams'  }, [_slt('Manage Teams')]),
+                Utils.el('a', { href: '#/teams', className: 'sidebar-link sidebar-sublink nav-managers-only', id: 'nav-teams', title: 'Manage Teams', style: 'display:none' }, [_slt('Manage Teams')]),
             ]),
 
             Utils.el('div', { className: 'sidebar-section-label', textContent: 'Shared' }),
@@ -1909,7 +1909,7 @@ const App = (() => {
 
         const { item: bnTeams, submenu: bnTeamsMenu } = _makeBnSubmenuItem(_iconPerson(), 'teams', 'Teams');
         bnTeamsMenu.appendChild(Utils.el('a', { href: '#/team-folders', className: 'bn-submenu-link', role: 'menuitem', textContent: 'Team Folders' }));
-        bnTeamsMenu.appendChild(Utils.el('a', { href: '#/teams',        className: 'bn-submenu-link', role: 'menuitem', textContent: 'Manage Teams' }));
+        bnTeamsMenu.appendChild(Utils.el('a', { href: '#/teams', className: 'bn-submenu-link nav-managers-only', role: 'menuitem', textContent: 'Manage Teams', style: 'display:none' }));
 
         const { item: bnShared, submenu: bnSharedMenu } = _makeBnSubmenuItem(_iconShare(), 'shared', 'Shared');
         bnSharedMenu.appendChild(Utils.el('a', { href: '#/shares',          className: 'bn-submenu-link', role: 'menuitem', textContent: 'Shared By Me' }));
@@ -1923,6 +1923,18 @@ const App = (() => {
                 link.addEventListener('click', _closeBnSubmenus);
             });
         });
+
+        // Show Manage Teams nav items only for users who are owners or managers of a team.
+        Api.get(`${Config.app.apiPrefix}/teams`).then(data => {
+            const canManage = (data.teams || []).some(t =>
+                (t.my_roles || []).some(r => r === 'team_admin' || r === 'team_manager')
+            );
+            if (canManage) {
+                document.querySelectorAll('.nav-managers-only').forEach(el => {
+                    el.style.display = '';
+                });
+            }
+        }).catch(() => {});
 
         // Populate Recent in both sidebar and bottom nav from a single fetch
         Api.get(`${Config.app.apiPrefix}/auth/me/recent-folders`).then(data => {

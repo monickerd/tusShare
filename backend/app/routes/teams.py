@@ -831,6 +831,10 @@ async def update_member_role(
         "UPDATE user_roles SET role_id = ? WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
         (body.role, target_user_id, team_id),
     )
+    await db.execute(
+        "UPDATE teams SET updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+        (team_id,),
+    )
     await db.commit()
     logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "User %s changed role of %s in team %s: %s → %s",
@@ -1960,3 +1964,96 @@ async def ephemeral_join(
         len(body.members),
     )
     return {"ok": True, "team_id": team_id}
+
+
+# ---------------------------------------------------------------------------
+# Team last-seen and activity
+# ---------------------------------------------------------------------------
+
+_TEAM_ACTIVITY_EVENT_TYPES = {
+    "admin.team.member_added",
+    "admin.team.member_removed",
+    "admin.team_key.rotation_started",
+    "admin.team_key.rotation_completed",
+    "admin.team_role.assigned",
+    "admin.team_role.revoked",
+    "admin.team_role.created",
+    "admin.team_role.updated",
+    "admin.team_role.deleted",
+    "admin.team.delete_scheduled",
+    "admin.team.delete_cancelled",
+}
+
+
+@router.post(
+    "/{team_id}/seen",
+    status_code=204,
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def mark_team_seen(
+    team_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Record that the calling user has viewed this team's management page.
+
+    Clears the 'has_updates' badge for this user on this team. Only meaningful
+    for team managers; silently succeeds for ordinary members.
+    """
+    team_id = validate_uuid(team_id)
+    await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_MEMBER)
+
+    await db.execute(
+        "INSERT INTO team_last_seen (team_id, user_id, seen_at) VALUES (?, ?, NOW()) "
+        "ON CONFLICT (team_id, user_id) DO UPDATE SET seen_at = NOW()",
+        (team_id, user.id),
+    )
+    await db.commit()
+
+
+@router.get(
+    "/{team_id}/activity",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def get_team_activity(
+    team_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    limit: int = 20,
+):
+    """Return recent management-relevant security events for this team.
+
+    Accessible to team managers (team_admin or team_manager role). Returns up to
+    `limit` events (max 50), newest first.
+    """
+    team_id = validate_uuid(team_id)
+    await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_SUPERVISOR)
+
+    limit = min(max(1, limit), 50)
+
+    placeholders = ", ".join("?" * len(_TEAM_ACTIVITY_EVENT_TYPES))
+    cursor = await db.execute(
+        f"SELECT id, event_type, actor_username, detail, severity, outcome, timestamp "
+        f"FROM security_events "
+        f"WHERE target_id = ? AND event_type IN ({placeholders}) "
+        f"ORDER BY timestamp DESC "
+        f"LIMIT ?",
+        (team_id, *_TEAM_ACTIVITY_EVENT_TYPES, limit),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "activity": [
+            {
+                "id": r["id"],
+                "event_type": r["event_type"],
+                "actor_username": r["actor_username"],
+                "detail": r["detail"],
+                "severity": r["severity"],
+                "outcome": r["outcome"],
+                "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
+            }
+            for r in rows
+        ]
+    }

@@ -599,10 +599,18 @@ const Teams = (() => {
             }));
         }
 
-        const cardHeader = Utils.el('div', { className: 'team-card-header' }, [
+        const cardHeaderChildren = [
             Utils.el('span', { className: 'team-card-name', textContent: team.name }),
             badgesEl,
-        ]);
+        ];
+        if (team.has_updates) {
+            cardHeaderChildren.push(Utils.el('span', {
+                className: 'team-update-badge',
+                textContent: 'Updated',
+                title: 'This team has changed since you last reviewed it',
+            }));
+        }
+        const cardHeader = Utils.el('div', { className: 'team-card-header' }, cardHeaderChildren);
         card.appendChild(cardHeader);
 
         if (team.description) {
@@ -730,6 +738,11 @@ const Teams = (() => {
         const isOwner     = myRole === 'team_admin';
         const isSupervisor= myRole === 'team_manager' || isOwner;
 
+        // Clear any pending "Updated" badge for this manager.
+        if (isSupervisor) {
+            Api.post(`${_api}/teams/${teamId}/seen`, {}).catch(() => {});
+        }
+
         // Header
         container.appendChild(Utils.el('h2', { textContent: team.name }));
         if (team.description) {
@@ -793,6 +806,60 @@ const Teams = (() => {
             container.appendChild(rolesSection);
             _renderTeamRolesSection(rolesSection, teamId, members, isOwner || user.is_admin);
         }
+
+        // ---- Recent Activity (visible to supervisors and admins) ----
+        if (isSupervisor || user.is_admin) {
+            const activitySection = Utils.el('section', { className: 'team-section' });
+            activitySection.appendChild(Utils.el('h3', { textContent: 'Recent Activity' }));
+            container.appendChild(activitySection);
+            _renderTeamActivitySection(activitySection, teamId);
+        }
+    }
+
+    async function _renderTeamActivitySection(container, teamId) {
+        const statusEl = Utils.el('p', { className: 'text-muted', textContent: 'Loading…' });
+        container.appendChild(statusEl);
+
+        let data;
+        try {
+            data = await Api.get(`${_api}/teams/${teamId}/activity`);
+        } catch {
+            statusEl.textContent = 'Could not load activity.';
+            return;
+        }
+
+        statusEl.remove();
+        const events = data.activity || [];
+        if (events.length === 0) {
+            container.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No recent management activity.' }));
+            return;
+        }
+
+        const _EVENT_LABELS = {
+            'admin.team.member_added':             'Member added',
+            'admin.team.member_removed':           'Member removed',
+            'admin.team_key.rotation_started':     'Key rotation started',
+            'admin.team_key.rotation_completed':   'Key rotation completed',
+            'admin.team_role.assigned':            'Custom role assigned',
+            'admin.team_role.revoked':             'Custom role revoked',
+            'admin.team_role.created':             'Custom role created',
+            'admin.team_role.updated':             'Custom role updated',
+            'admin.team_role.deleted':             'Custom role deleted',
+            'admin.team.delete_scheduled':         'Team deletion scheduled',
+            'admin.team.delete_cancelled':         'Team deletion cancelled',
+        };
+
+        const list = Utils.el('ul', { className: 'team-activity-list' });
+        for (const ev of events) {
+            const label = _EVENT_LABELS[ev.event_type] || ev.event_type;
+            const ts    = ev.timestamp ? new Date(ev.timestamp).toLocaleString() : '';
+            const actor = ev.actor_username ? `by ${ev.actor_username}` : '';
+            const li = Utils.el('li', { className: `team-activity-item team-activity-${ev.severity || 'info'}` });
+            li.appendChild(Utils.el('span', { className: 'team-activity-label', textContent: label }));
+            li.appendChild(Utils.el('span', { className: 'team-activity-meta', textContent: [actor, ts].filter(Boolean).join(' · ') }));
+            list.appendChild(li);
+        }
+        container.appendChild(list);
     }
 
     // =========================================================================
