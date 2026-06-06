@@ -670,3 +670,40 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_team_last_seen_user
                 ON team_last_seen(user_id);
         """)
+
+    # WebAuthn PRF key binding — four columns on users, prf_salt on webauthn_challenges.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS prf_credential_id         TEXT DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS prf_wrapped_master_key    TEXT DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS prf_wrapped_master_key_iv TEXT DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS prf_salt                  TEXT DEFAULT NULL;
+            ALTER TABLE webauthn_challenges
+                ADD COLUMN IF NOT EXISTS prf_salt TEXT DEFAULT NULL;
+        """)
+    # Extend the purpose CHECK constraint to include 'prf'.
+    # DROP IF EXISTS + unconditional ADD is the idempotent pattern for constraint changes.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE webauthn_challenges
+                DROP CONSTRAINT IF EXISTS webauthn_challenges_purpose_check;
+            ALTER TABLE webauthn_challenges
+                ADD CONSTRAINT webauthn_challenges_purpose_check
+                CHECK(purpose IN ('registration', 'authentication', 'step_up', 'unlock', 'prf'));
+        """)
+
+    # Metadata encryption — encrypted name columns on files and folders.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE files
+                ADD COLUMN IF NOT EXISTS name_ct  TEXT DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS name_idx TEXT DEFAULT NULL;
+            ALTER TABLE folders
+                ADD COLUMN IF NOT EXISTS name_ct  TEXT DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS name_idx TEXT DEFAULT NULL;
+            CREATE INDEX IF NOT EXISTS idx_files_unmigrated
+                ON files(owner_id) WHERE name_ct IS NULL AND upload_complete = 1 AND deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_folders_unmigrated
+                ON folders(owner_id) WHERE name_ct IS NULL AND deleted_at IS NULL;
+        """)
