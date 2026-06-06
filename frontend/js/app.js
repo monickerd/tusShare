@@ -11,6 +11,10 @@ const App = (() => {
     // Used by _renderShell to apply org brand name and logo.
     let _themeConfig = null;
 
+    // Manifest cache for client-side search (cleared on any SSE file-tree change).
+    let _searchManifest    = null;
+    let _manifestFetching  = null;
+
     async function _loadTheme() {
         try {
             _themeConfig = await Api.get(`${Config.app.apiPrefix}/theme`);
@@ -621,6 +625,32 @@ const App = (() => {
         return _getPinnedFolders().some(p => p.id === id);
     }
 
+    async function _loadSearchManifest() {
+        if (_searchManifest) return _searchManifest;
+        if (_manifestFetching) return _manifestFetching;
+        _manifestFetching = (async () => {
+            const masterKey = Auth.getMasterKeyObj();
+            const nameKeys  = masterKey ? await Crypto.deriveNameKeys(masterKey).catch(() => null) : null;
+            const data      = await Api.get(`${Config.app.apiPrefix}/files/manifest`);
+            const items     = await Promise.all((data.files || []).map(async (f) => {
+                let displayName = f.original_name;
+                if (nameKeys && f.name_ct) {
+                    try { displayName = await Crypto.decryptName(f.name_ct, nameKeys.nameKey); } catch { }
+                }
+                return { ...f, displayName };
+            }));
+            _searchManifest  = { items };
+            _manifestFetching = null;
+            return _searchManifest;
+        })();
+        return _manifestFetching;
+    }
+
+    function _invalidateSearchManifest() {
+        _searchManifest   = null;
+        _manifestFetching = null;
+    }
+
     async function _routeSearch(container) {
         _renderShell(container);
         const main = document.getElementById('main-content');
@@ -636,7 +666,7 @@ const App = (() => {
             type: 'text',
             className: 'input-sm',
             value: q,
-            placeholder: 'Search filenames…',
+            placeholder: 'Search files…',
             style: 'width:280px',
         });
         const btn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Search' });
@@ -648,21 +678,22 @@ const App = (() => {
         main.appendChild(page);
 
         const _doSearch = async (term) => {
-            if (!term.trim()) { resultsEl.innerHTML = ''; return; }
+            const needle = term.trim().toLowerCase();
+            if (!needle) { resultsEl.innerHTML = ''; return; }
             resultsEl.textContent = 'Searching…';
             try {
-                const data = await Api.get(`${Config.app.apiPrefix}/files/search?q=${encodeURIComponent(term.trim())}`);
+                const manifest = await _loadSearchManifest();
+                const files    = manifest.items.filter(f => f.displayName.toLowerCase().includes(needle));
                 resultsEl.innerHTML = '';
-                const files = data.files || [];
                 if (!files.length) {
                     resultsEl.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No files found.' }));
                     return;
                 }
                 const tbl = Utils.el('table', { className: 'file-table' });
-                tbl.innerHTML = '<thead><tr><th>Name</th><th>Size</th><th>Location</th><th>Modified</th></tr></thead>';
+                tbl.innerHTML = '<thead><tr><th>Name</th><th>Size</th><th>Location</th><th>Date</th></tr></thead>';
                 const tbody = Utils.el('tbody');
                 for (const f of files) {
-                    const nameLink = Utils.el('a', { href: '#', textContent: f.original_name, className: 'file-name-link' });
+                    const nameLink = Utils.el('a', { href: '#', textContent: f.displayName, className: 'file-name-link' });
                     nameLink.addEventListener('click', (e) => {
                         e.preventDefault();
                         Files.downloadFileById(f.id, f);
@@ -2104,5 +2135,5 @@ const App = (() => {
         init();
     }
 
-    return { init, pinCurrentFolder, unpinCurrentFolder, isPinned, reloadTheme: _loadTheme };
+    return { init, pinCurrentFolder, unpinCurrentFolder, isPinned, reloadTheme: _loadTheme, invalidateSearchManifest: _invalidateSearchManifest };
 })();

@@ -373,6 +373,69 @@ async def search_files(
     }
 
 
+@router.get("/manifest")
+async def get_file_manifest(
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return all files accessible to the user for client-side search.
+
+    The server returns name_ct (ciphertext) rather than executing a plaintext
+    query — the client decrypts names locally and performs substring matching
+    in-memory, so the server never learns the search term.  original_name is
+    included as a fallback for rows that have not yet been through the lazy
+    name-encryption migration.
+    """
+    cursor = await db.execute(
+        "WITH RECURSIVE "
+        "team_tree(id) AS ( "
+        "    SELECT tf.folder_id "
+        "    FROM team_folders tf "
+        "    JOIN user_team_keys utk ON utk.team_id = tf.team_id AND utk.user_id = ? AND utk.key_confirmed = 1 "
+        "    UNION ALL "
+        "    SELECT f.id FROM folders f "
+        "    JOIN team_tree tt ON f.parent_id = tt.id "
+        "    WHERE f.restrict_permissions = false AND f.deleted_at IS NULL "
+        "), "
+        "perm_tree(id, rec) AS ( "
+        "    SELECT p.resource_id, p.recursive FROM permissions p "
+        "    WHERE p.resource_type = 'folder' AND p.user_id = ? "
+        "    UNION ALL "
+        "    SELECT f.id, 1 FROM folders f "
+        "    JOIN perm_tree pt ON f.parent_id = pt.id AND pt.rec = 1 "
+        "    WHERE f.restrict_permissions = false AND f.deleted_at IS NULL "
+        ") "
+        "SELECT f.id, f.name_ct, f.original_name, f.size_bytes, f.created_at, "
+        "       f.folder_id, f.encrypted_file_key, f.key_iv, fold.name AS folder_name "
+        "FROM files f "
+        "LEFT JOIN folders fold ON fold.id = f.folder_id "
+        "WHERE f.deleted_at IS NULL AND f.upload_complete = 1 "
+        "  AND (f.owner_id = ? "
+        "       OR f.folder_id IN (SELECT id FROM team_tree) "
+        "       OR f.folder_id IN (SELECT id FROM perm_tree)) "
+        "ORDER BY f.created_at DESC "
+        "LIMIT 10000",
+        (user.id, user.id, user.id),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "files": [
+            {
+                "id":                r["id"],
+                "name_ct":           r["name_ct"],
+                "original_name":     r["original_name"],
+                "size_bytes":        r["size_bytes"],
+                "created_at":        str(r["created_at"]) if r["created_at"] else None,
+                "folder_id":         r["folder_id"],
+                "folder_path":       r["folder_name"] or "(root)",
+                "encrypted_file_key": r["encrypted_file_key"],
+                "key_iv":            r["key_iv"],
+            }
+            for r in rows
+        ]
+    }
+
+
 import re as _re
 
 _NAME_IDX_RE = _re.compile(r'^[0-9a-f]{64}$')

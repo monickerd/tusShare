@@ -149,7 +149,10 @@ const Files = (() => {
         source.onmessage = () => {
             // Debounce rapid bursts (e.g. multiple files uploaded at once)
             clearTimeout(_liveReloadTimer);
-            _liveReloadTimer = setTimeout(() => _reloadCurrentView(), 500);
+            _liveReloadTimer = setTimeout(() => {
+                App?.invalidateSearchManifest?.();
+                _reloadCurrentView();
+            }, 500);
         };
         _liveSource = source;
     }
@@ -200,7 +203,7 @@ const Files = (() => {
                         type: 'text',
                         id: 'file-list-filter',
                         className: 'input-sm toolbar-filter',
-                        placeholder: 'Filter by name…',
+                        placeholder: 'Search in this folder...',
                         onInput: (e) => {
                             const term = e.target.value.toLowerCase();
                             const listEl = document.getElementById('file-list');
