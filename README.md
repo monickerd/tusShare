@@ -39,6 +39,12 @@ still give any malicious people an easy win.
   tracked per-file with real-time speed and ETA.
 - **Folder organisation** – create nested folders, move and rename files and folders,
   with inline rename directly in the file browser.
+- **Encrypted file and folder names** – file and folder names are encrypted
+  client-side using AES-256-GCM before being stored on the server. A keyed
+  HMAC index allows exact-match search without the server ever seeing plaintext
+  names. Names are derived from your master key and are invisible to the server
+  operator. Existing names migrate automatically in the background on your next
+  login.
 - **Antivirus scanning** – files are scanned by the host OS AV engine on upload.
   Downloads are blocked until a clean verdict is recorded.
 
@@ -48,8 +54,13 @@ still give any malicious people an easy win.
 - **Team folders** – create teams with shared encrypted workspaces. Files uploaded
   to a team folder are accessible to all team members without the uploader needing
   to be online – re-encryption is handled cryptographically, not by copying the file.
-- **Invite links** – generate time-limited invite links for external collaborators,
-  optionally scoped to a specific folder.
+- **Share links** – generate time-limited links that let external users (no account
+  required) access specific files or folders, with optional upload permissions.
+  Links can optionally require a password; the password cryptographically wraps the
+  share key in the browser so the server never sees or verifies it — a leaked URL
+  alone is not enough to access the data.
+- **Invite links** – administrators can generate single-use registration links to
+  bring new users onto the platform without open registration.
 - **Sharing restrictions** – administrators can restrict who users may share with
   (e.g. internal-only, domain-allow/block lists, maximum share duration).
 
@@ -58,6 +69,11 @@ still give any malicious people an easy win.
   in hashed form. The login protocol is zero-knowledge.
 - **Multi-factor authentication** – TOTP (authenticator apps) and WebAuthn (hardware
   keys, passkeys, Face ID / Touch ID).
+- **WebAuthn PRF key binding** – users with a compatible hardware key (YubiKey 5+,
+  platform authenticator) can bind their master encryption key to the authenticator
+  via the WebAuthn PRF extension. When enrolled the key is never written to the
+  browser; each page load requires a physical tap. Requires Chrome 116+,
+  Firefox 119+, or Safari 17+.
 - **SSO integrations** – LDAP and OIDC/OAuth2 for organisations with an existing
   identity provider. Multiple identity providers can be active simultaneously.
 - **Public device mode** – mark a login as "public device" to shorten session lifetime

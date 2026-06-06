@@ -88,6 +88,10 @@ def user_response_dict(user: AuthenticatedUser) -> dict:
         "x25519_private_wrapped": getattr(user, "x25519_private_wrapped", None),
         "mlkem768_private_wrapped": getattr(user, "mlkem768_private_wrapped", None),
         "asymmetric_key_iv": getattr(user, "asymmetric_key_iv", None),
+        "prf_credential_id": getattr(user, "prf_credential_id", None),
+        "prf_wrapped_master_key": getattr(user, "prf_wrapped_master_key", None),
+        "prf_wrapped_master_key_iv": getattr(user, "prf_wrapped_master_key_iv", None),
+        "prf_salt": getattr(user, "prf_salt", None),
         "upload_rate_limit": live_settings.get_int("rate_limit_upload", settings.RATE_LIMIT_UPLOAD),
         "step_up_window_seconds": live_settings.get_int("step_up_window_seconds", settings.STEP_UP_WINDOW_SECONDS),
     }

@@ -15,6 +15,41 @@ const Files = (() => {
     let _currentTeamSKBytes = null; // Uint8Array team sk_team bytes for HKDF share key derivation
     const _pageSize = Config.ui.paginationDefaultLimit;
 
+    // Metadata encryption state.
+    // _nameKeys: { nameKey, searchKey } derived once from master key on init.
+    // _nameCache: uuid → decrypted name string, populated lazily per folder load.
+    let _nameKeys = null;
+    const _nameCache = new Map();
+
+    async function _initNameKeys() {
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey || _nameKeys) return;
+        try {
+            _nameKeys = await Crypto.deriveNameKeys(masterKey);
+        } catch {
+            // Non-fatal — plaintext names are used as fallback
+        }
+    }
+
+    // Decrypt any name_ct values in a list of file/folder objects in parallel and
+    // cache the results.  Falls back silently to the plaintext field on any error.
+    async function _decryptAndCacheNames(items, plaintextField) {
+        if (!_nameKeys || !items || items.length === 0) return;
+        await Promise.all(items.map(async (item) => {
+            if (!item.name_ct || _nameCache.has(item.id)) return;
+            try {
+                _nameCache.set(item.id, await Crypto.decryptName(item.name_ct, _nameKeys.nameKey));
+            } catch {
+                // Leave un-cached; fallback to plaintext below
+            }
+        }));
+    }
+
+    // Return the display name for an item, preferring the decrypted cache entry.
+    function _dn(item, plaintextField) {
+        return (item && _nameCache.get(item.id)) || (item && item[plaintextField]) || '';
+    }
+
     // Live update state — one EventSource per viewed folder/root
     let _liveSource = null;
     let _liveReloadTimer = null;
@@ -223,8 +258,13 @@ const Files = (() => {
         if (!listEl) return;
         // Show root breadcrumb
         _renderBreadcrumbs([], null);
+        await _initNameKeys();
         try {
             const data = await Api.get(`${Config.app.apiPrefix}/folders`);
+            await Promise.all([
+                _decryptAndCacheNames(data.folders, 'name'),
+                _decryptAndCacheNames(data.files, 'original_name'),
+            ]);
             _renderFolderContents(listEl, data.folders, data.files || [], data.pending_uploads || []);
             _startLive(null);
         } catch (err) {
@@ -247,7 +287,7 @@ const Files = (() => {
         const label = Utils.el('a', {
             href: `#/files/${folder.id}`,
             className: 'tree-label',
-            textContent: folder.name,
+            textContent: _dn(folder, 'name'),
         });
         row.appendChild(toggle);
         row.appendChild(label);
@@ -287,6 +327,7 @@ const Files = (() => {
     }
 
     async function loadFolder(folderId) {
+        await _initNameKeys();
         _currentFolderId = folderId;
         const listEl = document.getElementById('file-list');
         if (!listEl) return;
@@ -315,6 +356,13 @@ const Files = (() => {
                 _currentTeamSKBytes = null;
             }
 
+            // Pre-decrypt encrypted names before rendering so _dn() can return synchronously
+            await Promise.all([
+                _decryptAndCacheNames(data.child_folders, 'name'),
+                _decryptAndCacheNames(data.files, 'original_name'),
+                data.folder ? _decryptAndCacheNames([data.folder], 'name') : Promise.resolve(),
+                _decryptAndCacheNames(data.breadcrumbs || [], 'name'),
+            ]);
             _renderBreadcrumbs(data.breadcrumbs || [], data.folder);
             _renderFolderContents(listEl, data.child_folders, data.files, data.pending_uploads || []);
             const _mc = document.getElementById('main-content');
@@ -383,14 +431,14 @@ const Files = (() => {
             el.appendChild(Utils.el('a', {
                 href: crumbHash(ancestors[0]),
                 className: 'breadcrumb-tile',
-                textContent: ancestors[0].name,
+                textContent: _dn(ancestors[0], 'name'),
             }));
             el.appendChild(Utils.el('span', { className: 'breadcrumb-sep breadcrumb-ellipsis', textContent: ' / … / ' }));
             const parent = ancestors[ancestors.length - 1];
             el.appendChild(Utils.el('a', {
                 href: crumbHash(parent),
                 className: 'breadcrumb-tile',
-                textContent: parent.name,
+                textContent: _dn(parent, 'name'),
             }));
         } else {
             for (const crumb of ancestors) {
@@ -398,7 +446,7 @@ const Files = (() => {
                 el.appendChild(Utils.el('a', {
                     href: crumbHash(crumb),
                     className: 'breadcrumb-tile',
-                    textContent: crumb.name,
+                    textContent: _dn(crumb, 'name'),
                 }));
             }
         }
@@ -408,7 +456,7 @@ const Files = (() => {
             el.appendChild(Utils.el('span', { className: 'breadcrumb-sep', textContent: ' / ' }));
             el.appendChild(Utils.el('span', {
                 className: 'breadcrumb-current',
-                textContent: currentFolder.name,
+                textContent: _dn(currentFolder, 'name'),
             }));
 
             // Star icon at end of breadcrumb trail (toggle Favourites)
@@ -572,14 +620,15 @@ const Files = (() => {
     }
 
     function _createFolderRow(folder) {
+        const displayName = _dn(folder, 'name');
         const folderHash = _isTeamView ? `#/team-folders/${folder.id}` : `#/files/${folder.id}`;
-        return Utils.el('tr', { className: 'row-folder', dataset: { name: folder.name } }, [
-            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'folder', id: folder.id, name: folder.name } })]),
+        return Utils.el('tr', { className: 'row-folder', dataset: { name: displayName } }, [
+            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'folder', id: folder.id, name: displayName } })]),
             Utils.el('td', {}, [
                 Utils.el('a', {
                     href: folderHash,
                     className: 'folder-link',
-                    textContent: folder.name,
+                    textContent: displayName,
                 }),
             ]),
             Utils.el('td', { textContent: '--' }),
@@ -587,7 +636,7 @@ const Files = (() => {
             Utils.el('td', { className: 'row-actions' }, [
                 _createContextButton([
                     { label: 'Share', action: () => Shares.openFolderShareDialog({ ...folder, teamId: _currentTeamId }) },
-                    { label: 'Move/Copy', action: () => _openMoveCopyModal([{ type: 'folder', id: folder.id, name: folder.name }]) },
+                    { label: 'Move/Copy', action: () => _openMoveCopyModal([{ type: 'folder', id: folder.id, name: displayName }]) },
                     { label: 'Rename', action: () => _renameFolder(folder) },
                     folder.user_can_manage ? {
                         label: folder.restrict_permissions ? '✓ Block inherited permissions' : 'Block inherited permissions',
@@ -600,17 +649,18 @@ const Files = (() => {
     }
 
     function _createFileRow(file) {
+        const displayName = _dn(file, 'original_name');
         const nameLink = Utils.el('a', {
             href: '#',
             className: 'file-name-link',
-            textContent: file.original_name,
+            textContent: displayName,
         });
         nameLink.addEventListener('click', (e) => {
             e.preventDefault();
             _downloadFile(file);
         });
-        return Utils.el('tr', { className: 'row-file', dataset: { name: file.original_name } }, [
-            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'file', id: file.id, name: file.original_name } })]),
+        return Utils.el('tr', { className: 'row-file', dataset: { name: displayName } }, [
+            Utils.el('td', {}, [Utils.el('input', { type: 'checkbox', dataset: { type: 'file', id: file.id, name: displayName } })]),
             Utils.el('td', {}, [nameLink]),
             Utils.el('td', { textContent: Utils.formatBytes(file.size_bytes) }),
             Utils.el('td', { textContent: Utils.timeAgo(file.created_at) }),
@@ -621,7 +671,7 @@ const Files = (() => {
     }
 
     async function _fileContextItems(file) {
-        const fileForPicker = { type: 'file', id: file.id, name: file.original_name, encrypted_file_key: file.encrypted_file_key, key_iv: file.key_iv };
+        const fileForPicker = { type: 'file', id: file.id, name: _dn(file, 'original_name'), encrypted_file_key: file.encrypted_file_key, key_iv: file.key_iv };
         const items = [
             { label: 'Download', action: () => _downloadFile(file) },
             { label: 'Share', action: () => _openCombinedShareDialog(file) },
@@ -689,7 +739,7 @@ const Files = (() => {
         tabUser.addEventListener('click', () => _switchTab('user'));
 
         overlay.appendChild(Utils.el('div', { className: 'modal share-dialog' }, [
-            Utils.el('h3', { textContent: `Share: ${file.original_name}`, style: 'margin-top:0' }),
+            Utils.el('h3', { textContent: `Share: ${_dn(file, 'original_name')}`, style: 'margin-top:0' }),
             tabBar,
             contentWrap,
             actionsRow,
@@ -699,12 +749,13 @@ const Files = (() => {
     }
 
     async function _openFileInfoModal(file) {
-        Utils.showModal(`Info: ${file.original_name}`, Utils.el('p', { textContent: 'Loading…' }));
+        const displayName = _dn(file, 'original_name');
+        Utils.showModal(`Info: ${displayName}`, Utils.el('p', { textContent: 'Loading…' }));
         let info;
         try {
             info = await Api.get(`${Config.app.apiPrefix}/files/${file.id}/info`);
         } catch (e) {
-            Utils.showModal(`Info: ${file.original_name}`, Utils.el('p', { className: 'text-error', textContent: 'Failed to load: ' + e.message }));
+            Utils.showModal(`Info: ${displayName}`, Utils.el('p', { className: 'text-error', textContent: 'Failed to load: ' + e.message }));
             return;
         }
 
@@ -753,7 +804,7 @@ const Files = (() => {
 
     async function _discardPartialDownload(file) {
         await Download.clearPartialDownload(file.id);
-        Utils.showToast(`Partial download for "${file.original_name}" discarded.`, 'info');
+        Utils.showToast(`Partial download for "${_dn(file, 'original_name')}" discarded.`, 'info');
     }
 
     async function _downloadFile(file) {
@@ -773,22 +824,23 @@ const Files = (() => {
             }
         } catch { /* non-critical */ }
 
+        const displayName  = _dn(file, 'original_name');
         const abortCtrl    = new AbortController();
         const abortDownload = () => abortCtrl.abort();
-        const overlay      = _showUploadOverlay(file.original_name);
-        const transfer     = TransferManager.start(file.original_name, 'download', {
+        const overlay      = _showUploadOverlay(displayName);
+        const transfer     = TransferManager.start(displayName, 'download', {
             onStop:   abortDownload,
             onLogout: abortDownload,
         });
         try {
             await Download.downloadFile(file.id, masterKey, (done, total) => {
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-                overlay.update(pct, file.original_name);
+                overlay.update(pct, displayName);
                 transfer.update(pct);
             }, abortCtrl.signal, _currentTeamId);
             overlay.remove();
             transfer.complete();
-            Utils.showToast(`"${file.original_name}" downloaded`, 'success');
+            Utils.showToast(`"${displayName}" downloaded`, 'success');
         } catch (err) {
             overlay.remove();
             if (err.name === 'AbortError') {
@@ -1047,10 +1099,19 @@ const Files = (() => {
     }
 
     async function _renameFolder(folder) {
-        const name = prompt('New name:', folder.name);
-        if (!name || name === folder.name) return;
+        const currentName = _dn(folder, 'name');
+        const name = prompt('New name:', currentName);
+        if (!name || name === currentName) return;
         try {
-            await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`, { name });
+            const payload = { name };
+            if (_nameKeys && !_isTeamView) {
+                try {
+                    payload.name_ct  = await Crypto.encryptName(name, _nameKeys.nameKey);
+                    payload.name_idx = await Crypto.computeNameHmac(name, _nameKeys.searchKey);
+                } catch { /* Non-fatal — fall through to plaintext rename */ }
+            }
+            await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`, payload);
+            if (payload.name_ct) _nameCache.delete(folder.id);
             Utils.showToast('Folder renamed', 'success');
             _reloadCurrentView();
         } catch (err) {
@@ -1092,8 +1153,9 @@ const Files = (() => {
     }
 
     async function _renameFile(file) {
-        const name = prompt('New name:', file.original_name);
-        if (!name || name === file.original_name) return;
+        const currentName = _dn(file, 'original_name');
+        const name = prompt('New name:', currentName);
+        if (!name || name === currentName) return;
 
         // Client-side preview: warn before submitting if chars will be stripped
         const preview = _previewFilenameSanitize(name);
@@ -1106,7 +1168,15 @@ const Files = (() => {
         }
 
         try {
-            const res = await Api.put(`${Config.app.apiPrefix}/files/${file.id}`, { original_name: name });
+            const payload = { original_name: name };
+            if (_nameKeys) {
+                try {
+                    payload.name_ct  = await Crypto.encryptName(name, _nameKeys.nameKey);
+                    payload.name_idx = await Crypto.computeNameHmac(name, _nameKeys.searchKey);
+                } catch { /* Non-fatal */ }
+            }
+            const res = await Api.put(`${Config.app.apiPrefix}/files/${file.id}`, payload);
+            if (payload.name_ct) _nameCache.delete(file.id);
             if (res.removed_chars?.length) {
                 const chars = res.removed_chars.map(c => c === ' ' ? '(space)' : c).join('  ');
                 Utils.showToast(`File renamed. Removed invalid characters: ${chars}`, 'warning');
@@ -1120,7 +1190,7 @@ const Files = (() => {
     }
 
     async function _deleteFolder(folder) {
-        const ok = await Utils.showConfirm(`Delete folder "${folder.name}" and all its contents?`);
+        const ok = await Utils.showConfirm(`Delete folder "${_dn(folder, 'name')}" and all its contents?`);
         if (!ok) return;
         try {
             await Api.del(`${Config.app.apiPrefix}/folders/${folder.id}`);
@@ -1132,7 +1202,7 @@ const Files = (() => {
     }
 
     async function _deleteFile(file) {
-        const ok = await Utils.showConfirm(`Delete "${file.original_name}"?`);
+        const ok = await Utils.showConfirm(`Delete "${_dn(file, 'original_name')}"?`);
         if (!ok) return;
         try {
             await Api.del(`${Config.app.apiPrefix}/files/${file.id}`);
@@ -1954,15 +2024,23 @@ const Files = (() => {
     }
 
     function _promptNewFolder() {
-        Utils.showPrompt('New Folder', 'Folder name').then((name) => {
+        Utils.showPrompt('New Folder', 'Folder name').then(async (name) => {
             if (!name) return;
-            Api.post(`${Config.app.apiPrefix}/folders`, { name, parent_id: _currentFolderId })
-                .then(() => {
-                    Utils.showToast('Folder created', 'success');
-                    if (_currentFolderId) loadFolder(_currentFolderId);
-                    else _loadRootFolders();
-                })
-                .catch(err => Utils.showToast(err.message, 'error'));
+            try {
+                const payload = { name, parent_id: _currentFolderId };
+                if (_nameKeys && !_isTeamView) {
+                    try {
+                        payload.name_ct  = await Crypto.encryptName(name, _nameKeys.nameKey);
+                        payload.name_idx = await Crypto.computeNameHmac(name, _nameKeys.searchKey);
+                    } catch { /* Non-fatal */ }
+                }
+                await Api.post(`${Config.app.apiPrefix}/folders`, payload);
+                Utils.showToast('Folder created', 'success');
+                if (_currentFolderId) loadFolder(_currentFolderId);
+                else _loadRootFolders();
+            } catch (err) {
+                Utils.showToast(err.message, 'error');
+            }
         });
     }
 
@@ -1993,7 +2071,14 @@ const Files = (() => {
 
     async function _createOrResolveFolder(name, parentServerId, ctx) {
         try {
-            const r = await Api.post(`${Config.app.apiPrefix}/folders`, { name, parent_id: parentServerId || null });
+            const payload = { name, parent_id: parentServerId || null };
+            if (_nameKeys && !_isTeamView) {
+                try {
+                    payload.name_ct  = await Crypto.encryptName(name, _nameKeys.nameKey);
+                    payload.name_idx = await Crypto.computeNameHmac(name, _nameKeys.searchKey);
+                } catch { /* Non-fatal */ }
+            }
+            const r = await Api.post(`${Config.app.apiPrefix}/folders`, payload);
             return r.folder.id;
         } catch (err) {
             if (err.status === 409 && err.existingFolderId) {
@@ -2307,7 +2392,7 @@ const Files = (() => {
                     const batch = await Promise.all(
                         group.map(async ({ file }) => {
                             await _prewarmSemaphore.acquire();
-                            const prepared = await Upload.prepareUpload(file, folderId, masterKey);
+                            const prepared = await Upload.prepareUpload(file, folderId, masterKey, _nameKeys);
                             _prewarmSemaphore.release();
                             return { prepared, file };
                         })
@@ -2328,7 +2413,7 @@ const Files = (() => {
                 let prepared;
                 try {
                     await _prewarmSemaphore.acquire();
-                    prepared = await Upload.prepareUpload(file, retryFolderId, masterKey);
+                    prepared = await Upload.prepareUpload(file, retryFolderId, masterKey, _nameKeys);
                     _prewarmSemaphore.release();
                 } catch (err) {
                     _prewarmSemaphore.release();
@@ -2347,7 +2432,7 @@ const Files = (() => {
         // Large files: existing bounded tus path (unchanged).
         const uploads = largeResolved.map(async ({ file, index, deletedForReplace }) => {
             await _prewarmSemaphore.acquire();
-            const preparedPromise = Upload.prepareUpload(file, folderId, masterKey);
+            const preparedPromise = Upload.prepareUpload(file, folderId, masterKey, _nameKeys);
 
             await _uploadSemaphore.acquire();
             _prewarmSemaphore.release(); // crypto done + upload slot secured; next file can pre-warm
@@ -2619,6 +2704,7 @@ const Files = (() => {
             chunk_hash:         `sha256:${chunkHash}`,
             last_modified_ms:   String(file.lastModified),
             ...prepared.escrowMeta,
+            ...prepared.nameMeta,
         }));
         const form = new FormData();
         form.append('metadata', new Blob([JSON.stringify(metadataArr)], { type: 'application/json' }));
@@ -3015,11 +3101,40 @@ const Files = (() => {
         return _downloadFile(file);
     }
 
+    // Lazily migrate plaintext names to encrypted form in the background.
+    // Called once after login; safe to call multiple times (server enforces name_ct IS NULL guard).
+    async function migrateNames() {
+        await _initNameKeys();
+        if (!_nameKeys) return;
+        try {
+            const data = await Api.get(`${Config.app.apiPrefix}/files/unmigrated-names`);
+            const items = data.items || [];
+            if (items.length === 0) return;
+            const updates = [];
+            for (const item of items) {
+                const rawName = item.name || item.original_name || '';
+                if (!rawName) continue;
+                try {
+                    updates.push({
+                        type: item.type,
+                        id:   item.id,
+                        name_ct:  await Crypto.encryptName(rawName, _nameKeys.nameKey),
+                        name_idx: await Crypto.computeNameHmac(rawName, _nameKeys.searchKey),
+                    });
+                } catch { /* skip this item */ }
+            }
+            if (updates.length > 0) {
+                await Api.post(`${Config.app.apiPrefix}/files/migrate-names`, { items: updates });
+            }
+        } catch { /* Non-fatal — migration will retry on next login */ }
+    }
+
     return {
         renderFileBrowser,
         loadFolder,
         downloadFileById,
         getSelectedItems,
         stopLive: _stopLive,
+        migrateNames,
     };
 })();

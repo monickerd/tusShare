@@ -151,6 +151,33 @@ Password → OPAQUE KEK → Master Key (AES-256) → File Key (per file)
 The master key is stored on the server encrypted under the KEK; the server
 cannot derive either without the user's password.
 
+### Metadata encryption (file and folder names)
+
+File and folder names in a user's personal namespace are encrypted client-side
+before being stored. The encryption uses two sub-keys derived from the user's
+master key via HKDF-SHA-256 with a fixed salt (`tusShare-meta-v1`):
+
+- **`nameKey`** (`info = "filename-enc"`) — AES-256-GCM key used to encrypt the
+  name. A random 12-byte IV is prepended to the ciphertext; the combined blob is
+  base64-encoded and stored in the `name_ct` column.
+- **`searchKey`** (`info = "filename-search"`) — HMAC-SHA-256 key used to produce
+  a keyed digest of the lowercased, trimmed name. The 32-byte hex digest is stored
+  in the `name_idx` column and allows exact-match server-side search without
+  revealing the plaintext.
+
+The server stores only ciphertext and an HMAC tag; it cannot derive either sub-key
+or recover any name.
+
+**Backward compatibility**: rows with `name_ct = NULL` fall back to the legacy
+`original_name` / `name` columns. On first login after the feature is deployed, the
+client fetches all unmigrated rows and re-uploads them with encrypted names in the
+background (at most 200 rows per request).
+
+**Team folder limitation**: names in team folders remain unencrypted. Each member's
+personal `nameKey` is derived from their own master key, which is not shared with
+other team members, so a single shared name key would require a separate key
+agreement step. This is a known limitation and is tracked for a future release.
+
 ### Team sharing (Proxy Re-Encryption)
 
 Team folders use BLS12-381 proxy re-encryption (AFGH scheme). A re-encryption
@@ -163,6 +190,34 @@ The server performs the re-encryption operation but cannot decrypt the result.
 Direct file shares use an ephemeral ECDH key encapsulation mechanism. The
 sender encrypts the file key under the recipient's public key; only the
 recipient can unwrap it.
+
+### Password-protected share links
+
+Share links can optionally be protected with a password chosen at creation time.
+
+- The share key is wrapped with AES-256-GCM using a KEK derived from the password
+  via PBKDF2-SHA-256 (100,000 iterations, 16-byte random salt). The salt, GCM IV,
+  and wrapped key (48 bytes including authentication tag) are encoded into the URL
+  fragment as a `pw1`-prefixed base64url blob.
+- The server stores only the sentinel string `'pw1'` in the `password_hash` column
+  to signal that protection is active. It never receives, stores, or verifies the
+  password.
+- The cryptographic gate is the AES-GCM authentication tag. A wrong password
+  causes an irrecoverable `DOMException` in the browser's `SubtleCrypto.unwrapKey`
+  call before any file key material is accessible — this is not a UI-layer check
+  that can be bypassed by a modified client.
+- The protected fragment is in the URL hash (`#...`) and is therefore never
+  transmitted to the server, even via short-link redirects.
+- If a short link is created for a password-protected share, the protected fragment
+  is stored in the `short_links` table as the `share_key` value. An attacker with
+  database access obtains the encrypted blob but still requires the password to
+  derive the KEK and unwrap the share key.
+
+**Residual risk:** password strength determines offline brute-force cost. PBKDF2 at
+100,000 iterations raises the cost relative to a raw hash, but short or common
+passwords remain vulnerable if an attacker obtains the URL fragment. Users should
+choose passwords that are not easily guessable and treat the password as a secret
+channel separate from the link itself.
 
 ### Key escrow
 
@@ -341,7 +396,8 @@ controls the CA).
 | File plaintext | Yes — files are stored encrypted; the server holds no KEK |
 | File keys | Yes — file keys are encrypted under user master keys |
 | Master keys | Yes — master keys are encrypted under the user's KEK |
-| Metadata (file names, sizes, share relationships) | **No** — stored in plaintext |
+| File and folder names | **Partially** — names are encrypted client-side (AES-256-GCM) before storage; team folder names remain plaintext (see below) |
+| File sizes, share relationships, timestamps | **No** — stored in plaintext |
 
 ### What an attacker with full server (OS-level) access obtains
 
@@ -425,9 +481,9 @@ policy and key-grant events.
 | Item | Detail |
 |---|---|
 | `style-src 'unsafe-inline'` | Runtime pixel calculations prevent a fully strict CSP; tracked for a future nonce-based refactor |
-| Metadata not encrypted | File names, sizes, folder structure, share relationships, and access timestamps are stored in plaintext. A database-level attacker obtains a complete social graph (who shares with whom), file-type and content inferences from naming and size, and a full activity timeline — even though file content remains protected. |
+| Team folder names not encrypted | File and folder names in a user's personal namespace are encrypted client-side (see below). Names in *team* folders are stored in plaintext because the team name key derives from the personal master key, which team members do not share with each other. File sizes, share relationships, folder structure, and access timestamps are still stored in plaintext. |
 | LDAP users and E2E encryption | IdP-authenticated users require an admin-configured escrow path to access encrypted files |
 | Certificate pinning | Not implemented; relies on the operator's PKI |
 | Redis optional | Rate-limit counters, SSE state, and upload-chunk offsets are in-process by default; set `TUSSHARE_REDIS_URL` to share state across workers in a multi-container deployment |
-| Master key in sessionStorage | The unwrapped master key is held in `sessionStorage` for the tab lifetime so the OPFS download pipeline can access raw key bytes without re-running OPAQUE on every operation. An XSS exploit that bypasses CSP during an active session would expose it. WebAuthn PRF binding (hardware-bound key storage that would eliminate this exposure) is not yet implemented. Mitigations in place: strict CSP, SRI on all scripts, all `innerHTML` paths removed. |
+| Master key in sessionStorage | The unwrapped master key is held in `sessionStorage` for the tab lifetime so the OPFS download pipeline can access raw key bytes without re-running OPAQUE on every operation. An XSS exploit that bypasses CSP during an active session would expose it. **Mitigation for WebAuthn users**: users with a compatible hardware key (YubiKey 5+, Chrome/Firefox/Safari platform authenticators) can enable *PRF key binding* in MFA settings. When enrolled the key is never written to the browser; each page refresh re-derives it via a physical authenticator tap using the WebAuthn PRF extension — an XSS cannot invoke PRF silently. For non-PRF users: strict CSP, SRI on all scripts, all `innerHTML` paths removed. The master key remains `extractable: true` (a future refactor target) to support the password-change and share-key-derivation flows. |
 | OPAQUE ServerSetup backup | The `opaque.server_setup` value in `sensitive_config` is the OPRF seed from which all user credential files are derived. Loss of this value makes every OPAQUE-authenticated account permanently inaccessible — there is no recovery path. It must be backed up securely and independently of the database. If the seed is exfiltrated rather than lost, an attacker who also obtains a user's OPAQUE credential record can perform an offline attack to recover that user's KEK. |

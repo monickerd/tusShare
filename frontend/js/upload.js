@@ -75,7 +75,7 @@ const Upload = (() => {
      * @param {CryptoKey}  masterKey - Decrypted master key.
      * @returns {Promise<object>} Opaque prepared object consumed by uploadFromPrepared.
      */
-    async function prepareUpload(file, folderId, masterKey) {
+    async function prepareUpload(file, folderId, masterKey, nameKeys = null) {
         const chunkSize = _getChunkSize();
         const totalChunks = Math.ceil(file.size / chunkSize);
 
@@ -90,6 +90,17 @@ const Upload = (() => {
         const { encryptedKeyB64, ivB64: keyIvB64 } = await Crypto.encryptFileKey(fileKey, masterKey);
         const escrowMeta = await _tryEscrowWrap(fileKeyBytes);
 
+        let nameMeta = {};
+        if (nameKeys) {
+            try {
+                const name_ct  = await Crypto.encryptName(file.name, nameKeys.nameKey);
+                const name_idx = await Crypto.computeNameHmac(file.name, nameKeys.searchKey);
+                nameMeta = { name_ct, name_idx };
+            } catch {
+                // Non-fatal: name encryption failure must never block the upload
+            }
+        }
+
         const meta = _buildMetadata({
             filename:           file.name,
             filetype:           file.type || 'application/octet-stream',
@@ -100,6 +111,7 @@ const Upload = (() => {
             original_size:      String(file.size),
             last_modified_ms:   String(file.lastModified),
             ...escrowMeta,
+            ...nameMeta,
         });
 
         // Pre-encrypt chunk 0 (the whole file for single-chunk uploads) now,
@@ -109,7 +121,7 @@ const Upload = (() => {
         return {
             fileKey, fileKeyBytes, meta, totalEncryptedSize, firstEncrypted, chunkSize, totalChunks,
             // Raw crypto fields for the batch upload path (avoids re-parsing the tus metadata string).
-            encryptedKeyB64, keyIvB64, escrowMeta,
+            encryptedKeyB64, keyIvB64, escrowMeta, nameMeta,
         };
     }
 

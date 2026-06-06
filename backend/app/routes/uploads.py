@@ -110,11 +110,29 @@ def _parse_upload_metadata(raw: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+_NAME_IDX_PATTERN = re.compile(r'^[0-9a-f]{64}$')
+
+
 def _validate_metadata_fields(meta: dict) -> tuple:
-    """Check required fields and validate escrow key encoding. Returns (escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv)."""
+    """Check required fields and validate optional encrypted-name and escrow key encoding.
+
+    Returns (escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv, name_ct, name_idx).
+    """
     for field in ("filename", "filetype", "encrypted_file_key", "key_iv", "chunk_size", "original_size"):
         if field not in meta:
             raise HTTPException(status_code=400, detail=f"Missing metadata field: {field}")
+
+    # Optional encrypted name fields (populated by clients that support metadata encryption)
+    name_ct: str | None = meta.get("name_ct") or None
+    name_idx: str | None = meta.get("name_idx") or None
+    if name_ct is not None:
+        try:
+            validate_base64(name_ct)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid name_ct encoding")
+        if name_idx is None or not _NAME_IDX_PATTERN.match(name_idx):
+            raise HTTPException(status_code=400, detail="name_idx must be a 64-char hex string when name_ct is present")
+
     escrow_ephemeral_pk: str | None = meta.get("escrow_ephemeral_pk") or None
     escrow_encrypted_key: str | None = meta.get("escrow_encrypted_key") or None
     escrow_key_iv: str | None = meta.get("escrow_key_iv") or None
@@ -125,7 +143,7 @@ def _validate_metadata_fields(meta: dict) -> tuple:
             validate_base64(escrow_key_iv)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid escrow key field encoding")
-    return escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv
+    return escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv, name_ct, name_idx
 
 
 async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> str | None:
@@ -251,7 +269,7 @@ async def create_upload(
         raise HTTPException(status_code=400, detail=str(exc))
 
     # --- Validate required metadata fields and escrow encoding ---
-    escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv = _validate_metadata_fields(meta)
+    escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv, name_ct, name_idx = _validate_metadata_fields(meta)
 
     try:
         sanitized = sanitize_filename(meta["filename"])
@@ -304,8 +322,8 @@ async def create_upload(
                 mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
                 encrypted_file_key, key_iv, upload_complete,
                 escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
-                last_modified_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                last_modified_ms, name_ct, name_idx
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
             """,
             (
                 file_id,
@@ -325,6 +343,8 @@ async def create_upload(
                 escrow_encrypted_key,
                 escrow_key_iv,
                 last_modified_ms,
+                name_ct,
+                name_idx,
             ),
         )
         # Inherit recursive permissions from the parent folder (personal root = no-inherit)

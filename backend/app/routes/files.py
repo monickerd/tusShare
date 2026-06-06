@@ -94,10 +94,15 @@ async def _check_av_gate(db, file_row) -> None:
     )
 
 
+_NAME_IDX_PATTERN_FILES = __import__('re').compile(r'^[0-9a-f]{64}$')
+
+
 class UpdateFileRequest(BaseModel):
     original_name: str | None = None
     folder_id: str | None = None
     move_to_root: bool = False
+    name_ct: str | None = None
+    name_idx: str | None = None
 
     @field_validator("original_name")
     @classmethod
@@ -111,6 +116,21 @@ class UpdateFileRequest(BaseModel):
     def validate_folder_id(cls, v: str | None) -> str | None:
         if v is not None:
             return validate_uuid(v)
+        return v
+
+    @field_validator("name_ct")
+    @classmethod
+    def validate_name_ct(cls, v: str | None) -> str | None:
+        if v is not None:
+            from app.validation.sanitizers import validate_base64
+            return validate_base64(v)
+        return v
+
+    @field_validator("name_idx")
+    @classmethod
+    def validate_name_idx(cls, v: str | None) -> str | None:
+        if v is not None and not _NAME_IDX_PATTERN_FILES.match(v):
+            raise ValueError("name_idx must be a 64-char hex string")
         return v
 
 
@@ -321,7 +341,7 @@ async def search_files(
         "    JOIN perm_tree pt ON f.parent_id = pt.id AND pt.rec = 1 "
         "    WHERE f.restrict_permissions = false AND f.deleted_at IS NULL "
         ") "
-        "SELECT f.id, f.original_name, f.size_bytes, f.created_at, f.folder_id, "
+        "SELECT f.id, f.original_name, f.name_ct, f.size_bytes, f.created_at, f.folder_id, "
         "       f.encrypted_file_key, f.key_iv, fold.name AS folder_name "
         "FROM files f "
         "LEFT JOIN folders fold ON fold.id = f.folder_id "
@@ -340,6 +360,7 @@ async def search_files(
             {
                 "id": r["id"],
                 "original_name": r["original_name"],
+                "name_ct": r["name_ct"],
                 "size_bytes": r["size_bytes"],
                 "created_at": str(r["created_at"]) if r["created_at"] else None,
                 "folder_id": r["folder_id"],
@@ -350,6 +371,118 @@ async def search_files(
             for r in rows
         ]
     }
+
+
+import re as _re
+
+_NAME_IDX_RE = _re.compile(r'^[0-9a-f]{64}$')
+
+_UNMIGRATED_PAGE_SIZE = 200
+
+
+@router.get("/unmigrated-names", responses={200: {"description": "OK"}})
+async def get_unmigrated_names(
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return all of the authenticated user's files and folders that lack an encrypted name.
+
+    The client calls this once after login and encrypts the names locally, then
+    submits the results to POST /files/migrate-names.
+    """
+    cursor = await db.execute(
+        "SELECT id, original_name FROM files "
+        "WHERE owner_id = ? AND name_ct IS NULL AND upload_complete = 1 AND deleted_at IS NULL "
+        "LIMIT ?",
+        (user.id, _UNMIGRATED_PAGE_SIZE),
+    )
+    files = [{"id": r["id"], "name": r["original_name"], "type": "file"} for r in await cursor.fetchall()]
+
+    cursor = await db.execute(
+        "SELECT id, name FROM folders "
+        "WHERE owner_id = ? AND name_ct IS NULL AND deleted_at IS NULL "
+        "LIMIT ?",
+        (user.id, _UNMIGRATED_PAGE_SIZE),
+    )
+    folders = [{"id": r["id"], "name": r["name"], "type": "folder"} for r in await cursor.fetchall()]
+
+    return {"items": files + folders}
+
+
+class _MigrateNameItem(BaseModel):
+    id: str
+    type: str
+    name_ct: str
+    name_idx: str
+
+    @field_validator("id")
+    @classmethod
+    def _vid(cls, v: str) -> str:
+        return validate_uuid(v)
+
+    @field_validator("type")
+    @classmethod
+    def _vtype(cls, v: str) -> str:
+        if v not in ("file", "folder"):
+            raise ValueError("type must be 'file' or 'folder'")
+        return v
+
+    @field_validator("name_ct")
+    @classmethod
+    def _vct(cls, v: str) -> str:
+        from app.validation.sanitizers import validate_base64
+        return validate_base64(v)
+
+    @field_validator("name_idx")
+    @classmethod
+    def _vidx(cls, v: str) -> str:
+        if not _NAME_IDX_RE.match(v):
+            raise ValueError("name_idx must be a 64-char hex string")
+        return v
+
+
+class _MigrateNamesRequest(BaseModel):
+    items: list[_MigrateNameItem]
+
+    @field_validator("items")
+    @classmethod
+    def _vitems(cls, v: list) -> list:
+        if not v:
+            raise ValueError("items must not be empty")
+        if len(v) > _UNMIGRATED_PAGE_SIZE:
+            raise ValueError(f"Cannot migrate more than {_UNMIGRATED_PAGE_SIZE} items per request")
+        return v
+
+
+@router.post("/migrate-names", responses={200: {"description": "OK"}, 400: {"description": "Bad Request"}})
+async def migrate_names(
+    body: _MigrateNamesRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Bulk-write encrypted name ciphertext for the user's own files and folders.
+
+    Only rows where the caller is the owner and name_ct IS NULL are updated —
+    already-migrated rows are silently skipped.  This prevents a race between
+    concurrent sessions from corrupting previously set values.
+    """
+    updated = 0
+    for item in body.items:
+        if item.type == "file":
+            cur = await db.execute(
+                "UPDATE files SET name_ct = ?, name_idx = ? "
+                "WHERE id = ? AND owner_id = ? AND name_ct IS NULL",
+                (item.name_ct, item.name_idx, item.id, user.id),
+            )
+        else:
+            cur = await db.execute(
+                "UPDATE folders SET name_ct = ?, name_idx = ? "
+                "WHERE id = ? AND owner_id = ? AND name_ct IS NULL",
+                (item.name_ct, item.name_idx, item.id, user.id),
+            )
+        updated += cur.rowcount if hasattr(cur, "rowcount") else 0
+    await db.commit()
+    return {"updated": updated}
 
 
 @router.post(
@@ -854,6 +987,13 @@ async def _build_file_update_fields(db, body: UpdateFileRequest, user) -> "tuple
         updates.append("sanitized_name = ?")
         params.append(sanitized.name)
         removed_chars = sanitized.removed_chars
+    if body.name_ct is not None:
+        if body.name_idx is None:
+            raise HTTPException(status_code=400, detail="name_idx required when name_ct is provided")
+        updates.append("name_ct = ?")
+        params.append(body.name_ct)
+        updates.append("name_idx = ?")
+        params.append(body.name_idx)
     if body.move_to_root:
         updates.append("folder_id = ?")
         params.append(None)

@@ -124,6 +124,7 @@ class CreateShareRequest(BaseModel):
     upload_max_bytes: int | None = None  # None → server chooses (min of default and available quota)
     target_folder_id: str | None = None
     client_token: str | None = None
+    is_password_protected: bool = False
 
     @field_validator("client_token")
     @classmethod
@@ -224,7 +225,8 @@ class CreateShortLinkRequest(BaseModel):
     @field_validator("share_key")
     @classmethod
     def validate_share_key(cls, v: str) -> str:
-        return validate_base64(v, max_length=64)
+        # Raw 256-bit share key (~44 chars) or password-protected fragment (~105 chars, pw1 prefix)
+        return validate_base64(v, max_length=112)
 
 
 # ---------------------------------------------------------------------------
@@ -793,8 +795,9 @@ async def _insert_share_transaction(
             """
             INSERT INTO shares
                 (id, token, created_by, share_type, target_user_id, expires_at,
-                 max_downloads, allow_upload, target_folder_id, key_type, upload_max_bytes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 max_downloads, allow_upload, target_folder_id, key_type, upload_max_bytes,
+                 password_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 share_id,
@@ -808,6 +811,7 @@ async def _insert_share_transaction(
                 target_folder_id,
                 key_type,
                 upload_max_bytes,
+                'pw1' if body.is_password_protected else None,
             ),
         )
         for item in body.items:

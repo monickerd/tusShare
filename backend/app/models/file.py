@@ -15,6 +15,8 @@ class Folder:
     updated_at: str
     deleted_at: str | None = None
     deleted_by: str | None = None
+    name_ct: str | None = None
+    name_idx: str | None = None
 
     @classmethod
     def from_row(cls, row) -> "Folder":
@@ -29,12 +31,16 @@ class Folder:
             updated_at=row["updated_at"],
             deleted_at=row.get("deleted_at"),
             deleted_by=row.get("deleted_by"),
+            name_ct=row.get("name_ct"),
+            name_idx=row.get("name_idx"),
         )
 
     def to_dict(self) -> dict:
         return {
             "id": self.id,
             "name": self.name,
+            "name_ct": self.name_ct,
+            "name_idx": self.name_idx,
             "parent_id": self.parent_id,
             "owner_id": self.owner_id,
             "is_shared": self.is_shared,
@@ -67,6 +73,8 @@ class File:
     deleted_at: str | None = None
     deleted_by: str | None = None
     last_modified_ms: int | None = None
+    name_ct: str | None = None
+    name_idx: str | None = None
 
     @classmethod
     def from_row(cls, row) -> "File":
@@ -91,6 +99,8 @@ class File:
             deleted_at=row.get("deleted_at"),
             deleted_by=row.get("deleted_by"),
             last_modified_ms=row.get("last_modified_ms"),
+            name_ct=row.get("name_ct"),
+            name_idx=row.get("name_idx"),
         )
 
     def to_dict(self) -> dict:
@@ -98,6 +108,8 @@ class File:
             "id": self.id,
             "original_name": self.original_name,
             "sanitized_name": self.sanitized_name,
+            "name_ct": self.name_ct,
+            "name_idx": self.name_idx,
             "folder_id": self.folder_id,
             "owner_id": self.owner_id,
             "mime_type": self.mime_type,

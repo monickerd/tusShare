@@ -53,24 +53,29 @@ const Auth = (() => {
     // ------------------------------------------------------------------
     // Session key caching (grace period)
     //
-    // The master key is exported to raw bytes and stored alongside the salt in
-    // sessionStorage with a timestamp. On page reload, if the timestamp is within
-    // the grace period (Config.auth.keyGracePeriodMs), the key is re-imported
-    // without prompting the user for their password again. The timestamp rolls
-    // forward on every successful restore so the window stays open during an
-    // active session (e.g. long-running uploads). sessionStorage is cleared when
-    // the tab closes, and we clear it explicitly on logout.
+    // Standard path: the master key is exported to raw bytes and stored in
+    // sessionStorage with a timestamp.  On page reload within the grace period the
+    // key is re-imported without prompting the user.  sessionStorage is cleared
+    // on logout and by the browser when the tab closes.
     //
-    // Security trade-off (T1-H1): storing the master key in sessionStorage means
-    // an XSS vulnerability with an active session yields immediate full key
-    // compromise. This is an accepted trade-off: the OPFS download pipeline
-    // requires access to raw key bytes during the session, and WebAuthn PRF
-    // binding (which would eliminate the sessionStorage exposure) is deferred.
-    // Mitigations in place: strict CSP, all innerHTML paths removed, SRI on all
-    // scripts, sessionStorage scoped to tab lifetime.
+    // PRF path (when the user has enrolled WebAuthn PRF key binding):
+    // The raw master key is NEVER written to sessionStorage.  Instead we write a
+    // sentinel { prf_bound: true } so checkSession() knows a session exists.  On
+    // page refresh the key is re-derived by calling navigator.credentials.get()
+    // with the PRF extension — which requires a physical authenticator tap.  An
+    // XSS cannot silently invoke PRF (it requires a user gesture).
+    //
+    // Residual risk: the master key is still CryptoKey extractable:true so that
+    // the existing password-change and share-key-derivation flows are unaffected.
+    // Future work: make it non-extractable once those flows are refactored.
     // ------------------------------------------------------------------
 
     async function _saveSessionKeyData(key, salt) {
+        // PRF path: write sentinel only — key stays out of sessionStorage.
+        if (_currentUser?.prf_credential_id) {
+            sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({ prf_bound: true }));
+            return;
+        }
         try {
             const keyB64url = await Crypto.exportKeyToBase64url(key);
             sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({
@@ -80,18 +85,64 @@ const Auth = (() => {
             }));
         } catch (err) {
             console.warn('[tusShare] Failed to cache master key:', err);
-            // Fall back to storing salt only so the key prompt still works
             sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify({ salt }));
         }
+    }
+
+    // Restore key via PRF: calls navigator.credentials.get() with the PRF extension
+    // and uses the output to decrypt the server-stored wrapped master key.
+    async function _restoreKeyViaPrf() {
+        if (!_currentUser?.prf_credential_id || !_currentUser?.prf_wrapped_master_key) return false;
+        try {
+            const credId = _base64urlToBuffer(_currentUser.prf_credential_id);
+            const prfSalt = _base64urlToBuffer(_currentUser.prf_salt);
+            const assertion = await navigator.credentials.get({
+                publicKey: {
+                    challenge: crypto.getRandomValues(new Uint8Array(32)),
+                    allowCredentials: [{ type: 'public-key', id: credId }],
+                    extensions: { prf: { eval: { first: prfSalt } } },
+                    userVerification: 'preferred',
+                },
+            });
+            const prfOutput = assertion.getClientExtensionResults()?.prf?.results?.first;
+            if (!prfOutput) {
+                console.warn('[tusShare] PRF extension not supported by this authenticator or was denied.');
+                return false;
+            }
+            _masterKeyObj = await Crypto.unwrapMasterKeyWithPrf(
+                prfOutput,
+                _currentUser.prf_wrapped_master_key,
+                _currentUser.prf_wrapped_master_key_iv
+            );
+            return true;
+        } catch (err) {
+            console.warn('[tusShare] PRF restore failed:', err.message);
+            return false;
+        }
+    }
+
+    // Helper: decode base64url string to ArrayBuffer (for credential IDs and PRF salts).
+    function _base64urlToBuffer(b64url) {
+        let b64 = (b64url || '').replaceAll('-', '+').replaceAll('_', '/');
+        while (b64.length % 4) b64 += '=';
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.codePointAt(i);
+        return bytes.buffer;
     }
 
     async function _restoreCachedMasterKey() {
         try {
             const stored = JSON.parse(sessionStorage.getItem(Config.auth.sessionStorageKey) || '{}');
+
+            // PRF path: no plaintext key in sessionStorage — re-derive via authenticator tap.
+            if (stored.prf_bound) {
+                return await _restoreKeyViaPrf();
+            }
+
             if (!stored.keyB64url || !stored.cachedAt) return false;
             if (Date.now() - stored.cachedAt > Config.auth.keyGracePeriodMs) return false;
             _masterKeyObj = await Crypto.importKeyFromBase64url(stored.keyB64url);
-            // Roll the window forward on restore
             stored.cachedAt = Date.now();
             sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify(stored));
             return true;
@@ -103,14 +154,14 @@ const Auth = (() => {
     /**
      * Update the cached-at timestamp so the grace period rolls forward on activity.
      * Called by Api._handleResponse and the upload loop on each successful request.
-     * No-ops gracefully if there's no cached key.
+     * No-ops gracefully if there's no cached key or if using the PRF path.
      */
     function touchKeyCache() {
         try {
             const raw = sessionStorage.getItem(Config.auth.sessionStorageKey);
             if (!raw) return;
             const stored = JSON.parse(raw);
-            if (!stored.keyB64url) return;
+            if (!stored.keyB64url) return; // PRF sentinel has no keyB64url — skip
             stored.cachedAt = Date.now();
             sessionStorage.setItem(Config.auth.sessionStorageKey, JSON.stringify(stored));
         } catch {
@@ -425,6 +476,8 @@ const Auth = (() => {
                     console.error('Asymmetric key setup failed:', err);
                     Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
                 });
+            // Background-migrate plaintext file/folder names to encrypted form.
+            Files.migrateNames().catch(() => {});
 
             status.textContent = '';
             startIdentityWatch();
@@ -486,14 +539,30 @@ const Auth = (() => {
     async function _tryInjectWebAuthnUnlock(container) {
         try {
             const stored = JSON.parse(sessionStorage.getItem(Config.auth.sessionStorageKey) || '{}');
+            const area = document.getElementById('webauthn-unlock-area');
+            if (!area) return;
+
+            // PRF path: no key in sessionStorage — offer authenticator tap button.
+            if (stored.prf_bound && _currentUser?.prf_credential_id) {
+                const btn = Utils.el('button', {
+                    type: 'button', className: 'btn btn-primary btn-full',
+                    style: 'margin-bottom:16px',
+                    textContent: 'Unlock with Security Key (tap required)',
+                    onClick: () => _handlePrfUnlock(container),
+                });
+                area.appendChild(btn);
+                area.appendChild(Utils.el('p', {
+                    className: 'text-muted', style: 'text-align:center;margin-bottom:8px;font-size:0.85em',
+                    textContent: '— or enter password below —',
+                }));
+                return;
+            }
+
             if (!stored.keyB64url) return;
 
             const data = await Api.get(`${Config.app.apiPrefix}/auth/mfa/credentials`);
             const hasWebAuthn = (data.credentials || []).some(c => c.method === 'webauthn');
             if (!hasWebAuthn) return;
-
-            const area = document.getElementById('webauthn-unlock-area');
-            if (!area) return;
 
             const btn = Utils.el('button', {
                 type: 'button', className: 'btn btn-secondary btn-full',
@@ -508,6 +577,31 @@ const Auth = (() => {
             }));
         } catch {
             // Non-critical — password form is always shown as fallback
+        }
+    }
+
+    async function _handlePrfUnlock(container) {
+        const status = document.getElementById('key-status');
+        if (status) status.textContent = 'Waiting for security key tap…';
+        try {
+            const ok = await _restoreKeyViaPrf();
+            if (!ok) {
+                if (status) status.textContent = 'PRF unlock failed. Try your password instead.';
+                return;
+            }
+            _unlockFailures = 0;
+            _setupAsymmetricKeys(_currentUser, _masterKeyObj)
+                .then(() => Teams.processPendingTeamOperations().catch(() => {}))
+                .catch(() => {});
+            startIdentityWatch();
+            const currentHash = globalThis.location.hash;
+            if (!currentHash || currentHash === '#/' || currentHash === '#/login') {
+                globalThis.location.hash = '#/files';
+            } else {
+                globalThis.dispatchEvent(new HashChangeEvent('hashchange'));
+            }
+        } catch (err) {
+            if (status) status.textContent = err.message || 'Security key verification failed.';
         }
     }
 
@@ -585,6 +679,7 @@ const Auth = (() => {
                     console.error('Asymmetric key setup failed:', err);
                     Utils.showToast('Sharing keys could not be set up. User shares will not work this session.', 'warning');
                 });
+            Files.migrateNames().catch(() => {});
 
             status.textContent = '';
             // Start identity watch so SSE-delivered deactivation/revocation events
@@ -1738,6 +1833,12 @@ const Auth = (() => {
                 _buildWebAuthnEnrollForm(wrap),
             ]));
         }
+
+        // PRF Key Binding — shown only when a WebAuthn credential exists and the master key is in memory
+        const hasWebAuthnCred = creds.some(c => c.method === 'webauthn');
+        if (globalThis.PublicKeyCredential && hasWebAuthnCred && _masterKeyObj) {
+            wrap.appendChild(_buildPrfSection(wrap));
+        }
     }
 
     function _buildTotpEnrollForm(wrapRef, _statusData) {
@@ -1903,6 +2004,107 @@ const Auth = (() => {
         ]);
         area.appendChild(form);
         return area;
+    }
+
+    function _buildPrfSection(wrapRef) {
+        const enrolled = !!_currentUser?.prf_credential_id;
+        const section = Utils.el('div', {
+            style: 'margin-top:20px;padding:16px;border:1px solid var(--border);border-radius:6px',
+        });
+        section.appendChild(Utils.el('h3', { style: 'margin:0 0 8px', textContent: 'Security Key Key Binding (PRF)' }));
+        section.appendChild(Utils.el('p', {
+            className: 'text-muted', style: 'margin-bottom:12px;font-size:0.9em',
+            textContent: enrolled
+                ? 'PRF binding is active. Your master key is protected by your security key and will not be stored in the browser on page refresh.'
+                : 'Bind your master encryption key to your security key using the PRF extension. When enrolled, your key is never stored in the browser — each page load requires a physical authenticator tap.',
+        }));
+
+        if (enrolled) {
+            const removeBtn = Utils.el('button', {
+                type: 'button', className: 'btn btn-danger',
+                textContent: 'Remove PRF Binding',
+                onClick: async (ev) => {
+                    ev.target.disabled = true;
+                    try {
+                        await Api.del(`${Config.app.apiPrefix}/auth/prf/enrollment`);
+                        _currentUser.prf_credential_id = null;
+                        _currentUser.prf_wrapped_master_key = null;
+                        _currentUser.prf_wrapped_master_key_iv = null;
+                        _currentUser.prf_salt = null;
+                        // Remove sentinel so next reload falls back to password
+                        sessionStorage.removeItem(Config.auth.sessionStorageKey);
+                        Utils.showToast('PRF binding removed.', 'success');
+                        const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
+                        _renderMfaSettingsContent(wrapRef, updated);
+                    } catch (err) {
+                        Utils.showToast(err.message || 'Failed to remove PRF binding.', 'error');
+                        ev.target.disabled = false;
+                    }
+                },
+            });
+            section.appendChild(removeBtn);
+        } else {
+            const enrollBtn = Utils.el('button', {
+                type: 'button', className: 'btn btn-secondary',
+                textContent: 'Enable PRF Key Binding',
+                onClick: async (ev) => { await _handlePrfEnroll(ev.target, wrapRef); },
+            });
+            section.appendChild(enrollBtn);
+            section.appendChild(Utils.el('p', {
+                className: 'text-muted', style: 'margin-top:8px;font-size:0.8em',
+                textContent: 'Requires: Chrome 116+, Firefox 119+, Safari 17+; YubiKey 5+ or platform authenticator.',
+            }));
+        }
+        return section;
+    }
+
+    async function _handlePrfEnroll(btn, wrapRef) {
+        btn.disabled = true;
+        btn.textContent = 'Waiting for security key…';
+        try {
+            const { challenge_id, options, prf_salt } = await Api.post(
+                `${Config.app.apiPrefix}/auth/prf/enroll/begin`
+            );
+
+            const publicKeyOptions = _webAuthnOptionsFromServer(options);
+            publicKeyOptions.extensions = { prf: { eval: { first: _base64urlToBuffer(prf_salt) } } };
+
+            const assertion = await navigator.credentials.get({ publicKey: publicKeyOptions });
+
+            const prfResults = assertion.getClientExtensionResults()?.prf?.results;
+            if (!prfResults?.first) {
+                Utils.showToast('Your security key does not support PRF (try a YubiKey 5 or platform authenticator on Chrome/Firefox/Safari).', 'error');
+                btn.disabled = false;
+                btn.textContent = 'Enable PRF Key Binding';
+                return;
+            }
+
+            const { wrappedKeyB64, ivB64 } = await Crypto.wrapMasterKeyWithPrf(prfResults.first, _masterKeyObj);
+
+            await Api.post(`${Config.app.apiPrefix}/auth/prf/enroll/finish`, {
+                challenge_id,
+                assertion: _serializeAssertion(assertion),
+                wrapped_mk_prf: wrappedKeyB64,
+                prf_iv: ivB64,
+            });
+
+            // Update local user record so _saveSessionKeyData writes the PRF sentinel from now on
+            _currentUser.prf_credential_id = assertion.id;
+            _currentUser.prf_wrapped_master_key = wrappedKeyB64;
+            _currentUser.prf_wrapped_master_key_iv = ivB64;
+            _currentUser.prf_salt = prf_salt;
+
+            // Rewrite sessionStorage with PRF sentinel immediately
+            await _saveSessionKeyData(_masterKeyObj, null);
+
+            Utils.showToast('PRF key binding enabled!', 'success');
+            const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
+            _renderMfaSettingsContent(wrapRef, updated);
+        } catch (err) {
+            Utils.showToast(err.message || 'PRF enrollment failed.', 'error');
+            btn.disabled = false;
+            btn.textContent = 'Enable PRF Key Binding';
+        }
     }
 
     // ------------------------------------------------------------------

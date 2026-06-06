@@ -61,7 +61,9 @@ _CHALLENGE_TTL = 300  # 5 minutes
 # ---------------------------------------------------------------------------
 
 
-async def _create_challenge(db, user_id: str, purpose: str) -> tuple[str, bytes]:
+async def _create_challenge(
+    db, user_id: str, purpose: str, prf_salt: str | None = None
+) -> tuple[str, bytes]:
     """Create and store a WebAuthn challenge row. Returns (challenge_id, challenge_bytes)."""
     challenge_id = str(uuid.uuid4())
     challenge_bytes = os.urandom(_WEBAUTHN_CHALLENGE_BYTES)
@@ -69,8 +71,9 @@ async def _create_challenge(db, user_id: str, purpose: str) -> tuple[str, bytes]
     now = int(time.time())
 
     await db.execute(
-        "INSERT INTO webauthn_challenges (id, user_id, purpose, challenge, created_at) VALUES (?, ?, ?, ?, ?)",
-        (challenge_id, user_id, purpose, challenge_b64, now),
+        "INSERT INTO webauthn_challenges (id, user_id, purpose, challenge, created_at, prf_salt) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (challenge_id, user_id, purpose, challenge_b64, now, prf_salt),
     )
     await db.commit()
     return challenge_id, challenge_bytes
@@ -350,3 +353,77 @@ async def finish_authentication(
     )
     await db.commit()
     return True
+
+
+# ---------------------------------------------------------------------------
+# PRF enrollment helpers
+# ---------------------------------------------------------------------------
+
+
+async def get_challenge_prf_salt(db, challenge_id: str, user_id: str) -> str | None:
+    """Read the prf_salt from a PRF challenge row without consuming it.
+
+    Returns the base64url PRF salt, or None if the challenge does not exist.
+    Used by finish_prf_enroll before calling finish_authentication (which consumes
+    the row) so that both values are available to the caller.
+    """
+    result = await db.execute(
+        "SELECT prf_salt FROM webauthn_challenges WHERE id = ? AND user_id = ? AND purpose = 'prf'",
+        (challenge_id, user_id),
+    )
+    row = await result.fetchone()
+    return row["prf_salt"] if row else None
+
+
+async def begin_prf_enroll(db, user_id: str) -> tuple[str, dict, str]:
+    """Generate a WebAuthn challenge for PRF key-binding enrollment.
+
+    Returns (challenge_id, options_dict, prf_salt_b64url) where:
+    - challenge_id: UUID of the challenge row for finish_prf_enroll
+    - options_dict: JSON-serialisable PublicKeyCredentialRequestOptions for
+      navigator.credentials.get() with the prf extension
+    - prf_salt_b64url: base64url-encoded 32-byte random salt to pass as
+      prf.eval.first in the WebAuthn extensions
+    """
+    cursor = await db.execute(
+        "SELECT credential FROM user_mfa_credentials "
+        "WHERE user_id = ? AND method = 'webauthn' AND is_active = 1",
+        (user_id,),
+    )
+    cred_rows = await cursor.fetchall()
+
+    allow_credentials: list[PublicKeyCredentialDescriptor] = []
+    for cr in cred_rows:
+        try:
+            payload = decrypt_credential(cr["credential"])
+            typed_transports: list[AuthenticatorTransport] = []
+            for t in payload.get("transports", []):
+                try:
+                    typed_transports.append(AuthenticatorTransport(t))
+                except ValueError:
+                    pass
+            allow_credentials.append(
+                PublicKeyCredentialDescriptor(
+                    id=base64url_to_bytes(payload["credential_id"]),
+                    transports=typed_transports or None,
+                )
+            )
+        except Exception:
+            pass
+
+    prf_salt_bytes = os.urandom(32)
+    prf_salt_b64url = bytes_to_base64url(prf_salt_bytes)
+
+    challenge_id, challenge_bytes = await _create_challenge(
+        db, user_id, "prf", prf_salt=prf_salt_b64url
+    )
+
+    options = webauthn.generate_authentication_options(
+        rp_id=settings.WEBAUTHN_RP_ID,
+        allow_credentials=allow_credentials,
+        user_verification=UserVerificationRequirement.PREFERRED,
+        challenge=challenge_bytes,
+    )
+
+    options_dict = json.loads(webauthn.options_to_json(options))
+    return challenge_id, options_dict, prf_salt_b64url

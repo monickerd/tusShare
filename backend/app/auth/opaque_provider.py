@@ -37,7 +37,8 @@ _USER_COLUMNS = (
     "id, username, auth_method, is_active, bandwidth_limit, "
     "wrapped_master_key, wrapped_master_key_iv, recovery_key_wrapped, recovery_key_iv, "
     "x25519_public_key, mlkem768_public_key, x25519_private_wrapped, "
-    "mlkem768_private_wrapped, asymmetric_key_iv"
+    "mlkem768_private_wrapped, asymmetric_key_iv, "
+    "prf_credential_id, prf_wrapped_master_key, prf_wrapped_master_key_iv, prf_salt"
 )
 
 
@@ -64,6 +65,10 @@ def _row_to_user(
         x25519_private_wrapped=row["x25519_private_wrapped"],
         mlkem768_private_wrapped=row["mlkem768_private_wrapped"],
         asymmetric_key_iv=row["asymmetric_key_iv"],
+        prf_credential_id=row["prf_credential_id"],
+        prf_wrapped_master_key=row["prf_wrapped_master_key"],
+        prf_wrapped_master_key_iv=row["prf_wrapped_master_key_iv"],
+        prf_salt=row["prf_salt"],
     )
 
 

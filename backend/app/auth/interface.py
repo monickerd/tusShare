@@ -41,6 +41,11 @@ class AuthenticatedUser:
     x25519_private_wrapped: str | None = None
     mlkem768_private_wrapped: str | None = None
     asymmetric_key_iv: str | None = None
+    # WebAuthn PRF key binding (opt-in; supplements OPAQUE-wrapped key)
+    prf_credential_id: str | None = None
+    prf_wrapped_master_key: str | None = None
+    prf_wrapped_master_key_iv: str | None = None
+    prf_salt: str | None = None
     # Session-level flags — populated from JWT claims, not from the DB.
     is_public_device: bool = False
     # sid from the access token's JWT "sid" claim — used to bind step-up tokens to a specific session.

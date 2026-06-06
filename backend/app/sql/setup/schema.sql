@@ -83,6 +83,15 @@ CREATE TABLE users (
     mlkem768_private_wrapped TEXT,
     asymmetric_key_iv        TEXT,
 
+    -- WebAuthn PRF key binding (opt-in; supplements OPAQUE-wrapped key)
+    -- prf_credential_id: base64url WebAuthn rawId of the bound credential
+    -- prf_wrapped_master_key / prf_wrapped_master_key_iv: master key AES-GCM-wrapped with the PRF output
+    -- prf_salt: 32-byte random salt (base64url) passed as PRF extension eval input
+    prf_credential_id        TEXT DEFAULT NULL,
+    prf_wrapped_master_key   TEXT DEFAULT NULL,
+    prf_wrapped_master_key_iv TEXT DEFAULT NULL,
+    prf_salt                 TEXT DEFAULT NULL,
+
     -- Identity provider link
     identity_provider_id     TEXT REFERENCES identity_providers(id),
     oidc_claims_cache        TEXT,
@@ -259,9 +268,10 @@ CREATE TABLE totp_used_codes (
 CREATE TABLE webauthn_challenges (
     id         TEXT    PRIMARY KEY,
     user_id    TEXT    NOT NULL,
-    purpose    TEXT    NOT NULL CHECK(purpose IN ('registration', 'authentication', 'step_up', 'unlock')),
+    purpose    TEXT    NOT NULL CHECK(purpose IN ('registration', 'authentication', 'step_up', 'unlock', 'prf')),
     challenge  TEXT    NOT NULL,
-    created_at BIGINT  NOT NULL
+    created_at BIGINT  NOT NULL,
+    prf_salt   TEXT    DEFAULT NULL
 );
 
 CREATE INDEX idx_webauthn_challenges_user ON webauthn_challenges(user_id);
@@ -339,6 +349,12 @@ CREATE TABLE folders (
     -- a recursive ancestor walk.  Maintained on INSERT and on parent_id changes.
     root_folder_id       TEXT REFERENCES folders(id),
 
+    -- Encrypted name (AES-256-GCM; 12-byte nonce prepended, base64) and HMAC
+    -- search index (HMAC-SHA-256 hex of normalised name under per-user key).
+    -- NULL until the client-side lazy migration runs for the owning user.
+    name_ct              TEXT DEFAULT NULL,
+    name_idx             TEXT DEFAULT NULL,
+
     -- Soft-delete / trash
     deleted_at           TIMESTAMPTZ DEFAULT NULL,
     deleted_by           TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL,
@@ -352,6 +368,7 @@ CREATE INDEX idx_folders_owner       ON folders(owner_id);
 CREATE INDEX idx_folders_deleted_at  ON folders(deleted_at) WHERE deleted_at IS NOT NULL;
 CREATE INDEX idx_folders_root_folder ON folders(root_folder_id);
 CREATE UNIQUE INDEX idx_folders_unique_name ON folders(COALESCE(parent_id, ''), owner_id, name) WHERE deleted_at IS NULL;
+CREATE INDEX idx_folders_unmigrated  ON folders(owner_id) WHERE name_ct IS NULL AND deleted_at IS NULL;
 
 -------------------------------------------------
 -- FILES
@@ -394,6 +411,12 @@ CREATE TABLE files (
     escrow_encrypted_key  TEXT,
     escrow_key_iv         TEXT,
 
+    -- Encrypted name (AES-256-GCM; 12-byte nonce prepended, base64) and HMAC
+    -- search index (HMAC-SHA-256 hex of normalised name under per-user key).
+    -- NULL until the client-side lazy migration runs for the owning user.
+    name_ct             TEXT DEFAULT NULL,
+    name_idx            TEXT DEFAULT NULL,
+
     -- Soft-delete / trash
     deleted_at          TIMESTAMPTZ DEFAULT NULL,
     deleted_by          TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL,
@@ -409,6 +432,7 @@ CREATE INDEX idx_files_folder      ON files(folder_id);
 CREATE INDEX idx_files_owner       ON files(owner_id);
 CREATE INDEX idx_files_storage_key ON files(storage_key);
 CREATE INDEX idx_files_deleted_at  ON files(deleted_at) WHERE deleted_at IS NOT NULL;
+CREATE INDEX idx_files_unmigrated  ON files(owner_id) WHERE name_ct IS NULL AND upload_complete = 1 AND deleted_at IS NULL;
 
 -------------------------------------------------
 -- FILE CHUNKS (per-chunk IVs for streaming decryption)

@@ -219,6 +219,26 @@ const Shares = (() => {
     // -----------------------------------------------------------------------
 
     /**
+     * Build the optional password section for the share dialog.
+     * Returns { el, getPassword } where getPassword() → trimmed string or ''.
+     */
+    function _buildPasswordSection() {
+        const pwInput = Utils.el('input', {
+            type: 'password',
+            className: 'input',
+            placeholder: 'Optional password',
+            autocomplete: 'new-password',
+        });
+        const wrapper = Utils.el('div', { className: 'share-dialog-section' });
+        wrapper.appendChild(Utils.el('span', { className: 'share-dialog-label', textContent: 'Password' }));
+        wrapper.appendChild(pwInput);
+        return {
+            el: wrapper,
+            getPassword: () => pwInput.value.trim(),
+        };
+    }
+
+    /**
      * Build the expiry section of the share dialog.
      * Returns { el, getExpiresAt } where getExpiresAt() → ISO string or null.
      */
@@ -326,6 +346,9 @@ const Shares = (() => {
         // --- Expiry section ---
         const expiry = _buildExpirySection();
 
+        // --- Optional password ---
+        const pw = _buildPasswordSection();
+
         // --- Options row (checkboxes left, max downloads right) ---
         const shortLinkChk = Utils.el('input', { type: 'checkbox' });
         const shortLinkRow = Utils.el('label', { className: 'share-dialog-check-row' }, [
@@ -394,15 +417,16 @@ const Shares = (() => {
             _clearEl(statusArea);
 
             try {
-                const shareKeyB64url = await _doCreateShare(files, masterKey, {
+                const shareFragment = await _doCreateShare(files, masterKey, {
                     expiresAt,
                     maxDownloads: maxDlInput.value ? Number.parseInt(maxDlInput.value, 10) : null,
                     generateShortLink: shortLinkChk.checked,
                     allowUpload: allowUploadChk ? allowUploadChk.checked : false,
                     folderId: folderCtx ? folderCtx.id : null,
                     teamSkBigInt,
+                    password: pw.getPassword(),
                 }, statusArea);
-                if (shareKeyB64url) {
+                if (shareFragment) {
                     createBtn.style.display = 'none';
                     cancelBtn.textContent = 'Close';
                 }
@@ -419,6 +443,7 @@ const Shares = (() => {
         dialog.appendChild(Utils.el('h3', { textContent: folderCtx ? `Share folder` : 'Share files' }));
         dialog.appendChild(fileList);
         dialog.appendChild(expiry.el);
+        dialog.appendChild(pw.el);
         dialog.appendChild(optionsRow);
         dialog.appendChild(statusArea);
         dialog.appendChild(Utils.el('div', { className: 'modal-actions' }, [cancelBtn, createBtn]));
@@ -438,7 +463,7 @@ const Shares = (() => {
      * Returns the shareKeyB64url on success.
      */
     async function _doCreateShare(files, masterKey, opts, statusArea) {
-        const { expiresAt, maxDownloads, generateShortLink, allowUpload, folderId, teamSkBigInt } = opts;
+        const { expiresAt, maxDownloads, generateShortLink, allowUpload, folderId, teamSkBigInt, password } = opts;
 
         if (maxDownloads !== null && maxDownloads !== undefined &&
             (Number.isNaN(maxDownloads) || maxDownloads < 1)) {
@@ -475,6 +500,13 @@ const Shares = (() => {
             });
         }
 
+        // If a password was set, wrap the shareKey with a PBKDF2-derived KEK so the
+        // URL fragment alone is useless without the password.
+        const isPasswordProtected = !!password;
+        const shareFragment = isPasswordProtected
+            ? await Crypto.wrapShareKeyWithPassword(shareKey, password)
+            : shareKeyB64url;
+
         // POST to API — client_token tells the server to use our pre-generated token
         // so key_type = 'hkdf-v1' is recorded and the URL is permanently reproducible.
         const resp = await Api.post(`${_prefix()}/shares`, {
@@ -484,21 +516,24 @@ const Shares = (() => {
             allow_upload: allowUpload || false,
             target_folder_id: folderId || null,
             client_token: token,
+            is_password_protected: isPasswordProtected,
         });
 
-        // Persist shareKey for the session so the owner can copy the URL later
-        _storeShareKey(resp.share_id, shareKeyB64url);
+        // Persist the fragment for the session so the owner can copy the URL later.
+        // For password-protected shares this stores the protected fragment so "My Shares"
+        // displays the URL recipients need (with password prompt).
+        _storeShareKey(resp.share_id, shareFragment);
 
         // Build and display the full share URL
-        const shareUrl = _buildShareUrl(resp.token, shareKeyB64url);
+        const shareUrl = _buildShareUrl(resp.token, shareFragment);
         _renderShareUrlBox(statusArea, shareUrl);
 
-        // Optionally create a short link (key stored server-side for root-level redirect)
+        // Optionally create a short link (fragment stored server-side for root-level redirect)
         if (generateShortLink && expiresAt) {
             try {
                 const slResp = await Api.post(`${_prefix()}/shares/${resp.share_id}/short-link`, {
                     expires_at: expiresAt,
-                    share_key: shareKeyB64url,
+                    share_key: shareFragment,
                 });
                 const slUrl = _buildShortLinkUrl(slResp.slug);
                 _renderShareUrlBox(statusArea, slUrl, 'Short link');
@@ -511,7 +546,7 @@ const Shares = (() => {
         }
 
         Utils.showToast('Share link created', 'success');
-        return shareKeyB64url;
+        return shareFragment;
     }
 
     // -----------------------------------------------------------------------
@@ -801,9 +836,33 @@ const Shares = (() => {
         return section;
     }
 
+    function _buildLockIcon() {
+        const ns  = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('width', '14');
+        svg.setAttribute('height', '14');
+        svg.setAttribute('fill', 'none');
+        svg.setAttribute('stroke', 'currentColor');
+        svg.setAttribute('stroke-width', '2');
+        svg.setAttribute('stroke-linecap', 'round');
+        svg.setAttribute('stroke-linejoin', 'round');
+        svg.setAttribute('aria-hidden', 'true');
+        const p = document.createElementNS(ns, 'path');
+        p.setAttribute('d', 'M16.5 10.5V6.75a4.5 4.5 0 1 0-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 0 0 2.25-2.25v-6.75a2.25 2.25 0 0 0-2.25-2.25H6.75a2.25 2.25 0 0 0-2.25 2.25v6.75a2.25 2.25 0 0 0 2.25 2.25Z');
+        svg.appendChild(p);
+        const wrap = Utils.el('span', { className: 'share-pw-icon', title: 'Password protected' });
+        wrap.setAttribute('aria-label', 'Password protected');
+        wrap.appendChild(svg);
+        return wrap;
+    }
+
     function _appendShareCardBadges(header, share) {
         if (!share.is_active) {
             header.appendChild(Utils.el('span', { className: 'badge badge-muted', textContent: 'Inactive' }));
+        }
+        if (share.has_password) {
+            header.appendChild(_buildLockIcon());
         }
         if (share.expires_at) {
             const expired = new Date(share.expires_at) < new Date();
@@ -947,6 +1006,66 @@ const Shares = (() => {
     // -----------------------------------------------------------------------
 
     /**
+     * Show a password modal and attempt to unwrap the share key.
+     * Returns a CryptoKey on success.  Loops on wrong password until the user
+     * gets it right (no cancel — they can close the tab if they don't know it).
+     *
+     * @param {string} fragment - pw1-prefixed URL fragment containing the wrapped key.
+     */
+    async function _promptForSharePassword(fragment) {
+        return new Promise(resolve => {
+            const overlay = Utils.el('div', { className: 'modal-overlay' });
+            const dialog  = Utils.el('div', { className: 'modal' });
+
+            dialog.appendChild(Utils.el('h3', { textContent: 'Password required' }));
+            dialog.appendChild(Utils.el('p', {
+                className: 'text-muted',
+                textContent: 'This share is password-protected. Enter the password to access it.',
+            }));
+
+            const input   = Utils.el('input', {
+                type: 'password',
+                className: 'input',
+                placeholder: 'Password',
+                autocomplete: 'current-password',
+            });
+            const errorEl = Utils.el('p', { className: 'share-error' });
+            errorEl.hidden = true;
+            const submitBtn = Utils.el('button', { className: 'btn btn-primary', textContent: 'Unlock' });
+
+            async function _attempt() {
+                const pw = input.value;
+                if (!pw) return;
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Verifying…';
+                errorEl.hidden = true;
+                try {
+                    const key = await Crypto.unwrapShareKeyFromPassword(fragment, pw);
+                    overlay.remove();
+                    resolve(key);
+                } catch {
+                    errorEl.textContent = 'Incorrect password — please try again.';
+                    errorEl.hidden = false;
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Unlock';
+                    input.value = '';
+                    input.focus();
+                }
+            }
+
+            input.addEventListener('keydown', e => { if (e.key === 'Enter') _attempt(); });
+            submitBtn.addEventListener('click', _attempt);
+
+            dialog.appendChild(input);
+            dialog.appendChild(errorEl);
+            dialog.appendChild(Utils.el('div', { className: 'modal-actions' }, [submitBtn]));
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+            input.focus();
+        });
+    }
+
+    /**
      * Render the public share access page.
      *
      * @param {HTMLElement} container      - Root element.
@@ -967,14 +1086,7 @@ const Shares = (() => {
             return;
         }
 
-        let shareKey;
-        try {
-            shareKey = await Crypto.importKeyFromBase64url(shareKeyB64url);
-        } catch {
-            status.textContent = 'Invalid share link — the encryption key could not be imported.';
-            return;
-        }
-
+        // Verify the share exists before prompting for a password.
         let shareData;
         let shareSessionToken = null;
         try {
@@ -992,6 +1104,19 @@ const Shares = (() => {
         } catch (err) {
             status.textContent = `Failed to load share: ${err.message}`;
             return;
+        }
+
+        // Resolve the share key — either directly from the fragment or via password prompt.
+        let shareKey;
+        if (Crypto.isPasswordProtectedFragment(shareKeyB64url)) {
+            shareKey = await _promptForSharePassword(shareKeyB64url);
+        } else {
+            try {
+                shareKey = await Crypto.importKeyFromBase64url(shareKeyB64url);
+            } catch {
+                status.textContent = 'Invalid share link — the encryption key could not be imported.';
+                return;
+            }
         }
 
         _clearEl(page);
@@ -1902,6 +2027,7 @@ const Shares = (() => {
         }
 
         const expiry = _buildExpirySection();
+        const pw     = _buildPasswordSection();
 
         const shortLinkChk = Utils.el('input', { type: 'checkbox' });
         const checkboxCol  = Utils.el('div', { className: 'share-dialog-checkboxes' }, [
@@ -1936,14 +2062,15 @@ const Shares = (() => {
             actionBtn.textContent = 'Creating…';
             _clearEl(statusArea);
             try {
-                const key = await _doCreateShare(files, masterKey, {
+                const fragment = await _doCreateShare(files, masterKey, {
                     expiresAt,
                     maxDownloads: maxDlInput.value ? Number.parseInt(maxDlInput.value, 10) : null,
                     generateShortLink: shortLinkChk.checked,
                     allowUpload: allowUploadChk ? allowUploadChk.checked : false,
                     folderId: folderCtx ? folderCtx.id : null,
+                    password: pw.getPassword(),
                 }, statusArea);
-                if (key) { actionBtn.style.display = 'none'; if (onSuccess) onSuccess(); }
+                if (fragment) { actionBtn.style.display = 'none'; if (onSuccess) onSuccess(); }
             } catch (err) {
                 statusArea.appendChild(Utils.el('p', { className: 'share-error', textContent: `Failed: ${err.message}` }));
                 actionBtn.disabled = false;
@@ -1954,6 +2081,7 @@ const Shares = (() => {
         const contentEl = Utils.el('div', {}, [
             fileList,
             expiry.el,
+            pw.el,
             Utils.el('div', { className: 'share-dialog-options' }, [
                 checkboxCol,
                 Utils.el('div', { className: 'share-dialog-maxdl' }, [Utils.el('span', { textContent: 'Max downloads' }), maxDlInput]),

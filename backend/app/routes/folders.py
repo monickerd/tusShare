@@ -78,9 +78,25 @@ async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: l
 router = APIRouter(dependencies=[Depends(check_management_write_rate_limit)])
 
 
+import re as _re_folders
+
+_NAME_IDX_RE_FOLDERS = _re_folders.compile(r'^[0-9a-f]{64}$')
+
+
+def _validate_name_ct_pair(name_ct: str | None, name_idx: str | None) -> None:
+    """Raise ValueError if name_ct is provided without a valid name_idx."""
+    if name_ct is not None:
+        from app.validation.sanitizers import validate_base64
+        validate_base64(name_ct)
+        if name_idx is None or not _NAME_IDX_RE_FOLDERS.match(name_idx):
+            raise ValueError("name_idx must be a 64-char hex string when name_ct is provided")
+
+
 class CreateFolderRequest(BaseModel):
     name: str
     parent_id: str | None = None
+    name_ct: str | None = None
+    name_idx: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -94,18 +110,50 @@ class CreateFolderRequest(BaseModel):
             return validate_uuid(v)
         return v
 
+    @field_validator("name_ct")
+    @classmethod
+    def validate_name_ct(cls, v: str | None) -> str | None:
+        if v is not None:
+            from app.validation.sanitizers import validate_base64
+            return validate_base64(v)
+        return v
+
+    @field_validator("name_idx")
+    @classmethod
+    def validate_name_idx(cls, v: str | None) -> str | None:
+        if v is not None and not _NAME_IDX_RE_FOLDERS.match(v):
+            raise ValueError("name_idx must be a 64-char hex string")
+        return v
+
 
 class UpdateFolderRequest(BaseModel):
     name: str | None = None
     parent_id: str | None = None
     move_to_root: bool = False
     restrict_permissions: bool | None = None
+    name_ct: str | None = None
+    name_idx: str | None = None
 
     @field_validator("name")
     @classmethod
     def validate_name(cls, v: str | None) -> str | None:
         if v is not None:
             return sanitize_folder_name(v)
+        return v
+
+    @field_validator("name_ct")
+    @classmethod
+    def validate_name_ct(cls, v: str | None) -> str | None:
+        if v is not None:
+            from app.validation.sanitizers import validate_base64
+            return validate_base64(v)
+        return v
+
+    @field_validator("name_idx")
+    @classmethod
+    def validate_name_idx(cls, v: str | None) -> str | None:
+        if v is not None and not _NAME_IDX_RE_FOLDERS.match(v):
+            raise ValueError("name_idx must be a 64-char hex string")
         return v
 
 
@@ -186,10 +234,14 @@ async def create_folder(
         await _check_parent_write_access(db, parent, user, body.parent_id)
         root_folder_id = parent["root_folder_id"] or body.parent_id
 
+    if body.name_ct is not None and body.name_idx is None:
+        raise HTTPException(status_code=400, detail="name_idx required when name_ct is provided")
+
     try:
         await db.execute(
-            "INSERT INTO folders (id, name, parent_id, owner_id, root_folder_id) VALUES (?, ?, ?, ?, ?)",
-            (folder_id, body.name, body.parent_id, user.id, root_folder_id),
+            "INSERT INTO folders (id, name, parent_id, owner_id, root_folder_id, name_ct, name_idx) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (folder_id, body.name, body.parent_id, user.id, root_folder_id, body.name_ct, body.name_idx),
         )
         # Inherit recursive permissions from the parent folder (personal root = no-inherit)
         if body.parent_id:
@@ -383,7 +435,7 @@ async def _list_team_folder_files(
     cursor = await db.execute(
         _cte
         + """
-        SELECT fi.id, fi.original_name, fi.size_bytes, fi.owner_id, fi.folder_id,
+        SELECT fi.id, fi.original_name, fi.name_ct, fi.size_bytes, fi.owner_id, fi.folder_id,
                fi.encrypted_file_key, fi.key_iv,
                ftk.pre_c1, ftk.encrypted_file_key AS team_encrypted_file_key,
                ftk.key_iv AS team_key_iv,
@@ -404,6 +456,7 @@ async def _list_team_folder_files(
         {
             "id": r["id"],
             "original_name": r["original_name"],
+            "name_ct": r["name_ct"],
             "size_bytes": r["size_bytes"],
             "folder_id": r["folder_id"],
             "folder_name": r["folder_name"],
@@ -533,6 +586,13 @@ async def _build_folder_update_params(db, folder_id: str, folder_row, body) -> t
     if body.name is not None:
         updates.append("name = ?")
         params.append(body.name)
+    if body.name_ct is not None:
+        if body.name_idx is None:
+            raise HTTPException(status_code=400, detail="name_idx required when name_ct is provided")
+        updates.append("name_ct = ?")
+        params.append(body.name_ct)
+        updates.append("name_idx = ?")
+        params.append(body.name_idx)
     if body.restrict_permissions is not None:
         updates.append("restrict_permissions = ?")
         params.append(body.restrict_permissions)

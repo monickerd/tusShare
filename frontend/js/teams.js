@@ -922,6 +922,8 @@ const Teams = (() => {
         const body = Utils.el('div', { className: 'role-card-body' });
         body.style.display = 'none';
 
+        const badge = Utils.el('span', { className: 'role-card-badge badge-custom', textContent: 'custom' });
+        const nameEl = Utils.el('span', { className: 'role-card-name', textContent: role.name });
         const toggle = Utils.el('button', {
             className: 'role-card-toggle collapsed',
             onClick: () => {
@@ -933,11 +935,9 @@ const Teams = (() => {
                     _populateTeamRoleCardBody(body, role, flags, members, teamId, canManage, refreshFn);
                 }
             },
-        });
+        }, [nameEl, badge]);
 
-        const badge = Utils.el('span', { className: 'role-card-badge badge-custom', textContent: 'custom' });
-        const nameEl = Utils.el('span', { className: 'role-card-name', textContent: role.name });
-        const header = Utils.el('div', { className: 'role-card-header' }, [toggle, nameEl, badge]);
+        const header = Utils.el('div', { className: 'role-card-header' }, [toggle]);
         return Utils.el('div', { className: 'role-card' }, [header, body]);
     }
 

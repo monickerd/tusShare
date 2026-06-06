@@ -38,6 +38,7 @@ from app.auth.interface import AuthenticatedUser
 from app.auth.jwt import create_access_token, create_refresh_token, generate_csrf_token, store_refresh_token
 from app.auth.mfa import (
     consume_pending_token,
+    decrypt_credential,
     get_active_methods,
     list_active_credentials,
     peek_pending_token,
@@ -46,9 +47,11 @@ from app.auth.stepup import log_security_event
 from app.auth.totp import enroll_finish, enroll_start, verify_recovery_code, verify_totp
 from app.auth.webauthn_helper import (
     begin_authentication,
+    begin_prf_enroll,
     begin_registration,
     finish_authentication,
     finish_registration,
+    get_challenge_prf_salt,
 )
 from app.config import settings
 from app.database import Database, get_db
@@ -555,6 +558,24 @@ async def delete_credential(
             )
 
     await db.execute("UPDATE user_mfa_credentials SET is_active = 0 WHERE id = ?", (cred_id,))
+
+    # If this WebAuthn credential is the user's PRF binding, clear the binding atomically.
+    if row["method"] == "webauthn":
+        try:
+            payload = decrypt_credential(row["credential"])
+            prf_cursor = await db.execute(
+                "SELECT prf_credential_id FROM users WHERE id = ?", (user.id,)
+            )
+            prf_row = await prf_cursor.fetchone()
+            if prf_row and prf_row["prf_credential_id"] == payload.get("credential_id"):
+                await db.execute(
+                    "UPDATE users SET prf_credential_id = NULL, prf_wrapped_master_key = NULL, "
+                    "prf_wrapped_master_key_iv = NULL, prf_salt = NULL WHERE id = ?",
+                    (user.id,),
+                )
+        except Exception:
+            pass  # Non-critical: PRF binding can be re-enrolled; don't block deletion
+
     await db.commit()
 
     client_ip = _get_client_ip(request)
@@ -663,6 +684,137 @@ async def mfa_pending_info(
 
     methods = await get_active_methods(db, user_id)
     return {"methods": sorted(methods)}
+
+
+# ---------------------------------------------------------------------------
+# WebAuthn PRF key binding enrollment
+#
+# Three endpoints:
+#   POST /auth/prf/enroll/begin   — generate challenge + PRF salt (authenticated)
+#   POST /auth/prf/enroll/finish  — verify assertion, store wrapped master key
+#   DELETE /auth/prf/enrollment   — remove PRF binding
+# ---------------------------------------------------------------------------
+
+
+@router.post("/prf/enroll/begin", responses={400: {"description": "Bad Request"}})
+async def prf_enroll_begin(
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Begin WebAuthn PRF key-binding enrollment.
+
+    Returns a WebAuthn authentication challenge (not a registration — PRF uses
+    navigator.credentials.get) alongside the per-user PRF salt.  The client
+    calls navigator.credentials.get() with extensions.prf.eval.first = prf_salt,
+    wraps the current master key with the PRF output, then POSTs to finish.
+    """
+    methods = await get_active_methods(db, user.id)
+    if "webauthn" not in methods:
+        raise HTTPException(
+            status_code=400,
+            detail="No WebAuthn credentials enrolled. Register a security key first.",
+        )
+
+    challenge_id, options_dict, prf_salt_b64url = await begin_prf_enroll(db, user.id)
+    return {"challenge_id": challenge_id, "options": options_dict, "prf_salt": prf_salt_b64url}
+
+
+class PrfEnrollFinishRequest(BaseModel):
+    challenge_id: str
+    assertion: dict
+    wrapped_mk_prf: str
+    prf_iv: str
+
+    @field_validator("challenge_id")
+    @classmethod
+    def val_cid(cls, v: str) -> str:
+        try:
+            return validate_uuid(v)
+        except ValueError:
+            raise ValueError(_ERR_INVALID_CHALLENGE_ID)
+
+    @field_validator("wrapped_mk_prf", "prf_iv")
+    @classmethod
+    def val_b64(cls, v: str) -> str:
+        from app.validation.sanitizers import validate_base64
+        validate_base64(v)
+        return v
+
+
+@router.post("/prf/enroll/finish", responses={400: {"description": "Bad Request"}})
+async def prf_enroll_finish(
+    body: PrfEnrollFinishRequest,
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Complete PRF key-binding enrollment and store the wrapped master key.
+
+    The server verifies the WebAuthn assertion to confirm authenticator possession,
+    then stores the client-wrapped master key and the credential ID used for PRF.
+    The PRF output itself never reaches the server — only the AES-GCM ciphertext.
+    """
+    # Read the PRF salt from the challenge before finish_authentication consumes it.
+    prf_salt_b64url = await get_challenge_prf_salt(db, body.challenge_id, user.id)
+    if prf_salt_b64url is None:
+        raise HTTPException(status_code=400, detail="Challenge not found or expired")
+
+    client_ip = _get_client_ip(request)
+    ua = request.headers.get("user-agent", "")
+
+    async def _emit(event_type, detail):
+        await log_security_event(db, event_type, user.id, client_ip, ua, detail=detail)
+
+    ok = await finish_authentication(
+        db, user.id, body.challenge_id, body.assertion, "prf",
+        emit_security_event=_emit,
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail="WebAuthn verification failed")
+
+    credential_id = body.assertion.get("rawId") or body.assertion.get("id", "")
+    if not credential_id:
+        raise HTTPException(status_code=400, detail="Missing credential ID in assertion")
+
+    await db.execute(
+        "UPDATE users SET prf_credential_id = ?, prf_wrapped_master_key = ?, "
+        "prf_wrapped_master_key_iv = ?, prf_salt = ? WHERE id = ?",
+        (credential_id, body.wrapped_mk_prf, body.prf_iv, prf_salt_b64url, user.id),
+    )
+    await db.commit()
+
+    await log_security_event(
+        db, "prf_enrollment_complete", user.id, client_ip, ua,
+        username=user.username,
+        detail={"credential_id": credential_id},
+    )
+    return {"message": "PRF key binding enrolled successfully"}
+
+
+@router.delete("/prf/enrollment", responses={200: {"description": "OK"}})
+async def prf_enrollment_delete(
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Remove the WebAuthn PRF key binding for the current user.
+
+    After this call the login flow falls back to the OPAQUE KEK path and the
+    key grace period (sessionStorage) is re-enabled.
+    """
+    await db.execute(
+        "UPDATE users SET prf_credential_id = NULL, prf_wrapped_master_key = NULL, "
+        "prf_wrapped_master_key_iv = NULL, prf_salt = NULL WHERE id = ?",
+        (user.id,),
+    )
+    await db.commit()
+
+    client_ip = _get_client_ip(request)
+    ua = request.headers.get("user-agent", "")
+    await log_security_event(
+        db, "prf_enrollment_removed", user.id, client_ip, ua, username=user.username,
+    )
+    return {"message": "PRF key binding removed"}
 
 
 # ---------------------------------------------------------------------------

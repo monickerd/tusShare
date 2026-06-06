@@ -560,6 +560,15 @@
     margin-bottom: var(--space-2);
 }
 
+/* === Share password icon === */
+.share-pw-icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--color-text-muted);
+    opacity: 0.75;
+    cursor: default;
+}
+
 /* === Share meta badges === */
 .share-meta {
     display: flex;

@@ -694,6 +694,71 @@ const Crypto = (() => {
     }
 
     // ===================================================================
+    // WebAuthn PRF key binding
+    //
+    // wrapMasterKeyWithPrf: during PRF enrollment, takes the PRF output bytes
+    //   (32 bytes from the authenticator) and uses them as a one-time KEK to
+    //   AES-GCM-encrypt the master key.  The ciphertext is stored server-side
+    //   as prf_wrapped_master_key — the PRF output never reaches the server.
+    //
+    // unwrapMasterKeyWithPrf: called at login or page-refresh for PRF-enrolled
+    //   users.  The authenticator tap produces the PRF output; this function
+    //   decrypts the wrapped key.
+    //
+    // Security note: the master key is imported as extractable:true so that
+    //   the existing password-change and share-key-derivation flows are
+    //   unchanged.  The primary XSS-protection gain is that the plaintext key
+    //   is never written to sessionStorage.  Future work: refactor
+    //   password-change to allow extractable:false here (requires obtaining
+    //   raw key bytes via the old-password OPAQUE KEK rather than from the
+    //   in-memory CryptoKey object).
+    // ===================================================================
+
+    async function wrapMasterKeyWithPrf(prfOutputBytes, masterKey) {
+        const prfKek = await crypto.subtle.importKey(
+            'raw', prfOutputBytes,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            false,
+            ['encrypt']
+        );
+        const iv = crypto.getRandomValues(new Uint8Array(_cfg().ivLength));
+        const rawKey = await crypto.subtle.exportKey('raw', masterKey);
+        const wrapped = await crypto.subtle.encrypt(
+            { name: _cfg().algorithm, iv },
+            prfKek,
+            rawKey
+        );
+        new Uint8Array(rawKey).fill(0);
+        return {
+            wrappedKeyB64: _arrayBufToBase64(wrapped),
+            ivB64: _arrayBufToBase64(iv.buffer),
+        };
+    }
+
+    async function unwrapMasterKeyWithPrf(prfOutputBytes, wrappedKeyB64, ivB64) {
+        const prfKek = await crypto.subtle.importKey(
+            'raw', prfOutputBytes,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            false,
+            ['decrypt']
+        );
+        const iv = _base64ToArrayBuf(ivB64);
+        const rawKey = await crypto.subtle.decrypt(
+            { name: _cfg().algorithm, iv: new Uint8Array(iv) },
+            prfKek,
+            _base64ToArrayBuf(wrappedKeyB64)
+        );
+        const key = await crypto.subtle.importKey(
+            'raw', rawKey,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            true,
+            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
+        );
+        new Uint8Array(rawKey).fill(0);
+        return key;
+    }
+
+    // ===================================================================
     // OPAQUE export_key → KEK derivation
     // ===================================================================
 
@@ -767,6 +832,134 @@ const Crypto = (() => {
         );
     }
 
+    // ===================================================================
+    // Password-protected share key wrapping
+    // Fragment format: 'pw1' + base64url(salt[16] || iv[12] || wrappedKey[48])
+    // PBKDF2-SHA-256 with 100 000 iterations turns the password into a KEK;
+    // AES-256-GCM wraps the raw shareKey.  Wrong password → GCM auth failure.
+    // ===================================================================
+
+    const _PW_PREFIX  = 'pw1';
+    const _PW_ITERS   = 100_000;
+    const _PW_SALT_LEN = 16;
+    const _PW_IV_LEN   = 12;
+
+    function isPasswordProtectedFragment(fragment) {
+        return typeof fragment === 'string' && fragment.startsWith(_PW_PREFIX);
+    }
+
+    async function _deriveShareKEK(password, saltBytes) {
+        const pwKey = await crypto.subtle.importKey(
+            'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey'],
+        );
+        return crypto.subtle.deriveKey(
+            { name: 'PBKDF2', salt: saltBytes, iterations: _PW_ITERS, hash: 'SHA-256' },
+            pwKey,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            false,
+            ['wrapKey', 'unwrapKey'],
+        );
+    }
+
+    async function wrapShareKeyWithPassword(shareKey, password) {
+        const salt    = crypto.getRandomValues(new Uint8Array(_PW_SALT_LEN));
+        const iv      = crypto.getRandomValues(new Uint8Array(_PW_IV_LEN));
+        const kek     = await _deriveShareKEK(password, salt);
+        const wrapped = new Uint8Array(
+            await crypto.subtle.wrapKey('raw', shareKey, kek, { name: _cfg().algorithm, iv }),
+        );
+        const blob = new Uint8Array(_PW_SALT_LEN + _PW_IV_LEN + wrapped.length);
+        blob.set(salt, 0);
+        blob.set(iv, _PW_SALT_LEN);
+        blob.set(wrapped, _PW_SALT_LEN + _PW_IV_LEN);
+        return _PW_PREFIX + _arrayBufToBase64url(blob.buffer);
+    }
+
+    async function unwrapShareKeyFromPassword(fragment, password) {
+        const blob    = new Uint8Array(_base64urlToArrayBuf(fragment.slice(_PW_PREFIX.length)));
+        const salt    = blob.slice(0, _PW_SALT_LEN);
+        const iv      = blob.slice(_PW_SALT_LEN, _PW_SALT_LEN + _PW_IV_LEN);
+        const wrapped = blob.slice(_PW_SALT_LEN + _PW_IV_LEN);
+        const kek = await _deriveShareKEK(password, salt);
+        // Throws DOMException on wrong password (GCM auth-tag failure)
+        return crypto.subtle.unwrapKey(
+            'raw', wrapped, kek,
+            { name: _cfg().algorithm, iv },
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            true,
+            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey'],
+        );
+    }
+
+    // ===================================================================
+    // Metadata encryption — filename and folder name
+    //
+    // Two HKDF-derived sub-keys are derived from the user's master key:
+    //
+    //   name_key   = HKDF-SHA-256(masterKey, salt="tusShare-meta-v1", info="filename-enc")
+    //   search_key = HKDF-SHA-256(masterKey, salt="tusShare-meta-v1", info="filename-search")
+    //
+    // name_key  → AES-256-GCM: encrypts the name string.  Ciphertext layout:
+    //             [IV 12 B | ciphertext + 16-byte GCM tag], stored as base64.
+    // search_key → HMAC-SHA-256: produces a 64-char hex token for exact-match
+    //             server queries without revealing the plaintext.
+    //
+    // Keys are per-user (derived from the master key) and are never sent to
+    // the server.  Team folder names remain unencrypted for now because the
+    // team name key would need to be derived from the team's shared secret.
+    // ===================================================================
+
+    async function deriveNameKeys(masterKey) {
+        const raw = new Uint8Array(await crypto.subtle.exportKey('raw', masterKey));
+        const hkdfKey = await crypto.subtle.importKey('raw', raw, 'HKDF', false, ['deriveKey']);
+        new Uint8Array(raw).fill(0);
+        const enc = new TextEncoder();
+        const salt = enc.encode('tusShare-meta-v1');
+
+        const nameKey = await crypto.subtle.deriveKey(
+            { name: 'HKDF', hash: 'SHA-256', salt, info: enc.encode('filename-enc') },
+            hkdfKey,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            false,
+            ['encrypt', 'decrypt'],
+        );
+
+        const searchKey = await crypto.subtle.deriveKey(
+            { name: 'HKDF', hash: 'SHA-256', salt, info: enc.encode('filename-search') },
+            hkdfKey,
+            { name: 'HMAC', hash: { name: 'SHA-256' } },
+            false,
+            ['sign'],
+        );
+
+        return { nameKey, searchKey };
+    }
+
+    async function encryptName(name, nameKey) {
+        const enc = new TextEncoder();
+        const iv = crypto.getRandomValues(new Uint8Array(12));
+        const ct = await crypto.subtle.encrypt({ name: _cfg().algorithm, iv }, nameKey, enc.encode(name));
+        const result = new Uint8Array(12 + ct.byteLength);
+        result.set(iv, 0);
+        result.set(new Uint8Array(ct), 12);
+        return _arrayBufToBase64(result.buffer);
+    }
+
+    async function decryptName(nameCt, nameKey) {
+        const bytes = new Uint8Array(_base64ToArrayBuf(nameCt));
+        const iv = bytes.slice(0, 12);
+        const ct = bytes.slice(12);
+        const plain = await crypto.subtle.decrypt({ name: _cfg().algorithm, iv }, nameKey, ct);
+        return new TextDecoder().decode(plain);
+    }
+
+    async function computeNameHmac(name, searchKey) {
+        const normalized = name.trim().toLowerCase();
+        const enc = new TextEncoder();
+        const sig = await crypto.subtle.sign('HMAC', searchKey, enc.encode(normalized));
+        return _arrayBufToHex(sig);
+    }
+
     return {
         // Master key generation and wrapping
         generateMasterKey,
@@ -796,12 +989,24 @@ const Crypto = (() => {
         unwrapAsymmetricPrivateKeys,
         encapsulateFileKeyForUser,
         decapsulateFileKeyFromUser,
+        // WebAuthn PRF key binding
+        wrapMasterKeyWithPrf,
+        unwrapMasterKeyWithPrf,
         // OPAQUE KEK derivation
         deriveOpaqueKEK,
         hashPayload,
         // HKDF-derived folder share keys
         generateShareToken,
         deriveShareKey,
+        // Password-protected share key wrapping
+        isPasswordProtectedFragment,
+        wrapShareKeyWithPassword,
+        unwrapShareKeyFromPassword,
+        // Metadata encryption (file and folder names)
+        deriveNameKeys,
+        encryptName,
+        decryptName,
+        computeNameHmac,
     };
 })();
 
