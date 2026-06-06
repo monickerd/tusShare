@@ -166,6 +166,12 @@ recipient can unwrap it.
 
 ### Key escrow
 
+When escrow is configured, the system moves from a strict zero-knowledge model
+to "E2EE with organizational key recovery": the escrow agent can access files
+without user participation. This is intentional for enterprise recovery
+scenarios but changes the trust boundary — the server is no longer unable to
+access file content; the escrow agent is.
+
 Administrators may designate escrow agents who hold a re-encryption key
 allowing recovery of files if the original owner is unavailable. Escrow key
 grants are proven correct with DLEQ (discrete log equality) proofs, preventing
@@ -419,9 +425,9 @@ policy and key-grant events.
 | Item | Detail |
 |---|---|
 | `style-src 'unsafe-inline'` | Runtime pixel calculations prevent a fully strict CSP; tracked for a future nonce-based refactor |
-| Metadata not encrypted | File names, sizes, folder structure, and share relationships are stored in plaintext in the database |
+| Metadata not encrypted | File names, sizes, folder structure, share relationships, and access timestamps are stored in plaintext. A database-level attacker obtains a complete social graph (who shares with whom), file-type and content inferences from naming and size, and a full activity timeline — even though file content remains protected. |
 | LDAP users and E2E encryption | IdP-authenticated users require an admin-configured escrow path to access encrypted files |
 | Certificate pinning | Not implemented; relies on the operator's PKI |
 | Redis optional | Rate-limit counters, SSE state, and upload-chunk offsets are in-process by default; set `TUSSHARE_REDIS_URL` to share state across workers in a multi-container deployment |
 | Master key in sessionStorage | The unwrapped master key is held in `sessionStorage` for the tab lifetime so the OPFS download pipeline can access raw key bytes without re-running OPAQUE on every operation. An XSS exploit that bypasses CSP during an active session would expose it. WebAuthn PRF binding (hardware-bound key storage that would eliminate this exposure) is not yet implemented. Mitigations in place: strict CSP, SRI on all scripts, all `innerHTML` paths removed. |
-| OPAQUE ServerSetup backup | The `opaque.server_setup` value in `sensitive_config` is the OPRF seed from which all user credential files are derived. Loss of this value makes every OPAQUE-authenticated account permanently inaccessible — there is no recovery path. It must be backed up securely and independently of the database. |
+| OPAQUE ServerSetup backup | The `opaque.server_setup` value in `sensitive_config` is the OPRF seed from which all user credential files are derived. Loss of this value makes every OPAQUE-authenticated account permanently inaccessible — there is no recovery path. It must be backed up securely and independently of the database. If the seed is exfiltrated rather than lost, an attacker who also obtains a user's OPAQUE credential record can perform an offline attack to recover that user's KEK. |

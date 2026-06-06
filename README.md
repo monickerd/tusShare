@@ -1,6 +1,9 @@
 # tusShare
 
-tusShare is a self-hosted, end-to-end encrypted file sharing service. Key features:
+tusShare is a self-hosted, end-to-end encrypted file sharing service. Files are
+encrypted client-side before upload; when key escrow is configured by an
+administrator a designated recovery agent can access files — see
+[SECURITY.md](SECURITY.md) for the full threat model. Key features:
 
 - Resumable uploads and downloads
 - Share links to files external users, or even share a folder for them to upload to

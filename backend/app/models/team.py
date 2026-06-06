@@ -1,6 +1,7 @@
 """Team, TeamMember, and TeamFileKey data models."""
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from app.conf.teams import TEAM_ROLE_HIERARCHY
 
@@ -209,8 +210,9 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
         last_seen = r["my_last_seen"]
         if last_seen is None:
             return True
-        # updated_at is a BIGINT epoch (seconds); last_seen is a TIMESTAMPTZ
-        return r["updated_at"] > int(last_seen.timestamp())
+        # updated_at is a BIGINT epoch (seconds); my_last_seen is an ISO string from _Row
+        last_seen_ts = int(datetime.fromisoformat(last_seen.replace("Z", "+00:00")).timestamp())
+        return r["updated_at"] > last_seen_ts
 
     return [
         {
@@ -218,7 +220,7 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
             "my_roles": list(r["my_roles"]) if r["my_roles"] else [],
             "my_key_confirmed": bool(r["my_key_confirmed"]),
             "has_pending_key_grants": bool(r["has_pending_key_grants"]),
-            "last_seen_at": r["my_last_seen"].isoformat() if r["my_last_seen"] else None,
+            "last_seen_at": r["my_last_seen"] if r["my_last_seen"] else None,
             "has_updates": _has_updates(r),
         }
         for r in rows
