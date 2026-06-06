@@ -1,15 +1,15 @@
 {
-  "generated": "2026-06-06T22:31:34.124123+00:00",
+  "generated": "2026-06-06T22:54:10.872870+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-UJ63WcVg2yntKE2pJ7VPTSJpEmo27LCz8LyqFCw3UX0=",
     "frontend/js/admin.js": "sha256-p3PeMeXn1qzHQYMZ4VOUSElZ2UV9dGXqaS0Pnp+0GC4=",
     "frontend/js/api.js": "sha256-OU+FFS9SDp0f+L+wPsnWrIxf280ZKBd/UNICi09gtF0=",
     "frontend/js/app.js": "sha256-vCoA3mwqIBayo+GPJa7uGlix7HEtrKC1PctqwM0Hjzs=",
-    "frontend/js/auth.js": "sha256-4eWO1y5KN+cx7vYVHuPgtDs86QxfmgqzMOfQYcdBw3Q=",
+    "frontend/js/auth.js": "sha256-YI2zoOs3CWfuYtcKb/xn/brE2RRcoRd3Ynd+lHzQmnM=",
     "frontend/js/config.js": "sha256-XvMaf1MBJniFDZDKqEXwNItIv5UwA+UM3PJsdrIURJk=",
     "frontend/js/crypto.js": "sha256-2scWF+R6qFpPevtJ/BWTx7UdBR22ClK4IsYuQeP3ZF4=",
     "frontend/js/download.js": "sha256-/fHNcN0EdzV1zDtySXWSDHschWZ4etYKIlcdVEtPeqk=",
-    "frontend/js/files.js": "sha256-E0dtJHkAIbPHI1VN4+dE8JQ477jQZM/T06JURqwZ4nM=",
+    "frontend/js/files.js": "sha256-9ljOwq3RJqoQc6cKpsyXmJTDjB6uo4b4rfbuQZdfXKU=",
     "frontend/js/permissions.js": "sha256-I/sMHysjmicKL1+UTL4qrknKTS5+GXw9RIoFYIN1wss=",
     "frontend/js/shares.js": "sha256-8Pf/Oclv37vaEUlsyv+yUPyQhCZ4lh/LqksDXY/t9/Q=",
     "frontend/js/teams.js": "sha256-wbyNQ/ro7jq0f0JmlxL54IG7Jb5x8TJ47RWBo4xMvtE=",

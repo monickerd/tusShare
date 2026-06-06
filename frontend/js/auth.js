@@ -580,7 +580,7 @@ const Auth = (() => {
         }
     }
 
-    async function _handlePrfUnlock(container) {
+    async function _handlePrfUnlock(_container) {
         const status = document.getElementById('key-status');
         if (status) status.textContent = 'Waiting for security key tap…';
         try {

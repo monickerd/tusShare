@@ -33,7 +33,7 @@ const Files = (() => {
 
     // Decrypt any name_ct values in a list of file/folder objects in parallel and
     // cache the results.  Falls back silently to the plaintext field on any error.
-    async function _decryptAndCacheNames(items, plaintextField) {
+    async function _decryptAndCacheNames(items, _plaintextField) {
         if (!_nameKeys || !items || items.length === 0) return;
         await Promise.all(items.map(async (item) => {
             if (!item.name_ct || _nameCache.has(item.id)) return;
@@ -2415,7 +2415,7 @@ const Files = (() => {
                     await _prewarmSemaphore.acquire();
                     prepared = await Upload.prepareUpload(file, retryFolderId, masterKey, _nameKeys);
                     _prewarmSemaphore.release();
-                } catch (err) {
+                } catch (_err) {
                     _prewarmSemaphore.release();
                     _ctx.results.failed.push(file.name);
                     continue;
