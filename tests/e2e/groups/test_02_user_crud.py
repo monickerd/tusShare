@@ -162,7 +162,12 @@ async def test_02_08_admin_can_delete_user(
     _bob["id"] = bob["id"]
     _bob["session"] = bob_session
 
+    # Disable trash so deletion is immediate (hard-delete), not scheduled.
+    # The default trash_enabled=true would leave the user in the list with
+    # scheduled_delete_at set; we want to verify the row is actually gone.
+    await admin_client.set_setting("trash_enabled", "false")
     await admin_client.delete_user(_bob["id"])
+    await admin_client.set_setting("trash_enabled", "true")
 
     users_after = await admin_client.list_users()
     assert not any(u["id"] == _bob["id"] for u in users_after), (

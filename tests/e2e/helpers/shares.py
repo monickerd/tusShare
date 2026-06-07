@@ -1,8 +1,9 @@
 """
 Share operation helpers.
 
-Uses the correct CreateShareRequest format: items list with per-file
-encrypted_file_key and key_iv (stub values — server stores but never decrypts).
+Uses the correct CreateShareRequest format: items list with per-file or
+per-folder encrypted_file_key and key_iv (stub values — server stores but
+never decrypts).
 """
 
 from __future__ import annotations
@@ -27,6 +28,16 @@ def _build_link_item(file_id: str) -> dict:
     }
 
 
+def _build_folder_item(folder_id: str) -> dict:
+    """Build a folder-key share item (folderKey wrapped with shareKey stub)."""
+    return {
+        "resource_type": "folder",
+        "resource_id":   folder_id,
+        "encrypted_file_key": fake_aes256_key(),
+        "key_iv":             fake_iv_12(),
+    }
+
+
 async def create_link_share(
     client:        ApiClient,
     file_ids:      list[str],
@@ -42,6 +53,46 @@ async def create_link_share(
     r = await client.post("/shares", json=payload)
     r.raise_for_status()
     return r.json()
+
+
+async def create_folder_key_share(
+    client:        ApiClient,
+    folder_ids:    list[str],
+    max_downloads: Optional[int] = None,
+    expiry_hours:  Optional[int] = None,
+) -> dict:
+    """Create a folder-key link share. Returns the full share dict including token."""
+    payload: dict = {
+        "share_type": "link",
+        "items":      [_build_folder_item(fid) for fid in folder_ids],
+    }
+    if max_downloads is not None:
+        payload["max_downloads"] = max_downloads
+    if expiry_hours is not None:
+        payload["expiry_hours"] = expiry_hours
+    r = await client.post("/shares", json=payload)
+    r.raise_for_status()
+    return r.json()
+
+
+async def list_share_exclusions(client: ApiClient, share_id: str) -> list[str]:
+    """Return the list of excluded folder ID strings for a share."""
+    r = await client.get(f"/shares/{share_id}/exclusions")
+    r.raise_for_status()
+    return r.json().get("excluded_folder_ids", [])
+
+
+async def add_share_exclusion(client: ApiClient, share_id: str, folder_id: str) -> dict:
+    """Add a folder to a share's exclusion list. Returns the created exclusion."""
+    r = await client.post(f"/shares/{share_id}/exclusions", json={"folder_id": folder_id})
+    r.raise_for_status()
+    return r.json()
+
+
+async def remove_share_exclusion(client: ApiClient, share_id: str, folder_id: str) -> None:
+    """Remove a folder from a share's exclusion list."""
+    r = await client.delete(f"/shares/{share_id}/exclusions/{folder_id}")
+    r.raise_for_status()
 
 
 async def list_shares(client: ApiClient) -> list[dict]:

@@ -40,6 +40,45 @@ async def create_folder(
     return r.json()["folder"]
 
 
+async def create_folder_with_key(
+    client:    ApiClient,
+    name:      str,
+    parent_id: Optional[str] = None,
+) -> dict:
+    """Create a personal folder with stub folder_key_ct/iv fields set.
+
+    POST /folders only returns {id, name, parent_id}; this helper does a
+    follow-up GET /folders/{id}/all-subfolders to retrieve the full folder
+    object including the stored crypto fields.
+    """
+    from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12
+    payload: dict[str, Any] = {
+        "name":          name,
+        "folder_key_ct": fake_aes256_key(),
+        "folder_key_iv": fake_iv_12(),
+    }
+    if parent_id:
+        payload["parent_id"] = parent_id
+    r = await client.post("/folders", json=payload)
+    r.raise_for_status()
+    folder_id = r.json()["folder"]["id"]
+
+    # POST only returns {id, name, parent_id}; fetch the full record so callers
+    # can assert on folder_key_ct / folder_key_iv.
+    subtree = await client.get(f"/folders/{folder_id}/all-subfolders")
+    subtree.raise_for_status()
+    folders = subtree.json().get("folders", [])
+    full = next((f for f in folders if f["id"] == folder_id), None)
+    return full if full else r.json()["folder"]
+
+
+async def get_folder_subtree(client: ApiClient, folder_id: str) -> dict:
+    """Return the all-subfolders subtree for folder_id."""
+    r = await client.get(f"/folders/{folder_id}/all-subfolders")
+    r.raise_for_status()
+    return r.json()
+
+
 async def list_root(client: ApiClient) -> dict:
     """List root-level folders and files."""
     r = await client.get("/folders")
@@ -275,17 +314,20 @@ async def tus_create_request(
 
 
 async def upload_file_api(
-    client:    ApiClient,
-    filename:  str,
-    content:   bytes,
-    folder_id: Optional[str] = None,
-    chunk_size: int = _SERVER_DEFAULT_CHUNK_SIZE,
+    client:      ApiClient,
+    filename:    str,
+    content:     bytes,
+    folder_id:   Optional[str] = None,
+    chunk_size:  int = _SERVER_DEFAULT_CHUNK_SIZE,
+    key_version: Optional[str] = None,
 ) -> dict:
     """Upload a file via TUS using stub AES-GCM metadata.
 
     No real encryption is performed — content bytes are sent as-is.  The
     server stores whatever blob it receives; tests only verify HTTP status
     codes and metadata, never decrypt content.
+
+    Pass key_version='v2-folder' to simulate an upload into a folder-key folder.
 
     Returns the file metadata dict from GET /files/{file_id}.
     """
@@ -305,6 +347,8 @@ async def upload_file_api(
     ]
     if folder_id:
         metadata_parts.append(f"folder_id {_enc(folder_id)}")
+    if key_version:
+        metadata_parts.append(f"key_version {_enc(key_version)}")
 
     # Step 1 — POST to create the upload record
     r = await client.post(
