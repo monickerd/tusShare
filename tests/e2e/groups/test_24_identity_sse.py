@@ -34,13 +34,14 @@ Tests
 from __future__ import annotations
 
 import asyncio
+
 import httpx
 import pytest
 from playwright.async_api import Browser, Page, expect
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from tests.e2e.helpers.admin import AdminClient
-from tests.e2e.helpers.auth  import register_via_invite, UserSession
+from tests.e2e.helpers.auth import UserSession, register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL        = "http://localhost:8001"

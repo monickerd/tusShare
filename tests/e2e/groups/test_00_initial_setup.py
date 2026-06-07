@@ -20,12 +20,12 @@ Tests
 
 from __future__ import annotations
 
-import pytest
 import httpx
+import pytest
 from playwright.async_api import Browser, expect
 
-from tests.e2e.helpers.db   import reset_db, get_bootstrap_token
 from tests.e2e.helpers.auth import bootstrap_admin, login, register_via_invite
+from tests.e2e.helpers.db import get_bootstrap_token, reset_db
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL        = "http://localhost:8001"

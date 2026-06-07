@@ -39,18 +39,17 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.auth   import register_via_invite
-from tests.e2e.helpers.files  import (
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
+from tests.e2e.helpers.files import (
     create_folder,
     list_root,
-    upload_file_api,
     list_trash,
-    restore_file_from_trash,
-    restore_folder_from_trash,
     permanently_delete_file_from_trash,
     permanently_delete_folder_from_trash,
-    empty_trash,
+    restore_file_from_trash,
+    restore_folder_from_trash,
+    upload_file_api,
 )
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 

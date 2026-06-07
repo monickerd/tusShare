@@ -9,7 +9,7 @@ browser, so tests that need confirmed key delivery use Playwright.
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Any
 
 from tests.e2e.helpers.admin import ApiClient
 
@@ -129,7 +129,7 @@ async def add_file_team_keys(
     Must be called by the file owner after uploading to a team folder.
     The server stores key material verbatim (never decrypts), so stub values work.
     """
-    from tests.e2e.helpers.crypto_stubs import fake_g1_point, fake_aes256_key, fake_iv_12
+    from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_g1_point, fake_iv_12
     file_keys = [
         {
             "file_id":            fid,

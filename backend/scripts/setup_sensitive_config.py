@@ -39,7 +39,6 @@ from urllib.parse import urlparse
 
 import asyncpg
 
-
 # ---------------------------------------------------------------------------
 # Default sensitive function seeds (must match sensitive_config.py)
 # ---------------------------------------------------------------------------

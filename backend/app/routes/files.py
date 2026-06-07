@@ -5,7 +5,9 @@ Phase 4. Encrypted bytes are served verbatim — the server never decrypts.
 """
 
 import asyncio
+import hashlib as _hashlib
 import logging
+import re as _re
 import uuid
 from typing import Annotated
 
@@ -373,8 +375,6 @@ async def search_files(
     }
 
 
-import hashlib as _hashlib
-
 _MANIFEST_LIMIT = 10000
 
 
@@ -508,8 +508,6 @@ async def get_file_manifest(
         headers={"ETag": etag, "Cache-Control": "no-cache, private"},
     )
 
-
-import re as _re
 
 _NAME_IDX_RE = _re.compile(r'^[0-9a-f]{64}$')
 

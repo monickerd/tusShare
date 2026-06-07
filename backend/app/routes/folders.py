@@ -1,6 +1,7 @@
 """Folder management routes."""
 
 import asyncio
+import re as _re_folders
 import uuid
 from typing import Annotated
 
@@ -108,8 +109,6 @@ async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: l
 
 router = APIRouter(dependencies=[Depends(check_management_write_rate_limit)])
 
-
-import re as _re_folders
 
 _NAME_IDX_RE_FOLDERS = _re_folders.compile(r'^[0-9a-f]{64}$')
 

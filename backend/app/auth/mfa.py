@@ -30,11 +30,10 @@ import time
 import uuid
 from typing import Any
 
-from app.util import jwt_impl as jwt
-
 from app.auth.stepup import hkdf_sha256
 from app.config import settings
 from app.services import live_settings
+from app.util import jwt_impl as jwt
 from app.util.crypto import aesgcm_decrypt_blob, aesgcm_encrypt_blob
 
 # ---------------------------------------------------------------------------

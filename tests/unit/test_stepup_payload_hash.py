@@ -20,7 +20,6 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 from app.auth.stepup import create_step_up_token, verify_step_up_token
 from app.services import live_settings
 
-
 USER_ID = "user-abc"
 ACTION = "admin.escrow.enable"
 HASH_A = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

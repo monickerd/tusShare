@@ -17,7 +17,6 @@ from pydantic import BaseModel, field_validator
 
 import app.storage.manager as storage
 from app.auth.dependencies import require_admin
-from app.services.trash import get_trash_settings
 from app.auth.interface import AuthenticatedUser
 from app.database import Database, db_session, get_db
 from app.middleware.rate_limit import _get_client_ip
@@ -36,6 +35,7 @@ from app.models.role import (
 from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
+from app.services.trash import get_trash_settings
 from app.validation.sanitizers import validate_base64, validate_uuid
 from app.validation.validators import validate_pagination
 

@@ -7,12 +7,11 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from app.util import jwt_impl as jwt
-
 from app.conf.auth import CSRF_TOKEN_BYTES, REFRESH_TOKEN_BYTES
 from app.config import settings
 from app.database import db_session
 from app.services import live_settings
+from app.util import jwt_impl as jwt
 from app.util.crypto import sha256_hex
 
 logger = logging.getLogger(__name__)

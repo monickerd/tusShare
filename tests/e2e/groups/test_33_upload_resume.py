@@ -34,16 +34,14 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.auth   import register_via_invite
-from tests.e2e.helpers.files  import (
-    _SERVER_DEFAULT_CHUNK_SIZE,
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
+from tests.e2e.helpers.files import (
     create_folder,
     get_file,
     list_pending_uploads,
     tus_upload_begin,
     tus_upload_chunk,
-    upload_file_api,
 )
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 

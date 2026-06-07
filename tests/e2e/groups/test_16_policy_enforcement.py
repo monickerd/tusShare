@@ -61,10 +61,10 @@ import pytest
 from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin import AdminClient, ApiClient
-from tests.e2e.helpers.auth  import ldap_login, register_via_invite
-from tests.e2e.helpers.files import create_folder, can_list_folder
-from tests.e2e.helpers.teams import create_team, delete_team, is_member
+from tests.e2e.helpers.auth import ldap_login, register_via_invite
+from tests.e2e.helpers.files import can_list_folder, create_folder
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.teams import create_team, delete_team, is_member
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"

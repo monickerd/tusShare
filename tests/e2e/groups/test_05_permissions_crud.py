@@ -31,11 +31,10 @@ Additional edge cases
 from __future__ import annotations
 
 import pytest
-import httpx
 from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin import AdminClient, ApiClient
-from tests.e2e.helpers.auth  import register_via_invite, login
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
@@ -108,7 +107,7 @@ async def _check(session, method: str, path: str) -> int:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_05_01_no_flag_blocks_admin_settings():
     r_status = await _check(_test_user["session"], "get", "/admin/settings")
-    assert r_status == 403, f"User without flag should be blocked from admin settings"
+    assert r_status == 403, "User without flag should be blocked from admin settings"
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -119,7 +118,7 @@ async def test_05_02_can_view_admin_panel_flag_grants_access(admin_client: Admin
     await admin_client.grant_role(_test_user["id"], _test_role["id"])
 
     r_status = await _check(_test_user["session"], "get", "/admin/settings")
-    assert r_status == 200, f"User with can_view_admin_panel should see settings"
+    assert r_status == 200, "User with can_view_admin_panel should see settings"
 
 
 @pytest.mark.asyncio(loop_scope="session")
@@ -128,7 +127,7 @@ async def test_05_03_revoking_flag_blocks_again(admin_client: AdminClient):
         _test_role["id"], {"admin_panel_view": False}
     )
     r_status = await _check(_test_user["session"], "get", "/admin/settings")
-    assert r_status == 403, f"After flag revoked, should be blocked again"
+    assert r_status == 403, "After flag revoked, should be blocked again"
 
 
 # ---------------------------------------------------------------------------

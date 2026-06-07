@@ -10,11 +10,9 @@ Usage:
 
 import argparse
 import base64
-import os
 import secrets
 import sys
 from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # Helpers

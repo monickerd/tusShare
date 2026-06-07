@@ -29,12 +29,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from app.util import jwt_impl as jwt
-
 from app.conf.auth import STEP_UP_TIMESTAMP_TOLERANCE
 from app.config import settings
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus, live_settings
+from app.util import jwt_impl as jwt
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,6 @@ Folder CRUD and metadata operations can be driven entirely via the API.
 
 from __future__ import annotations
 
-import io
 import os
 from typing import Any, Optional
 
@@ -288,6 +287,7 @@ async def tus_create_request(
     Use this to test upload access control without actually sending any data.
     """
     import base64 as _b64mod
+
     from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12
 
     def _enc(s: str) -> str:
@@ -332,7 +332,8 @@ async def upload_file_api(
     Returns the file metadata dict from GET /files/{file_id}.
     """
     import base64 as _b64mod
-    from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12, chunk_hash
+
+    from tests.e2e.helpers.crypto_stubs import chunk_hash, fake_aes256_key, fake_iv_12
 
     def _enc(s: str) -> str:
         return _b64mod.b64encode(s.encode()).decode()
@@ -418,6 +419,7 @@ async def tus_upload_begin(
     :func:`tus_upload_chunk` to send individual encrypted chunks.
     """
     import base64 as _b64mod
+
     from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12
 
     def _enc(s: str) -> str:
@@ -460,7 +462,7 @@ async def tus_upload_chunk(
     Returns *(new_offset, file_id)* where *file_id* is non-``None`` only when
     this chunk completes the upload and the server assigns a file ID.
     """
-    from tests.e2e.helpers.crypto_stubs import fake_iv_12, chunk_hash
+    from tests.e2e.helpers.crypto_stubs import chunk_hash, fake_iv_12
 
     r = await client.patch(
         f"/uploads/{upload_id}",

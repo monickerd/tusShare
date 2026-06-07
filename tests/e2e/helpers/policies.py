@@ -8,7 +8,7 @@ policy logic is server-side, so these helpers just drive the HTTP layer.
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from tests.e2e.helpers.admin import AdminClient, ApiClient
 

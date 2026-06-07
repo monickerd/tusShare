@@ -37,13 +37,14 @@ Tests
 from __future__ import annotations
 
 import os
+
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient  # ApiClient used in _api() helper
-from tests.e2e.helpers.auth   import register_via_invite
-from tests.e2e.helpers.files  import upload_file_api, create_folder, batch_move_files
-from tests.e2e.helpers.db     import _psql, PG_DB_NAME
+from tests.e2e.helpers.admin import AdminClient, ApiClient  # ApiClient used in _api() helper
+from tests.e2e.helpers.auth import register_via_invite
+from tests.e2e.helpers.db import PG_DB_NAME, _psql
+from tests.e2e.helpers.files import batch_move_files, create_folder, upload_file_api
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = os.getenv("TEST_APP_URL", "http://localhost:8001")

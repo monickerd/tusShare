@@ -20,13 +20,12 @@ Tests
 
 from __future__ import annotations
 
-import pytest
 import httpx
+import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.conftest      import ADMIN_USERNAME, ADMIN_PASSWORD
 from tests.e2e.helpers.admin import AdminClient, ApiClient
-from tests.e2e.helpers.auth  import login, register_via_invite
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
@@ -152,7 +151,6 @@ async def test_01_10_non_admin_cannot_access_settings(
 ):
     """A regular user (team_member role) must get 403 on admin settings."""
     invite_url = await admin_client.create_invite_url()
-    from tests.e2e.helpers.auth import register_via_invite
     user_session = await register_via_invite(
         browser, invite_url, "regular_user_01", "Us3r!Passw0rd"
     )

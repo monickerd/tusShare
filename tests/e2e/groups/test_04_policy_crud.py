@@ -25,10 +25,9 @@ from __future__ import annotations
 
 import pytest
 
-from tests.e2e.helpers.admin   import AdminClient, ApiClient
-from tests.e2e.helpers.policies import create_policy_with_conditions
-from tests.e2e.helpers.teams   import create_team, delete_team
+from tests.e2e.helpers.admin import AdminClient, ApiClient
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.teams import create_team, delete_team
 
 _field:         dict = {}
 _policy:        dict = {}

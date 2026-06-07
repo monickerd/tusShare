@@ -14,7 +14,6 @@ os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 from app.util.totp_impl import TOTP, random_base32, totp
 
-
 # ---------------------------------------------------------------------------
 # random_base32
 # ---------------------------------------------------------------------------

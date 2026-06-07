@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -38,7 +38,6 @@ if str(_backend) not in sys.path:
     sys.path.insert(0, str(_backend))
 
 from app.storage.base import VolumeConfig  # noqa: E402
-
 
 # ------------------------------------------------------------------
 # Helpers

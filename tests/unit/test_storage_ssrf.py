@@ -12,7 +12,6 @@ Run with: pytest tests/unit/
 from __future__ import annotations
 
 import asyncio
-import os
 
 import pytest
 from fastapi import HTTPException
@@ -20,7 +19,6 @@ from fastapi import HTTPException
 # Ensure settings can be imported with minimal env (JWT_SECRET has a default of "")
 # No other vars are needed for _validate_endpoint_url.
 from app.util.ssrf import validate_endpoint_url as _validate_endpoint_url
-
 
 # ---------------------------------------------------------------------------
 # Helper

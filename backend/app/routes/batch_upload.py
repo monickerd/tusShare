@@ -22,16 +22,16 @@ from multipart.multipart import MultipartParser
 import app.storage.manager as storage
 from app.auth.dependencies import require_user_role
 from app.auth.interface import AuthenticatedUser
+from app.config import settings
 from app.database import Database, db_session, get_db
 from app.middleware.rate_limit import check_upload_rate_limit
 from app.routes._access import check_data_permission, copy_folder_permissions
 from app.routes.uploads import _record_upload_folder_activity
-from app.services.av_scanner import enqueue_scan
 from app.schemas.security_event import SecurityEvent
 from app.services import event_bus, sse_broker
+from app.services.av_scanner import enqueue_scan
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
-from app.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

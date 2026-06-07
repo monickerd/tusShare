@@ -13,6 +13,7 @@ import os
 os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-only")
 
 import pytest
+
 from app.conf.validation import FOLDER_NAME_PATTERN
 
 

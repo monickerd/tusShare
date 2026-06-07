@@ -1,7 +1,7 @@
 """Team, TeamMember, and TeamFileKey data models."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 
 from app.conf.teams import TEAM_ROLE_HIERARCHY
 

@@ -41,8 +41,8 @@ Tests
 
 from __future__ import annotations
 
-import pytest
 import httpx
+import pytest
 
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 

@@ -31,9 +31,9 @@ import pytest
 from playwright.async_api import Browser
 
 from tests.e2e.helpers.admin import AdminClient, ApiClient
-from tests.e2e.helpers.auth  import register_via_invite
-from tests.e2e.helpers.teams import create_team, list_members, add_member
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.teams import add_member, create_team, list_members
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"

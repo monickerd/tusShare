@@ -8,9 +8,9 @@ objects are passed as plain mocks so the tests are fast and hermetic.
 
 from __future__ import annotations
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helpers

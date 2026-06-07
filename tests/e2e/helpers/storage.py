@@ -119,7 +119,7 @@ def seed_warm_volume(
     After calling this, restart_app_and_wait() must be called so the
     StorageManager reloads its volume list and picks up the new warm volume.
     """
-    from tests.e2e.helpers.db import _psql, PG_DB_NAME
+    from tests.e2e.helpers.db import PG_DB_NAME, _psql
 
     warm_config = {
         "endpoint_url":      MINIO_ENDPOINT_URL,
@@ -200,7 +200,7 @@ def seed_azure_volume(volume_id: str = AZURITE_VOLUME_ID) -> None:
     Uses the internal docker network endpoint (http://azurite:10000/...) so
     the running app container can reach the Azurite container by name.
     """
-    from tests.e2e.helpers.db import _psql, PG_DB_NAME
+    from tests.e2e.helpers.db import PG_DB_NAME, _psql
 
     config = {
         "connection_string": AZURITE_CONNECTION_STRING_INTERNAL,
@@ -234,7 +234,7 @@ def seed_s3_volume(volume_id: str = MINIO_VOLUME_ID) -> None:
     the SSRF blocklist (which rejects RFC-1918 endpoints) is never involved.
     The SSRF logic is covered separately in tests/unit/test_storage_ssrf.py.
     """
-    from tests.e2e.helpers.db import _psql, PG_DB_NAME
+    from tests.e2e.helpers.db import PG_DB_NAME, _psql
 
     config = {
         "endpoint_url":    MINIO_ENDPOINT_URL,

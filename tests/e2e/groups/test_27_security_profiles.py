@@ -59,7 +59,7 @@ import jwt
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin         import AdminClient
+from tests.e2e.helpers.admin import AdminClient
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
@@ -205,8 +205,8 @@ async def test_27_04_high_security_settings_locked(admin_client: AdminClient):
     rules_data = await admin_client.list_sharing_rules()
     for rule in rules_data.get("rules", []):
         if "high security" in rule.get("name", "").lower():
-            assert rule.get("is_locked") is True,   f"High Security rule should be locked"
-            assert rule.get("locked_min_tier") == 1, f"High Security rule should be locked at tier 1"
+            assert rule.get("is_locked") is True,   "High Security rule should be locked"
+            assert rule.get("locked_min_tier") == 1, "High Security rule should be locked at tier 1"
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +298,6 @@ async def test_27_07_export_structure(admin_client: AdminClient):
 @pytest.mark.asyncio(loop_scope="session")
 async def test_27_08_export_strips_escrow_user_ids(admin_client: AdminClient):
     """Export strips user IDs from escrow settings and populates _warnings."""
-    import json as _json
 
     # Inject a fake user ID list into escrow settings so the export has something to strip
     await admin_client._client.put(
@@ -392,8 +391,6 @@ async def test_27_11_preview_import_returns_diff_without_changes(admin_client: A
 
     # Preview importing High Security profile as merge (no confirm)
     tok     = _step_up(_state["admin_id"])
-    import json as _json
-    from tests.e2e.helpers.admin import API as _API
 
     # Build a minimal profile with one changed setting to preview
     hs_profile = {

@@ -2,8 +2,6 @@
 
 # Must be the first import from this package: installs the socket.connect
 # audit hook before any networking library finishes initializing.
-from app.util import egress_monitor as _egress_monitor
-
 import asyncio
 import logging
 import re
@@ -37,6 +35,7 @@ from app.services.live_settings import run_settings_invalidation_listener
 from app.services.maintenance import ensure_audit_partitions, run_daily_maintenance
 from app.services.sse_broker import run_redis_listener
 from app.services.trash import run_trash_cleanup
+from app.util import egress_monitor as _egress_monitor
 from app.util.integrity import check_integrity, verify_file_integrity
 from app.util.integrity import get_result as get_integrity_result
 from app.util.sri import inject_sri
@@ -85,10 +84,9 @@ def _actor_from_request(request: Request) -> EventActor:
     Reads from the httpOnly access-token cookie or Authorization Bearer header,
     falling back to IP-only if the token is absent or invalid.
     """
-    from app.util import jwt_impl as _pyjwt
-
     from app.auth.jwt import verify_access_token
     from app.conf.auth import COOKIE_ACCESS
+    from app.util import jwt_impl as _pyjwt
 
     ip = request.client.host if request.client else None
     token = request.cookies.get(COOKIE_ACCESS)
@@ -591,6 +589,7 @@ def create_app() -> FastAPI:
     from app.routes.admin_storage import router as admin_storage_router
     from app.routes.admin_teams import router as admin_teams_router
     from app.routes.auth import router as auth_router
+    from app.routes.batch_upload import router as batch_upload_router
     from app.routes.events import router as events_router
     from app.routes.files import router as files_router
     from app.routes.folders import router as folders_router
@@ -606,7 +605,6 @@ def create_app() -> FastAPI:
     from app.routes.teams import router as teams_router
     from app.routes.theme import router as theme_router
     from app.routes.trash import router as trash_router
-    from app.routes.batch_upload import router as batch_upload_router
     from app.routes.uploads import router as uploads_router
     from app.routes.users import router as users_router
 

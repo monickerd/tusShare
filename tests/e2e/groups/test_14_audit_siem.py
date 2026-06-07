@@ -37,9 +37,9 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin        import AdminClient, ApiClient
-from tests.e2e.helpers.auth         import register_via_invite
-from tests.e2e.helpers.audit        import get_recent_event
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.audit import get_recent_event
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"

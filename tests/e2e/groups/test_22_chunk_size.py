@@ -40,16 +40,15 @@ try/finally block to avoid cross-test contamination.
 from __future__ import annotations
 
 import base64
-import hashlib
 
 import httpx
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin        import AdminClient, ApiClient
-from tests.e2e.helpers.auth         import register_via_invite
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.crypto_stubs import chunk_hash, fake_aes256_key, fake_iv_12
-from tests.e2e.helpers.files        import _SERVER_DEFAULT_CHUNK_SIZE
+from tests.e2e.helpers.files import _SERVER_DEFAULT_CHUNK_SIZE
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"

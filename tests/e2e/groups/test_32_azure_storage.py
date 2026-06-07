@@ -43,26 +43,26 @@ from __future__ import annotations
 
 import pytest
 
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import bootstrap_admin, register_via_invite
+from tests.e2e.helpers.db import (
+    PG_DB_NAME,
+    _psql_fetch,
+    reset_db,
+    restart_app_and_wait,
+)
+from tests.e2e.helpers.files import (
+    create_folder,
+    delete_file,
+    get_folder,
+    upload_file_api,
+)
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 from tests.e2e.helpers.storage import (
     AZURITE_VOLUME_ID,
     azurite_reachable,
     seed_azure_volume,
 )
-from tests.e2e.helpers.db import (
-    reset_db,
-    restart_app_and_wait,
-    _psql_fetch,
-    PG_DB_NAME,
-)
-from tests.e2e.helpers.auth import bootstrap_admin, register_via_invite
-from tests.e2e.helpers.admin import AdminClient, ApiClient
-from tests.e2e.helpers.files import (
-    upload_file_api,
-    delete_file,
-    create_folder,
-    get_folder,
-)
-from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -82,7 +82,7 @@ _state: dict = {}
 
 @pytest.fixture(scope="module")
 async def azure_env(browser):
-    from tests.e2e.conftest import ADMIN_USERNAME, ADMIN_PASSWORD
+    from tests.e2e.conftest import ADMIN_PASSWORD, ADMIN_USERNAME
 
     token = reset_db()
     admin_session = await bootstrap_admin(

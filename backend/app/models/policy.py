@@ -22,7 +22,6 @@ conditions as non-matching (conservative default).
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import uuid as _uuid
@@ -1047,7 +1046,6 @@ async def _resolve_oidc_fields(
     except Exception:
         return {}
 
-    import json
 
     claim_mode = row["claim_mode"] or "at_login"
 
@@ -1082,13 +1080,12 @@ async def _fetch_oidc_userinfo(row) -> dict:
         if not refresh_token_enc:
             return {}
 
-        from app.auth.idp_crypto import decrypt_idp_config, decrypt_token
+        import httpx as _httpx
 
+        from app.auth.idp_crypto import decrypt_idp_config, decrypt_token
         from app.config import settings as _s
         from app.services import live_settings as _ls
         from app.util.ssrf import validate_endpoint_url
-
-        import httpx as _httpx
 
         cfg = decrypt_idp_config(row["config_enc"])
         refresh_token = decrypt_token(refresh_token_enc)

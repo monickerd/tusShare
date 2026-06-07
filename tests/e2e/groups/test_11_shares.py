@@ -14,18 +14,18 @@ Tests
 from __future__ import annotations
 
 import pytest
-import httpx
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.auth   import register_via_invite
-from tests.e2e.helpers.files  import delete_file, upload_file_api
-from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
+from tests.e2e.helpers.files import delete_file, upload_file_api
 from tests.e2e.helpers.shares import (
-    create_link_share, delete_share,
-    resolve_share_public, download_share_content_public,
-    download_share_content_authed,
+    create_link_share,
+    delete_share,
+    download_share_content_public,
+    resolve_share_public,
 )
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 

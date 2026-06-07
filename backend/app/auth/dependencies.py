@@ -7,7 +7,6 @@ This dual-auth approach supports both browser sessions and API/deeplink access.
 import asyncio
 import logging
 
-from app.util import jwt_impl as jwt
 from fastapi import Depends, HTTPException, Request
 
 from app.auth.interface import AuthenticatedUser
@@ -15,6 +14,7 @@ from app.auth.jwt import touch_session, verify_access_token
 from app.auth.opaque_provider import OPAQUEAuthProvider
 from app.conf.auth import COOKIE_ACCESS
 from app.database import get_db
+from app.util import jwt_impl as jwt
 
 logger = logging.getLogger(__name__)
 

@@ -34,20 +34,26 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.auth   import register_via_invite
-from tests.e2e.helpers.files  import (
-    create_folder, can_get_file_meta, move_file_to_root,
-    upload_file_api, batch_move_files,
-    rename_file, delete_file,
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
+from tests.e2e.helpers.files import (
+    can_get_file_meta,
+    create_folder,
+    delete_file,
+    move_file_to_root,
+    rename_file,
+    upload_file_api,
 )
 from tests.e2e.helpers.shares import (
-    create_link_share, resolve_share_public,
-)
-from tests.e2e.helpers.teams  import (
-    create_team, add_member, add_team_folder,
+    create_link_share,
+    resolve_share_public,
 )
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.teams import (
+    add_member,
+    add_team_folder,
+    create_team,
+)
 
 # Module-level world state
 _owner:       dict = {}   # User A — file owner, team creator

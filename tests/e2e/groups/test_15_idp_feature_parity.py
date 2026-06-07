@@ -66,19 +66,26 @@ Admin role for LDAP users
 from __future__ import annotations
 
 import pytest
-import httpx
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.auth   import ldap_login, oidc_login, register_asymmetric_keys, register_via_invite
-from tests.e2e.helpers.files  import (
-    create_folder, upload_file_api, can_list_folder, rename_folder, delete_file,
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import ldap_login, oidc_login, register_asymmetric_keys, register_via_invite
+from tests.e2e.helpers.files import (
+    can_list_folder,
+    create_folder,
+    delete_file,
+    rename_folder,
+    upload_file_api,
 )
-from tests.e2e.helpers.shares import create_link_share, resolve_share_public
-from tests.e2e.helpers.teams  import (
-    create_team, add_member, list_team_folders, delete_team, add_team_folder,
-)
+from tests.e2e.helpers.shares import create_link_share
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.teams import (
+    add_member,
+    add_team_folder,
+    create_team,
+    delete_team,
+    list_team_folders,
+)
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"

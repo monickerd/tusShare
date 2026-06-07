@@ -38,23 +38,23 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.auth   import register_via_invite
-from tests.e2e.helpers.files  import (
-    create_folder,
-    upload_file_api,
-    get_file,
-    delete_file,
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
+from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_g2_point, fake_iv_12
+from tests.e2e.helpers.files import (
     batch_copy_files,
+    create_folder,
+    delete_file,
+    get_file,
+    upload_file_api,
 )
-from tests.e2e.helpers.teams  import (
-    create_team,
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
+from tests.e2e.helpers.teams import (
+    add_file_team_keys,
     add_member,
     add_team_folder,
-    add_file_team_keys,
+    create_team,
 )
-from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12, fake_g2_point
-from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"
@@ -395,7 +395,6 @@ async def test_30_09_non_member_cannot_copy_from_team():
 @pytest.mark.asyncio(loop_scope="session")
 async def test_30_10_no_write_access_to_destination():
     """A user cannot copy into a folder they do not own and are not a team member of."""
-    api_a = _alice["api"]
     api_v = _viewer["api"]
 
     src = await upload_file_api(api_v, "viewer_src.txt", b"viewer file",

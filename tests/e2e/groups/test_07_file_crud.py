@@ -29,15 +29,23 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.auth   import register_via_invite
-from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
-from tests.e2e.helpers.files  import (
-    create_folder, list_root, get_folder, rename_folder,
-    move_folder, delete_folder, get_file, rename_file,
-    delete_file, batch_move_files, can_download_file, can_get_file_meta,
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
+from tests.e2e.helpers.files import (
+    batch_move_files,
+    can_download_file,
+    can_get_file_meta,
+    create_folder,
+    delete_file,
+    delete_folder,
+    get_file,
+    list_root,
+    move_folder,
+    rename_file,
+    rename_folder,
     upload_file_api,
 )
+from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
 
@@ -160,10 +168,6 @@ async def test_07_07_file_upload_via_browser():
 async def test_07_08_file_in_listing():
     if not _file:
         pytest.skip("No file uploaded (test_07_07 skipped)")
-    api = ApiClient.from_session(_user["session"])
-    async with api:
-        root = await list_root(api)
-    file_ids = [f["id"] for f in root.get("files", [])]
     # File may be in root or in a folder; just check it's accessible by metadata
     async with ApiClient.from_session(_user["session"]) as api:
         can_read = await can_get_file_meta(api, _file["id"])

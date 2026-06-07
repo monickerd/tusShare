@@ -47,8 +47,7 @@ import jwt
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin         import AdminClient
-from tests.e2e.helpers.auth          import register_via_invite
+from tests.e2e.helpers.admin import AdminClient
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
@@ -307,7 +306,8 @@ async def test_26_09_expired_key_is_rejected():
     """A key for a non-existent (deleted) SA is rejected with 401."""
     # The throwaway account from 26-07 is deleted; its key should 401
     # We fabricate a well-formed key that won't be in the DB
-    import secrets, base64
+    import base64
+    import secrets
     fake_key = "sa_" + base64.urlsafe_b64encode(secrets.token_bytes(24)).rstrip(b"=").decode()
     r = await _authenticate_as_sa(fake_key, f"{API}/auth/me")
     assert r.status_code == 401, (

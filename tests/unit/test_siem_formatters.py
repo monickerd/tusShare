@@ -14,15 +14,14 @@ import hashlib
 import hmac
 from datetime import datetime, timezone
 
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services.siem_syslog import (
-    _format_rfc5424,
     _format_cef,
     _format_leef,
+    _format_rfc5424,
     _syslog_pri,
 )
 from app.util.crypto import hmac_sha256_hex as _sign
-from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / shared test data

@@ -124,20 +124,23 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 import jwt
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin  import AdminClient, ApiClient
-from tests.e2e.helpers.audit  import get_recent_event
-from tests.e2e.helpers.auth   import register_via_invite
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.audit import get_recent_event
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.crypto_stubs import (
-    fake_aes256_key, fake_iv_12, fake_kem_ciphertext, fake_x25519_pub,
+    fake_aes256_key,
+    fake_iv_12,
+    fake_kem_ciphertext,
+    fake_x25519_pub,
 )
-from tests.e2e.helpers.files  import upload_file_api
+from tests.e2e.helpers.files import upload_file_api
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
@@ -580,7 +583,7 @@ async def test_20_09_custom_role_grants_link_only_while_role_user_has_none(
     }, tok)
 
     # Custom role: link shares only
-    link_role = await admin_client.create_role("link_only_role_20")
+    await admin_client.create_role("link_only_role_20")
     await admin_client.update_sharing_flags(
         "link_only_role_20", {"shares_link_create": True}, tok
     )

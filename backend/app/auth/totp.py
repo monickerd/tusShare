@@ -31,9 +31,9 @@ import time
 import uuid
 
 import bcrypt
-from app.util import totp_impl as pyotp
 
 from app.auth.mfa import decrypt_credential, encrypt_credential
+from app.util import totp_impl as pyotp
 
 # TOTP window: accept ±1 step (30 s each) to tolerate minor clock skew
 _TOTP_WINDOW = 1

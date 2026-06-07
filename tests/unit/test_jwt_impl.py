@@ -132,7 +132,8 @@ def test_wrong_key_raises_invalid_token_error():
 
 
 def test_tampered_payload_raises():
-    import base64, json
+    import base64
+    import json
     token = encode({"sub": "u", "role": "user"}, _KEY)
     parts = token.split(".")
     # Tamper: elevate role to admin in the payload

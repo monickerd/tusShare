@@ -10,10 +10,10 @@ from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
 from app.conf.teams import TEAM_ROLE_OWNER, VALID_TEAM_ROLES
 from app.database import Database, get_db
-from app.models.team_role import TEAM_FLAG_META
 from app.middleware.rate_limit import _get_client_ip
 from app.models.policy import get_blocking_policies
-from app.models.role import FLAG_TEAMS_MANAGE, FLAG_TEAMS_MEMBERS_MANAGE
+from app.models.role import FLAG_TEAMS_MANAGE
+from app.models.team_role import TEAM_FLAG_META
 from app.routes.admin_scope import require_team_scope, scope_team_ids
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus

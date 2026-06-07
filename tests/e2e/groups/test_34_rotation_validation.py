@@ -21,16 +21,17 @@ Tests
 
 from __future__ import annotations
 
-import httpx
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin        import AdminClient, ApiClient
-from tests.e2e.helpers.auth         import register_via_invite
+from tests.e2e.helpers.admin import AdminClient, ApiClient
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.crypto_stubs import (
-    fake_g1_point, fake_g2_point, fake_kem_bundle,
+    fake_g1_point,
+    fake_g2_point,
+    fake_kem_bundle,
 )
-from tests.e2e.helpers.teams        import create_team, add_member, list_members
+from tests.e2e.helpers.teams import add_member, create_team
 
 APP_URL = "http://localhost:8001"
 API     = f"{APP_URL}/api/v1"

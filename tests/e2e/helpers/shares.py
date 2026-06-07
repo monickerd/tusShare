@@ -14,7 +14,7 @@ from typing import Optional
 import httpx
 
 from tests.e2e.helpers.admin import ApiClient
-from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12, fake_kem_bundle, fake_x25519_pub
+from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12
 
 APP_URL = os.getenv("TEST_APP_URL", "http://localhost:8001")
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Optional
 
-from tests.e2e.helpers.admin import AdminClient, API
+from tests.e2e.helpers.admin import AdminClient
 
 
 async def get_recent_event(

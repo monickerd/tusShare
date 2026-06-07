@@ -24,9 +24,9 @@ from __future__ import annotations
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.conftest      import ADMIN_USERNAME, ADMIN_PASSWORD
+from tests.e2e.conftest import ADMIN_USERNAME
 from tests.e2e.helpers.admin import AdminClient, ApiClient
-from tests.e2e.helpers.auth  import register_via_invite
+from tests.e2e.helpers.auth import register_via_invite
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
@@ -192,7 +192,6 @@ async def test_02_09_deleted_user_session_returns_401():
 @pytest.mark.asyncio(loop_scope="session")
 async def test_02_10_admin_cannot_delete_self(admin_client: AdminClient):
     """Admin attempting to delete their own account should be rejected."""
-    import httpx as _httpx
     # Find admin's own user_id
     users = await admin_client.list_users()
     me = next(u for u in users if u["username"].lower() == ADMIN_USERNAME.lower())

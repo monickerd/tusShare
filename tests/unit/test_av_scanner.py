@@ -18,7 +18,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Shared test data
 # ---------------------------------------------------------------------------
@@ -139,7 +138,7 @@ class TestWebhookSigning:
             MockCls.return_value.__aexit__ = AsyncMock(return_value=None)
 
             from app.services.av_scanner import _call_webhook
-            result = await _call_webhook(
+            await _call_webhook(
                 _ENDPOINT, _SECRET, [_PLAINTEXT], _FILE_ID, _NAME, _MIME,
                 pinned_hostname=_PINNED[0], pinned_ip=_PINNED[1],
             )

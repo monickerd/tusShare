@@ -36,8 +36,8 @@ import jwt
 import pytest
 from playwright.async_api import Browser
 
-from tests.e2e.helpers.admin         import AdminClient
-from tests.e2e.helpers.siem          import wait_for
+from tests.e2e.helpers.admin import AdminClient
+from tests.e2e.helpers.siem import wait_for
 from tests.e2e.helpers.siem_manifest import ExpectedSiemEvent, assert_manifest
 
 APP_URL = "http://localhost:8001"
@@ -159,8 +159,8 @@ async def test_35_01_failed_opaque_login_emits_failure_event():
     ev = await wait_for("auth.login.failure", max_wait=5.0, outcome="failure")
     assert ev is not None, (
         "auth.login.failure did not appear in SIEM capture within 5 s after a "
-        f"failed OPAQUE login/finish request.\nCapture note: event should carry "
-        f"detail.method='opaque' and detail.reason='session_not_found'."
+        "failed OPAQUE login/finish request.\nCapture note: event should carry "
+        "detail.method='opaque' and detail.reason='session_not_found'."
     )
     assert ev.get("severity") == "warning", f"Expected severity=warning: {ev}"
     detail = ev.get("detail", {})

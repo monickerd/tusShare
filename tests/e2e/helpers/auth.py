@@ -26,10 +26,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING
 
 import httpx
-from playwright.async_api import Browser, BrowserContext, Page, expect
+from playwright.async_api import Browser, BrowserContext, expect
+
+if TYPE_CHECKING:
+    from tests.e2e.helpers.admin import ApiClient
 
 APP_URL = os.getenv("TEST_APP_URL", "http://localhost:8001")
 HEADED  = os.getenv("TEST_HEADED", "0") == "1"

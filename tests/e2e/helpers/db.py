@@ -173,8 +173,8 @@ def _restart_app() -> None:
 
 def _wait_for_healthy(timeout: int = HEALTH_TIMEOUT_S) -> None:
     """Poll GET /api/v1/health until 200 or timeout."""
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     deadline = time.time() + timeout
     last_error = None
