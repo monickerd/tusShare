@@ -1305,18 +1305,32 @@ const Files = (() => {
         const grantsTable = Utils.el('table', { className: 'file-table manage-folder-grants-table' });
         grantsTable.innerHTML = '<thead><tr><th>User</th><th>Permissions</th><th>Subfolders</th><th></th></tr></thead>';
         const grantsTbody = Utils.el('tbody');
+
+        // Folder creator always has full access — show as a static, non-removable row.
+        const _creatorRow = Utils.el('tr', { className: 'manage-folder-implicit-row' });
+        _creatorRow.appendChild(Utils.el('td', { textContent: stats.owner_username + ' (creator)' }));
+        _creatorRow.appendChild(Utils.el('td', {}, [Utils.el('em', { textContent: 'Full access (folder creator)' })]));
+        _creatorRow.appendChild(Utils.el('td', {}, [Utils.el('em', { textContent: 'Yes' })]));
+        _creatorRow.appendChild(Utils.el('td'));
+        grantsTbody.appendChild(_creatorRow);
+
         grantsTable.appendChild(grantsTbody);
         userGrantsPane.appendChild(grantsTable);
 
+        const _ownerId = stats.owner_id || '';
         const _renderGrants = (grantsList) => {
+            // Re-append the static creator row first; innerHTML wipe removes it.
             grantsTbody.innerHTML = '';
-            if (!grantsList.length) {
+            grantsTbody.appendChild(_creatorRow);
+            // Exclude the creator from the editable list — they have implicit full access.
+            const filtered = grantsList.filter(g => g.user_id !== _ownerId);
+            if (!filtered.length) {
                 grantsTbody.appendChild(Utils.el('tr', {}, [
                     Utils.el('td', { colSpan: 4, className: 'text-muted', style: 'text-align:center', textContent: 'No explicit grants. Add one below.' }),
                 ]));
                 return;
             }
-            for (const g of grantsList) {
+            for (const g of filtered) {
                 const removeBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Remove' });
                 removeBtn.addEventListener('click', async () => {
                     removeBtn.disabled = true;

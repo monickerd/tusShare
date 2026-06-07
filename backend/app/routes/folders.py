@@ -1118,17 +1118,41 @@ async def get_folder_stats(
             caller_context["allowed_flags"] = [*_BASE_FLAGS, *extra]
         # else: is_admin or is_team_owner → allowed_flags stays None (all allowed)
 
-    # Any org-level admin accounts other than the caller have implicit access.
-    org_cursor = await db.execute(
-        "SELECT 1 FROM users WHERE is_admin = 1 AND is_active = 1 AND id != ? LIMIT 1",
+    # has_org_access: true when accounts outside normal ACL can read this folder's files.
+    # Triggers on: (a) any active user with files_access_all_read/write role permission,
+    # or (b) active escrow agents who actually hold team key material (policy_effect_id
+    # links to a team_escrow policy_effects row).  "can_act_as_escrow" alone on a role
+    # does NOT trigger — the agent must have been provisioned with real keys.
+    file_bypass_cursor = await db.execute(
+        "SELECT 1 FROM users u "
+        "JOIN user_roles ur ON ur.user_id = u.id AND ur.scope_type IS NULL "
+        "JOIN role_permissions rp ON rp.role_id = ur.role_id "
+        "WHERE u.is_active = 1 AND u.id != ? "
+        "  AND rp.flag IN ('files_access_all_read', 'files_access_all_write') "
+        "  AND rp.value = '1' "
+        "LIMIT 1",
         (user.id,),
     )
-    caller_context["has_org_access"] = (await org_cursor.fetchone()) is not None
+    has_file_bypass = (await file_bypass_cursor.fetchone()) is not None
+
+    has_active_escrow = False
+    if team_row:
+        escrow_cursor = await db.execute(
+            "SELECT 1 FROM user_team_keys utk "
+            "JOIN policy_effects pe ON pe.id = utk.policy_effect_id "
+            "WHERE utk.team_id = ? AND pe.effect_type = 'team_escrow' "
+            "LIMIT 1",
+            (team_row["team_id"],),
+        )
+        has_active_escrow = (await escrow_cursor.fetchone()) is not None
+
+    caller_context["has_org_access"] = has_file_bypass or has_active_escrow
 
     return {
         "id":                   folder_id,
         "name":                 folder_row["name"],
         "owner_username":       folder_row["owner_username"],
+        "owner_id":             folder_row["owner_id"],
         "created_at":           str(folder_row["created_at"]) if folder_row["created_at"] else None,
         "updated_at":           str(folder_row["updated_at"]) if folder_row["updated_at"] else None,
         "restrict_permissions": bool(folder_row["restrict_permissions"]),
