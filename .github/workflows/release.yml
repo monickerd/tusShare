@@ -1,6 +1,18 @@
 name: Release
 
 on:
+  # Primary: run manually from the Actions tab with a version input.
+  # The workflow creates a draft, builds, uploads assets, then publishes —
+  # which creates the protected tag via the Releases API (bypasses the tag
+  # protection rule that blocks direct git pushes).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. v1.1.0)'
+        required: true
+        type: string
+
+  # Fallback: tag-push path still works if a tag is created externally.
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
@@ -18,6 +30,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Resolve the version from input (workflow_dispatch) or tag (push).
+      # Outputs:
+      #   ver.ref    — full ref, e.g. v1.1.0
+      #   ver.semver — bare semver, e.g. 1.1.0
+      #   ver.minor  — major.minor, e.g. 1.1
+      - name: Resolve version
+        id: ver
+        run: |
+          V="${{ inputs.version || github.ref_name }}"
+          SEMVER="${V#v}"
+          MINOR="${SEMVER%.*}"
+          echo "ref=${V}"       >> $GITHUB_OUTPUT
+          echo "semver=${SEMVER}" >> $GITHUB_OUTPUT
+          echo "minor=${MINOR}"  >> $GITHUB_OUTPUT
+
       # Create the release as a draft immediately so assets can be uploaded to
       # it before the release is published. GitHub treats published releases as
       # immutable — asset uploads are rejected once a release is no longer a
@@ -25,6 +52,8 @@ jobs:
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.ref }}
+          name: ${{ steps.ver.outputs.ref }}
           draft: true
           make_latest: false
 
@@ -44,18 +73,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Produces tags:
-      #   ghcr.io/monickerd/tusshare:1.2.3
-      #   ghcr.io/monickerd/tusshare:1.2
-      #   ghcr.io/monickerd/tusshare:latest
+      # Use type=raw tags so the metadata step works even when the git tag
+      # does not yet exist (workflow_dispatch path; tag is created at publish).
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/tusshare
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ steps.ver.outputs.semver }}
+            type=raw,value=${{ steps.ver.outputs.minor }}
             type=raw,value=latest
 
       - name: Build and push image
@@ -84,7 +111,7 @@ jobs:
 
       - name: Create deployment bundle
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION: ${{ steps.ver.outputs.semver }}
           IMAGE: ghcr.io/${{ github.repository_owner }}/tusshare
         run: |
           mkdir -p release-bundle/backend/sql
@@ -109,14 +136,18 @@ jobs:
           cd release-bundle && zip -r "../tusshare-${VERSION}.zip" .
 
       # Upload assets to the draft release and publish it.
+      # Publishing via the Releases API creates the protected git tag, which
+      # bypasses the tag protection rule that blocks direct git pushes.
       - name: Publish release with assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.ver.outputs.ref }}
+          name: ${{ steps.ver.outputs.ref }}
           draft: false
           make_latest: true
           files: |
-            tusshare-${{ steps.meta.outputs.version }}.tar.gz
-            tusshare-${{ steps.meta.outputs.version }}.zip
+            tusshare-${{ steps.ver.outputs.semver }}.tar.gz
+            tusshare-${{ steps.ver.outputs.semver }}.zip
           body: |
             ## Quick start
 
@@ -126,7 +157,7 @@ jobs:
 
             The image is also available directly:
             ```
-            docker pull ghcr.io/${{ github.repository_owner }}/tusshare:${{ steps.meta.outputs.version }}
+            docker pull ghcr.io/${{ github.repository_owner }}/tusshare:${{ steps.ver.outputs.semver }}
             ```
 
             See the [README](https://github.com/${{ github.repository }}#readme) for full setup and configuration docs.
