@@ -70,12 +70,14 @@ const Upload = (() => {
      * all crypto latency is hidden behind the wait rather than added to the
      * critical path.
      *
-     * @param {File}       file      - Browser File object.
-     * @param {string|null} folderId - Target folder UUID, or null for root.
-     * @param {CryptoKey}  masterKey - Decrypted master key.
+     * @param {File}           file      - Browser File object.
+     * @param {string|null}    folderId  - Target folder UUID, or null for root.
+     * @param {CryptoKey}      masterKey - Decrypted master key.
+     * @param {object}         [nameKeys] - Optional { nameKey, searchKey } for metadata encryption.
+     * @param {CryptoKey|null} [folderKey] - If set, wraps fileKey with folderKey (v2-folder model).
      * @returns {Promise<object>} Opaque prepared object consumed by uploadFromPrepared.
      */
-    async function prepareUpload(file, folderId, masterKey, nameKeys = null) {
+    async function prepareUpload(file, folderId, masterKey, nameKeys = null, folderKey = null) {
         const chunkSize = _getChunkSize();
         const totalChunks = Math.ceil(file.size / chunkSize);
 
@@ -87,7 +89,10 @@ const Upload = (() => {
 
         const fileKey = await Crypto.generateFileKey();
         const fileKeyBytes = new Uint8Array(await crypto.subtle.exportKey('raw', fileKey));
-        const { encryptedKeyB64, ivB64: keyIvB64 } = await Crypto.encryptFileKey(fileKey, masterKey);
+        // v2-folder: wrap fileKey with the folder's folderKey instead of masterKey.
+        const wrappingKey = folderKey || masterKey;
+        const { encryptedKeyB64, ivB64: keyIvB64 } = await Crypto.encryptFileKey(fileKey, wrappingKey);
+        const keyVersion = folderKey ? 'v2-folder' : 'v1-master';
         const escrowMeta = await _tryEscrowWrap(fileKeyBytes);
 
         let nameMeta = {};
@@ -107,6 +112,7 @@ const Upload = (() => {
             folder_id:          folderId || '',
             encrypted_file_key: encryptedKeyB64,
             key_iv:             keyIvB64,
+            key_version:        keyVersion,
             chunk_size:         String(chunkSize),
             original_size:      String(file.size),
             last_modified_ms:   String(file.lastModified),
@@ -121,7 +127,7 @@ const Upload = (() => {
         return {
             fileKey, fileKeyBytes, meta, totalEncryptedSize, firstEncrypted, chunkSize, totalChunks,
             // Raw crypto fields for the batch upload path (avoids re-parsing the tus metadata string).
-            encryptedKeyB64, keyIvB64, escrowMeta, nameMeta,
+            encryptedKeyB64, keyIvB64, keyVersion, escrowMeta, nameMeta,
         };
     }
 

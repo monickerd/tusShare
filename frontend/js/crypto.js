@@ -892,6 +892,57 @@ const Crypto = (() => {
     }
 
     // ===================================================================
+    // Per-folder key operations (folder-key sharing model)
+    //
+    // Key hierarchy for new files (v2-folder):
+    //   masterKey wraps folderKey → folderKey wraps fileKey → fileKey encrypts chunks
+    //
+    // Sharing a folder sends one share_item per folder (folderKey wrapped with
+    // shareKey) instead of one per file, making share creation O(folders) not O(files).
+    // ===================================================================
+
+    async function generateFolderKey() {
+        return crypto.subtle.generateKey(
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            true,
+            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
+        );
+    }
+
+    async function wrapFolderKey(folderKey, wrappingKey) {
+        const iv = crypto.getRandomValues(new Uint8Array(_cfg().ivLength));
+        const rawKey = await crypto.subtle.exportKey('raw', folderKey);
+        const wrapped = await crypto.subtle.encrypt(
+            { name: _cfg().algorithm, iv },
+            wrappingKey,
+            rawKey
+        );
+        new Uint8Array(rawKey).fill(0);
+        return {
+            ctB64: _arrayBufToBase64(wrapped),
+            ivB64: _arrayBufToBase64(iv.buffer),
+        };
+    }
+
+    async function unwrapFolderKey(ctB64, ivB64, wrappingKey) {
+        const ct = _base64ToArrayBuf(ctB64);
+        const iv = _base64ToArrayBuf(ivB64);
+        const rawKey = await crypto.subtle.decrypt(
+            { name: _cfg().algorithm, iv: new Uint8Array(iv) },
+            wrappingKey,
+            ct
+        );
+        const key = await crypto.subtle.importKey(
+            'raw', rawKey,
+            { name: _cfg().algorithm, length: _cfg().aesKeyLength },
+            true,
+            ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']
+        );
+        new Uint8Array(rawKey).fill(0);
+        return key;
+    }
+
+    // ===================================================================
     // Metadata encryption — filename and folder name
     //
     // Two HKDF-derived sub-keys are derived from the user's master key:
@@ -1002,6 +1053,10 @@ const Crypto = (() => {
         isPasswordProtectedFragment,
         wrapShareKeyWithPassword,
         unwrapShareKeyFromPassword,
+        // Folder key operations (folder-key sharing model)
+        generateFolderKey,
+        wrapFolderKey,
+        unwrapFolderKey,
         // Metadata encryption (file and folder names)
         deriveNameKeys,
         encryptName,

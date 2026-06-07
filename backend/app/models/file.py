@@ -17,6 +17,8 @@ class Folder:
     deleted_by: str | None = None
     name_ct: str | None = None
     name_idx: str | None = None
+    folder_key_ct: str | None = None
+    folder_key_iv: str | None = None
 
     @classmethod
     def from_row(cls, row) -> "Folder":
@@ -33,6 +35,8 @@ class Folder:
             deleted_by=row.get("deleted_by"),
             name_ct=row.get("name_ct"),
             name_idx=row.get("name_idx"),
+            folder_key_ct=row.get("folder_key_ct"),
+            folder_key_iv=row.get("folder_key_iv"),
         )
 
     def to_dict(self) -> dict:
@@ -45,6 +49,8 @@ class Folder:
             "owner_id": self.owner_id,
             "is_shared": self.is_shared,
             "restrict_permissions": self.restrict_permissions,
+            "folder_key_ct": self.folder_key_ct,
+            "folder_key_iv": self.folder_key_iv,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "deleted_at": self.deleted_at,
@@ -75,6 +81,7 @@ class File:
     last_modified_ms: int | None = None
     name_ct: str | None = None
     name_idx: str | None = None
+    key_version: str = "v1-master"
 
     @classmethod
     def from_row(cls, row) -> "File":
@@ -101,6 +108,7 @@ class File:
             last_modified_ms=row.get("last_modified_ms"),
             name_ct=row.get("name_ct"),
             name_idx=row.get("name_idx"),
+            key_version=row.get("key_version") or "v1-master",
         )
 
     def to_dict(self) -> dict:
@@ -119,6 +127,7 @@ class File:
             "total_chunks": self.total_chunks,
             "encrypted_file_key": self.encrypted_file_key,
             "key_iv": self.key_iv,
+            "key_version": self.key_version,
             "checksum_sha256": self.checksum_sha256,
             "upload_complete": self.upload_complete,
             "created_at": self.created_at,

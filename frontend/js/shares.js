@@ -157,10 +157,16 @@ const Shares = (() => {
      * @param {function}    onProgress    - Called with (chunksDecrypted, totalChunks).
      * @param {string|null} sessionToken  - share_session_token for unauthenticated access.
      */
-    async function _decryptSharedFileToBytes(token, fileInfo, shareKey, onProgress, sessionToken = null) {
-        const fileKey = await Crypto.unwrapFileKeyFromShare(
-            fileInfo.encrypted_file_key, fileInfo.key_iv, shareKey,
-        );
+    async function _decryptSharedFileToBytes(token, fileInfo, shareKey, onProgress, sessionToken = null, folderKeyMap = new Map()) {
+        let fileKey;
+        if (fileInfo.key_model === 'folder-key') {
+            // File key is wrapped with the folder's folderKey (not shareKey directly).
+            const folderKey = folderKeyMap.get(fileInfo.folder_id);
+            if (!folderKey) throw new Error('Folder key not available for this file');
+            fileKey = await Crypto.decryptFileKey(fileInfo.encrypted_file_key, fileInfo.key_iv, folderKey);
+        } else {
+            fileKey = await Crypto.unwrapFileKeyFromShare(fileInfo.encrypted_file_key, fileInfo.key_iv, shareKey);
+        }
         const manifest = await _fetchSharedManifest(token, fileInfo.resource_id, sessionToken);
 
         if (manifest.chunks.length !== manifest.total_chunks) {
@@ -205,8 +211,8 @@ const Shares = (() => {
         return buf;
     }
 
-    async function _downloadSharedFile(token, fileInfo, shareKey, onProgress, sessionToken = null) {
-        const data = await _decryptSharedFileToBytes(token, fileInfo, shareKey, onProgress, sessionToken);
+    async function _downloadSharedFile(token, fileInfo, shareKey, onProgress, sessionToken = null, folderKeyMap = new Map()) {
+        const data = await _decryptSharedFileToBytes(token, fileInfo, shareKey, onProgress, sessionToken, folderKeyMap);
         const url  = URL.createObjectURL(new Blob([data]));
         const a    = document.createElement('a');
         a.href = url; a.download = fileInfo.file_name || 'download';
@@ -1141,11 +1147,29 @@ const Shares = (() => {
         }
         if (meta.children.length > 0) page.appendChild(meta);
 
-        const files = shareData.files || [];
+        const allItems = shareData.files || [];
+
+        // Folder-key model: unwrap each folder-key item to build a folderId → folderKey map.
+        // File items with key_model='folder-key' use this map to decrypt their fileKeys.
+        const folderKeyMap = new Map(); // folder_id → CryptoKey (folderKey)
+        for (const item of allItems) {
+            if (item.resource_type === 'folder' && item.encrypted_file_key && item.key_iv) {
+                try {
+                    const folderKey = await Crypto.unwrapFolderKey(
+                        item.encrypted_file_key, item.key_iv, shareKey
+                    );
+                    folderKeyMap.set(item.resource_id, folderKey);
+                } catch { /* Skip unreadable folder keys */ }
+            }
+        }
+
+        // File items only (folder items are key-transport, not downloadable files).
+        const files = allItems.filter(item => item.resource_type === 'file');
+
         if (files.length === 0) {
             page.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No files in this share.' }));
         } else {
-            page.appendChild(_buildPublicFileTree(files, token, shareKey, shareSessionToken));
+            page.appendChild(_buildPublicFileTree(files, token, shareKey, shareSessionToken, folderKeyMap));
         }
 
         // Upload section — shown when the share owner enabled upload
@@ -1161,7 +1185,7 @@ const Shares = (() => {
      * Groups files by folder_path, adds per-file and per-folder Download buttons,
      * and a top-level "Download All as ZIP" button that preserves folder structure.
      */
-    function _buildPublicFileTree(files, token, shareKey, sessionToken) {
+    function _buildPublicFileTree(files, token, shareKey, sessionToken, folderKeyMap = new Map()) {
         const wrap = Utils.el('div', { className: 'public-share-tree' });
 
         // Group by folder_path (relative path from share root, e.g. "Root/Sub/Sub2")
@@ -1184,7 +1208,7 @@ const Shares = (() => {
         const dlAllBtn = Utils.el('button', { className: 'btn btn-primary', textContent: 'Download All as ZIP' });
         const dlAllProgress = Utils.el('span', { className: 'text-muted', style: 'margin-left:8px;display:none' });
         dlAllBtn.addEventListener('click', () =>
-            _downloadPublicZip(files, token, shareKey, sessionToken, dlAllBtn, dlAllProgress, 'shared_files')
+            _downloadPublicZip(files, token, shareKey, sessionToken, dlAllBtn, dlAllProgress, 'shared_files', folderKeyMap)
         );
         headerBar.appendChild(dlAllBtn);
         headerBar.appendChild(dlAllProgress);
@@ -1217,7 +1241,7 @@ const Shares = (() => {
             const folderZipName = displayName.replaceAll('/', '_');
             dlFolderBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                _downloadPublicZip(folderFiles, token, shareKey, sessionToken, dlFolderBtn, dlFolderProgress, folderZipName);
+                _downloadPublicZip(folderFiles, token, shareKey, sessionToken, dlFolderBtn, dlFolderProgress, folderZipName, folderKeyMap);
             });
             folderHeader.appendChild(dlFolderBtn);
             folderHeader.appendChild(dlFolderProgress);
@@ -1232,7 +1256,7 @@ const Shares = (() => {
                 row.appendChild(Utils.el('td', { className: 'text-muted', textContent: Utils.formatBytes(fileInfo.size_bytes) }));
 
                 const dlBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Download' });
-                dlBtn.addEventListener('click', () => _handlePublicDownload(dlBtn, token, fileInfo, shareKey, sessionToken));
+                dlBtn.addEventListener('click', () => _handlePublicDownload(dlBtn, token, fileInfo, shareKey, sessionToken, folderKeyMap));
                 row.appendChild(Utils.el('td', { style: 'text-align:right' }, [dlBtn]));
                 tbody.appendChild(row);
             }
@@ -1253,7 +1277,7 @@ const Shares = (() => {
         return wrap;
     }
 
-    async function _downloadPublicZip(files, token, shareKey, sessionToken, btn, progressEl, baseName) {
+    async function _downloadPublicZip(files, token, shareKey, sessionToken, btn, progressEl, baseName, folderKeyMap = new Map()) {
         btn.disabled = true;
         const orig = btn.textContent;
         progressEl.style.display = '';
@@ -1266,6 +1290,7 @@ const Shares = (() => {
                 const data = await _decryptSharedFileToBytes(token, fileInfo, shareKey,
                     (c, t) => { progressEl.textContent = `File ${done + 1}/${files.length}: chunk ${c}/${t}`; },
                     sessionToken,
+                    folderKeyMap,
                 );
                 const pathInZip = fileInfo.folder_path
                     ? `${fileInfo.folder_path}/${fileInfo.file_name}`
@@ -1378,7 +1403,7 @@ const Shares = (() => {
         }
     }
 
-    async function _handlePublicDownload(btn, token, fileInfo, shareKey, sessionToken = null) {
+    async function _handlePublicDownload(btn, token, fileInfo, shareKey, sessionToken = null, folderKeyMap = new Map()) {
         const origText = btn.textContent;
         btn.disabled = true;
         btn.textContent = '0%';
@@ -1387,7 +1412,7 @@ const Shares = (() => {
             await _downloadSharedFile(token, fileInfo, shareKey, (done, total) => {
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 btn.textContent = `${pct}%`;
-            }, sessionToken);
+            }, sessionToken, folderKeyMap);
             btn.textContent = 'Done';
         } catch (err) {
             btn.disabled = false;
@@ -1517,6 +1542,13 @@ const Shares = (() => {
             return;
         }
 
+        // Folder-key model: if the folder has a folderKey, use the efficient O(folders) path.
+        // Each subfolder with a folderKey gets one share_item instead of one per file.
+        if (folder.folder_key_ct && !folder.teamId) {
+            await _openFolderKeyShareDialog(folder, masterKey);
+            return;
+        }
+
         // For team folders, unwrap the team secret key so we can re-wrap file keys
         // for files uploaded by other team members (team PRE key path).
         let teamSkBigInt = null;
@@ -1554,6 +1586,147 @@ const Shares = (() => {
         }
 
         openShareDialog(files, { id: folder.id, name: folder.name }, teamSkBigInt);
+    }
+
+    /**
+     * Open the share dialog for a folder using the folder-key model (O(folders) share creation).
+     * One share_item per folder (folderKey wrapped with shareKey) instead of one per file.
+     */
+    async function _openFolderKeyShareDialog(folder, masterKey) {
+        let allFolders;
+        try {
+            const data = await Api.get(`${_prefix()}/folders/${folder.id}/all-subfolders`);
+            allFolders = data.folders || [];
+        } catch (err) {
+            Utils.showToast(`Failed to enumerate folder structure: ${err.message}`, 'error');
+            return;
+        }
+
+        const foldersWithKeys = allFolders.filter(f => f.folder_key_ct && f.folder_key_iv);
+        if (foldersWithKeys.length === 0) {
+            Utils.showToast('No encryptable folders found. This folder may be using the legacy key format.', 'warning');
+            return;
+        }
+
+        // Show dialog and handle share creation
+        const overlay = Utils.el('div', { className: 'modal-overlay' });
+        const dialog  = Utils.el('div', { className: 'modal share-dialog' });
+
+        function _closeDialog() { if (overlay.parentNode) overlay.remove(); }
+        overlay.addEventListener('click', e => { if (e.target === overlay) _closeDialog(); });
+
+        const folderCount = foldersWithKeys.length;
+        const infoText = folderCount === 1
+            ? `Sharing folder "${folder.name}" (folder-key model)`
+            : `Sharing "${folder.name}" and ${folderCount - 1} subfolder(s) (folder-key model)`;
+
+        const expiryInput = Utils.el('input', {
+            type: 'datetime-local',
+            className: 'input',
+            value: _defaultExpiryIso(),
+        });
+        const maxDlInput = Utils.el('input', {
+            type: 'number',
+            className: 'input',
+            placeholder: 'Unlimited',
+            min: '1',
+        });
+        const pwInput = Utils.el('input', {
+            type: 'password',
+            className: 'input',
+            placeholder: 'Leave blank for no password',
+        });
+        const statusArea = Utils.el('div', { className: 'share-status' });
+
+        const createBtn = Utils.el('button', {
+            className: 'btn btn-primary',
+            textContent: 'Create Share',
+            onClick: async () => {
+                createBtn.disabled = true;
+                createBtn.textContent = 'Creating…';
+                _clearEl(statusArea);
+                try {
+                    const expiresAt = expiryInput.value ? new Date(expiryInput.value).toISOString() : null;
+                    const maxDownloads = maxDlInput.value ? Number.parseInt(maxDlInput.value, 10) : null;
+                    const password = pwInput.value || null;
+                    await _doFolderKeyShare(foldersWithKeys, masterKey, {
+                        folderId: folder.id,
+                        expiresAt, maxDownloads, password,
+                    }, statusArea);
+                } catch (err) {
+                    statusArea.textContent = `Error: ${err.message}`;
+                    createBtn.disabled = false;
+                    createBtn.textContent = 'Create Share';
+                }
+            },
+        });
+
+        dialog.appendChild(Utils.el('h3', { textContent: infoText }));
+        dialog.appendChild(Utils.el('label', { textContent: 'Expires' }));
+        dialog.appendChild(expiryInput);
+        dialog.appendChild(Utils.el('label', { textContent: 'Max downloads' }));
+        dialog.appendChild(maxDlInput);
+        dialog.appendChild(Utils.el('label', { textContent: 'Password (optional)' }));
+        dialog.appendChild(pwInput);
+        dialog.appendChild(statusArea);
+        dialog.appendChild(Utils.el('div', { className: 'share-dialog-actions' }, [
+            Utils.el('button', { className: 'btn btn-secondary', textContent: 'Cancel', onClick: _closeDialog }),
+            createBtn,
+        ]));
+
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+    }
+
+    /**
+     * Create a folder-key share: one share_item per folder (folderKey wrapped with shareKey).
+     */
+    async function _doFolderKeyShare(foldersWithKeys, masterKey, opts, statusArea) {
+        const { folderId, expiresAt, maxDownloads, password } = opts;
+
+        const token = Crypto.generateShareToken();
+        const shareKey = await Crypto.deriveShareKey(masterKey, token);
+        const shareKeyB64url = await Crypto.exportKeyToBase64url(shareKey);
+
+        // Unwrap each folder's key with masterKey, re-wrap with shareKey.
+        const items = [];
+        for (const f of foldersWithKeys) {
+            try {
+                const folderKey = await Crypto.unwrapFolderKey(f.folder_key_ct, f.folder_key_iv, masterKey);
+                const { ctB64, ivB64 } = await Crypto.wrapFolderKey(folderKey, shareKey);
+                items.push({
+                    resource_type: 'folder',
+                    resource_id:   f.id,
+                    encrypted_file_key: ctB64,
+                    key_iv:            ivB64,
+                });
+            } catch {
+                // Folder key unavailable — skip this folder
+            }
+        }
+
+        if (items.length === 0) {
+            throw new Error('Could not wrap any folder keys — check that your master key is available.');
+        }
+
+        const isPasswordProtected = !!password;
+        const shareFragment = isPasswordProtected
+            ? await Crypto.wrapShareKeyWithPassword(shareKey, password)
+            : shareKeyB64url;
+
+        const resp = await Api.post(`${_prefix()}/shares`, {
+            items,
+            share_type:     'link',
+            expires_at:     expiresAt,
+            max_downloads:  maxDownloads,
+            target_folder_id: folderId,
+            client_token:   token,
+            is_password_protected: isPasswordProtected,
+        });
+
+        _storeShareKey(resp.share_id || resp.id, shareFragment);
+        const shareUrl = _buildShareUrl(resp.token, shareFragment);
+        _renderShareUrlBox(statusArea, shareUrl);
     }
 
     // -----------------------------------------------------------------------

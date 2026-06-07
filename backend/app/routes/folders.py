@@ -97,6 +97,8 @@ class CreateFolderRequest(BaseModel):
     parent_id: str | None = None
     name_ct: str | None = None
     name_idx: str | None = None
+    folder_key_ct: str | None = None
+    folder_key_iv: str | None = None
 
     @field_validator("name")
     @classmethod
@@ -113,6 +115,14 @@ class CreateFolderRequest(BaseModel):
     @field_validator("name_ct")
     @classmethod
     def validate_name_ct(cls, v: str | None) -> str | None:
+        if v is not None:
+            from app.validation.sanitizers import validate_base64
+            return validate_base64(v)
+        return v
+
+    @field_validator("folder_key_ct", "folder_key_iv")
+    @classmethod
+    def validate_folder_key_fields(cls, v: str | None) -> str | None:
         if v is not None:
             from app.validation.sanitizers import validate_base64
             return validate_base64(v)
@@ -237,11 +247,16 @@ async def create_folder(
     if body.name_ct is not None and body.name_idx is None:
         raise HTTPException(status_code=400, detail="name_idx required when name_ct is provided")
 
+    if body.folder_key_ct is not None and body.folder_key_iv is None:
+        raise HTTPException(status_code=400, detail="folder_key_iv required when folder_key_ct is provided")
+
     try:
         await db.execute(
-            "INSERT INTO folders (id, name, parent_id, owner_id, root_folder_id, name_ct, name_idx) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (folder_id, body.name, body.parent_id, user.id, root_folder_id, body.name_ct, body.name_idx),
+            "INSERT INTO folders "
+            "    (id, name, parent_id, owner_id, root_folder_id, name_ct, name_idx, folder_key_ct, folder_key_iv) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (folder_id, body.name, body.parent_id, user.id, root_folder_id,
+             body.name_ct, body.name_idx, body.folder_key_ct, body.folder_key_iv),
         )
         # Inherit recursive permissions from the parent folder (personal root = no-inherit)
         if body.parent_id:
@@ -561,6 +576,58 @@ async def list_folder_files_recursive(
         files, total = await _list_personal_folder_files(db, folder_id, user.id, limit, offset)
 
     return {"files": files, "total": total, "offset": offset, "limit": limit}
+
+
+@router.get(
+    "/{folder_id}/all-subfolders",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def list_all_subfolders(
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return all folders in the subtree rooted at folder_id (root included), with crypto fields.
+
+    Used by the frontend share-creation flow to enumerate folder keys when building a
+    folder-key share: one share_item per folder, rather than one per file.
+
+    Returns { folders: [{ id, folder_key_ct, folder_key_iv }] }
+    """
+    folder_id = validate_uuid(folder_id)
+
+    cursor = await db.execute("SELECT owner_id FROM folders WHERE id = ?", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if folder_row is None:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    if folder_row["owner_id"] != user.id and not user.is_admin:
+        team_id = await get_folder_team_id(db, folder_id)
+        level = await _team_level_for_user(db, team_id, user.id) if team_id else None
+        if level not in ("admin", "write"):
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+    cursor = await db.execute(
+        """
+        WITH RECURSIVE subtree AS (
+            SELECT id, folder_key_ct, folder_key_iv
+            FROM folders WHERE id = ? AND deleted_at IS NULL
+            UNION ALL
+            SELECT f.id, f.folder_key_ct, f.folder_key_iv
+            FROM folders f JOIN subtree s ON f.parent_id = s.id
+            WHERE f.deleted_at IS NULL
+        )
+        SELECT id, folder_key_ct, folder_key_iv FROM subtree
+        """,
+        (folder_id,),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "folders": [
+            {"id": r["id"], "folder_key_ct": r["folder_key_ct"], "folder_key_iv": r["folder_key_iv"]}
+            for r in rows
+        ]
+    }
 
 
 async def _check_no_ancestor_cycle(db, folder_id: str, new_parent_id: str) -> None:

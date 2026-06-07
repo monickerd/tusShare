@@ -355,6 +355,15 @@ CREATE TABLE folders (
     name_ct              TEXT DEFAULT NULL,
     name_idx             TEXT DEFAULT NULL,
 
+    -- Folder-level encryption key (AES-256-GCM).
+    -- folder_key_ct: folderKey wrapped with owner's masterKey (base64 AES-GCM ciphertext).
+    -- folder_key_iv: 12-byte IV for folder_key_ct (base64).
+    -- NULL for folders created before the folder-key model was introduced.
+    -- Child folders within a permission boundary wrap their folderKey with the
+    -- parent folderKey; folders with restrict_permissions=TRUE wrap with masterKey.
+    folder_key_ct        TEXT DEFAULT NULL,
+    folder_key_iv        TEXT DEFAULT NULL,
+
     -- Soft-delete / trash
     deleted_at           TIMESTAMPTZ DEFAULT NULL,
     deleted_by           TEXT REFERENCES users(id) ON DELETE SET NULL DEFAULT NULL,
@@ -416,6 +425,13 @@ CREATE TABLE files (
     -- NULL until the client-side lazy migration runs for the owning user.
     name_ct             TEXT DEFAULT NULL,
     name_idx            TEXT DEFAULT NULL,
+
+    -- Key-wrapping model for this file's encrypted_file_key:
+    --   'v1-master'  (default): fileKey is wrapped with the owner's masterKey.
+    --   'v2-folder':            fileKey is wrapped with the containing folder's folderKey.
+    -- The v2-folder path enables O(1) folder shares: the share carries only the
+    -- folderKey, and new files are automatically accessible without re-keying.
+    key_version         TEXT NOT NULL DEFAULT 'v1-master',
 
     -- Soft-delete / trash
     deleted_at          TIMESTAMPTZ DEFAULT NULL,
@@ -533,6 +549,25 @@ CREATE TABLE share_items (
 );
 
 CREATE INDEX idx_sitems_share ON share_items(share_id);
+
+-------------------------------------------------
+-- SHARE EXCLUSIONS
+-- Per-share denylist of subfolders that have been removed from a folder share.
+-- The server checks this on every file listing and download request, so removing
+-- a subfolder from a share is enforced at the ACL layer even though the recipient
+-- still holds the shareKey (and thus the folderKey for the parent).
+-- Cryptographic enforcement: the recipient cannot access the files in an excluded
+-- folder because the server refuses to return folder-key items or file listings
+-- for excluded folder_ids.
+-------------------------------------------------
+CREATE TABLE share_exclusions (
+    share_id  TEXT NOT NULL REFERENCES shares(id)  ON DELETE CASCADE,
+    folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    PRIMARY KEY (share_id, folder_id)
+);
+
+CREATE INDEX idx_share_exclusions_share  ON share_exclusions(share_id);
+CREATE INDEX idx_share_exclusions_folder ON share_exclusions(folder_id);
 
 -------------------------------------------------
 -- PENDING SHARE KEYING

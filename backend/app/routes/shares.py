@@ -82,8 +82,10 @@ class _ShareItemIn(BaseModel):
     @field_validator("resource_type")
     @classmethod
     def validate_rtype(cls, v: str) -> str:
-        if v != "file":
-            raise ValueError("resource_type must be 'file'")
+        # 'file': per-file shareKey-wrapped key (legacy model).
+        # 'folder': folderKey wrapped with shareKey (folder-key model).
+        if v not in ("file", "folder"):
+            raise ValueError("resource_type must be 'file' or 'folder'")
         return v
 
     @field_validator("resource_id")
@@ -153,8 +155,17 @@ class CreateShareRequest(BaseModel):
     @field_validator("items")
     @classmethod
     def validate_items(cls, v: list) -> list:
-        if len(v) > _SHARE_MAX_ITEMS:
-            raise ValueError(f"Share cannot contain more than {_SHARE_MAX_ITEMS} files")
+        folder_items = [i for i in v if i.resource_type == "folder"]
+        file_items = [i for i in v if i.resource_type == "file"]
+        if folder_items:
+            # Folder-key model: one item per folder; limit on folder count, not file count.
+            if len(folder_items) > 500:
+                raise ValueError("Share cannot reference more than 500 folders")
+            if len(file_items) > _SHARE_MAX_ITEMS:
+                raise ValueError(f"Share cannot contain more than {_SHARE_MAX_ITEMS} legacy file entries")
+        else:
+            if len(v) > _SHARE_MAX_ITEMS:
+                raise ValueError(f"Share cannot contain more than {_SHARE_MAX_ITEMS} files")
         return v
 
     @field_validator("expires_at")
@@ -335,15 +346,160 @@ async def _get_active_share_by_token(db, token: str):
 
 
 async def _get_items_with_files(db, share_id: str, folder_id: str | None = None) -> list[dict]:
-    """Return share items joined with file metadata for file-type items.
+    """Return share items joined with file metadata.
 
-    Returns the share-item encrypted_file_key (re-encrypted with shareKey),
-    never the file's original key (encrypted with the owner's masterKey).
+    Supports two key models:
 
-    When folder_id is given (folder shares) the query is driven from the
-    files table so that deletions are reflected immediately and only files
-    that currently exist are returned.
+    Legacy model (key_model='share-key'):
+      share_items has resource_type='file'; encrypted_file_key is wrapped with shareKey.
+
+    Folder-key model (key_model='folder-key'):
+      share_items has resource_type='folder'; encrypted_file_key is the folderKey wrapped
+      with shareKey.  Files with key_version='v2-folder' in covered folders are returned
+      with their files.encrypted_file_key (folderKey-wrapped), letting the client use
+      shareKey → folderKey → fileKey.  Files with key_version='v1-master' fall back to
+      legacy per-file share_items entries.
+
+    share_exclusions rows cause the matching subfolders (and their files) to be omitted.
     """
+    # Detect whether this share uses the folder-key model (has any resource_type='folder' items).
+    fk_cursor = await db.execute(
+        "SELECT COUNT(*) AS cnt FROM share_items WHERE share_id = ? AND resource_type = 'folder'",
+        (share_id,),
+    )
+    fk_row = await fk_cursor.fetchone()
+    has_folder_keys = (fk_row["cnt"] > 0) if fk_row else False
+
+    results: list[dict] = []
+
+    if has_folder_keys:
+        # --- Folder-key model ---
+
+        # 1. Return all folder-key items (one per covered folder).
+        fki_cursor = await db.execute(
+            """
+            SELECT si.id AS item_id, si.resource_type, si.resource_id,
+                   si.encrypted_file_key, si.key_iv
+            FROM share_items si
+            LEFT JOIN share_exclusions se
+                ON se.share_id = si.share_id AND se.folder_id = si.resource_id
+            WHERE si.share_id = ? AND si.resource_type = 'folder'
+              AND se.folder_id IS NULL
+            """,
+            (share_id,),
+        )
+        for r in await fki_cursor.fetchall():
+            results.append({
+                "item_id": r["item_id"],
+                "resource_type": "folder",
+                "resource_id": r["resource_id"],
+                "encrypted_file_key": r["encrypted_file_key"],
+                "key_iv": r["key_iv"],
+                "key_model": "folder-key",
+                "ephemeral_x25519_pub": None,
+                "kem_ciphertext": None,
+                "file_name": None,
+                "size_bytes": None,
+                "mime_type": None,
+                "total_chunks": None,
+                "folder_id": r["resource_id"],
+                "folder_name": None,
+                "folder_path": None,
+            })
+
+        # 2. v2-folder files whose folder has a folder-key item (automatically covered).
+        if folder_id:
+            v2_cursor = await db.execute(
+                """
+                WITH RECURSIVE folder_tree AS (
+                    SELECT id, name, name AS rel_path
+                    FROM folders WHERE id = ?
+                    UNION ALL
+                    SELECT f2.id, f2.name, ft.rel_path || '/' || f2.name
+                    FROM folders f2 JOIN folder_tree ft ON f2.parent_id = ft.id
+                )
+                SELECT f.id           AS resource_id,
+                       f.encrypted_file_key,
+                       f.key_iv,
+                       f.original_name,
+                       f.size_bytes,
+                       f.mime_type,
+                       f.total_chunks,
+                       f.folder_id,
+                       ft.name        AS folder_name,
+                       ft.rel_path    AS folder_path
+                FROM files f
+                JOIN folder_tree ft ON ft.id = f.folder_id
+                JOIN share_items si
+                    ON si.share_id = ? AND si.resource_type = 'folder' AND si.resource_id = ft.id
+                LEFT JOIN share_exclusions se
+                    ON se.share_id = ? AND se.folder_id = f.folder_id
+                WHERE f.upload_complete = 1
+                  AND f.deleted_at IS NULL
+                  AND f.key_version = 'v2-folder'
+                  AND se.folder_id IS NULL
+                """,
+                (folder_id, share_id, share_id),
+            )
+            for r in await v2_cursor.fetchall():
+                results.append({
+                    "item_id": None,
+                    "resource_type": "file",
+                    "resource_id": r["resource_id"],
+                    "encrypted_file_key": r["encrypted_file_key"],
+                    "key_iv": r["key_iv"],
+                    "key_model": "folder-key",
+                    "ephemeral_x25519_pub": None,
+                    "kem_ciphertext": None,
+                    "file_name": r["original_name"],
+                    "size_bytes": r["size_bytes"],
+                    "mime_type": r["mime_type"],
+                    "total_chunks": r["total_chunks"],
+                    "folder_id": r["folder_id"],
+                    "folder_name": r["folder_name"],
+                    "folder_path": r["folder_path"],
+                })
+
+        # 3. Legacy v1-master files that still have explicit per-file share_items.
+        legacy_cursor = await db.execute(
+            """
+            SELECT si.id AS item_id, si.resource_id,
+                   si.encrypted_file_key, si.key_iv,
+                   si.ephemeral_x25519_pub, si.kem_ciphertext,
+                   f.original_name, f.size_bytes, f.mime_type, f.total_chunks,
+                   f.folder_id, fol.name AS folder_name, fol.name AS folder_path
+            FROM share_items si
+            JOIN files f ON si.resource_type = 'file' AND si.resource_id = f.id
+                         AND f.upload_complete = 1 AND f.deleted_at IS NULL
+            LEFT JOIN folders fol ON fol.id = f.folder_id
+            LEFT JOIN share_exclusions se ON se.share_id = si.share_id AND se.folder_id = f.folder_id
+            WHERE si.share_id = ? AND si.resource_type = 'file'
+              AND se.folder_id IS NULL
+            """,
+            (share_id,),
+        )
+        for r in await legacy_cursor.fetchall():
+            results.append({
+                "item_id": r["item_id"],
+                "resource_type": "file",
+                "resource_id": r["resource_id"],
+                "encrypted_file_key": r["encrypted_file_key"],
+                "key_iv": r["key_iv"],
+                "key_model": "share-key",
+                "ephemeral_x25519_pub": r["ephemeral_x25519_pub"],
+                "kem_ciphertext": r["kem_ciphertext"],
+                "file_name": r["original_name"],
+                "size_bytes": r["size_bytes"],
+                "mime_type": r["mime_type"],
+                "total_chunks": r["total_chunks"],
+                "folder_id": r["folder_id"],
+                "folder_name": r["folder_name"],
+                "folder_path": r["folder_path"],
+            })
+
+        return results
+
+    # --- Legacy model (no folder-key items) ---
     if folder_id:
         cursor = await db.execute(
             """
@@ -415,6 +571,7 @@ async def _get_items_with_files(db, share_id: str, folder_id: str | None = None)
             "resource_id": r["resource_id"],
             "encrypted_file_key": r["encrypted_file_key"],
             "key_iv": r["key_iv"],
+            "key_model": "share-key",
             "ephemeral_x25519_pub": r["ephemeral_x25519_pub"],
             "kem_ciphertext": r["kem_ciphertext"],
             "file_name": r["original_name"],
@@ -430,13 +587,38 @@ async def _get_items_with_files(db, share_id: str, folder_id: str | None = None)
 
 
 async def _verify_file_in_share(db, share_id: str, file_id: str) -> None:
-    """Raise 403 if the file is not included in the share."""
+    """Raise 403 if the file is not accessible through this share.
+
+    Grants access either via:
+    - A legacy per-file share_item (resource_type='file'), OR
+    - The folder-key model: file.key_version='v2-folder' and file.folder_id has a
+      resource_type='folder' share_item that is not in share_exclusions.
+    """
+    # Legacy model: explicit per-file share_item.
     cursor = await db.execute(
         "SELECT id FROM share_items WHERE share_id = ? AND resource_type = 'file' AND resource_id = ?",
         (share_id, file_id),
     )
-    if await cursor.fetchone() is None:
-        raise HTTPException(status_code=403, detail="File not in share")
+    if await cursor.fetchone() is not None:
+        return
+
+    # Folder-key model: file is v2-folder and its folder has a non-excluded folder-key item.
+    cursor = await db.execute(
+        """
+        SELECT 1
+        FROM files f
+        JOIN share_items si
+            ON si.share_id = ? AND si.resource_type = 'folder' AND si.resource_id = f.folder_id
+        LEFT JOIN share_exclusions se
+            ON se.share_id = ? AND se.folder_id = f.folder_id
+        WHERE f.id = ? AND f.key_version = 'v2-folder' AND se.folder_id IS NULL
+        """,
+        (share_id, share_id, file_id),
+    )
+    if await cursor.fetchone() is not None:
+        return
+
+    raise HTTPException(status_code=403, detail="File not in share")
 
 
 async def _verify_creator_still_has_access(
@@ -718,23 +900,37 @@ async def _resolve_share_recipient(db: Database, body: "CreateShareRequest") -> 
 
 
 async def _verify_share_items_access(db: Database, user: AuthenticatedUser, items: list) -> None:
-    """Verify every file in the share exists, is complete, and the requester may share it."""
+    """Verify every item in the share exists and the requester may share it."""
     for item in items:
-        cursor = await db.execute(
-            "SELECT id, folder_id, owner_id FROM files WHERE id = ? AND upload_complete = 1",
-            (item.resource_id,),
-        )
-        file_row = await cursor.fetchone()
-        if file_row is None:
-            raise HTTPException(status_code=404, detail=f"File not found or upload incomplete: {item.resource_id}")
-        if file_row["owner_id"] != user.id and not user.is_admin:
-            has_access = False
-            if file_row["folder_id"]:
-                has_access = await is_in_shared_tree(db, file_row["folder_id"]) or await is_team_folder_member(
-                    db, file_row["folder_id"], user.id
-                )
-            if not has_access:
-                raise HTTPException(status_code=404, detail=f"File not found or access denied: {item.resource_id}")
+        if item.resource_type == "folder":
+            cursor = await db.execute(
+                "SELECT id, owner_id FROM folders WHERE id = ? AND deleted_at IS NULL",
+                (item.resource_id,),
+            )
+            folder_row = await cursor.fetchone()
+            if folder_row is None:
+                raise HTTPException(status_code=404, detail=f"Folder not found: {item.resource_id}")
+            if folder_row["owner_id"] != user.id and not user.is_admin:
+                team_id = await get_folder_team_id(db, item.resource_id)
+                level = await _team_level_for_user(db, team_id, user.id) if team_id else None
+                if level not in ("admin", "write"):
+                    raise HTTPException(status_code=404, detail=f"Folder not found or access denied: {item.resource_id}")
+        else:
+            cursor = await db.execute(
+                "SELECT id, folder_id, owner_id FROM files WHERE id = ? AND upload_complete = 1",
+                (item.resource_id,),
+            )
+            file_row = await cursor.fetchone()
+            if file_row is None:
+                raise HTTPException(status_code=404, detail=f"File not found or upload incomplete: {item.resource_id}")
+            if file_row["owner_id"] != user.id and not user.is_admin:
+                has_access = False
+                if file_row["folder_id"]:
+                    has_access = await is_in_shared_tree(db, file_row["folder_id"]) or await is_team_folder_member(
+                        db, file_row["folder_id"], user.id
+                    )
+                if not has_access:
+                    raise HTTPException(status_code=404, detail=f"File not found or access denied: {item.resource_id}")
 
 
 async def _compute_upload_budget(db: Database, user: AuthenticatedUser, body: "CreateShareRequest") -> int:
@@ -833,8 +1029,9 @@ async def _insert_share_transaction(
                     item.kem_ciphertext,
                 ),
             )
-        # For HKDF link shares targeting a folder, flag any files the client
-        # did NOT supply keys for so that another team member can fulfill them.
+        # For HKDF link shares targeting a folder, flag any v1-master files the client
+        # did NOT supply keys for so another session can fulfill them.
+        # v2-folder files are auto-covered by the folder's folderKey share item — skip them.
         if target_folder_id and key_type == "hkdf-v1":
             await db.execute(
                 """
@@ -844,6 +1041,7 @@ async def _insert_share_transaction(
                 WHERE f.folder_id = ?
                   AND f.upload_complete = 1
                   AND f.deleted_at IS NULL
+                  AND f.key_version = 'v1-master'
                   AND NOT EXISTS (
                       SELECT 1 FROM share_items si
                       WHERE si.share_id = ? AND si.resource_type = 'file'
@@ -1372,6 +1570,94 @@ async def remove_share_folder_items(
     )
     await db.commit()
     return {"removed": result.rowcount}
+
+
+class _ExclusionRequest(BaseModel):
+    folder_id: str
+
+    @field_validator("folder_id")
+    @classmethod
+    def validate_folder_id(cls, v: str) -> str:
+        return validate_uuid(v)
+
+
+@router.get(
+    "/api/v1/shares/{share_id}/exclusions",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def list_share_exclusions(
+    share_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return the list of folder IDs excluded from a folder-key share."""
+    share_id = validate_uuid(share_id)
+    await _get_share_for_manage(db, share_id, user)
+
+    cursor = await db.execute(
+        "SELECT folder_id FROM share_exclusions WHERE share_id = ?",
+        (share_id,),
+    )
+    return {"excluded_folder_ids": [r["folder_id"] for r in await cursor.fetchall()]}
+
+
+@router.post(
+    "/api/v1/shares/{share_id}/exclusions",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def add_share_exclusion(
+    share_id: str,
+    body: _ExclusionRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Exclude a folder from a folder-key share (denylist entry).
+
+    Immediately prevents the server from returning that folder's files to share
+    recipients.  Idempotent — safe to call if the folder is already excluded.
+    """
+    share_id = validate_uuid(share_id)
+    await _get_share_for_manage(db, share_id, user)
+
+    # Confirm the folder exists in the share's covered tree.
+    cursor = await db.execute(
+        "SELECT id FROM share_items WHERE share_id = ? AND resource_type = 'folder' AND resource_id = ?",
+        (share_id, body.folder_id),
+    )
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail="Folder is not part of this share")
+
+    await db.execute(
+        "INSERT INTO share_exclusions (share_id, folder_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+        (share_id, body.folder_id),
+    )
+    await db.commit()
+    return {"excluded": True, "folder_id": body.folder_id}
+
+
+@router.delete(
+    "/api/v1/shares/{share_id}/exclusions/{folder_id}",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def remove_share_exclusion(
+    share_id: str,
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Re-include a previously excluded folder in a folder-key share."""
+    share_id = validate_uuid(share_id)
+    folder_id = validate_uuid(folder_id)
+    await _get_share_for_manage(db, share_id, user)
+
+    result = await db.execute(
+        "DELETE FROM share_exclusions WHERE share_id = ? AND folder_id = ?",
+        (share_id, folder_id),
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Exclusion not found")
+    await db.commit()
+    return {"removed": True, "folder_id": folder_id}
 
 
 @router.post(

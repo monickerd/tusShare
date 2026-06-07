@@ -145,11 +145,47 @@ before decryption.
 ### Key hierarchy
 
 ```
-Password → OPAQUE KEK → Master Key (AES-256) → File Key (per file)
+Password → OPAQUE KEK → Master Key (AES-256) ─→ Folder Key (per folder) → File Key (v2-folder)
+                                              └──────────────────────────→ File Key (v1-master, legacy)
 ```
 
 The master key is stored on the server encrypted under the KEK; the server
 cannot derive either without the user's password.
+
+Each personal folder has its own AES-256-GCM folder key stored encrypted
+(`folder_key_ct` / `folder_key_iv`) under the user's master key. Files
+uploaded to a folder with a folder key use `key_version = 'v2-folder'`, where
+the file key is wrapped with the folder key rather than directly with the master
+key. Files created before folder keys existed retain `key_version = 'v1-master'`
+and continue to be accessible via the original path.
+
+### Folder-key sharing
+
+Share links for folder trees use the folder-key model rather than per-file key
+wrapping.
+
+- **Share items** — the share carries one `resource_type = 'folder'` item per
+  folder in scope. Each item stores the folder's folder key wrapped with the
+  share key (`key_model = 'folder-key'`). v2-folder files within those folders
+  require no individual share_items; they are covered automatically by the folder
+  key.
+- **Legacy per-file items** — files with `key_version = 'v1-master'` still use a
+  `resource_type = 'file'` share item carrying the file key wrapped with the share
+  key (`key_model = 'share-key'`). Both models co-exist transparently in a share.
+- **Subfolder exclusion** — a `share_exclusions` table (`share_id`, `folder_id`)
+  acts as a server-enforced denylist. The server filters excluded folders from
+  `_get_items_with_files` and from `_verify_file_in_share`. Adding a row
+  immediately stops access to that folder's contents without changing any key
+  material; removing the row reinstates access.
+- **Efficiency** — share creation is O(subfolder count) not O(file count). A
+  folder tree with thousands of files is shared by wrapping a handful of folder
+  keys, not by individually re-wrapping every file key.
+
+**Residual risk:** the share_exclusions check is an ACL, not a cryptographic
+gate — an attacker who obtains the raw share token and the share items can still
+derive folder keys. Exclusion is an operational revocation mechanism, not a
+forward-secrecy boundary. For permanent removal of access, delete the share and
+create a new one.
 
 ### Metadata encryption (file and folder names)
 
@@ -394,7 +430,8 @@ controls the CA).
 |---|---|
 | Passwords | Yes — OPAQUE credential files are not crackable hashes |
 | File plaintext | Yes — files are stored encrypted; the server holds no KEK |
-| File keys | Yes — file keys are encrypted under user master keys |
+| File keys | Yes — file keys are encrypted under folder keys (v2-folder) or master keys (v1-master) |
+| Folder keys | Yes — folder keys are encrypted under the user's master key |
 | Master keys | Yes — master keys are encrypted under the user's KEK |
 | File and folder names | **Partially** — names are encrypted client-side (AES-256-GCM) before storage; team folder names remain plaintext (see below) |
 | File sizes, share relationships, timestamps | **No** — stored in plaintext |

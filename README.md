@@ -58,7 +58,10 @@ still give any malicious people an easy win.
   required) access specific files or folders, with optional upload permissions.
   Links can optionally require a password; the password cryptographically wraps the
   share key in the browser so the server never sees or verifies it — a leaked URL
-  alone is not enough to access the data.
+  alone is not enough to access the data. When sharing a folder, each subfolder is
+  covered by its own folder key so sharing scales with the number of subfolders, not
+  the number of files. Individual subfolders can be excluded from a share after
+  creation without re-keying the rest.
 - **Invite links** – administrators can generate single-use registration links to
   bring new users onto the platform without open registration.
 - **Sharing restrictions** – administrators can restrict who users may share with

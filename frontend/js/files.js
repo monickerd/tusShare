@@ -21,6 +21,11 @@ const Files = (() => {
     let _nameKeys = null;
     const _nameCache = new Map();
 
+    // Folder-key model: the decrypted AES-GCM key for the currently viewed folder.
+    // Set when entering a folder that has folder_key_ct; cleared on leaving the folder.
+    // Used to wrap/unwrap per-file keys for v2-folder files.
+    let _currentFolderKey = null;
+
     async function _initNameKeys() {
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey || _nameKeys) return;
@@ -257,6 +262,7 @@ const Files = (() => {
         _currentTeamId   = null;
         _currentTeamName = null;
         _currentTeamPK   = null;
+        _currentFolderKey = null;
         const listEl = document.getElementById('file-list');
         if (!listEl) return;
         // Show root breadcrumb
@@ -357,6 +363,19 @@ const Files = (() => {
                 _currentTeamName = null;
                 _currentTeamPK = null;
                 _currentTeamSKBytes = null;
+            }
+
+            // Unwrap folder key for v2-folder uploads/downloads (best-effort; only for personal folders)
+            _currentFolderKey = null;
+            if (data.folder?.folder_key_ct && !_currentTeamId) {
+                const masterKey = Auth.getMasterKeyObj();
+                if (masterKey) {
+                    try {
+                        _currentFolderKey = await Crypto.unwrapFolderKey(
+                            data.folder.folder_key_ct, data.folder.folder_key_iv, masterKey
+                        );
+                    } catch { /* Non-fatal — fall back to v1-master key path */ }
+                }
             }
 
             // Pre-decrypt encrypted names before rendering so _dn() can return synchronously
@@ -836,7 +855,12 @@ const Files = (() => {
             onLogout: abortDownload,
         });
         try {
-            await Download.downloadFile(file.id, masterKey, (done, total) => {
+            // v2-folder files: fileKey is wrapped with folderKey, not masterKey.
+            // Use _currentFolderKey as the unwrapping key when available.
+            const unwrapKey = (file.key_version === 'v2-folder' && _currentFolderKey)
+                ? _currentFolderKey
+                : masterKey;
+            await Download.downloadFile(file.id, unwrapKey, (done, total) => {
                 const pct = total > 0 ? Math.round((done / total) * 100) : 0;
                 overlay.update(pct, displayName);
                 transfer.update(pct);
@@ -924,7 +948,10 @@ const Files = (() => {
 
             let fileKey;
             try {
-                fileKey = await Crypto.decryptFileKey(upload.encrypted_file_key, upload.key_iv, masterKey);
+                const unwrapKey = (upload.key_version === 'v2-folder' && _currentFolderKey)
+                    ? _currentFolderKey
+                    : masterKey;
+                fileKey = await Crypto.decryptFileKey(upload.encrypted_file_key, upload.key_iv, unwrapKey);
             } catch {
                 Utils.showToast('Upload cannot be resumed — the folder\'s encryption keys were rotated (likely due to a membership change). Please re-upload the file.', 'error');
                 return;
@@ -1980,9 +2007,10 @@ const Files = (() => {
      * folder listing and /folders/{id}/files responses).
      */
     async function _resolveFileKeyBytes(file, masterKey) {
-        const fileKey = await Crypto.decryptFileKey(
-            file.encrypted_file_key, file.key_iv, masterKey
-        );
+        const unwrapKey = (file.key_version === 'v2-folder' && _currentFolderKey)
+            ? _currentFolderKey
+            : masterKey;
+        const fileKey = await Crypto.decryptFileKey(file.encrypted_file_key, file.key_iv, unwrapKey);
         return new Uint8Array(await crypto.subtle.exportKey('raw', fileKey));
     }
 
@@ -2036,6 +2064,18 @@ const Files = (() => {
                         payload.name_ct  = await Crypto.encryptName(name, _nameKeys.nameKey);
                         payload.name_idx = await Crypto.computeNameHmac(name, _nameKeys.searchKey);
                     } catch { /* Non-fatal */ }
+                }
+                // Personal folders get a folderKey so new uploads use the v2-folder model.
+                if (!_isTeamView) {
+                    const masterKey = Auth.getMasterKeyObj();
+                    if (masterKey) {
+                        try {
+                            const folderKey = await Crypto.generateFolderKey();
+                            const { ctB64, ivB64 } = await Crypto.wrapFolderKey(folderKey, masterKey);
+                            payload.folder_key_ct = ctB64;
+                            payload.folder_key_iv = ivB64;
+                        } catch { /* Non-fatal — folder will fall back to v1-master key path */ }
+                    }
                 }
                 await Api.post(`${Config.app.apiPrefix}/folders`, payload);
                 Utils.showToast('Folder created', 'success');
@@ -2395,7 +2435,7 @@ const Files = (() => {
                     const batch = await Promise.all(
                         group.map(async ({ file }) => {
                             await _prewarmSemaphore.acquire();
-                            const prepared = await Upload.prepareUpload(file, folderId, masterKey, _nameKeys);
+                            const prepared = await Upload.prepareUpload(file, folderId, masterKey, _nameKeys, _currentFolderKey);
                             _prewarmSemaphore.release();
                             return { prepared, file };
                         })
@@ -2416,7 +2456,7 @@ const Files = (() => {
                 let prepared;
                 try {
                     await _prewarmSemaphore.acquire();
-                    prepared = await Upload.prepareUpload(file, retryFolderId, masterKey, _nameKeys);
+                    prepared = await Upload.prepareUpload(file, retryFolderId, masterKey, _nameKeys, _currentFolderKey);
                     _prewarmSemaphore.release();
                 } catch (_err) {
                     _prewarmSemaphore.release();
@@ -2435,7 +2475,7 @@ const Files = (() => {
         // Large files: existing bounded tus path (unchanged).
         const uploads = largeResolved.map(async ({ file, index, deletedForReplace }) => {
             await _prewarmSemaphore.acquire();
-            const preparedPromise = Upload.prepareUpload(file, folderId, masterKey, _nameKeys);
+            const preparedPromise = Upload.prepareUpload(file, folderId, masterKey, _nameKeys, _currentFolderKey);
 
             await _uploadSemaphore.acquire();
             _prewarmSemaphore.release(); // crypto done + upload slot secured; next file can pre-warm
@@ -2703,6 +2743,7 @@ const Files = (() => {
             encrypted_size:     String(prepared.totalEncryptedSize),
             encrypted_file_key: prepared.encryptedKeyB64,
             key_iv:             prepared.keyIvB64,
+            key_version:        prepared.keyVersion || 'v1-master',
             chunk_iv:           chunkIvB64,
             chunk_hash:         `sha256:${chunkHash}`,
             last_modified_ms:   String(file.lastModified),

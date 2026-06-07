@@ -143,7 +143,12 @@ def _validate_metadata_fields(meta: dict) -> tuple:
             validate_base64(escrow_key_iv)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid escrow key field encoding")
-    return escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv, name_ct, name_idx
+
+    key_version_raw = meta.get("key_version") or "v1-master"
+    if key_version_raw not in ("v1-master", "v2-folder"):
+        raise HTTPException(status_code=400, detail="Invalid key_version; must be 'v1-master' or 'v2-folder'")
+
+    return escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv, name_ct, name_idx, key_version_raw
 
 
 async def _check_folder_access(db, user_id: str, folder_id_raw: str | None) -> str | None:
@@ -269,7 +274,7 @@ async def create_upload(
         raise HTTPException(status_code=400, detail=str(exc))
 
     # --- Validate required metadata fields and escrow encoding ---
-    escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv, name_ct, name_idx = _validate_metadata_fields(meta)
+    escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv, name_ct, name_idx, key_version = _validate_metadata_fields(meta)
 
     try:
         sanitized = sanitize_filename(meta["filename"])
@@ -320,10 +325,10 @@ async def create_upload(
             INSERT INTO files (
                 id, original_name, sanitized_name, storage_key, folder_id, owner_id,
                 mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
-                encrypted_file_key, key_iv, upload_complete,
+                encrypted_file_key, key_iv, key_version, upload_complete,
                 escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
                 last_modified_ms, name_ct, name_idx
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
             """,
             (
                 file_id,
@@ -339,6 +344,7 @@ async def create_upload(
                 total_chunks,
                 encrypted_file_key,
                 key_iv,
+                key_version,
                 escrow_ephemeral_pk,
                 escrow_encrypted_key,
                 escrow_key_iv,

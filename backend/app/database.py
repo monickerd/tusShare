@@ -707,3 +707,23 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_folders_unmigrated
                 ON folders(owner_id) WHERE name_ct IS NULL AND deleted_at IS NULL;
         """)
+
+    # Folder-key model — per-folder encryption key + per-file key_version flag.
+    # share_exclusions table for per-subfolder revocation within folder shares.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE folders
+                ADD COLUMN IF NOT EXISTS folder_key_ct TEXT DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS folder_key_iv TEXT DEFAULT NULL;
+            ALTER TABLE files
+                ADD COLUMN IF NOT EXISTS key_version TEXT NOT NULL DEFAULT 'v1-master';
+            CREATE TABLE IF NOT EXISTS share_exclusions (
+                share_id  TEXT NOT NULL REFERENCES shares(id)  ON DELETE CASCADE,
+                folder_id TEXT NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                PRIMARY KEY (share_id, folder_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_share_exclusions_share
+                ON share_exclusions(share_id);
+            CREATE INDEX IF NOT EXISTS idx_share_exclusions_folder
+                ON share_exclusions(folder_id);
+        """)

@@ -77,6 +77,7 @@ class _FileMeta:
     escrow_ephemeral_pk: str | None
     escrow_encrypted_key: str | None
     escrow_key_iv: str | None
+    key_version: str                   # 'v1-master' or 'v2-folder'
     chunk_size: int                   # admin chunk size stored in files table
 
 
@@ -337,6 +338,10 @@ async def _build_file_meta(entry: dict, index: int, user_id: str, db, admin_chun
     escrow_pk, escrow_enc, escrow_iv = _parse_escrow_fields(entry, index)
     folder_id = await _validate_folder_access(entry, index, user_id, db)
 
+    key_version_raw = entry.get("key_version") or "v1-master"
+    if key_version_raw not in ("v1-master", "v2-folder"):
+        raise HTTPException(status_code=400, detail=f"Entry {index}: invalid key_version")
+
     return _FileMeta(
         index=index,
         filename=entry["filename"],
@@ -353,6 +358,7 @@ async def _build_file_meta(entry: dict, index: int, user_id: str, db, admin_chun
         escrow_ephemeral_pk=escrow_pk,
         escrow_encrypted_key=escrow_enc,
         escrow_key_iv=escrow_iv,
+        key_version=key_version_raw,
         chunk_size=admin_chunk_size,
     )
 
@@ -422,16 +428,16 @@ async def _insert_file_in_tx(
         INSERT INTO files (
             id, original_name, sanitized_name, storage_key, folder_id, owner_id,
             mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
-            encrypted_file_key, key_iv, upload_complete,
+            encrypted_file_key, key_iv, key_version, upload_complete,
             escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
             last_modified_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 1, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 1, ?, ?, ?, ?)
         """,
         (
             file_id, meta.filename, meta.sanitized_name, storage_key,
             meta.folder_id, user_id, meta.filetype,
             meta.original_size, meta.encrypted_size, meta.chunk_size,
-            meta.encrypted_file_key, meta.key_iv,
+            meta.encrypted_file_key, meta.key_iv, meta.key_version,
             meta.escrow_ephemeral_pk, meta.escrow_encrypted_key, meta.escrow_key_iv,
             meta.last_modified_ms,
         ),
