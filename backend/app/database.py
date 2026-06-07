@@ -891,3 +891,10 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             await conn.execute(f"INSERT INTO {_tbl} SELECT * FROM {_legacy}")
             await conn.execute(f"DROP TABLE {_legacy}")
             logger.info("Startup migration: %s partitioned successfully", _tbl)
+
+    # filter_min_severity on notification_channels — severity gate for webhook delivery.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE notification_channels
+                ADD COLUMN IF NOT EXISTS filter_min_severity TEXT DEFAULT NULL;
+        """)
