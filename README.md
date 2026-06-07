@@ -50,7 +50,11 @@ still give any malicious people an easy win.
 
 ### Sharing
 - **User shares** – share individual files or folders with specific users, with
-  read-only or read-write access.
+  read-only or read-write access. When sharing a folder, access can be scoped
+  further with per-user and per-role permission grants: choose any combination of
+  view, download, upload, delete, move, subfolder management, and share-link
+  creation. Permissions are capped by what the granting user is themselves allowed
+  at the team level — a team member cannot grant a permission they do not hold.
 - **Team folders** – create teams with shared encrypted workspaces. Files uploaded
   to a team folder are accessible to all team members without the uploader needing
   to be online – re-encryption is handled cryptographically, not by copying the file.

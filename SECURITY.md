@@ -117,6 +117,22 @@ and API enforce this invariant.
 Custom team roles allow per-team permission sets (upload, download, share,
 manage members, etc.) defined by team owners.
 
+### Per-folder permission grants and ceiling enforcement
+
+Folders support explicit per-user and per-role permission grants. Rather than
+coarse read/write/admin levels, grants are expressed as comma-separated atomic
+flags: `view_contents`, `download_files`, `upload_files`, `delete_files`,
+`move_own_within_folder`, `folder_create`, `share_create`, `manage_this_folder`,
+and their counterparts.
+
+A **permission ceiling** is enforced at both the UI and API layers: a user may
+only grant a flag that their own team role permits. For example, if the team role
+has `share_create` disabled, a user with that role cannot grant `share_create` to
+another user on a subfolder — even if they have `manage_this_folder` access to
+that subfolder. Team Owners and org admins have no ceiling. This prevents
+privilege escalation through the folder permission system: a team member cannot
+use folder grants to extend permissions beyond what the team policy allows.
+
 ### Step-up authentication
 
 Sensitive operations — security settings changes, user deletion, key management,
@@ -451,6 +467,23 @@ device that has a decrypted master key in memory.
 
 When key escrow is active, an admin transparency banner is shown to all users by
 default (suppressible by org policy, which is itself logged as an audit event).
+
+An additional notice — "One or more organizational accounts have access to all
+files and folders in this system" — is shown to any user who opens the Manage
+Folder panel for a folder they administer. This notice fires when either of the
+following conditions is true:
+
+- Any active user (other than the viewer) holds a role with
+  `files_access_all_read = '1'` or `files_access_all_write = '1'` — the
+  explicit ACL-bypass permissions.
+- For team folders: at least one `user_team_keys` row exists whose
+  `policy_effect_id` links to a `team_escrow` policy effect, meaning an escrow
+  agent has been provisioned with actual team key material (not merely assigned
+  the `can_act_as_escrow` capability flag on their role).
+
+The notice deliberately omits usernames and role names to avoid revealing the
+identity or number of privileged accounts. It is a signal that someone can
+access the files, not a complete access manifest.
 
 ### Immutable audit trail
 
