@@ -523,6 +523,89 @@ const Utils = (() => {
         });
     }
 
+    // -----------------------------------------------------------------------
+    // mkPermTree — hierarchical checkbox tree for permission selection
+    //
+    // groups: [{label, items: [{flag, label, desc?}]}]
+    // initialFlags: array of flag strings that should start checked
+    //
+    // Returns: { el, getFlags(), getPermString() }
+    //   getFlags()      → string[] of currently-checked flags
+    //   getPermString() → comma-joined string, or 'none' when nothing selected
+    // -----------------------------------------------------------------------
+    function mkPermTree(groups, initialFlags) {
+        const selected = new Set(Array.isArray(initialFlags) ? initialFlags : []);
+        const container = el('div', { className: 'perm-tree' });
+
+        function _sync(parentCb, childCbs) {
+            const n = childCbs.filter(c => c.checked).length;
+            if (n === 0) {
+                parentCb.indeterminate = false; parentCb.checked = false;
+            } else if (n === childCbs.length) {
+                parentCb.indeterminate = false; parentCb.checked = true;
+            } else {
+                parentCb.indeterminate = true; parentCb.checked = false;
+            }
+        }
+
+        for (const group of groups) {
+            const groupEl  = el('div', { className: 'perm-tree-group' });
+            const parentCb = el('input', { type: 'checkbox', className: 'perm-tree-parent-cb' });
+            const toggle   = el('button', { type: 'button', className: 'perm-tree-toggle', title: 'Collapse / expand', textContent: '▾' });
+            const headerLbl = el('label', { className: 'perm-tree-header-label' });
+            headerLbl.appendChild(parentCb);
+            headerLbl.appendChild(document.createTextNode(' ' + group.label));
+            const header = el('div', { className: 'perm-tree-header' });
+            header.appendChild(headerLbl);
+            header.appendChild(toggle);
+            groupEl.appendChild(header);
+
+            const childWrap = el('div', { className: 'perm-tree-children' });
+            const childCbs  = [];
+
+            for (const item of group.items) {
+                const childCb = el('input', { type: 'checkbox', className: 'perm-tree-child-cb' });
+                childCb.checked = selected.has(item.flag);
+                childCbs.push(childCb);
+                const lbl = el('label', { className: 'perm-tree-item' });
+                lbl.appendChild(childCb);
+                const body = el('span', { className: 'perm-tree-item-body' });
+                body.appendChild(el('span', { className: 'perm-tree-item-name', textContent: item.label }));
+                if (item.desc) body.appendChild(el('span', { className: 'perm-tree-item-desc', textContent: item.desc }));
+                lbl.appendChild(body);
+                childWrap.appendChild(lbl);
+                childCb.addEventListener('change', () => {
+                    if (childCb.checked) selected.add(item.flag); else selected.delete(item.flag);
+                    _sync(parentCb, childCbs);
+                });
+            }
+
+            groupEl.appendChild(childWrap);
+            container.appendChild(groupEl);
+            _sync(parentCb, childCbs);
+
+            parentCb.addEventListener('click', () => {
+                const newState = parentCb.checked; // browser already set it
+                parentCb.indeterminate = false;
+                childCbs.forEach((c, i) => {
+                    c.checked = newState;
+                    if (newState) selected.add(group.items[i].flag); else selected.delete(group.items[i].flag);
+                });
+            });
+
+            toggle.addEventListener('click', () => {
+                const collapsed = childWrap.classList.toggle('perm-tree-collapsed');
+                toggle.textContent = collapsed ? '▸' : '▾';
+            });
+        }
+
+        return {
+            el: container,
+            getFlags: ()      => [...selected],
+            getPermString: () => selected.size ? [...selected].join(',') : 'none',
+        };
+    }
+
     return {
         formatBytes,
         formatDate,
@@ -544,5 +627,6 @@ const Utils = (() => {
         inlineFilter,
         addLongPress,
         attachPasswordStrength,
+        mkPermTree,
     };
 })();

@@ -917,6 +917,19 @@ const Teams = (() => {
         container.appendChild(list);
     }
 
+    // Group server-provided flag metadata by the 'group' field for use with Utils.mkPermTree.
+    // Flags lacking a group field fall into a generic 'Permissions' bucket.
+    function _buildFlagGroups(flags) {
+        const groupMap = {};
+        const groupOrder = [];
+        for (const f of flags) {
+            const g = f.group || 'Permissions';
+            if (!groupMap[g]) { groupMap[g] = []; groupOrder.push(g); }
+            groupMap[g].push({ flag: f.flag, label: f.label || f.flag, desc: f.description });
+        }
+        return groupOrder.map(g => ({ label: g, items: groupMap[g] }));
+    }
+
     function _buildTeamRoleCard(role, flags, members, teamId, canManage, refreshFn) {
         let bodyLoaded = false;
         const body = Utils.el('div', { className: 'role-card-body' });
@@ -988,28 +1001,11 @@ const Teams = (() => {
             ]));
         }
 
-        // --- Permission flags ---
-        const flagChecks = {};
-        const flagsDiv = Utils.el('div', { className: 'flag-category' }, [
-            Utils.el('div', { className: 'flag-category-label', textContent: 'Move Permissions' }),
-        ]);
-
-        for (const flagMeta of flags) {
-            const granted = role.permissions[flagMeta.flag] === '1';
-            const cb = Utils.el('input', { type: 'checkbox' });
-            cb.checked = granted;
-            if (!canManage) cb.disabled = true;
-            flagChecks[flagMeta.flag] = cb;
-
-            flagsDiv.appendChild(Utils.el('div', { className: 'flag-row' }, [
-                cb,
-                Utils.el('div', { className: 'flag-label' }, [
-                    Utils.el('span', { className: 'flag-name', textContent: flagMeta.flag }),
-                    Utils.el('span', { className: 'flag-desc', textContent: flagMeta.description }),
-                ]),
-            ]));
-        }
-        content.appendChild(flagsDiv);
+        // --- Permission flags (hierarchical checkbox tree) ---
+        const initialFlags = flags.filter(f => role.permissions[f.flag] === '1').map(f => f.flag);
+        const permTree = Utils.mkPermTree(_buildFlagGroups(flags), initialFlags);
+        if (!canManage) permTree.el.querySelectorAll('input').forEach(i => { i.disabled = true; });
+        content.appendChild(permTree.el);
 
         if (canManage) {
             const savePermsBtn = Utils.el('button', {
@@ -1017,9 +1013,8 @@ const Teams = (() => {
                 textContent: 'Save Permissions',
                 onClick: async () => {
                     const permissions = {};
-                    for (const [f, cb] of Object.entries(flagChecks)) {
-                        permissions[f] = cb.checked ? '1' : '0';
-                    }
+                    const checkedSet = new Set(permTree.getFlags());
+                    for (const f of flags) permissions[f.flag] = checkedSet.has(f.flag) ? '1' : '0';
                     try {
                         await Api.put(`${_api}/teams/${teamId}/custom-roles/${role.id}/permissions`, { permissions });
                         Utils.showToast('Permissions saved', 'success');
@@ -1116,21 +1111,7 @@ const Teams = (() => {
         const errorEl = Utils.el('p', { className: 'form-error', textContent: '' });
         errorEl.style.display = 'none';
 
-        const flagChecks = {};
-        const flagsDiv = Utils.el('div', { className: 'flag-category' }, [
-            Utils.el('div', { className: 'flag-category-label', textContent: 'Move Permissions' }),
-        ]);
-        for (const flagMeta of flags) {
-            const cb = Utils.el('input', { type: 'checkbox' });
-            flagChecks[flagMeta.flag] = cb;
-            flagsDiv.appendChild(Utils.el('div', { className: 'flag-row' }, [
-                cb,
-                Utils.el('div', { className: 'flag-label' }, [
-                    Utils.el('span', { className: 'flag-name', textContent: flagMeta.flag }),
-                    Utils.el('span', { className: 'flag-desc', textContent: flagMeta.description }),
-                ]),
-            ]));
-        }
+        const permTree = Utils.mkPermTree(_buildFlagGroups(flags), []);
 
         // eslint-disable-next-line prefer-const -- forward reference: callbacks capture this before Utils.showModal() assigns it
         let closeModal;
@@ -1146,9 +1127,8 @@ const Teams = (() => {
                     return;
                 }
                 const permissions = {};
-                for (const [f, cb] of Object.entries(flagChecks)) {
-                    permissions[f] = cb.checked ? '1' : '0';
-                }
+                const checkedSet = new Set(permTree.getFlags());
+                for (const f of flags) permissions[f.flag] = checkedSet.has(f.flag) ? '1' : '0';
                 try {
                     await Api.post(`${_api}/teams/${teamId}/custom-roles`, {
                         name,
@@ -1167,7 +1147,7 @@ const Teams = (() => {
         const formContent = Utils.el('div', { className: 'create-role-form' }, [
             Utils.el('label', { textContent: 'Name' }), nameInput,
             Utils.el('label', { textContent: 'Description' }), descInput,
-            flagsDiv,
+            permTree.el,
             errorEl,
             Utils.el('div', { className: 'modal-actions' }, [
                 createBtn,

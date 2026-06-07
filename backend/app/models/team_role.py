@@ -16,18 +16,34 @@ from dataclasses import dataclass
 # Team-scoped permission flag name constants
 # ---------------------------------------------------------------------------
 
-TEAM_FLAG_MOVE_OWN_OUT = "move_own_files_out_of_team"
+TEAM_FLAG_MOVE_OWN_OUT    = "move_own_files_out_of_team"
 TEAM_FLAG_MOVE_OTHERS_OUT = "move_others_files_out_of_team"
+TEAM_FLAG_MOVE_OWN_IN     = "move_own_within_team"
+TEAM_FLAG_MOVE_OTHERS_IN  = "move_all_within_team"
+
+# Folder flags
 TEAM_FLAG_MANAGE_FOLDER_OWN = "team_folder_manage_own"
 TEAM_FLAG_MANAGE_FOLDER_ALL = "team_folder_manage_all"
+TEAM_FLAG_FOLDER_CREATE     = "folder_create"
+
+# Share flags
+TEAM_FLAG_SHARE_CREATE     = "share_create"
+TEAM_FLAG_SHARE_MANAGE_OWN = "share_manage_own"
+TEAM_FLAG_SHARE_MANAGE_ALL = "share_manage_all"
 
 # All valid flags for team roles (the complete set checked server-side)
 TEAM_ROLE_FLAGS: frozenset[str] = frozenset(
     {
         TEAM_FLAG_MOVE_OWN_OUT,
         TEAM_FLAG_MOVE_OTHERS_OUT,
+        TEAM_FLAG_MOVE_OWN_IN,
+        TEAM_FLAG_MOVE_OTHERS_IN,
         TEAM_FLAG_MANAGE_FOLDER_OWN,
         TEAM_FLAG_MANAGE_FOLDER_ALL,
+        TEAM_FLAG_FOLDER_CREATE,
+        TEAM_FLAG_SHARE_CREATE,
+        TEAM_FLAG_SHARE_MANAGE_OWN,
+        TEAM_FLAG_SHARE_MANAGE_ALL,
     }
 )
 
@@ -37,27 +53,70 @@ _AUTHORITY_ROLES = frozenset({"team_admin", "team_manager"})
 # Backwards-compatible alias used by move-permission checks
 _MOVE_AUTHORITY_ROLES = _AUTHORITY_ROLES
 
-# Display metadata for UI rendering (ordered)
+# Display metadata for UI rendering (ordered, grouped for hierarchical checkbox tree)
 TEAM_FLAG_META: list[dict] = [
+    # --- Move / Copy ---
+    {
+        "flag": TEAM_FLAG_MOVE_OWN_IN,
+        "group": "Move / Copy",
+        "label": "Own files within Team",
+        "description": "Move or copy own files between folders within the team",
+    },
+    {
+        "flag": TEAM_FLAG_MOVE_OTHERS_IN,
+        "group": "Move / Copy",
+        "label": "All files within Team",
+        "description": "Move or copy any file between folders within the team",
+    },
     {
         "flag": TEAM_FLAG_MOVE_OWN_OUT,
-        "label": "Move own files out of team",
-        "description": "May move files owned by themselves out of a team folder",
+        "group": "Move / Copy",
+        "label": "Own files out of Team",
+        "description": "May move files owned by themselves out of a team folder to a personal folder",
     },
     {
         "flag": TEAM_FLAG_MOVE_OTHERS_OUT,
-        "label": "Move others' files out of team",
+        "group": "Move / Copy",
+        "label": "All files out of Team",
         "description": "May move files owned by another user out of a team folder",
+    },
+    # --- Folders ---
+    {
+        "flag": TEAM_FLAG_FOLDER_CREATE,
+        "group": "Folders",
+        "label": "Create folders",
+        "description": "Create new subfolders within the team",
     },
     {
         "flag": TEAM_FLAG_MANAGE_FOLDER_OWN,
-        "label": "Manage own team folders",
+        "group": "Folders",
+        "label": "Manage own folders",
         "description": "May manage (restrict permissions, set grants on) folders they created within the team",
     },
     {
         "flag": TEAM_FLAG_MANAGE_FOLDER_ALL,
-        "label": "Manage all team folders",
+        "group": "Folders",
+        "label": "Manage all folders",
         "description": "May manage any folder within the team regardless of who created it",
+    },
+    # --- Shares ---
+    {
+        "flag": TEAM_FLAG_SHARE_CREATE,
+        "group": "Shares",
+        "label": "Create shares",
+        "description": "Create share links from team files",
+    },
+    {
+        "flag": TEAM_FLAG_SHARE_MANAGE_OWN,
+        "group": "Shares",
+        "label": "Manage own shares",
+        "description": "Manage share links you created",
+    },
+    {
+        "flag": TEAM_FLAG_SHARE_MANAGE_ALL,
+        "group": "Shares",
+        "label": "Manage all shares",
+        "description": "Manage all share links within the team",
     },
 ]
 

@@ -42,6 +42,17 @@ _LEVEL_ACTIONS: dict[str, frozenset[str]] = {
     "none": frozenset(),
 }
 
+# Atomic permission flags stored as comma-separated values in the permission column.
+# Each flag maps to the set of internal action strings it authorises.
+# Grants stored this way are always additive (no deny semantics).
+_FLAG_ACTIONS: dict[str, frozenset[str]] = {
+    "view_contents":      frozenset({"read"}),
+    "download_files":     frozenset({"read", "download"}),
+    "upload_files":       frozenset({"read", "write"}),
+    "delete_files":       frozenset({"read", "delete"}),
+    "manage_this_folder": frozenset({"read", "manage_permissions"}),
+}
+
 # Default folder permission level granted by each built-in team role.
 # Overridden per-team via the team_folder_role_levels table.
 _TEAM_ROLE_DEFAULTS: dict[str, str] = {
@@ -229,6 +240,10 @@ async def _check_acl(
     perm = row["permission"]
     if perm == "deny":
         return False
+    if "," in perm:
+        flags = {f.strip() for f in perm.split(",")}
+        implied = frozenset().union(*(_FLAG_ACTIONS.get(f, frozenset()) for f in flags))
+        return action in implied or None
     return action in _LEVEL_ACTIONS.get(perm, frozenset()) or None
 
 
@@ -262,7 +277,13 @@ async def _check_role_acl(
         recursive = bool(row["recursive"])
         if not exact and not recursive:
             continue
-        if action in _LEVEL_ACTIONS.get(row["permission"], frozenset()):
+        perm = row["permission"]
+        if "," in perm:
+            flags = {f.strip() for f in perm.split(",")}
+            implied = frozenset().union(*(_FLAG_ACTIONS.get(f, frozenset()) for f in flags))
+            if action in implied:
+                return True
+        elif action in _LEVEL_ACTIONS.get(perm, frozenset()):
             return True
     return None
 

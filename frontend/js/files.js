@@ -1195,6 +1195,37 @@ const Files = (() => {
     }
 
     function _renderManageFolderBody(body, folder, stats, grants, roleGrants, _close) {
+        // Per-folder permission groups for the checkbox tree
+        const _FOLDER_PERM_GROUPS = [
+            {
+                label: 'Read / Write',
+                items: [
+                    { flag: 'view_contents',  label: 'View contents',  desc: 'See file and subfolder listings' },
+                    { flag: 'download_files', label: 'Download',       desc: 'Download and decrypt files' },
+                    { flag: 'upload_files',   label: 'Upload',         desc: 'Upload new files to this folder' },
+                    { flag: 'delete_files',   label: 'Delete files',   desc: 'Delete files in this folder' },
+                ],
+            },
+            {
+                label: 'Manage this folder',
+                items: [
+                    { flag: 'manage_this_folder', label: 'Manage this folder', desc: 'Change permissions and access grants for this folder' },
+                ],
+            },
+        ];
+        // Human-readable labels for stored permission values (legacy levels + new flags)
+        const _PERM_MAP = {
+            read: 'View', download: 'View + Download', write: 'Read / Write', admin: 'Admin',
+            manage_permissions: 'Manage folder',
+            view_contents: 'View', download_files: 'Download', upload_files: 'Upload',
+            delete_files: 'Delete', manage_this_folder: 'Manage folder',
+        };
+        const _permLabel = (perm) => {
+            if (!perm || perm === 'none') return '—';
+            if (_PERM_MAP[perm]) return _PERM_MAP[perm];
+            return perm.split(',').map(f => _PERM_MAP[f.trim()] || f.trim()).join(' + ');
+        };
+
         // ---- Section 1: Metadata ----
         const metaSection = Utils.el('section', { className: 'manage-folder-section' });
         metaSection.appendChild(Utils.el('h4', { textContent: 'Folder Information', className: 'manage-folder-section-title' }));
@@ -1233,14 +1264,11 @@ const Files = (() => {
 
         // Tab strip
         const tabStrip = Utils.el('div', { className: 'manage-folder-tabs', style: 'display:flex;gap:0;margin-bottom:10px;border-bottom:1px solid var(--border-color,#ccc)' });
-        const _mkTab = (label, active) => {
-            const btn = Utils.el('button', {
-                textContent: label,
-                className: 'manage-folder-tab' + (active ? ' active' : ''),
-                style: 'padding:4px 14px;border:none;border-bottom:2px solid ' + (active ? 'var(--accent,#2563eb)' : 'transparent') + ';background:none;cursor:pointer;font-size:0.9em;color:' + (active ? 'var(--accent,#2563eb)' : 'inherit'),
-            });
-            return btn;
-        };
+        const _mkTab = (label, active) => Utils.el('button', {
+            textContent: label,
+            className: 'manage-folder-tab' + (active ? ' active' : ''),
+            style: 'padding:4px 14px;border:none;border-bottom:2px solid ' + (active ? 'var(--accent,#2563eb)' : 'transparent') + ';background:none;cursor:pointer;font-size:0.9em;color:' + (active ? 'var(--accent,#2563eb)' : 'inherit'),
+        });
         const tabByUser = _mkTab('By User', true);
         const tabByRole = _mkTab('By Role', false);
         tabStrip.append(tabByUser, tabByRole);
@@ -1249,7 +1277,7 @@ const Files = (() => {
         // ---- Tab: By User ----
         const userGrantsPane = Utils.el('div');
         const grantsTable = Utils.el('table', { className: 'file-table manage-folder-grants-table' });
-        grantsTable.innerHTML = '<thead><tr><th>User</th><th>Permission</th><th>Recursive</th><th></th></tr></thead>';
+        grantsTable.innerHTML = '<thead><tr><th>User</th><th>Permissions</th><th>Subfolders</th><th></th></tr></thead>';
         const grantsTbody = Utils.el('tbody');
         grantsTable.appendChild(grantsTbody);
         userGrantsPane.appendChild(grantsTable);
@@ -1277,7 +1305,7 @@ const Files = (() => {
                 });
                 grantsTbody.appendChild(Utils.el('tr', {}, [
                     Utils.el('td', { textContent: g.username }),
-                    Utils.el('td', { textContent: g.permission }),
+                    Utils.el('td', { textContent: _permLabel(g.permission) }),
                     Utils.el('td', { textContent: g.recursive ? 'Yes' : 'No' }),
                     Utils.el('td', {}, [removeBtn]),
                 ]));
@@ -1285,25 +1313,27 @@ const Files = (() => {
         };
         _renderGrants(grants);
 
-        const addRow = Utils.el('div', { className: 'manage-folder-add-grant', style: 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap' });
-        const usernameInput = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Username', style: 'width:140px' });
-        const permSelect    = Utils.el('select', { className: 'input-sm' });
-        for (const p of ['read', 'write', 'admin']) {
-            permSelect.appendChild(Utils.el('option', { value: p, textContent: p }));
-        }
-        const recursiveChk = Utils.el('input', { type: 'checkbox', id: 'mf-recursive', checked: true });
-        const recursiveLbl = Utils.el('label', { htmlFor: 'mf-recursive', style: 'display:flex;align-items:center;gap:3px;font-size:0.85em' });
+        // Add-grant form: username → permission tree → apply-to-subfolders + Add
+        const userAddForm = Utils.el('div', { className: 'manage-folder-add-form' });
+        const usernameInput = Utils.el('input', { type: 'text', className: 'input-sm manage-folder-add-username', placeholder: 'Username' });
+        userAddForm.appendChild(usernameInput);
+        const userPermTree = Utils.mkPermTree(_FOLDER_PERM_GROUPS, []);
+        userAddForm.appendChild(userPermTree.el);
+        const userAddFooter = Utils.el('div', { className: 'manage-folder-add-footer' });
+        const recursiveChk = Utils.el('input', { type: 'checkbox', id: 'mf-subfolder', checked: true });
+        const recursiveLbl = Utils.el('label', { htmlFor: 'mf-subfolder', className: 'manage-folder-subfolder-label' });
         recursiveLbl.appendChild(recursiveChk);
-        recursiveLbl.appendChild(document.createTextNode(' Recursive'));
+        recursiveLbl.appendChild(document.createTextNode(' Apply to subfolders'));
         const addBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Add' });
-
         addBtn.addEventListener('click', async () => {
             const uname = usernameInput.value.trim();
             if (!uname) { Utils.showToast('Enter a username', 'error'); return; }
+            const permStr = userPermTree.getPermString();
+            if (permStr === 'none') { Utils.showToast('Select at least one permission', 'error'); return; }
             addBtn.disabled = true;
             try {
                 const newGrant = await Api.post(`${Config.app.apiPrefix}/folders/${folder.id}/grants`, {
-                    username: uname, permission: permSelect.value, recursive: recursiveChk.checked,
+                    username: uname, permission: permStr, recursive: recursiveChk.checked,
                 });
                 grants = [...grants, newGrant];
                 _renderGrants(grants);
@@ -1314,15 +1344,15 @@ const Files = (() => {
                 addBtn.disabled = false;
             }
         });
-
-        addRow.append(usernameInput, permSelect, recursiveLbl, addBtn);
-        userGrantsPane.appendChild(addRow);
+        userAddFooter.append(recursiveLbl, addBtn);
+        userAddForm.appendChild(userAddFooter);
+        userGrantsPane.appendChild(userAddForm);
         grantsSection.appendChild(userGrantsPane);
 
         // ---- Tab: By Role ----
         const roleGrantsPane = Utils.el('div', { style: 'display:none' });
         const roleGrantsTable = Utils.el('table', { className: 'file-table manage-folder-grants-table' });
-        roleGrantsTable.innerHTML = '<thead><tr><th>Role</th><th>Permission</th><th>Recursive</th><th></th></tr></thead>';
+        roleGrantsTable.innerHTML = '<thead><tr><th>Role</th><th>Permissions</th><th>Subfolders</th><th></th></tr></thead>';
         const roleGrantsTbody = Utils.el('tbody');
         roleGrantsTable.appendChild(roleGrantsTbody);
         roleGrantsPane.appendChild(roleGrantsTable);
@@ -1350,7 +1380,7 @@ const Files = (() => {
                 });
                 roleGrantsTbody.appendChild(Utils.el('tr', {}, [
                     Utils.el('td', { textContent: g.role_name }),
-                    Utils.el('td', { textContent: g.permission }),
+                    Utils.el('td', { textContent: _permLabel(g.permission) }),
                     Utils.el('td', { textContent: g.recursive ? 'Yes' : 'No' }),
                     Utils.el('td', {}, [removeBtn]),
                 ]));
@@ -1358,27 +1388,40 @@ const Files = (() => {
         };
         _renderRoleGrants(roleGrants);
 
-        const roleAddRow = Utils.el('div', { className: 'manage-folder-add-grant', style: 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap' });
-        const roleSelect    = Utils.el('select', { className: 'input-sm', style: 'min-width:140px' });
-        const rolePermSel   = Utils.el('select', { className: 'input-sm' });
-        for (const p of ['read', 'download', 'write', 'admin', 'manage_permissions']) {
-            rolePermSel.appendChild(Utils.el('option', { value: p, textContent: p }));
-        }
-        const roleRecChk = Utils.el('input', { type: 'checkbox', id: 'mf-role-recursive', checked: true });
-        const roleRecLbl = Utils.el('label', { htmlFor: 'mf-role-recursive', style: 'display:flex;align-items:center;gap:3px;font-size:0.85em' });
+        // Role add form
+        const roleAddForm = Utils.el('div', { className: 'manage-folder-add-form' });
+        const roleSelect  = Utils.el('select', { className: 'input-sm manage-folder-role-select' });
+        roleAddForm.appendChild(roleSelect);
+        const rolePermTree = Utils.mkPermTree(_FOLDER_PERM_GROUPS, []);
+        roleAddForm.appendChild(rolePermTree.el);
+        const roleAddFooter = Utils.el('div', { className: 'manage-folder-add-footer' });
+        const roleRecChk = Utils.el('input', { type: 'checkbox', id: 'mf-role-subfolder', checked: true });
+        const roleRecLbl = Utils.el('label', { htmlFor: 'mf-role-subfolder', className: 'manage-folder-subfolder-label' });
         roleRecLbl.appendChild(roleRecChk);
-        roleRecLbl.appendChild(document.createTextNode(' Recursive'));
+        roleRecLbl.appendChild(document.createTextNode(' Apply to subfolders'));
         const roleAddBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Add' });
 
-        // Populate role picker lazily when the tab is first shown
+        // Populate role picker lazily. When inside a team folder, shows only that
+        // team's built-in roles + custom roles; otherwise falls back to admin roles.
         let _rolesLoaded = false;
         const _loadRoles = async () => {
             if (_rolesLoaded) return;
             _rolesLoaded = true;
             roleSelect.innerHTML = '';
             try {
-                const data = await Api.get(`${Config.app.apiPrefix.replace('/api/v1', '')}/api/v1/admin/roles`);
-                const roles = data.roles || [];
+                let roles = [];
+                if (_currentTeamId) {
+                    const builtIn = [
+                        { id: 'team_admin',   name: 'Team Owner' },
+                        { id: 'team_manager', name: 'Team Supervisor' },
+                        { id: 'team_member',  name: 'Team Member' },
+                    ];
+                    const data = await Api.get(`${Config.app.apiPrefix}/teams/${_currentTeamId}/custom-roles`);
+                    roles = [...builtIn, ...(data.roles || [])];
+                } else {
+                    const data = await Api.get(`${Config.app.apiPrefix}/admin/roles`);
+                    roles = data.roles || [];
+                }
                 if (!roles.length) {
                     roleSelect.appendChild(Utils.el('option', { value: '', textContent: '— no roles —', disabled: true }));
                 } else {
@@ -1393,10 +1436,12 @@ const Files = (() => {
 
         roleAddBtn.addEventListener('click', async () => {
             if (!roleSelect.value) { Utils.showToast('Select a role', 'error'); return; }
+            const permStr = rolePermTree.getPermString();
+            if (permStr === 'none') { Utils.showToast('Select at least one permission', 'error'); return; }
             roleAddBtn.disabled = true;
             try {
                 const newGrant = await Api.post(`${Config.app.apiPrefix}/folders/${folder.id}/role-grants`, {
-                    role_id: roleSelect.value, permission: rolePermSel.value, recursive: roleRecChk.checked,
+                    role_id: roleSelect.value, permission: permStr, recursive: roleRecChk.checked,
                 });
                 roleGrants = [...roleGrants, newGrant];
                 _renderRoleGrants(roleGrants);
@@ -1406,9 +1451,9 @@ const Files = (() => {
                 roleAddBtn.disabled = false;
             }
         });
-
-        roleAddRow.append(roleSelect, rolePermSel, roleRecLbl, roleAddBtn);
-        roleGrantsPane.appendChild(roleAddRow);
+        roleAddFooter.append(roleRecLbl, roleAddBtn);
+        roleAddForm.appendChild(roleAddFooter);
+        roleGrantsPane.appendChild(roleAddForm);
         grantsSection.appendChild(roleGrantsPane);
 
         // Tab switching
