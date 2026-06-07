@@ -11,9 +11,12 @@ const App = (() => {
     // Used by _renderShell to apply org brand name and logo.
     let _themeConfig = null;
 
-    // Manifest cache for client-side search (cleared on any SSE file-tree change).
-    let _searchManifest    = null;
+    // Manifest cache for client-side search.
+    // Keyed by folder_id (null = global manifest).  ETag-backed: encrypted items are
+    // persisted in sessionStorage; in-memory _searchManifest holds decrypted displayNames.
+    let _searchManifest    = null;  // { folderId, items, etag }
     let _manifestFetching  = null;
+    const _MANIFEST_SS_KEY = 'manifest_cache_v2';
 
     async function _loadTheme() {
         try {
@@ -625,21 +628,90 @@ const App = (() => {
         return _getPinnedFolders().some(p => p.id === id);
     }
 
-    async function _loadSearchManifest() {
-        if (_searchManifest) return _searchManifest;
+    // Decrypt manifest items via a Web Worker (offloads bulk AES-GCM from main thread).
+    // Falls back to main-thread decryption if Worker is unavailable or masterKey is missing.
+    async function _decryptManifestItems(files) {
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey) {
+            return files.map(f => ({ ...f, displayName: f.original_name || '' }));
+        }
+        if (typeof Worker !== 'undefined') {
+            try {
+                const masterKeyRaw = await crypto.subtle.exportKey('raw', masterKey);
+                return await new Promise((resolve, reject) => {
+                    const w = new Worker('/js/workers/manifest-decrypt.js');
+                    w.onmessage = ({ data: msg }) => {
+                        w.terminate();
+                        if (msg.error) reject(new Error(msg.error));
+                        else {
+                            const byId = new Map(msg.results.map(r => [r.id, r.displayName]));
+                            resolve(files.map(f => ({ ...f, displayName: byId.get(f.id) ?? (f.original_name || '') })));
+                        }
+                    };
+                    w.onerror = (e) => { w.terminate(); reject(e); };
+                    // Transfer the ArrayBuffer so the raw bytes are zeroed in the main thread.
+                    w.postMessage(
+                        { masterKeyRaw, items: files.map(f => ({ id: f.id, name_ct: f.name_ct, original_name: f.original_name })) },
+                        [masterKeyRaw],
+                    );
+                });
+            } catch { /* fall through */ }
+        }
+        // Main-thread fallback.
+        const nameKeys = await Crypto.deriveNameKeys(masterKey).catch(() => null);
+        return Promise.all(files.map(async (f) => {
+            let displayName = f.original_name || '';
+            if (nameKeys && f.name_ct) {
+                try { displayName = await Crypto.decryptName(f.name_ct, nameKeys.nameKey); } catch { }
+            }
+            return { ...f, displayName };
+        }));
+    }
+
+    async function _loadSearchManifest(folderId = null) {
+        if (_searchManifest && _searchManifest.folderId === folderId) return _searchManifest;
         if (_manifestFetching) return _manifestFetching;
         _manifestFetching = (async () => {
-            const masterKey = Auth.getMasterKeyObj();
-            const nameKeys  = masterKey ? await Crypto.deriveNameKeys(masterKey).catch(() => null) : null;
-            const data      = await Api.get(`${Config.app.apiPrefix}/files/manifest`);
-            const items     = await Promise.all((data.files || []).map(async (f) => {
-                let displayName = f.original_name;
-                if (nameKeys && f.name_ct) {
-                    try { displayName = await Crypto.decryptName(f.name_ct, nameKeys.nameKey); } catch { }
+            // Read sessionStorage cache for ETag revalidation.
+            let cachedEtag = null;
+            let cachedFiles = null;
+            try {
+                const ss = JSON.parse(sessionStorage.getItem(_MANIFEST_SS_KEY) || 'null');
+                if (ss && ss.folderId === folderId) { cachedEtag = ss.etag; cachedFiles = ss.files; }
+            } catch { /* ignore */ }
+
+            const url = `${Config.app.apiPrefix}/files/manifest${folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''}`;
+            let files;
+            try {
+                const resp = await fetch(url, {
+                    credentials: 'include',
+                    headers: {
+                        'Accept': 'application/json',
+                        ...(cachedEtag ? { 'If-None-Match': cachedEtag } : {}),
+                    },
+                });
+                if (resp.status === 304 && cachedFiles) {
+                    files = cachedFiles;
+                } else if (resp.ok) {
+                    const data = await resp.json();
+                    files = data.files || [];
+                    const newEtag = data.etag || resp.headers.get('etag');
+                    // Persist encrypted items so next reload can validate via ETag.
+                    if (newEtag) {
+                        try {
+                            sessionStorage.setItem(_MANIFEST_SS_KEY, JSON.stringify({ folderId, etag: newEtag, files }));
+                        } catch { /* quota exceeded — skip cache */ }
+                    }
+                } else {
+                    throw new Error(`Manifest fetch failed: ${resp.status}`);
                 }
-                return { ...f, displayName };
-            }));
-            _searchManifest  = { items };
+            } catch (err) {
+                if (cachedFiles) { files = cachedFiles; }
+                else throw err;
+            }
+
+            const items = await _decryptManifestItems(files);
+            _searchManifest  = { folderId, items };
             _manifestFetching = null;
             return _searchManifest;
         })();
@@ -649,6 +721,60 @@ const App = (() => {
     function _invalidateSearchManifest() {
         _searchManifest   = null;
         _manifestFetching = null;
+        // Clear the sessionStorage cache so next load re-fetches (not just revalidates).
+        try { sessionStorage.removeItem(_MANIFEST_SS_KEY); } catch { }
+    }
+
+    // Apply a single file-level delta from an SSE event to the in-memory manifest.
+    // Async because decrypting name_ct for the affected file happens inline.
+    // Safe to fire-and-forget from the SSE handler.
+    async function applyManifestDelta(event) {
+        const { action, file } = event || {};
+        if (!action) return;
+
+        // For remove we don't need the manifest to be loaded — if it's null just skip.
+        if (action === 'file.removed' && file?.id) {
+            if (_searchManifest) {
+                _searchManifest.items = _searchManifest.items.filter(i => i.id !== file.id);
+            }
+            // Still clear sessionStorage ETag so next page-load re-fetches.
+            try { sessionStorage.removeItem(_MANIFEST_SS_KEY); } catch { }
+            return;
+        }
+
+        if (!_searchManifest || !file?.id) {
+            // No manifest in memory or insufficient data — full invalidation.
+            _invalidateSearchManifest();
+            return;
+        }
+
+        // Decrypt name_ct for the affected file if we have the master key.
+        let displayName = file.original_name || '';
+        if (file.name_ct) {
+            const masterKey = Auth.getMasterKeyObj();
+            if (masterKey) {
+                try {
+                    const nameKeys = await Crypto.deriveNameKeys(masterKey);
+                    displayName = await Crypto.decryptName(file.name_ct, nameKeys.nameKey);
+                } catch { }
+            }
+        }
+
+        const enriched = { ...file, displayName };
+        const items = _searchManifest.items;
+        if (action === 'file.added') {
+            if (!items.some(i => i.id === file.id)) {
+                _searchManifest.items = [enriched, ...items];
+            }
+        } else if (action === 'file.updated' || action === 'file.moved') {
+            _searchManifest.items = items.map(i => i.id === file.id ? { ...i, ...enriched } : i);
+        } else {
+            // Unknown action — full invalidation is safe.
+            _invalidateSearchManifest();
+            return;
+        }
+        // Clear sessionStorage ETag so next page-load re-fetches cleanly.
+        try { sessionStorage.removeItem(_MANIFEST_SS_KEY); } catch { }
     }
 
     async function _routeSearch(container) {
@@ -656,12 +782,13 @@ const App = (() => {
         const main = document.getElementById('main-content');
         while (main.firstChild) main.firstChild.remove();
         const params = new URLSearchParams(globalThis.location.hash.split('?')[1] || '');
-        const q = params.get('q') || '';
+        const q        = params.get('q') || '';
+        const folderParam = params.get('folder') || null;
 
         const page = Utils.el('div', { className: 'page-content' });
         page.appendChild(Utils.el('h2', { textContent: q ? `Search: ${q}` : 'File Search', style: 'margin-bottom:12px' }));
 
-        const searchRow = Utils.el('div', { style: 'display:flex;gap:8px;margin-bottom:16px' });
+        const searchRow = Utils.el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap' });
         const input = Utils.el('input', {
             type: 'text',
             className: 'input-sm',
@@ -670,29 +797,58 @@ const App = (() => {
             style: 'width:280px',
         });
         const btn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Search' });
-        searchRow.append(input, btn);
+        const scopeChk = Utils.el('input', { type: 'checkbox', id: 'search-page-all-folders' });
+        if (!folderParam) scopeChk.checked = true;
+        const scopeLbl = Utils.el('label', {
+            htmlFor: 'search-page-all-folders',
+            style: 'display:flex;align-items:center;gap:4px;font-size:0.9em;cursor:pointer',
+        });
+        scopeLbl.appendChild(scopeChk);
+        scopeLbl.appendChild(document.createTextNode(' Search all folders'));
+        searchRow.append(input, btn, scopeLbl);
         page.appendChild(searchRow);
+
+        if (folderParam && !scopeChk.checked) {
+            page.appendChild(Utils.el('p', {
+                className: 'text-muted',
+                style: 'font-size:0.85em;margin-bottom:12px',
+                textContent: 'Searching in current folder only. Check "Search all folders" to search everywhere.',
+            }));
+        }
 
         const resultsEl = Utils.el('div');
         page.appendChild(resultsEl);
         main.appendChild(page);
+
+        const _buildSearchHash = () => {
+            const v = input.value.trim();
+            if (!v) return null;
+            let hash = `#/search?q=${encodeURIComponent(v)}`;
+            if (!scopeChk.checked && folderParam) hash += `&folder=${encodeURIComponent(folderParam)}`;
+            return hash;
+        };
 
         const _doSearch = async (term) => {
             const needle = term.trim().toLowerCase();
             if (!needle) { resultsEl.innerHTML = ''; return; }
             resultsEl.textContent = 'Searching…';
             try {
-                const manifest = await _loadSearchManifest();
-                const files    = manifest.items.filter(f => f.displayName.toLowerCase().includes(needle));
+                // When scoped to a folder, request the folder-scoped manifest to reduce payload.
+                const manifestFolderId = (!scopeChk.checked && folderParam) ? folderParam : null;
+                const manifest = await _loadSearchManifest(manifestFolderId);
+                let items = manifest.items.filter(f => f.displayName.toLowerCase().includes(needle));
+                if (!scopeChk.checked && folderParam) {
+                    items = items.filter(f => f.folder_id === folderParam);
+                }
                 resultsEl.innerHTML = '';
-                if (!files.length) {
+                if (!items.length) {
                     resultsEl.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'No files found.' }));
                     return;
                 }
                 const tbl = Utils.el('table', { className: 'file-table' });
                 tbl.innerHTML = '<thead><tr><th>Name</th><th>Size</th><th>Location</th><th>Date</th></tr></thead>';
                 const tbody = Utils.el('tbody');
-                for (const f of files) {
+                for (const f of items) {
                     const nameLink = Utils.el('a', { href: '#', textContent: f.displayName, className: 'file-name-link' });
                     nameLink.addEventListener('click', (e) => {
                         e.preventDefault();
@@ -717,11 +873,15 @@ const App = (() => {
         };
 
         btn.addEventListener('click', () => {
-            globalThis.location.hash = `#/search?q=${encodeURIComponent(input.value.trim())}`;
+            const hash = _buildSearchHash();
+            if (hash) globalThis.location.hash = hash;
             _doSearch(input.value.trim());
         });
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') btn.click();
+        });
+        scopeChk.addEventListener('change', () => {
+            if (q) _doSearch(q);
         });
 
         if (q) _doSearch(q);
@@ -1758,19 +1918,48 @@ const App = (() => {
             onClick: () => Auth.logout(),
         });
 
-        // Global file search bar
+        // Global file search bar.
+        // Default scope is "current folder"; a checkbox revealed on focus switches to global.
+        function _getCurrentFolderFromHash() {
+            const m = (globalThis.location.hash || '').match(/^#\/(?:files|team-folders)\/([0-9a-f-]{36})/i);
+            return m ? m[1] : null;
+        }
+
         const searchInput = Utils.el('input', {
             type: 'text',
-            className: 'global-search-input mobile-hidden',
-            placeholder: 'Search files…',
-            style: 'width:40%',
+            className: 'global-search-input',
+            placeholder: 'Search in this folder...',
+            'aria-label': 'Search files',
+        });
+        const allFoldersChk = Utils.el('input', { type: 'checkbox', id: 'gs-all-folders' });
+        const scopeLabel = Utils.el('label', {
+            htmlFor: 'gs-all-folders',
+            className: 'global-search-scope',
+        });
+        scopeLabel.appendChild(allFoldersChk);
+        scopeLabel.appendChild(document.createTextNode(' All folders'));
+
+        searchInput.addEventListener('focus', () => {
+            scopeLabel.classList.add('visible');
+        });
+        searchInput.addEventListener('blur', () => {
+            if (!searchInput.value.trim()) scopeLabel.classList.remove('visible');
         });
         searchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && searchInput.value.trim()) {
-                globalThis.location.hash = `#/search?q=${encodeURIComponent(searchInput.value.trim())}`;
+                const q = searchInput.value.trim();
+                const folderId = allFoldersChk.checked ? null : _getCurrentFolderFromHash();
+                let hash = `#/search?q=${encodeURIComponent(q)}`;
+                if (folderId) hash += `&folder=${encodeURIComponent(folderId)}`;
+                globalThis.location.hash = hash;
                 searchInput.value = '';
+                scopeLabel.classList.remove('visible');
             }
         });
+
+        const searchWrapper = Utils.el('div', { className: 'global-search-wrapper mobile-hidden' });
+        searchWrapper.appendChild(searchInput);
+        searchWrapper.appendChild(scopeLabel);
 
         // --- Mobile utility panel (hamburger → left side panel) ---
         const mobileUtilBackdrop = Utils.el('div', { className: 'mobile-util-backdrop' });
@@ -1785,7 +1974,7 @@ const App = (() => {
         const utilSearch = Utils.el('input', {
             type: 'text',
             className: 'mobile-util-search',
-            placeholder: 'Search files…',
+            placeholder: 'Search in this folder...',
         });
         utilSearch.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && utilSearch.value.trim()) {
@@ -2020,7 +2209,7 @@ const App = (() => {
                     sidebarToggle,
                     _buildBrandEl(),
                 ]),
-                searchInput,
+                searchWrapper,
                 Utils.el('div', { className: 'header-actions' }, [
                     notifBtn,
                     accountLink,
@@ -2135,5 +2324,5 @@ const App = (() => {
         init();
     }
 
-    return { init, pinCurrentFolder, unpinCurrentFolder, isPinned, reloadTheme: _loadTheme, invalidateSearchManifest: _invalidateSearchManifest };
+    return { init, pinCurrentFolder, unpinCurrentFolder, isPinned, reloadTheme: _loadTheme, invalidateSearchManifest: _invalidateSearchManifest, applyManifestDelta };
 })();

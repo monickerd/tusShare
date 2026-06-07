@@ -727,3 +727,153 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_share_exclusions_folder
                 ON share_exclusions(folder_id);
         """)
+
+    # resource_role_grants — role-based ACL grants on files/folders.
+    async with conn.transaction():
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS resource_role_grants (
+                id            TEXT NOT NULL PRIMARY KEY,
+                resource_type TEXT NOT NULL CHECK(resource_type IN ('file', 'folder')),
+                resource_id   TEXT NOT NULL,
+                role_id       TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+                permission    TEXT NOT NULL CHECK(permission IN ('read', 'write', 'admin', 'manage_permissions')),
+                recursive     INTEGER NOT NULL DEFAULT 0,
+                granted_by    TEXT REFERENCES users(id) ON DELETE SET NULL,
+                created_at    TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+                UNIQUE(resource_type, resource_id, role_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rrg_resource ON resource_role_grants(resource_type, resource_id);
+            CREATE INDEX IF NOT EXISTS idx_rrg_role     ON resource_role_grants(role_id);
+        """)
+
+    # detail_enc column on security_events for encrypted audit log.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE security_events ADD COLUMN IF NOT EXISTS detail_enc TEXT DEFAULT NULL;
+        """)
+
+    # audit_key_grants — per-user wrapped copies of K_audit for human viewers.
+    async with conn.transaction():
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS audit_key_grants (
+                id                   TEXT PRIMARY KEY,
+                user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                ephemeral_x25519_pub TEXT NOT NULL,
+                kem_ciphertext       TEXT NOT NULL,
+                encrypted_k_audit    TEXT NOT NULL,
+                sk_iv                TEXT NOT NULL,
+                created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(user_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_key_grants_user ON audit_key_grants(user_id);
+        """)
+
+    # RANGE partitioning for audit tables — convert existing regular tables.
+    # For each table, if it is a regular table (relkind='r') rather than a
+    # partitioned table (relkind='p'), we rename it to _legacy, recreate it
+    # as a partitioned table, copy all rows, and drop the legacy table.
+    # This migration is idempotent — if the table is already partitioned it
+    # is skipped.  The copy step may be slow for large existing deployments;
+    # if it times out, re-run startup and it will resume from where it left off
+    # because the legacy table survives a failed copy.
+    for _tbl in ("access_logs", "security_events", "bandwidth_log"):
+        _row = await conn.fetchrow(
+            "SELECT relkind FROM pg_class WHERE relname = $1 AND relkind IN ('r', 'p')",
+            _tbl,
+        )
+        if _row is None or _row["relkind"] == "p":
+            continue  # not found or already partitioned
+
+        # Regular table — migrate to partitioned.
+        logger.info("Startup migration: converting %s to partitioned table", _tbl)
+        _legacy = f"{_tbl}_legacy_pre_partition"
+        async with conn.transaction():
+            await conn.execute(f"ALTER TABLE {_tbl} RENAME TO {_legacy}")
+
+            if _tbl == "access_logs":
+                await conn.execute(f"""
+                    CREATE TABLE {_tbl} (
+                        id                TEXT        NOT NULL,
+                        file_id           TEXT,
+                        user_id           TEXT,
+                        actor_username    TEXT,
+                        actor_auth_method TEXT,
+                        share_id          TEXT,
+                        ip_address        TEXT        NOT NULL DEFAULT '',
+                        user_agent        TEXT,
+                        action            TEXT        NOT NULL DEFAULT 'view',
+                        timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (id, timestamp)
+                    ) PARTITION BY RANGE (timestamp)
+                """)
+                await conn.execute(f"""
+                    CREATE TABLE {_tbl}_default PARTITION OF {_tbl} DEFAULT
+                """)
+                await conn.execute(f"""
+                    CREATE TRIGGER prevent_{_tbl}_default_update
+                    BEFORE UPDATE ON {_tbl}_default FOR EACH ROW
+                    EXECUTE FUNCTION _prevent_access_log_mutation()
+                """)
+                await conn.execute(f"""
+                    CREATE TRIGGER prevent_{_tbl}_default_delete
+                    BEFORE DELETE ON {_tbl}_default FOR EACH ROW
+                    EXECUTE FUNCTION _prevent_access_log_mutation()
+                """)
+
+            elif _tbl == "security_events":
+                await conn.execute(f"""
+                    CREATE TABLE {_tbl} (
+                        id                TEXT        NOT NULL,
+                        user_id           TEXT,
+                        actor_username    TEXT,
+                        actor_auth_method TEXT,
+                        ip_address        TEXT        NOT NULL DEFAULT '',
+                        user_agent        TEXT,
+                        event_type        TEXT        NOT NULL DEFAULT 'system.unknown',
+                        action_key        TEXT,
+                        detail            TEXT,
+                        severity          TEXT        NOT NULL DEFAULT 'info',
+                        outcome           TEXT,
+                        actor_session_id  TEXT,
+                        target_type       TEXT,
+                        target_id         TEXT,
+                        target_name       TEXT,
+                        admin_actor_id    TEXT,
+                        timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        detail_enc        TEXT        DEFAULT NULL,
+                        PRIMARY KEY (id, timestamp)
+                    ) PARTITION BY RANGE (timestamp)
+                """)
+                await conn.execute(f"""
+                    CREATE TABLE {_tbl}_default PARTITION OF {_tbl} DEFAULT
+                """)
+                await conn.execute(f"""
+                    CREATE TRIGGER prevent_{_tbl}_default_update
+                    BEFORE UPDATE ON {_tbl}_default FOR EACH ROW
+                    EXECUTE FUNCTION _prevent_security_event_mutation()
+                """)
+                await conn.execute(f"""
+                    CREATE TRIGGER prevent_{_tbl}_default_delete
+                    BEFORE DELETE ON {_tbl}_default FOR EACH ROW
+                    EXECUTE FUNCTION _prevent_security_event_mutation()
+                """)
+
+            elif _tbl == "bandwidth_log":
+                await conn.execute(f"""
+                    CREATE TABLE {_tbl} (
+                        id        TEXT        NOT NULL,
+                        user_id   TEXT,
+                        bytes     BIGINT      NOT NULL DEFAULT 0,
+                        direction TEXT        NOT NULL DEFAULT 'upload',
+                        timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        PRIMARY KEY (id, timestamp)
+                    ) PARTITION BY RANGE (timestamp)
+                """)
+                await conn.execute(f"""
+                    CREATE TABLE {_tbl}_default PARTITION OF {_tbl} DEFAULT
+                """)
+
+            # Copy existing rows into the new partitioned table.
+            await conn.execute(f"INSERT INTO {_tbl} SELECT * FROM {_legacy}")
+            await conn.execute(f"DROP TABLE {_legacy}")
+            logger.info("Startup migration: %s partitioned successfully", _tbl)

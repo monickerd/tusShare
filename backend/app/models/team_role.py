@@ -1,13 +1,13 @@
 """Custom team-scoped role models and query helpers.
 
 Custom team roles are created per-team by users with can_create_roles.
-They carry team-specific permission flags (move flags) rather than
+They carry team-specific permission flags (move flags, folder-manage flags) rather than
 the global admin flags defined in role_permission_flags.
 
 Global team roles (team_admin, team_manager, team_member) are stored in
-user_roles with scope_type='team' and have implicit move defaults:
-  team_admin / team_manager : both move flags on
-  team_member               : both move flags off
+user_roles with scope_type='team' and have implicit defaults:
+  team_admin / team_manager : all flags on
+  team_member               : move flags off, manage_own on, manage_all off
 """
 
 from dataclasses import dataclass
@@ -18,17 +18,24 @@ from dataclasses import dataclass
 
 TEAM_FLAG_MOVE_OWN_OUT = "move_own_files_out_of_team"
 TEAM_FLAG_MOVE_OTHERS_OUT = "move_others_files_out_of_team"
+TEAM_FLAG_MANAGE_FOLDER_OWN = "team_folder_manage_own"
+TEAM_FLAG_MANAGE_FOLDER_ALL = "team_folder_manage_all"
 
 # All valid flags for team roles (the complete set checked server-side)
 TEAM_ROLE_FLAGS: frozenset[str] = frozenset(
     {
         TEAM_FLAG_MOVE_OWN_OUT,
         TEAM_FLAG_MOVE_OTHERS_OUT,
+        TEAM_FLAG_MANAGE_FOLDER_OWN,
+        TEAM_FLAG_MANAGE_FOLDER_ALL,
     }
 )
 
-# Global team role IDs that carry default move authority
-_MOVE_AUTHORITY_ROLES = frozenset({"team_admin", "team_manager"})
+# Global team role IDs that carry default authority (admin + manager)
+_AUTHORITY_ROLES = frozenset({"team_admin", "team_manager"})
+
+# Backwards-compatible alias used by move-permission checks
+_MOVE_AUTHORITY_ROLES = _AUTHORITY_ROLES
 
 # Display metadata for UI rendering (ordered)
 TEAM_FLAG_META: list[dict] = [
@@ -41,6 +48,16 @@ TEAM_FLAG_META: list[dict] = [
         "flag": TEAM_FLAG_MOVE_OTHERS_OUT,
         "label": "Move others' files out of team",
         "description": "May move files owned by another user out of a team folder",
+    },
+    {
+        "flag": TEAM_FLAG_MANAGE_FOLDER_OWN,
+        "label": "Manage own team folders",
+        "description": "May manage (restrict permissions, set grants on) folders they created within the team",
+    },
+    {
+        "flag": TEAM_FLAG_MANAGE_FOLDER_ALL,
+        "label": "Manage all team folders",
+        "description": "May manage any folder within the team regardless of who created it",
     },
 ]
 
@@ -100,21 +117,18 @@ async def get_user_team_move_flags(db, user_id: str, team_id: str) -> dict[str, 
       team_admin / team_manager → both flags True
       team_member               → both flags False (unless custom role grants them)
     """
-    # Check global roles scoped to this team
     cursor = await db.execute(
         "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
         (user_id, team_id),
     )
     scoped_role_ids = {r["role_id"] for r in await cursor.fetchall()}
 
-    if scoped_role_ids & _MOVE_AUTHORITY_ROLES:
-        # team_admin or team_manager: full move authority
+    if scoped_role_ids & _AUTHORITY_ROLES:
         return {
             TEAM_FLAG_MOVE_OWN_OUT: True,
             TEAM_FLAG_MOVE_OTHERS_OUT: True,
         }
 
-    # Check custom team role assignments for this user in this team
     cursor = await db.execute(
         "SELECT tp.flag, MAX(tp.value) AS value "
         "FROM team_role_assignments tra "
@@ -128,4 +142,43 @@ async def get_user_team_move_flags(db, user_id: str, team_id: str) -> dict[str, 
     return {
         TEAM_FLAG_MOVE_OWN_OUT: custom_flags.get(TEAM_FLAG_MOVE_OWN_OUT, False),
         TEAM_FLAG_MOVE_OTHERS_OUT: custom_flags.get(TEAM_FLAG_MOVE_OTHERS_OUT, False),
+    }
+
+
+async def get_user_team_manage_flags(db, user_id: str, team_id: str) -> dict[str, bool]:
+    """Return effective folder-manage flags for a user within a team.
+
+    Global defaults:
+      team_admin / team_manager → both manage flags True
+      team_member               → manage_own True, manage_all False
+    Custom roles can override either flag.
+    """
+    cursor = await db.execute(
+        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+        (user_id, team_id),
+    )
+    scoped_role_ids = {r["role_id"] for r in await cursor.fetchall()}
+
+    if scoped_role_ids & _AUTHORITY_ROLES:
+        return {
+            TEAM_FLAG_MANAGE_FOLDER_OWN: True,
+            TEAM_FLAG_MANAGE_FOLDER_ALL: True,
+        }
+
+    cursor = await db.execute(
+        "SELECT tp.flag, MAX(tp.value) AS value "
+        "FROM team_role_assignments tra "
+        "JOIN team_role_permissions tp ON tp.team_role_id = tra.team_role_id "
+        "WHERE tra.user_id = ? AND tra.team_id = ? "
+        "  AND tp.flag IN (?, ?) "
+        "GROUP BY tp.flag",
+        (user_id, team_id, TEAM_FLAG_MANAGE_FOLDER_OWN, TEAM_FLAG_MANAGE_FOLDER_ALL),
+    )
+    custom_flags = {r["flag"]: r["value"] not in ("0", "", "false", "False", "no") for r in await cursor.fetchall()}
+
+    # team_member default: manage_own=True (owner already granted by _annotate_can_manage),
+    # manage_all=False (need explicit grant via custom role).
+    return {
+        TEAM_FLAG_MANAGE_FOLDER_OWN: custom_flags.get(TEAM_FLAG_MANAGE_FOLDER_OWN, True),
+        TEAM_FLAG_MANAGE_FOLDER_ALL: custom_flags.get(TEAM_FLAG_MANAGE_FOLDER_ALL, False),
     }

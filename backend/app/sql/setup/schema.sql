@@ -982,6 +982,28 @@ CREATE UNIQUE INDEX idx_perm_unique        ON permissions(resource_type, resourc
 CREATE INDEX idx_permissions_policy_effect ON permissions(policy_effect_id);
 
 -------------------------------------------------
+-- RESOURCE ROLE GRANTS
+-- Role-based ACL grants on files/folders (complement to per-user permissions).
+-- Any user holding the named role gains the specified permission on the resource.
+-- granted_by: nullable — admin who created the grant.
+-- recursive:  1 = applies to all children that don't restrict_permissions.
+-------------------------------------------------
+CREATE TABLE resource_role_grants (
+    id            TEXT NOT NULL PRIMARY KEY,
+    resource_type TEXT NOT NULL CHECK(resource_type IN ('file', 'folder')),
+    resource_id   TEXT NOT NULL,
+    role_id       TEXT NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    permission    TEXT NOT NULL CHECK(permission IN ('read', 'write', 'admin', 'manage_permissions')),
+    recursive     INTEGER NOT NULL DEFAULT 0,
+    granted_by    TEXT REFERENCES users(id) ON DELETE SET NULL,
+    created_at    TEXT NOT NULL DEFAULT (to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+    UNIQUE(resource_type, resource_id, role_id)
+);
+
+CREATE INDEX idx_rrg_resource ON resource_role_grants(resource_type, resource_id);
+CREATE INDEX idx_rrg_role     ON resource_role_grants(role_id);
+
+-------------------------------------------------
 -- TEAM FOLDER ROLE LEVELS (Phase 1)
 -- Per-team override: what folder permission level each team role grants.
 -- Rows absent here fall back to _TEAM_ROLE_DEFAULTS in _access.py.
@@ -1063,20 +1085,26 @@ CREATE INDEX idx_invsl_invite  ON invite_short_links(invite_id);
 
 -------------------------------------------------
 -- ACCESS LOGS (append-only audit trail)
--- BEFORE UPDATE/DELETE triggers enforce immutability at the DB layer.
+-- Partitioned by month (RANGE on timestamp) for scalable retention.
+-- Immutability enforced by per-partition BEFORE triggers; retention is
+-- achieved by DROP TABLE on expired partitions (bypasses triggers cleanly).
+-- PRIMARY KEY includes timestamp because the partition key must appear in
+-- any UNIQUE constraint on a partitioned table.  No FK references exist to
+-- this table so the wider key is safe.
 -------------------------------------------------
 CREATE TABLE access_logs (
-    id                TEXT PRIMARY KEY,
+    id                TEXT        NOT NULL,
     file_id           TEXT,
     user_id           TEXT,
     actor_username    TEXT,      -- denormalised: actual username or 'external' for anonymous share access
     actor_auth_method TEXT,      -- denormalised: 'opaque' | 'ldap' | 'oidc' | 'service' | NULL for anonymous
     share_id          TEXT,
-    ip_address        TEXT NOT NULL,
+    ip_address        TEXT        NOT NULL,
     user_agent        TEXT,
-    action            TEXT NOT NULL CHECK(action IN ('view', 'download', 'upload', 'delete', 'share')),
-    timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    action            TEXT        NOT NULL CHECK(action IN ('view', 'download', 'upload', 'delete', 'share')),
+    timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, timestamp)
+) PARTITION BY RANGE (timestamp);
 
 CREATE INDEX idx_alog_file      ON access_logs(file_id);
 CREATE INDEX idx_alog_user      ON access_logs(user_id);
@@ -1090,36 +1118,43 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER prevent_access_log_update
-    BEFORE UPDATE ON access_logs
-    FOR EACH ROW EXECUTE FUNCTION _prevent_access_log_mutation();
+-- Default partition — receives rows that fall outside all month partitions.
+-- Startup and maintenance code creates specific monthly partitions; this
+-- prevents INSERT failures when a monthly partition hasn't been created yet.
+CREATE TABLE access_logs_default PARTITION OF access_logs DEFAULT;
 
+CREATE TRIGGER prevent_access_log_update
+    BEFORE UPDATE ON access_logs_default
+    FOR EACH ROW EXECUTE FUNCTION _prevent_access_log_mutation();
 CREATE TRIGGER prevent_access_log_delete
-    BEFORE DELETE ON access_logs
+    BEFORE DELETE ON access_logs_default
     FOR EACH ROW EXECUTE FUNCTION _prevent_access_log_mutation();
 
 -------------------------------------------------
--- BANDWIDTH LOG
+-- BANDWIDTH LOG (partitioned by month)
 -------------------------------------------------
 CREATE TABLE bandwidth_log (
-    id        TEXT PRIMARY KEY,
-    user_id   TEXT REFERENCES users(id) ON DELETE SET NULL,
-    bytes     BIGINT NOT NULL,
-    direction TEXT NOT NULL CHECK(direction IN ('upload', 'download')),
-    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    id        TEXT        NOT NULL,
+    user_id   TEXT        REFERENCES users(id) ON DELETE SET NULL,
+    bytes     BIGINT      NOT NULL,
+    direction TEXT        NOT NULL CHECK(direction IN ('upload', 'download')),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id, timestamp)
+) PARTITION BY RANGE (timestamp);
 
 CREATE INDEX idx_bwlog_user      ON bandwidth_log(user_id);
 CREATE INDEX idx_bwlog_timestamp ON bandwidth_log(timestamp);
 
+CREATE TABLE bandwidth_log_default PARTITION OF bandwidth_log DEFAULT;
+
 -------------------------------------------------
 -- SECURITY EVENTS (append-only, separate from access_logs)
--- BEFORE UPDATE/DELETE triggers enforce immutability at the DB layer.
+-- Partitioned by month; immutability enforced by per-partition BEFORE triggers.
 -- SIEM canonical columns: severity, outcome, actor_session_id,
 --   target_type, target_id, target_name, admin_actor_id.
 -------------------------------------------------
 CREATE TABLE security_events (
-    id                TEXT        PRIMARY KEY,
+    id                TEXT        NOT NULL,
     user_id           TEXT,
     actor_username    TEXT,      -- denormalised: preserved even if user is later deleted
     actor_auth_method TEXT,      -- denormalised: 'opaque' | 'ldap' | 'oidc' | 'service' | NULL for unauthenticated
@@ -1134,9 +1169,11 @@ CREATE TABLE security_events (
     target_type       TEXT,
     target_id         TEXT,
     target_name       TEXT,
-    admin_actor_id    TEXT REFERENCES users(id),
-    timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    admin_actor_id    TEXT,
+    timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    detail_enc        TEXT        DEFAULT NULL,
+    PRIMARY KEY (id, timestamp)
+) PARTITION BY RANGE (timestamp);
 
 CREATE INDEX idx_sevt_user      ON security_events(user_id);
 CREATE INDEX idx_sevt_type      ON security_events(event_type);
@@ -1150,12 +1187,13 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER prevent_security_event_update
-    BEFORE UPDATE ON security_events
-    FOR EACH ROW EXECUTE FUNCTION _prevent_security_event_mutation();
+CREATE TABLE security_events_default PARTITION OF security_events DEFAULT;
 
+CREATE TRIGGER prevent_security_event_update
+    BEFORE UPDATE ON security_events_default
+    FOR EACH ROW EXECUTE FUNCTION _prevent_security_event_mutation();
 CREATE TRIGGER prevent_security_event_delete
-    BEFORE DELETE ON security_events
+    BEFORE DELETE ON security_events_default
     FOR EACH ROW EXECUTE FUNCTION _prevent_security_event_mutation();
 
 -------------------------------------------------

@@ -460,6 +460,34 @@ log append-only from the application's perspective. A compromised application
 account cannot silently delete or alter log entries (a superuser-level DB
 compromise would still be required).
 
+The three audit tables (`access_logs`, `security_events`, `bandwidth_log`) are
+RANGE-partitioned by month.  Retention is enforced by `DROP TABLE` on expired
+monthly partitions — a DDL operation that cleanly bypasses the row-level
+immutability triggers.  The default retention window is 30 days (configurable
+via the `op_event_retention_days` admin setting).
+
+#### Encrypted audit event details (detail_enc)
+
+Sensitive social-graph fields in `security_events` (`actor_username`,
+`ip_address`, `target_name`, `admin_actor_id`, freeform `detail`) are stored in
+a `detail_enc` column encrypted with AES-256-GCM under a server-held key
+(`K_audit`).  This protects against a DB-dump-only attacker (SQL injection,
+stolen backup) while keeping all four SIEM output paths unchanged — they fan out
+from the in-memory event bus before persistence and always see plaintext.
+
+K_audit is generated on first use, wrapped under HKDF(JWT_SECRET) + AES-GCM,
+and stored in `admin_settings`.  Administrators with the `audit_log_view` flag
+can be granted a per-user wrapped copy (`audit_key_grants` table), derived via
+X25519 ECDH + HKDF + AES-GCM over their stored public key, for client-side
+decryption in the audit UI.  Revocation is immediate — deleting the row removes
+access with no coordination required from other key holders.
+
+**Residual risk:** because the server holds K_audit in plaintext, a server-level
+compromise is out of scope for this protection.  The `audit_key_grants` grants
+are administrative access control, not cryptographic — a rogue server admin
+could write a wrapped copy for any user.  This is the same rogue-admin caveat
+documented elsewhere and is visible in the audit trail itself.
+
 ### Privilege abuse (rogue admin)
 
 An administrator with sufficient privilege can create a new user account and

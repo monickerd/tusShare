@@ -116,6 +116,114 @@
     margin-top: var(--space-5);
 }
 
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: var(--space-4);
+    border-bottom: 1px solid var(--color-border);
+    padding-bottom: var(--space-3);
+}
+.modal-title {
+    font-size: var(--font-size-lg);
+    font-weight: 600;
+    margin: 0;
+}
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 1.4rem;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--color-text-secondary);
+    padding: 0 var(--space-1);
+}
+.modal-close:hover { color: var(--color-text); }
+
+.modal-body {
+    padding: 0;
+}
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-top: var(--space-5);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--color-border);
+}
+
+/* === Manage Folder modal === */
+.manage-folder-modal {
+    min-width: 480px;
+    max-width: 600px;
+}
+.manage-folder-section {
+    margin-bottom: var(--space-5);
+}
+.manage-folder-section-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-secondary);
+    margin: 0 0 var(--space-3) 0;
+}
+.manage-folder-meta {
+    display: grid;
+    grid-template-columns: 130px 1fr;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    font-size: var(--font-size-sm);
+}
+.manage-folder-meta dt {
+    color: var(--color-text-secondary);
+    font-weight: 500;
+}
+.manage-folder-meta dd { margin: 0; }
+
+.manage-folder-toggle-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    cursor: pointer;
+    font-weight: 500;
+}
+.manage-folder-grants-table {
+    width: 100%;
+    margin-top: var(--space-3);
+}
+.manage-folder-add-grant {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+/* === Global search scope toggle === */
+.global-search-wrapper {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 40%;
+}
+.global-search-wrapper .global-search-input {
+    flex: 1;
+    min-width: 0;
+}
+.global-search-scope {
+    display: none;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+}
+.global-search-scope.visible {
+    display: flex;
+}
+
 /* === Confirm dialog === */
 .confirm-dialog p {
     margin-bottom: var(--space-4);

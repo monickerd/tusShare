@@ -24,6 +24,7 @@ Self-healing:
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
@@ -57,13 +58,159 @@ async def _sweep_stale_short_links(db) -> int:
 
 
 async def _sweep_bandwidth_log(db) -> int:
-    """Delete bandwidth_log rows older than op_event_retention_days (default 30)."""
+    """Delete bandwidth_log rows older than op_event_retention_days (default 30).
+
+    Falls back to row-level DELETE for deployments where bandwidth_log is not
+    yet partitioned; the partition manager below handles the DROP TABLE path.
+    """
     retention_days = await get_admin_setting(db, "op_event_retention_days", 30, dtype=int)
     result = await db.execute(
         "DELETE FROM bandwidth_log WHERE timestamp < NOW() - (? || ' days')::interval",
         (str(retention_days),),
     )
     return result.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Partition management for RANGE-partitioned audit tables
+# ---------------------------------------------------------------------------
+
+_PARTITIONED_AUDIT_TABLES = ("access_logs", "security_events", "bandwidth_log")
+
+# Trigger functions to apply to each new monthly partition.
+_PARTITION_TRIGGER_SQL: dict[str, str] = {
+    "access_logs": "EXECUTE FUNCTION _prevent_access_log_mutation()",
+    "security_events": "EXECUTE FUNCTION _prevent_security_event_mutation()",
+}
+
+
+async def _is_partitioned(db, table: str) -> bool:
+    """Return True if the named table is a PostgreSQL partitioned table (relkind='p')."""
+    row = await db.execute(
+        "SELECT relkind FROM pg_class WHERE relname = ? AND relkind IN ('r', 'p')",
+        (table,),
+    )
+    r = await row.fetchone()
+    return bool(r and r["relkind"] == "p")
+
+
+async def _create_partition(db, table: str, year: int, month: int) -> bool:
+    """Create a monthly partition for *table* if it doesn't already exist.
+
+    Returns True if a new partition was created.
+    """
+    suffix = f"{year:04d}_{month:02d}"
+    partition_name = f"{table}_{suffix}"
+
+    # Compute range boundaries
+    from_dt = f"{year:04d}-{month:02d}-01"
+    if month == 12:
+        to_dt = f"{year + 1:04d}-01-01"
+    else:
+        to_dt = f"{year:04d}-{month + 1:02d}-01"
+
+    # Skip if already exists
+    r = await db.execute("SELECT 1 FROM pg_class WHERE relname = ?", (partition_name,))
+    if await r.fetchone():
+        return False
+
+    await db.execute(
+        f"CREATE TABLE {partition_name} PARTITION OF {table} "
+        f"FOR VALUES FROM ('{from_dt}') TO ('{to_dt}')"
+    )
+
+    # Add immutability triggers to append-only partitions
+    if table in _PARTITION_TRIGGER_SQL:
+        fn = _PARTITION_TRIGGER_SQL[table]
+        await db.execute(
+            f"CREATE TRIGGER prevent_{table}_{suffix}_update "
+            f"BEFORE UPDATE ON {partition_name} FOR EACH ROW {fn}"
+        )
+        await db.execute(
+            f"CREATE TRIGGER prevent_{table}_{suffix}_delete "
+            f"BEFORE DELETE ON {partition_name} FOR EACH ROW {fn}"
+        )
+
+    return True
+
+
+async def _drop_expired_partition(db, table: str, year: int, month: int) -> bool:
+    """Drop an expired monthly partition for *table* if it exists.
+
+    DROP TABLE bypasses the immutability triggers — this is the intended
+    retention mechanism for partitioned audit tables.
+    Returns True if a partition was dropped.
+    """
+    suffix = f"{year:04d}_{month:02d}"
+    partition_name = f"{table}_{suffix}"
+    r = await db.execute("SELECT 1 FROM pg_class WHERE relname = ?", (partition_name,))
+    if not await r.fetchone():
+        return False
+    await db.execute(f"DROP TABLE {partition_name}")
+    return True
+
+
+async def _manage_audit_partitions(db, retention_days: int = 30) -> dict[str, int]:
+    """Create upcoming monthly partitions and drop expired ones.
+
+    Creates partitions for the current month and the next 2 months for each
+    partitioned audit table.  Drops partitions older than retention_days.
+
+    Returns a dict with 'created' and 'dropped' counts.
+    """
+    created = 0
+    dropped = 0
+
+    now = datetime.now(timezone.utc)
+    current_year, current_month = now.year, now.month
+
+    def _month_offset(base_year: int, base_month: int, delta: int):
+        """Return (year, month) for base + delta months (delta can be negative)."""
+        total = base_year * 12 + (base_month - 1) + delta
+        return total // 12, (total % 12) + 1
+
+    for table in _PARTITIONED_AUDIT_TABLES:
+        if not await _is_partitioned(db, table):
+            continue
+
+        # Create current + next 2 months
+        for delta in range(3):
+            y, m = _month_offset(current_year, current_month, delta)
+            if await _create_partition(db, table, y, m):
+                created += 1
+
+        # Drop partitions older than retention_days.
+        # Walk back month-by-month (max 10 years = 120 months).
+        for months_back in range(1, 121):
+            y, m = _month_offset(current_year, current_month, -months_back)
+            if y < 2020:
+                break
+            # Partition end = start of the following month.
+            end_y, end_m = _month_offset(y, m, 1)
+            cutoff = datetime(end_y, end_m, 1, tzinfo=timezone.utc)
+            age_days = (now - cutoff).days
+            if age_days <= retention_days:
+                continue  # still within retention window
+            if await _drop_expired_partition(db, table, y, m):
+                dropped += 1
+
+    return {"created": created, "dropped": dropped}
+
+
+async def ensure_audit_partitions(db_factory) -> None:
+    """Create current + upcoming monthly partitions for all partitioned audit tables.
+
+    Called once at startup so that new events always have a partition to land in.
+    The default partition catches any rows that fall outside a specific partition.
+    """
+    try:
+        async with db_factory() as db:
+            result = await _manage_audit_partitions(db, retention_days=99999)  # no drops at startup
+            await db.commit()
+            if result["created"]:
+                logger.info("Partition startup: created %d monthly partition(s)", result["created"])
+    except Exception:
+        logger.exception("Partition startup: failed to create initial partitions")
 
 
 async def _sweep_stale_pending_share_keying(db) -> int:
@@ -222,6 +369,19 @@ async def run_daily_maintenance(db_factory, interval: float = 86400.0) -> None:
                     logger.info("Maintenance: removed %d old bandwidth_log row(s)", n)
             except Exception:
                 logger.exception("Maintenance: bandwidth_log sweep failed")
+
+        async with db_factory() as db:
+            try:
+                retention_days = await get_admin_setting(db, "op_event_retention_days", 30, dtype=int)
+                result = await _manage_audit_partitions(db, retention_days=retention_days)
+                await db.commit()
+                if result["created"] or result["dropped"]:
+                    logger.info(
+                        "Maintenance: audit partitions — created %d, dropped %d",
+                        result["created"], result["dropped"],
+                    )
+            except Exception:
+                logger.exception("Maintenance: audit partition management failed")
 
         async with db_factory() as db:
             try:

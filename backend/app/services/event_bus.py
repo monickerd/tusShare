@@ -31,6 +31,7 @@ from datetime import timezone
 
 from app.config import settings
 from app.schemas.security_event import SecurityEvent
+from app.services import audit_key as _audit_key
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,63 @@ async def _drain_loop() -> None:
             logger.exception("Event bus: unhandled error in drain loop")
 
 
+def _build_persist_params(event: SecurityEvent, event_id: str) -> tuple:
+    """Build INSERT params for security_events, encrypting sensitive fields.
+
+    If K_audit is available the social-graph fields are bundled into detail_enc
+    (AES-256-GCM) and stored as NULL in their plaintext columns.  Readers that
+    need the fields must decrypt detail_enc.  The four routing columns
+    (event_type, severity, outcome, timestamp) are always plaintext.
+    """
+    ts = event.timestamp.astimezone(timezone.utc).isoformat()
+
+    k = _audit_key.get_k_audit()
+    if k is not None:
+        sensitive = {
+            "actor_username": event.actor.username,
+            "ip_address":     event.actor.ip or "",
+            "target_id":      event.target.id   if event.target else None,
+            "target_name":    event.target.name if event.target else None,
+            "admin_actor_id": event.admin_actor_id,
+            "detail":         event.detail or {},
+        }
+        detail_enc = _audit_key.encrypt_detail(sensitive)
+        actor_username = None
+        ip_address     = None
+        target_id      = event.target.id   if event.target else None  # kept for filtering
+        target_name    = None
+        admin_actor_id = None
+        detail_json    = None
+    else:
+        detail_enc     = None
+        actor_username = event.actor.username
+        ip_address     = event.actor.ip or ""
+        target_id      = event.target.id   if event.target else None
+        target_name    = event.target.name if event.target else None
+        admin_actor_id = event.admin_actor_id
+        detail_json    = json.dumps(event.detail) if event.detail else None
+
+    return (
+        event_id,
+        event.actor.user_id,
+        actor_username,
+        event.actor.auth_method,
+        ip_address,
+        None,  # user_agent — not available at bus level
+        event.event_type,
+        event.severity,
+        event.outcome,
+        event.actor.session_id,
+        event.target.type if event.target else None,
+        target_id,
+        target_name,
+        admin_actor_id,
+        detail_json,
+        ts,
+        detail_enc,
+    )
+
+
 async def _persist(event: SecurityEvent) -> None:
     """Write the event to the security_events table."""
     if _db_session_factory is None:
@@ -173,35 +231,17 @@ async def _persist(event: SecurityEvent) -> None:
         return
     try:
         async with _db_session_factory() as db:
-            ts = event.timestamp.astimezone(timezone.utc).isoformat()
-            detail_json = json.dumps(event.detail) if event.detail else None
+            params = _build_persist_params(event, str(uuid.uuid4()))
             await db.execute(
                 """
                 INSERT INTO security_events
                     (id, user_id, actor_username, actor_auth_method, ip_address, user_agent,
                      event_type, severity, outcome, actor_session_id,
                      target_type, target_id, target_name,
-                     admin_actor_id, detail, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     admin_actor_id, detail, timestamp, detail_enc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (
-                    str(uuid.uuid4()),
-                    event.actor.user_id,
-                    event.actor.username,
-                    event.actor.auth_method,
-                    event.actor.ip or "",
-                    None,  # user_agent — not available at bus level
-                    event.event_type,
-                    event.severity,
-                    event.outcome,
-                    event.actor.session_id,
-                    event.target.type if event.target else None,
-                    event.target.id if event.target else None,
-                    event.target.name if event.target else None,
-                    event.admin_actor_id,
-                    detail_json,
-                    ts,
-                ),
+                params,
             )
             await db.commit()
     except Exception:
@@ -216,35 +256,17 @@ async def _persist_batch(events: list[SecurityEvent]) -> None:
     try:
         async with _db_session_factory() as db:
             for event in events:
-                ts = event.timestamp.astimezone(timezone.utc).isoformat()
-                detail_json = json.dumps(event.detail) if event.detail else None
+                params = _build_persist_params(event, str(uuid.uuid4()))
                 await db.execute(
                     """
                     INSERT INTO security_events
                         (id, user_id, actor_username, actor_auth_method, ip_address, user_agent,
                          event_type, severity, outcome, actor_session_id,
                          target_type, target_id, target_name,
-                         admin_actor_id, detail, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         admin_actor_id, detail, timestamp, detail_enc)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        str(uuid.uuid4()),
-                        event.actor.user_id,
-                        event.actor.username,
-                        event.actor.auth_method,
-                        event.actor.ip or "",
-                        None,
-                        event.event_type,
-                        event.severity,
-                        event.outcome,
-                        event.actor.session_id,
-                        event.target.type if event.target else None,
-                        event.target.id if event.target else None,
-                        event.target.name if event.target else None,
-                        event.admin_actor_id,
-                        detail_json,
-                        ts,
-                    ),
+                    params,
                 )
             await db.commit()
     except Exception:

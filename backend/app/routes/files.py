@@ -373,20 +373,14 @@ async def search_files(
     }
 
 
-@router.get("/manifest")
-async def get_file_manifest(
-    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
-    db: Annotated[Database, Depends(get_db)],
-):
-    """Return all files accessible to the user for client-side search.
+import hashlib as _hashlib
 
-    The server returns name_ct (ciphertext) rather than executing a plaintext
-    query — the client decrypts names locally and performs substring matching
-    in-memory, so the server never learns the search term.  original_name is
-    included as a fallback for rows that have not yet been through the lazy
-    name-encryption migration.
-    """
-    cursor = await db.execute(
+_MANIFEST_LIMIT = 10000
+
+
+def _manifest_cte_params(user_id: str) -> tuple[str, tuple]:
+    """Return the manifest CTE SQL fragment and its positional parameters."""
+    sql = (
         "WITH RECURSIVE "
         "team_tree(id) AS ( "
         "    SELECT tf.folder_id "
@@ -405,35 +399,114 @@ async def get_file_manifest(
         "    JOIN perm_tree pt ON f.parent_id = pt.id AND pt.rec = 1 "
         "    WHERE f.restrict_permissions = false AND f.deleted_at IS NULL "
         ") "
-        "SELECT f.id, f.name_ct, f.original_name, f.size_bytes, f.created_at, "
-        "       f.folder_id, f.encrypted_file_key, f.key_iv, fold.name AS folder_name "
-        "FROM files f "
-        "LEFT JOIN folders fold ON fold.id = f.folder_id "
-        "WHERE f.deleted_at IS NULL AND f.upload_complete = 1 "
-        "  AND (f.owner_id = ? "
-        "       OR f.folder_id IN (SELECT id FROM team_tree) "
-        "       OR f.folder_id IN (SELECT id FROM perm_tree)) "
-        "ORDER BY f.created_at DESC "
-        "LIMIT 10000",
-        (user.id, user.id, user.id),
     )
+    return sql, (user_id, user_id)
+
+
+def _rows_to_manifest_files(rows) -> list[dict]:
+    return [
+        {
+            "id":                r["id"],
+            "name_ct":           r["name_ct"],
+            "original_name":     r["original_name"],
+            "size_bytes":        r["size_bytes"],
+            "created_at":        str(r["created_at"]) if r["created_at"] else None,
+            "folder_id":         r["folder_id"],
+            "folder_path":       r["folder_name"] or "(root)",
+            "encrypted_file_key": r["encrypted_file_key"],
+            "key_iv":            r["key_iv"],
+        }
+        for r in rows
+    ]
+
+
+@router.get("/manifest")
+async def get_file_manifest(
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    folder_id: str | None = None,
+):
+    """Return all files accessible to the user for client-side search.
+
+    The server returns name_ct (ciphertext) rather than executing a plaintext
+    query — the client decrypts names locally and performs substring matching
+    in-memory, so the server never learns the search term.  original_name is
+    included as a fallback for rows that have not yet been through the lazy
+    name-encryption migration.
+
+    Optional folder_id param scopes the manifest to a specific folder subtree
+    (permission-boundary optimisation — reduces payload when searching within
+    a single restricted folder).
+
+    Supports ETag-based conditional GET: returns 304 Not Modified when the
+    client's cached manifest is still current.
+    """
+    if folder_id is not None:
+        try:
+            folder_id = validate_uuid(folder_id)
+        except ValueError:
+            folder_id = None
+
+    cte_sql, cte_params = _manifest_cte_params(user.id)
+
+    if folder_id:
+        # Scope to a specific folder subtree using a secondary recursive CTE.
+        sql = (
+            cte_sql
+            + "subtree(id) AS ( "
+            "    SELECT ? "
+            "    UNION ALL "
+            "    SELECT f.id FROM folders f "
+            "    JOIN subtree s ON f.parent_id = s.id "
+            "    WHERE f.restrict_permissions = false AND f.deleted_at IS NULL "
+            ") "
+            "SELECT f.id, f.name_ct, f.original_name, f.size_bytes, f.created_at, "
+            "       f.folder_id, f.encrypted_file_key, f.key_iv, fold.name AS folder_name "
+            "FROM files f "
+            "LEFT JOIN folders fold ON fold.id = f.folder_id "
+            "WHERE f.deleted_at IS NULL AND f.upload_complete = 1 "
+            "  AND f.folder_id IN (SELECT id FROM subtree) "
+            "  AND (f.owner_id = ? "
+            "       OR f.folder_id IN (SELECT id FROM team_tree) "
+            "       OR f.folder_id IN (SELECT id FROM perm_tree)) "
+            "ORDER BY f.created_at DESC "
+            f"LIMIT {_MANIFEST_LIMIT}"
+        )
+        params = (*cte_params, folder_id, user.id)
+    else:
+        sql = (
+            cte_sql
+            + "SELECT f.id, f.name_ct, f.original_name, f.size_bytes, f.created_at, "
+            "       f.folder_id, f.encrypted_file_key, f.key_iv, fold.name AS folder_name "
+            "FROM files f "
+            "LEFT JOIN folders fold ON fold.id = f.folder_id "
+            "WHERE f.deleted_at IS NULL AND f.upload_complete = 1 "
+            "  AND (f.owner_id = ? "
+            "       OR f.folder_id IN (SELECT id FROM team_tree) "
+            "       OR f.folder_id IN (SELECT id FROM perm_tree)) "
+            "ORDER BY f.created_at DESC "
+            f"LIMIT {_MANIFEST_LIMIT}"
+        )
+        params = (*cte_params, user.id)
+
+    cursor = await db.execute(sql, params)
     rows = await cursor.fetchall()
-    return {
-        "files": [
-            {
-                "id":                r["id"],
-                "name_ct":           r["name_ct"],
-                "original_name":     r["original_name"],
-                "size_bytes":        r["size_bytes"],
-                "created_at":        str(r["created_at"]) if r["created_at"] else None,
-                "folder_id":         r["folder_id"],
-                "folder_path":       r["folder_name"] or "(root)",
-                "encrypted_file_key": r["encrypted_file_key"],
-                "key_iv":            r["key_iv"],
-            }
-            for r in rows
-        ]
-    }
+    files = _rows_to_manifest_files(rows)
+
+    # ETag: SHA-256 of all file IDs + updated_at values in result order.
+    # Cheap proxy for "did the set of files change?" without hashing full content.
+    etag_src = "|".join(f"{r['id']},{r['created_at']}" for r in rows)
+    etag = f'"{_hashlib.sha256(etag_src.encode()).hexdigest()[:32]}"'
+
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache, private"})
+
+    return Response(
+        content=__import__("json").dumps({"files": files, "etag": etag}),
+        media_type="application/json",
+        headers={"ETag": etag, "Cache-Control": "no-cache, private"},
+    )
 
 
 import re as _re
@@ -1150,12 +1223,20 @@ async def update_file(
     await db.commit()
 
     old_topic = row["folder_id"] or f"root:{row['owner_id']}"
-    sse_broker.publish(old_topic, {"type": "change"})
+    is_move = body.folder_id is not None or body.move_to_root
+    new_folder_id = body.folder_id if not body.move_to_root else None
+    sse_event_type = "file.moved" if is_move else "file.updated"
+    sse_file_payload = {
+        "id": file_id,
+        "folder_id": new_folder_id if is_move else row["folder_id"],
+        "name_ct": body.name_ct if body.name_ct else row["name_ct"],
+        "original_name": body.original_name if body.original_name else row["original_name"],
+    }
+    sse_broker.publish(old_topic, {"type": sse_event_type, "file": sse_file_payload})
     if body.folder_id and body.folder_id != row["folder_id"]:
-        sse_broker.publish(body.folder_id, {"type": "change"})
+        sse_broker.publish(body.folder_id, {"type": "file.moved", "file": sse_file_payload})
 
     ip = _get_client_ip(request)
-    is_move = body.folder_id is not None or body.move_to_root
     if is_move:
         event_bus.emit(
             SecurityEvent(
@@ -1223,7 +1304,10 @@ async def delete_file(
             (user.id, file_id),
         )
         await db.commit()
-        sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
+        sse_broker.publish(
+            row["folder_id"] or f"root:{row['owner_id']}",
+            {"type": "file.removed", "file_id": file_id, "folder_id": row["folder_id"]},
+        )
         event_bus.emit(
             SecurityEvent(
                 event_type="file.delete",
@@ -1255,7 +1339,10 @@ async def delete_file(
         await db.rollback()
         raise
 
-    sse_broker.publish(row["folder_id"] or f"root:{row['owner_id']}", {"type": "change"})
+    sse_broker.publish(
+        row["folder_id"] or f"root:{row['owner_id']}",
+        {"type": "file.removed", "file_id": file_id, "folder_id": row["folder_id"]},
+    )
 
     # Blob ref-count: only delete the blob when no other files row shares storage_key
     cursor = await db.execute("SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (storage_key,))

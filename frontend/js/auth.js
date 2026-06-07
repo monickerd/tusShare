@@ -2031,8 +2031,9 @@ const Auth = (() => {
                         _currentUser.prf_wrapped_master_key = null;
                         _currentUser.prf_wrapped_master_key_iv = null;
                         _currentUser.prf_salt = null;
-                        // Remove sentinel so next reload falls back to password
-                        sessionStorage.removeItem(Config.auth.sessionStorageKey);
+                        // prf_credential_id is now null, so _saveSessionKeyData writes the raw key
+                        // to sessionStorage — session survives a page reload without PRF.
+                        await _saveSessionKeyData(_masterKeyObj, null);
                         Utils.showToast('PRF binding removed.', 'success');
                         const updated = await Api.get(`${Config.app.apiPrefix}/auth/mfa/status`);
                         _renderMfaSettingsContent(wrapRef, updated);

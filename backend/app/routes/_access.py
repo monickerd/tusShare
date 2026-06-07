@@ -142,6 +142,9 @@ async def _seed_folder_walk(
     file_allowed = await _check_acl(db, "file", resource_id, user_id, action, exact=True)
     if file_allowed is not None:
         return None, file_allowed, False
+    role_allowed = await _check_role_acl(db, "file", resource_id, user_id, action, exact=True)
+    if role_allowed is not None:
+        return None, role_allowed, False
     cursor = await db.execute("SELECT folder_id FROM files WHERE id = ?", (resource_id,))
     frow = await cursor.fetchone()
     if not frow or not frow["folder_id"]:
@@ -181,7 +184,12 @@ async def check_data_permission(
         if acl_result is not None:
             return acl_result
 
-        # 3: team-based grant.
+        # Role-based ACL grant check.
+        role_result = await _check_role_acl(db, "folder", folder_id, user_id, action, exact=is_exact)
+        if role_result is not None:
+            return role_result
+
+        # Team-based grant.
         if await _check_team_grant(db, folder_id, user_id, action):
             return True
 
@@ -222,6 +230,41 @@ async def _check_acl(
     if perm == "deny":
         return False
     return action in _LEVEL_ACTIONS.get(perm, frozenset()) or None
+
+
+async def _check_role_acl(
+    db,
+    resource_type: str,
+    resource_id: str,
+    user_id: str,
+    action: str,
+    exact: bool,
+) -> bool | None:
+    """Check resource_role_grants for a role-based ACL entry held by user_id.
+
+    Returns True (allow) or None (no applicable row found — never False, since
+    role grants cannot express explicit deny).
+    *exact=True*  → also accepts non-recursive rows.
+    *exact=False* → only recursive rows propagate.
+    """
+    try:
+        cursor = await db.execute(
+            "SELECT rrg.permission, rrg.recursive "
+            "FROM resource_role_grants rrg "
+            "JOIN user_roles ur ON ur.role_id = rrg.role_id "
+            "WHERE rrg.resource_type = ? AND rrg.resource_id = ? AND ur.user_id = ?",
+            (resource_type, resource_id, user_id),
+        )
+        rows = await cursor.fetchall()
+    except Exception:
+        return None  # table absent on old schema
+    for row in rows:
+        recursive = bool(row["recursive"])
+        if not exact and not recursive:
+            continue
+        if action in _LEVEL_ACTIONS.get(row["permission"], frozenset()):
+            return True
+    return None
 
 
 # ---------------------------------------------------------------------------

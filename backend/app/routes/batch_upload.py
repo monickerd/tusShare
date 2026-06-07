@@ -527,7 +527,7 @@ def _emit_file_events(file_id: str, user_id: str, encrypted_size: int, folder_id
         )
     )
     topic = folder_id or f"root:{user_id}"
-    sse_broker.publish(topic, {"type": "change"})
+    sse_broker.publish(topic, {"type": "file.added", "file_id": file_id, "folder_id": folder_id})
 
 
 def _fire_background_tasks(file_id: str, user_id: str, folder_id: str | None) -> None:

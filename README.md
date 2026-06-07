@@ -100,8 +100,10 @@ still give any malicious people an easy win.
 - **Policy engine** – org-level and team-level policies with attribute-based conditions
   and cascading overrides.
 - **Immutable audit log** – all access and security events are written to append-only
-  tables (enforced by database triggers). Logs are exportable and streamable via API
-  key.
+  PostgreSQL tables (enforced by database triggers), partitioned by month for scalable
+  retention. Sensitive social-graph fields are encrypted at rest with AES-256-GCM
+  (`detail_enc`). Logs are exportable and streamable via API key; authorised admins
+  receive a per-user wrapped copy of the audit key for client-side decryption.
 
 ### Monitoring and integrations
 - **SIEM integration** – security events can be forwarded to a syslog receiver,

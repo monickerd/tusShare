@@ -31,10 +31,10 @@ from app.middleware.sanitize import InputSanitizationMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.routes.uploads import run_upload_cleanup
 from app.schemas.security_event import EventActor, SecurityEvent
-from app.services import event_bus, live_settings, notification_emitter, op_bus, siem_syslog, siem_webhook
+from app.services import audit_key, event_bus, live_settings, notification_emitter, op_bus, siem_syslog, siem_webhook
 from app.services.av_scanner import run_av_scan_worker
 from app.services.live_settings import run_settings_invalidation_listener
-from app.services.maintenance import run_daily_maintenance
+from app.services.maintenance import ensure_audit_partitions, run_daily_maintenance
 from app.services.sse_broker import run_redis_listener
 from app.services.trash import run_trash_cleanup
 from app.util.integrity import check_integrity, verify_file_integrity
@@ -262,8 +262,11 @@ async def lifespan(app: FastAPI):
     oidc_state_cleanup_task = asyncio.create_task(_run_oidc_state_cleanup(db_session))
     storage_tiering_task = asyncio.create_task(storage_manager.run_tiering_task())
     storage_reconcile_task = asyncio.create_task(storage_manager.run_reconciliation_task())
+    await ensure_audit_partitions(db_session)
     daily_maintenance_task = asyncio.create_task(run_daily_maintenance(db_session))
     av_scan_worker_task = asyncio.create_task(run_av_scan_worker(db_session))
+
+    await audit_key.ensure_loaded(db_session)
 
     event_bus.init(db_session)
     event_bus_task = event_bus.start()

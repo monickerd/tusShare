@@ -151,11 +151,24 @@ const Files = (() => {
             ? `${Config.app.apiPrefix}/events?folder_id=${encodeURIComponent(folderId)}`
             : `${Config.app.apiPrefix}/events`;
         const source = new EventSource(url, { withCredentials: true });
-        source.onmessage = () => {
+        source.onmessage = (e) => {
             // Debounce rapid bursts (e.g. multiple files uploaded at once)
             clearTimeout(_liveReloadTimer);
             _liveReloadTimer = setTimeout(() => {
-                App?.invalidateSearchManifest?.();
+                try {
+                    const data = JSON.parse(e.data || '{}');
+                    if (data.type?.startsWith('file.') && (data.file || data.file_id)) {
+                        // File-level delta: update manifest in-place (async fire-and-forget).
+                        App?.applyManifestDelta?.({
+                            action: data.type,
+                            file: data.file || { id: data.file_id, folder_id: data.folder_id },
+                        });
+                    } else {
+                        App?.invalidateSearchManifest?.();
+                    }
+                } catch {
+                    App?.invalidateSearchManifest?.();
+                }
                 _reloadCurrentView();
             }, 500);
         };
@@ -208,7 +221,7 @@ const Files = (() => {
                         type: 'text',
                         id: 'file-list-filter',
                         className: 'input-sm toolbar-filter',
-                        placeholder: 'Search in this folder...',
+                        placeholder: 'Filter files by name...',
                         onInput: (e) => {
                             const term = e.target.value.toLowerCase();
                             const listEl = document.getElementById('file-list');
@@ -661,8 +674,8 @@ const Files = (() => {
                     { label: 'Move/Copy', action: () => _openMoveCopyModal([{ type: 'folder', id: folder.id, name: displayName }]) },
                     { label: 'Rename', action: () => _renameFolder(folder) },
                     folder.user_can_manage ? {
-                        label: folder.restrict_permissions ? '✓ Block inherited permissions' : 'Block inherited permissions',
-                        action: () => _toggleFolderInheritance(folder),
+                        label: 'Manage Folder',
+                        action: () => _openManageFolderModal(folder),
                     } : null,
                     { label: 'Delete', action: () => _deleteFolder(folder), danger: true },
                 ].filter(Boolean)),
@@ -1149,22 +1162,300 @@ const Files = (() => {
         }
     }
 
-    async function _toggleFolderInheritance(folder) {
-        const newVal = !folder.restrict_permissions;
-        const msg = newVal
-            ? 'Block inherited permissions on this folder? Users will need explicit access grants here.'
-            : 'Remove the inheritance block? This folder will inherit permissions from its ancestors again.';
-        if (!confirm(msg)) return;
+    async function _openManageFolderModal(folder) {
+        const overlay = Utils.el('div', { className: 'modal-overlay' });
+        const modal   = Utils.el('div', { className: 'modal manage-folder-modal' });
+        overlay.appendChild(modal);
+        document.body.appendChild(overlay);
+
+        const _close = () => { if (overlay.parentNode) overlay.remove(); };
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) _close(); });
+
+        modal.appendChild(Utils.el('div', { className: 'modal-header' }, [
+            Utils.el('h3', { textContent: `Manage: ${_dn(folder, 'name')}`, className: 'modal-title' }),
+            Utils.el('button', { className: 'modal-close', textContent: '×', 'aria-label': 'Close', onClick: _close }),
+        ]));
+
+        const body = Utils.el('div', { className: 'modal-body' });
+        modal.appendChild(body);
+        body.textContent = 'Loading…';
+
         try {
-            await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`, { restrict_permissions: newVal });
-            Utils.showToast(
-                newVal ? 'Inheritance blocked — access to this folder is now self-contained.' : 'Inheritance restored.',
-                'success',
-            );
-            _reloadCurrentView();
+            const [stats, grantsData, roleGrantsData] = await Promise.all([
+                Api.get(`${Config.app.apiPrefix}/folders/${folder.id}/stats`),
+                Api.get(`${Config.app.apiPrefix}/folders/${folder.id}/grants`),
+                Api.get(`${Config.app.apiPrefix}/folders/${folder.id}/role-grants`),
+            ]);
+            body.innerHTML = '';
+            _renderManageFolderBody(body, folder, stats, grantsData.grants || [], roleGrantsData.role_grants || [], _close);
         } catch (err) {
-            Utils.showToast(err.message, 'error');
+            body.innerHTML = '';
+            body.appendChild(Utils.el('p', { className: 'text-error', textContent: 'Failed to load folder info: ' + err.message }));
         }
+    }
+
+    function _renderManageFolderBody(body, folder, stats, grants, roleGrants, _close) {
+        // ---- Section 1: Metadata ----
+        const metaSection = Utils.el('section', { className: 'manage-folder-section' });
+        metaSection.appendChild(Utils.el('h4', { textContent: 'Folder Information', className: 'manage-folder-section-title' }));
+        const metaGrid = Utils.el('dl', { className: 'manage-folder-meta' });
+        const _row = (label, value) => {
+            metaGrid.appendChild(Utils.el('dt', { textContent: label }));
+            metaGrid.appendChild(Utils.el('dd', { textContent: value }));
+        };
+        _row('Files',         `${stats.file_count} file${stats.file_count !== 1 ? 's' : ''}`);
+        _row('Total size',    Utils.formatBytes(stats.total_size_bytes));
+        _row('Created by',    stats.owner_username);
+        _row('Created',       stats.created_at ? Utils.timeAgo(stats.created_at) : '—');
+        _row('Last modified', stats.updated_at  ? Utils.timeAgo(stats.updated_at)  : '—');
+        metaSection.appendChild(metaGrid);
+        body.appendChild(metaSection);
+
+        // ---- Section 2: Permission inheritance ----
+        const inheritSection = Utils.el('section', { className: 'manage-folder-section' });
+        inheritSection.appendChild(Utils.el('h4', { textContent: 'Permission Inheritance', className: 'manage-folder-section-title' }));
+
+        const inheritLabel = Utils.el('label', { className: 'manage-folder-toggle-label' });
+        const inheritChk   = Utils.el('input', { type: 'checkbox' });
+        inheritChk.checked = stats.restrict_permissions;
+        inheritLabel.appendChild(inheritChk);
+        inheritLabel.appendChild(document.createTextNode(' Disable inherited permissions'));
+        inheritSection.appendChild(inheritLabel);
+        inheritSection.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'font-size:0.85em;margin-top:4px',
+            textContent: 'When enabled, this folder does not inherit access from its parent. Users must be explicitly granted access below.',
+        }));
+
+        // ---- Section 3: Access grants (shown when inheritance disabled) ----
+        const grantsSection = Utils.el('section', { className: 'manage-folder-section', style: stats.restrict_permissions ? '' : 'display:none' });
+        grantsSection.appendChild(Utils.el('h4', { textContent: 'Access Grants', className: 'manage-folder-section-title' }));
+
+        // Tab strip
+        const tabStrip = Utils.el('div', { className: 'manage-folder-tabs', style: 'display:flex;gap:0;margin-bottom:10px;border-bottom:1px solid var(--border-color,#ccc)' });
+        const _mkTab = (label, active) => {
+            const btn = Utils.el('button', {
+                textContent: label,
+                className: 'manage-folder-tab' + (active ? ' active' : ''),
+                style: 'padding:4px 14px;border:none;border-bottom:2px solid ' + (active ? 'var(--accent,#2563eb)' : 'transparent') + ';background:none;cursor:pointer;font-size:0.9em;color:' + (active ? 'var(--accent,#2563eb)' : 'inherit'),
+            });
+            return btn;
+        };
+        const tabByUser = _mkTab('By User', true);
+        const tabByRole = _mkTab('By Role', false);
+        tabStrip.append(tabByUser, tabByRole);
+        grantsSection.appendChild(tabStrip);
+
+        // ---- Tab: By User ----
+        const userGrantsPane = Utils.el('div');
+        const grantsTable = Utils.el('table', { className: 'file-table manage-folder-grants-table' });
+        grantsTable.innerHTML = '<thead><tr><th>User</th><th>Permission</th><th>Recursive</th><th></th></tr></thead>';
+        const grantsTbody = Utils.el('tbody');
+        grantsTable.appendChild(grantsTbody);
+        userGrantsPane.appendChild(grantsTable);
+
+        const _renderGrants = (grantsList) => {
+            grantsTbody.innerHTML = '';
+            if (!grantsList.length) {
+                grantsTbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { colSpan: 4, className: 'text-muted', style: 'text-align:center', textContent: 'No explicit grants. Add one below.' }),
+                ]));
+                return;
+            }
+            for (const g of grantsList) {
+                const removeBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Remove' });
+                removeBtn.addEventListener('click', async () => {
+                    removeBtn.disabled = true;
+                    try {
+                        await Api.delete(`${Config.app.apiPrefix}/folders/${folder.id}/grants/${g.id}`);
+                        grants = grants.filter(x => x.id !== g.id);
+                        _renderGrants(grants);
+                    } catch (err) {
+                        Utils.showToast(err.message, 'error');
+                        removeBtn.disabled = false;
+                    }
+                });
+                grantsTbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: g.username }),
+                    Utils.el('td', { textContent: g.permission }),
+                    Utils.el('td', { textContent: g.recursive ? 'Yes' : 'No' }),
+                    Utils.el('td', {}, [removeBtn]),
+                ]));
+            }
+        };
+        _renderGrants(grants);
+
+        const addRow = Utils.el('div', { className: 'manage-folder-add-grant', style: 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap' });
+        const usernameInput = Utils.el('input', { type: 'text', className: 'input-sm', placeholder: 'Username', style: 'width:140px' });
+        const permSelect    = Utils.el('select', { className: 'input-sm' });
+        for (const p of ['read', 'write', 'admin']) {
+            permSelect.appendChild(Utils.el('option', { value: p, textContent: p }));
+        }
+        const recursiveChk = Utils.el('input', { type: 'checkbox', id: 'mf-recursive', checked: true });
+        const recursiveLbl = Utils.el('label', { htmlFor: 'mf-recursive', style: 'display:flex;align-items:center;gap:3px;font-size:0.85em' });
+        recursiveLbl.appendChild(recursiveChk);
+        recursiveLbl.appendChild(document.createTextNode(' Recursive'));
+        const addBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Add' });
+
+        addBtn.addEventListener('click', async () => {
+            const uname = usernameInput.value.trim();
+            if (!uname) { Utils.showToast('Enter a username', 'error'); return; }
+            addBtn.disabled = true;
+            try {
+                const newGrant = await Api.post(`${Config.app.apiPrefix}/folders/${folder.id}/grants`, {
+                    username: uname, permission: permSelect.value, recursive: recursiveChk.checked,
+                });
+                grants = [...grants, newGrant];
+                _renderGrants(grants);
+                usernameInput.value = '';
+            } catch (err) {
+                Utils.showToast(err.message, 'error');
+            } finally {
+                addBtn.disabled = false;
+            }
+        });
+
+        addRow.append(usernameInput, permSelect, recursiveLbl, addBtn);
+        userGrantsPane.appendChild(addRow);
+        grantsSection.appendChild(userGrantsPane);
+
+        // ---- Tab: By Role ----
+        const roleGrantsPane = Utils.el('div', { style: 'display:none' });
+        const roleGrantsTable = Utils.el('table', { className: 'file-table manage-folder-grants-table' });
+        roleGrantsTable.innerHTML = '<thead><tr><th>Role</th><th>Permission</th><th>Recursive</th><th></th></tr></thead>';
+        const roleGrantsTbody = Utils.el('tbody');
+        roleGrantsTable.appendChild(roleGrantsTbody);
+        roleGrantsPane.appendChild(roleGrantsTable);
+
+        const _renderRoleGrants = (list) => {
+            roleGrantsTbody.innerHTML = '';
+            if (!list.length) {
+                roleGrantsTbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { colSpan: 4, className: 'text-muted', style: 'text-align:center', textContent: 'No role grants. Add one below.' }),
+                ]));
+                return;
+            }
+            for (const g of list) {
+                const removeBtn = Utils.el('button', { className: 'btn btn-danger btn-sm', textContent: 'Remove' });
+                removeBtn.addEventListener('click', async () => {
+                    removeBtn.disabled = true;
+                    try {
+                        await Api.delete(`${Config.app.apiPrefix}/folders/${folder.id}/role-grants/${g.id}`);
+                        roleGrants = roleGrants.filter(x => x.id !== g.id);
+                        _renderRoleGrants(roleGrants);
+                    } catch (err) {
+                        Utils.showToast(err.message, 'error');
+                        removeBtn.disabled = false;
+                    }
+                });
+                roleGrantsTbody.appendChild(Utils.el('tr', {}, [
+                    Utils.el('td', { textContent: g.role_name }),
+                    Utils.el('td', { textContent: g.permission }),
+                    Utils.el('td', { textContent: g.recursive ? 'Yes' : 'No' }),
+                    Utils.el('td', {}, [removeBtn]),
+                ]));
+            }
+        };
+        _renderRoleGrants(roleGrants);
+
+        const roleAddRow = Utils.el('div', { className: 'manage-folder-add-grant', style: 'display:flex;gap:6px;margin-top:10px;flex-wrap:wrap' });
+        const roleSelect    = Utils.el('select', { className: 'input-sm', style: 'min-width:140px' });
+        const rolePermSel   = Utils.el('select', { className: 'input-sm' });
+        for (const p of ['read', 'download', 'write', 'admin', 'manage_permissions']) {
+            rolePermSel.appendChild(Utils.el('option', { value: p, textContent: p }));
+        }
+        const roleRecChk = Utils.el('input', { type: 'checkbox', id: 'mf-role-recursive', checked: true });
+        const roleRecLbl = Utils.el('label', { htmlFor: 'mf-role-recursive', style: 'display:flex;align-items:center;gap:3px;font-size:0.85em' });
+        roleRecLbl.appendChild(roleRecChk);
+        roleRecLbl.appendChild(document.createTextNode(' Recursive'));
+        const roleAddBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Add' });
+
+        // Populate role picker lazily when the tab is first shown
+        let _rolesLoaded = false;
+        const _loadRoles = async () => {
+            if (_rolesLoaded) return;
+            _rolesLoaded = true;
+            roleSelect.innerHTML = '';
+            try {
+                const data = await Api.get(`${Config.app.apiPrefix.replace('/api/v1', '')}/api/v1/admin/roles`);
+                const roles = data.roles || [];
+                if (!roles.length) {
+                    roleSelect.appendChild(Utils.el('option', { value: '', textContent: '— no roles —', disabled: true }));
+                } else {
+                    for (const r of roles) {
+                        roleSelect.appendChild(Utils.el('option', { value: r.id, textContent: r.name }));
+                    }
+                }
+            } catch {
+                roleSelect.appendChild(Utils.el('option', { value: '', textContent: '— failed to load —', disabled: true }));
+            }
+        };
+
+        roleAddBtn.addEventListener('click', async () => {
+            if (!roleSelect.value) { Utils.showToast('Select a role', 'error'); return; }
+            roleAddBtn.disabled = true;
+            try {
+                const newGrant = await Api.post(`${Config.app.apiPrefix}/folders/${folder.id}/role-grants`, {
+                    role_id: roleSelect.value, permission: rolePermSel.value, recursive: roleRecChk.checked,
+                });
+                roleGrants = [...roleGrants, newGrant];
+                _renderRoleGrants(roleGrants);
+            } catch (err) {
+                Utils.showToast(err.message, 'error');
+            } finally {
+                roleAddBtn.disabled = false;
+            }
+        });
+
+        roleAddRow.append(roleSelect, rolePermSel, roleRecLbl, roleAddBtn);
+        roleGrantsPane.appendChild(roleAddRow);
+        grantsSection.appendChild(roleGrantsPane);
+
+        // Tab switching
+        const _switchTab = (showUser) => {
+            userGrantsPane.style.display = showUser ? '' : 'none';
+            roleGrantsPane.style.display = showUser ? 'none' : '';
+            tabByUser.style.borderBottomColor = showUser ? 'var(--accent,#2563eb)' : 'transparent';
+            tabByRole.style.borderBottomColor = showUser ? 'transparent' : 'var(--accent,#2563eb)';
+            tabByUser.style.color = showUser ? 'var(--accent,#2563eb)' : 'inherit';
+            tabByRole.style.color = showUser ? 'inherit' : 'var(--accent,#2563eb)';
+            if (!showUser) _loadRoles();
+        };
+        tabByUser.addEventListener('click', () => _switchTab(true));
+        tabByRole.addEventListener('click', () => _switchTab(false));
+
+        inheritSection.appendChild(grantsSection);
+
+        // Toggle grants section visibility + save
+        let _saving = false;
+        inheritChk.addEventListener('change', async () => {
+            if (_saving) return;
+            _saving = true;
+            inheritChk.disabled = true;
+            try {
+                await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`, { restrict_permissions: inheritChk.checked });
+                grantsSection.style.display = inheritChk.checked ? '' : 'none';
+                Utils.showToast(
+                    inheritChk.checked
+                        ? 'Inheritance disabled — this folder manages its own access.'
+                        : 'Inheritance restored — folder inherits access from parent.',
+                    'success',
+                );
+                _reloadCurrentView();
+            } catch (err) {
+                inheritChk.checked = !inheritChk.checked;
+                Utils.showToast(err.message, 'error');
+            } finally {
+                inheritChk.disabled = false;
+                _saving = false;
+            }
+        });
+
+        body.appendChild(inheritSection);
+
+        const footer = Utils.el('div', { className: 'modal-footer' });
+        footer.appendChild(Utils.el('button', { className: 'btn btn-secondary', textContent: 'Close', onClick: _close }));
+        body.parentElement.appendChild(footer);
     }
 
     function _previewFilenameSanitize(name) {

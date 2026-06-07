@@ -45,10 +45,13 @@ _MANAGE_LEVELS = ("admin", "manage_permissions")
 async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: list[dict]) -> None:
     """Annotate each dict in folder_dicts with user_can_manage: bool (in-place).
 
-    True when: caller is an org admin, OR the folder is owned by the caller,
-    OR the caller has an explicit ACL grant at admin/manage_permissions level.
-    Team-based grants are not checked here — the backend PUT endpoint enforces
-    owner-or-admin anyway, so false negatives on team folders are safe.
+    True when any of:
+      - caller is an org admin
+      - the folder is owned by the caller (owner_id match)
+      - caller has an explicit ACL grant at admin/manage_permissions level
+      - caller has team_admin or team_manager scope-role for the team owning this folder
+        (team owner bypass, covers manage_all authority)
+      - caller has team_folder_manage_all via a custom team role assignment
     """
     if is_admin:
         for fd in folder_dicts:
@@ -59,6 +62,7 @@ async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: l
     non_owned = [fd["id"] for fd in folder_dicts if fd["id"] not in can_manage]
 
     if non_owned:
+        # --- Explicit ACL grants ---
         placeholders = ",".join("?" * len(non_owned))
         level_placeholders = ",".join("?" * len(_MANAGE_LEVELS))
         cursor = await db.execute(
@@ -70,6 +74,33 @@ async def _annotate_can_manage(db, user_id: str, is_admin: bool, folder_dicts: l
         )
         for row in await cursor.fetchall():
             can_manage.add(row["resource_id"])
+
+        # --- Team-based manage authority (team owner bypass + manage_all flag) ---
+        still_not_managed = [fid for fid in non_owned if fid not in can_manage]
+        if still_not_managed:
+            from app.models.team_role import TEAM_FLAG_MANAGE_FOLDER_ALL, get_user_team_manage_flags
+
+            ph = ",".join("?" * len(still_not_managed))
+            cursor = await db.execute(
+                f"SELECT f.id AS folder_id, tf.team_id "
+                f"FROM folders f "
+                f"JOIN team_folders tf ON tf.folder_id = f.root_folder_id "
+                f"WHERE f.id IN ({ph})",
+                (*still_not_managed,),
+            )
+            folder_to_team: dict[str, str] = {}
+            for r in await cursor.fetchall():
+                folder_to_team[r["folder_id"]] = r["team_id"]
+
+            # Cache per-team result to avoid re-querying the same team multiple times.
+            team_manage_all: dict[str, bool] = {}
+            for team_id in set(folder_to_team.values()):
+                flags = await get_user_team_manage_flags(db, user_id, team_id)
+                team_manage_all[team_id] = flags[TEAM_FLAG_MANAGE_FOLDER_ALL]
+
+            for folder_id, team_id in folder_to_team.items():
+                if team_manage_all.get(team_id, False):
+                    can_manage.add(folder_id)
 
     for fd in folder_dicts:
         fd["user_can_manage"] = fd["id"] in can_manage
@@ -1002,3 +1033,376 @@ async def get_effective_escrow_agents(
         raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
 
     return await resolve_effective_escrow_agents(db, folder_id)
+
+
+# ---------------------------------------------------------------------------
+# Folder stats
+# ---------------------------------------------------------------------------
+
+@router.get("/{folder_id}/stats", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def get_folder_stats(
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return aggregate stats for a folder: file count, total size, dates, owner username."""
+    folder_id = validate_uuid(folder_id)
+    cursor = await db.execute(
+        "SELECT f.*, u.username AS owner_username FROM folders f "
+        "JOIN users u ON u.id = f.owner_id "
+        "WHERE f.id = ? AND f.deleted_at IS NULL",
+        (folder_id,),
+    )
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    if folder_row["owner_id"] != user.id and not user.is_admin:
+        if not await is_in_shared_tree(db, folder_id):
+            if not await check_data_permission(db, "folder", folder_id, user.id, "read"):
+                raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+    stats_cursor = await db.execute(
+        "SELECT COUNT(*) AS file_count, COALESCE(SUM(size_bytes), 0) AS total_size_bytes "
+        "FROM files WHERE folder_id = ? AND deleted_at IS NULL AND upload_complete = 1",
+        (folder_id,),
+    )
+    stats_row = await stats_cursor.fetchone()
+
+    return {
+        "id":                folder_id,
+        "name":              folder_row["name"],
+        "owner_username":    folder_row["owner_username"],
+        "created_at":        str(folder_row["created_at"]) if folder_row["created_at"] else None,
+        "updated_at":        str(folder_row["updated_at"]) if folder_row["updated_at"] else None,
+        "restrict_permissions": bool(folder_row["restrict_permissions"]),
+        "file_count":        stats_row["file_count"] if stats_row else 0,
+        "total_size_bytes":  stats_row["total_size_bytes"] if stats_row else 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Folder grants — explicit per-user permission grants on a folder
+# ---------------------------------------------------------------------------
+
+class AddGrantRequest(BaseModel):
+    username: str
+    permission: str
+    recursive: bool = True
+
+    @field_validator("permission")
+    @classmethod
+    def validate_permission(cls, v: str) -> str:
+        allowed = {"read", "write", "admin"}
+        if v not in allowed:
+            raise ValueError(f"permission must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("username is required")
+        return v
+
+
+async def _require_folder_manage_access(db, folder_id: str, folder_row, user: AuthenticatedUser) -> None:
+    """Raise 403 unless caller may manage this folder.
+
+    Allowed when: org admin, folder owner, explicit manage_permissions ACL grant,
+    or team_admin/manager scope-role / team_folder_manage_all custom flag for the
+    team that owns this folder.
+    """
+    if user.is_admin or folder_row["owner_id"] == user.id:
+        return
+    if await check_data_permission(db, "folder", folder_id, user.id, "manage_permissions"):
+        return
+    # Team-based authority: find the team for this folder (via root_folder_id).
+    cursor = await db.execute(
+        "SELECT tf.team_id FROM team_folders tf "
+        "WHERE tf.folder_id = COALESCE("
+        "    (SELECT root_folder_id FROM folders WHERE id = ?), ?)",
+        (folder_id, folder_id),
+    )
+    team_row = await cursor.fetchone()
+    if team_row:
+        from app.models.team_role import TEAM_FLAG_MANAGE_FOLDER_ALL, get_user_team_manage_flags
+        flags = await get_user_team_manage_flags(db, user.id, team_row["team_id"])
+        if flags[TEAM_FLAG_MANAGE_FOLDER_ALL]:
+            return
+    raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+
+@router.get("/{folder_id}/grants", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})
+async def list_folder_grants(
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """List explicit per-user permission grants for a folder (excludes policy-sourced grants)."""
+    folder_id = validate_uuid(folder_id)
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    await _require_folder_manage_access(db, folder_id, folder_row, user)
+
+    grants_cursor = await db.execute(
+        "SELECT p.id, p.user_id, u.username, p.permission, p.recursive, p.created_at, "
+        "       g.username AS granted_by_username "
+        "FROM permissions p "
+        "JOIN users u ON u.id = p.user_id "
+        "LEFT JOIN users g ON g.id = p.granted_by "
+        "WHERE p.resource_type = 'folder' AND p.resource_id = ? AND p.policy_effect_id IS NULL "
+        "ORDER BY u.username",
+        (folder_id,),
+    )
+    rows = await grants_cursor.fetchall()
+    return {
+        "grants": [
+            {
+                "id":                 r["id"],
+                "user_id":            r["user_id"],
+                "username":           r["username"],
+                "permission":         r["permission"],
+                "recursive":          bool(r["recursive"]),
+                "created_at":         str(r["created_at"]) if r["created_at"] else None,
+                "granted_by_username": r["granted_by_username"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post(
+    "/{folder_id}/grants",
+    status_code=201,
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}, 409: {"description": "Already granted"}},
+)
+async def add_folder_grant(
+    folder_id: str,
+    body: AddGrantRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Add a per-user permission grant on a folder."""
+    await check_management_write_rate_limit(user.id)
+    folder_id = validate_uuid(folder_id)
+
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    await _require_folder_manage_access(db, folder_id, folder_row, user)
+
+    # Resolve target user
+    cursor = await db.execute("SELECT id FROM users WHERE username = ? AND is_active = 1", (body.username,))
+    target_user = await cursor.fetchone()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found or inactive")
+
+    grant_id = str(uuid.uuid4())
+    try:
+        await db.execute(
+            "INSERT INTO permissions (id, resource_type, resource_id, user_id, permission, recursive, granted_by) "
+            "VALUES (?, 'folder', ?, ?, ?, ?, ?)",
+            (grant_id, folder_id, target_user["id"], body.permission, 1 if body.recursive else 0, user.id),
+        )
+        await db.commit()
+    except DuplicateError:
+        raise HTTPException(status_code=409, detail="A grant for this user already exists on this folder")
+
+    return {"id": grant_id, "user_id": target_user["id"], "username": body.username, "permission": body.permission, "recursive": body.recursive}
+
+
+@router.delete(
+    "/{folder_id}/grants/{grant_id}",
+    status_code=204,
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def remove_folder_grant(
+    folder_id: str,
+    grant_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Remove a per-user permission grant from a folder."""
+    folder_id = validate_uuid(folder_id)
+    grant_id  = validate_uuid(grant_id)
+
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    await _require_folder_manage_access(db, folder_id, folder_row, user)
+
+    cursor = await db.execute(
+        "SELECT id FROM permissions WHERE id = ? AND resource_type = 'folder' AND resource_id = ? AND policy_effect_id IS NULL",
+        (grant_id, folder_id),
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Grant not found")
+
+    await db.execute("DELETE FROM permissions WHERE id = ?", (grant_id,))
+    await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Folder role-grants — role-based (non-user-specific) permission grants
+# ---------------------------------------------------------------------------
+
+
+class AddRoleGrantRequest(BaseModel):
+    role_id: str
+    permission: str
+    recursive: bool = True
+
+    @field_validator("permission")
+    @classmethod
+    def validate_permission(cls, v: str) -> str:
+        allowed = {"read", "download", "write", "admin", "manage_permissions"}
+        if v not in allowed:
+            raise ValueError(f"permission must be one of {sorted(allowed)}")
+        return v
+
+    @field_validator("role_id")
+    @classmethod
+    def validate_role_id(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("role_id is required")
+        return v
+
+
+@router.get(
+    "/{folder_id}/role-grants",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def list_folder_role_grants(
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """List role-based permission grants for a folder."""
+    folder_id = validate_uuid(folder_id)
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    await _require_folder_manage_access(db, folder_id, folder_row, user)
+
+    cursor = await db.execute(
+        "SELECT rrg.id, rrg.role_id, r.name AS role_name, rrg.permission, rrg.recursive, rrg.created_at, "
+        "       u.username AS granted_by_username "
+        "FROM resource_role_grants rrg "
+        "JOIN roles r ON r.id = rrg.role_id "
+        "LEFT JOIN users u ON u.id = rrg.granted_by "
+        "WHERE rrg.resource_type = 'folder' AND rrg.resource_id = ? "
+        "ORDER BY r.name",
+        (folder_id,),
+    )
+    rows = await cursor.fetchall()
+    return {
+        "role_grants": [
+            {
+                "id":                  r["id"],
+                "role_id":             r["role_id"],
+                "role_name":           r["role_name"],
+                "permission":          r["permission"],
+                "recursive":           bool(r["recursive"]),
+                "created_at":          str(r["created_at"]) if r["created_at"] else None,
+                "granted_by_username": r["granted_by_username"],
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.post(
+    "/{folder_id}/role-grants",
+    status_code=201,
+    responses={
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        409: {"description": "Role already granted"},
+    },
+)
+async def add_folder_role_grant(
+    folder_id: str,
+    body: AddRoleGrantRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Add a role-based permission grant on a folder."""
+    await check_management_write_rate_limit(user.id)
+    folder_id = validate_uuid(folder_id)
+
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    await _require_folder_manage_access(db, folder_id, folder_row, user)
+
+    cursor = await db.execute("SELECT id, name FROM roles WHERE id = ?", (body.role_id,))
+    role_row = await cursor.fetchone()
+    if not role_row:
+        raise HTTPException(status_code=404, detail="Role not found")
+
+    grant_id = str(uuid.uuid4())
+    try:
+        await db.execute(
+            "INSERT INTO resource_role_grants "
+            "(id, resource_type, resource_id, role_id, permission, recursive, granted_by) "
+            "VALUES (?, 'folder', ?, ?, ?, ?, ?)",
+            (grant_id, folder_id, body.role_id, body.permission, 1 if body.recursive else 0, user.id),
+        )
+        await db.commit()
+    except DuplicateError:
+        raise HTTPException(status_code=409, detail="A grant for this role already exists on this folder")
+
+    return {
+        "id":         grant_id,
+        "role_id":    body.role_id,
+        "role_name":  role_row["name"],
+        "permission": body.permission,
+        "recursive":  body.recursive,
+    }
+
+
+@router.delete(
+    "/{folder_id}/role-grants/{grant_id}",
+    status_code=204,
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def remove_folder_role_grant(
+    folder_id: str,
+    grant_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Remove a role-based permission grant from a folder."""
+    folder_id = validate_uuid(folder_id)
+    grant_id  = validate_uuid(grant_id)
+
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    await _require_folder_manage_access(db, folder_id, folder_row, user)
+
+    cursor = await db.execute(
+        "SELECT id FROM resource_role_grants WHERE id = ? AND resource_type = 'folder' AND resource_id = ?",
+        (grant_id, folder_id),
+    )
+    if not await cursor.fetchone():
+        raise HTTPException(status_code=404, detail="Role grant not found")
+
+    await db.execute("DELETE FROM resource_role_grants WHERE id = ?", (grant_id,))
+    await db.commit()
