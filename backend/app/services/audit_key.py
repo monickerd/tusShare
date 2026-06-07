@@ -25,9 +25,13 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from app.auth.stepup import hkdf_sha256
 from app.config import settings
 from app.util.crypto import aesgcm_decrypt_bytes, aesgcm_encrypt_bytes
+
+
+def _hkdf_sha256(ikm: bytes, length: int, salt: bytes, info: bytes) -> bytes:
+    """HKDF-SHA256 without importing from app.auth.stepup (avoids circular import)."""
+    return HKDF(algorithm=hashes.SHA256(), length=length, salt=salt, info=info).derive(ikm)
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +44,7 @@ _k_audit: bytes | None = None
 
 def _wrapping_key() -> bytes:
     """Server-side AES-256 key used to protect K_audit at rest in admin_settings."""
-    return hkdf_sha256(
+    return _hkdf_sha256(
         settings.JWT_SECRET.encode(),
         length=32,
         salt=b"k-audit-wrap-v1",
