@@ -49,11 +49,14 @@ jobs:
       # it before the release is published. GitHub treats published releases as
       # immutable — asset uploads are rejected once a release is no longer a
       # draft. The final step sets draft: false to publish after assets are ready.
+      #
+      # target_commitish tells GitHub what commit to tag at publish time.
       - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.ref }}
           name: ${{ steps.ver.outputs.ref }}
+          target_commitish: ${{ github.sha }}
           draft: true
           make_latest: false
 
@@ -136,11 +139,15 @@ jobs:
           cd release-bundle && zip -r "../tusshare-${VERSION}.zip" .
 
       # Upload assets to the draft release and publish it.
-      # Publishing via the Releases API creates the protected git tag, which
-      # bypasses the tag protection rule that blocks direct git pushes.
+      # Uses RELEASE_TOKEN (a fine-grained PAT for the repo owner) rather than
+      # GITHUB_TOKEN because the tag-protection rule blocks github-actions[bot]
+      # from creating the git tag when the draft is published. The PAT runs as
+      # the repo owner, who is allowed to create protected tags via the
+      # Releases API.
       - name: Publish release with assets
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.RELEASE_TOKEN }}
           tag_name: ${{ steps.ver.outputs.ref }}
           name: ${{ steps.ver.outputs.ref }}
           draft: false
