@@ -746,6 +746,15 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_rrg_role     ON resource_role_grants(role_id);
         """)
 
+    # Drop the restrictive CHECK on resource_role_grants.permission so that
+    # comma-separated atomic flag strings (e.g. "view_contents,download_files")
+    # can be stored alongside the legacy single-value rows.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE resource_role_grants
+                DROP CONSTRAINT IF EXISTS resource_role_grants_permission_check;
+        """)
+
     # detail_enc column on security_events for encrypted audit log.
     async with conn.transaction():
         await conn.execute("""
@@ -806,6 +815,9 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                         PRIMARY KEY (id, timestamp)
                     ) PARTITION BY RANGE (timestamp)
                 """)
+                # Drop any stale standalone table with the default partition name
+                # before attaching it as a partition of the new table.
+                await conn.execute(f"DROP TABLE IF EXISTS {_tbl}_default")
                 await conn.execute(f"""
                     CREATE TABLE {_tbl}_default PARTITION OF {_tbl} DEFAULT
                 """)
@@ -844,6 +856,7 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                         PRIMARY KEY (id, timestamp)
                     ) PARTITION BY RANGE (timestamp)
                 """)
+                await conn.execute(f"DROP TABLE IF EXISTS {_tbl}_default")
                 await conn.execute(f"""
                     CREATE TABLE {_tbl}_default PARTITION OF {_tbl} DEFAULT
                 """)
@@ -869,6 +882,7 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                         PRIMARY KEY (id, timestamp)
                     ) PARTITION BY RANGE (timestamp)
                 """)
+                await conn.execute(f"DROP TABLE IF EXISTS {_tbl}_default")
                 await conn.execute(f"""
                     CREATE TABLE {_tbl}_default PARTITION OF {_tbl} DEFAULT
                 """)
