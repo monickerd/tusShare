@@ -46,11 +46,25 @@ _LEVEL_ACTIONS: dict[str, frozenset[str]] = {
 # Each flag maps to the set of internal action strings it authorises.
 # Grants stored this way are always additive (no deny semantics).
 _FLAG_ACTIONS: dict[str, frozenset[str]] = {
-    "view_contents":      frozenset({"read"}),
-    "download_files":     frozenset({"read", "download"}),
-    "upload_files":       frozenset({"read", "write"}),
-    "delete_files":       frozenset({"read", "delete"}),
-    "manage_this_folder": frozenset({"read", "manage_permissions"}),
+    # --- Read / Write ---
+    "view_contents":          frozenset({"read"}),
+    "download_files":         frozenset({"read", "download"}),
+    "upload_files":           frozenset({"read", "write"}),
+    "delete_files":           frozenset({"read", "delete"}),
+    "manage_this_folder":     frozenset({"read", "manage_permissions"}),
+    # --- Move / Copy (folder-level grants; enforcement added per route) ---
+    "move_own_within_folder": frozenset({"read", "move_own_within"}),
+    "move_all_within_folder": frozenset({"read", "move_all_within"}),
+    "move_own_out_of_folder": frozenset({"read", "move_own_out"}),
+    "move_all_out_of_folder": frozenset({"read", "move_all_out"}),
+    # --- Folders ---
+    "folder_create":          frozenset({"read", "folder_create"}),
+    "manage_own_subfolders":  frozenset({"read", "manage_own_subfolders"}),
+    "manage_all_subfolders":  frozenset({"read", "manage_all_subfolders"}),
+    # --- Shares ---
+    "share_create":           frozenset({"read", "share_create"}),
+    "share_manage_own":       frozenset({"read", "share_manage_own"}),
+    "share_manage_all":       frozenset({"read", "share_manage_all"}),
 }
 
 # Default folder permission level granted by each built-in team role.

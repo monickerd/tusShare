@@ -1207,6 +1207,31 @@ const Files = (() => {
                 ],
             },
             {
+                label: 'Move / Copy',
+                items: [
+                    { flag: 'move_own_within_folder', label: 'Own files within folder', desc: 'Move or copy own files between subfolders' },
+                    { flag: 'move_all_within_folder', label: 'All files within folder', desc: 'Move or copy any file between subfolders' },
+                    { flag: 'move_own_out_of_folder', label: 'Own files out of folder', desc: 'Move own files out to another folder' },
+                    { flag: 'move_all_out_of_folder', label: 'All files out of folder', desc: 'Move any file out to another folder' },
+                ],
+            },
+            {
+                label: 'Folders',
+                items: [
+                    { flag: 'folder_create',         label: 'Create subfolders',    desc: 'Create new subfolders within this folder' },
+                    { flag: 'manage_own_subfolders', label: 'Manage own subfolders', desc: 'Manage subfolders you created' },
+                    { flag: 'manage_all_subfolders', label: 'Manage all subfolders', desc: 'Manage any subfolder regardless of creator' },
+                ],
+            },
+            {
+                label: 'Shares',
+                items: [
+                    { flag: 'share_create',     label: 'Create shares',      desc: 'Create share links from files in this folder' },
+                    { flag: 'share_manage_own', label: 'Manage own shares',  desc: 'Manage share links you created' },
+                    { flag: 'share_manage_all', label: 'Manage all shares',  desc: 'Manage any share link from this folder' },
+                ],
+            },
+            {
                 label: 'Manage this folder',
                 items: [
                     { flag: 'manage_this_folder', label: 'Manage this folder', desc: 'Change permissions and access grants for this folder' },
@@ -1225,6 +1250,8 @@ const Files = (() => {
             if (_PERM_MAP[perm]) return _PERM_MAP[perm];
             return perm.split(',').map(f => _PERM_MAP[f.trim()] || f.trim()).join(' + ');
         };
+        const callerCtx     = stats.caller_context || {};
+        const _allowedFlags = callerCtx.allowed_flags || null;  // null = all allowed
 
         // ---- Section 1: Metadata ----
         const metaSection = Utils.el('section', { className: 'manage-folder-section' });
@@ -1263,11 +1290,10 @@ const Files = (() => {
         grantsSection.appendChild(Utils.el('h4', { textContent: 'Access Grants', className: 'manage-folder-section-title' }));
 
         // Tab strip
-        const tabStrip = Utils.el('div', { className: 'manage-folder-tabs', style: 'display:flex;gap:0;margin-bottom:10px;border-bottom:1px solid var(--border-color,#ccc)' });
+        const tabStrip = Utils.el('div', { className: 'manage-folder-tabs' });
         const _mkTab = (label, active) => Utils.el('button', {
             textContent: label,
             className: 'manage-folder-tab' + (active ? ' active' : ''),
-            style: 'padding:4px 14px;border:none;border-bottom:2px solid ' + (active ? 'var(--accent,#2563eb)' : 'transparent') + ';background:none;cursor:pointer;font-size:0.9em;color:' + (active ? 'var(--accent,#2563eb)' : 'inherit'),
         });
         const tabByUser = _mkTab('By User', true);
         const tabByRole = _mkTab('By Role', false);
@@ -1317,7 +1343,7 @@ const Files = (() => {
         const userAddForm = Utils.el('div', { className: 'manage-folder-add-form' });
         const usernameInput = Utils.el('input', { type: 'text', className: 'input-sm manage-folder-add-username', placeholder: 'Username' });
         userAddForm.appendChild(usernameInput);
-        const userPermTree = Utils.mkPermTree(_FOLDER_PERM_GROUPS, []);
+        const userPermTree = Utils.mkPermTree(_FOLDER_PERM_GROUPS, [], { allowedFlags: _allowedFlags });
         userAddForm.appendChild(userPermTree.el);
         const userAddFooter = Utils.el('div', { className: 'manage-folder-add-footer' });
         const recursiveChk = Utils.el('input', { type: 'checkbox', id: 'mf-subfolder', checked: true });
@@ -1351,14 +1377,37 @@ const Files = (() => {
 
         // ---- Tab: By Role ----
         const roleGrantsPane = Utils.el('div', { style: 'display:none' });
+
+        // Org-level access notice (shown before the table so users know some accounts have implicit access)
+        if (callerCtx.has_org_access) {
+            roleGrantsPane.appendChild(Utils.el('div', {
+                className: 'manage-folder-org-notice',
+                textContent: 'One or more organizational accounts have access to all files and folders in this system.',
+            }));
+        }
+
         const roleGrantsTable = Utils.el('table', { className: 'file-table manage-folder-grants-table' });
         roleGrantsTable.innerHTML = '<thead><tr><th>Role</th><th>Permissions</th><th>Subfolders</th><th></th></tr></thead>';
         const roleGrantsTbody = Utils.el('tbody');
+
+        // Team Owner always has full access — show as a static, non-removable row.
+        if (_currentTeamId) {
+            const ownerRow = Utils.el('tr', { className: 'manage-folder-implicit-row' });
+            ownerRow.appendChild(Utils.el('td', { textContent: 'Team Owner' }));
+            ownerRow.appendChild(Utils.el('td', {}, [Utils.el('em', { textContent: 'Full access (automatic)' })]));
+            ownerRow.appendChild(Utils.el('td', {}, [Utils.el('em', { textContent: 'Yes' })]));
+            ownerRow.appendChild(Utils.el('td'));
+            roleGrantsTbody.appendChild(ownerRow);
+        }
+
         roleGrantsTable.appendChild(roleGrantsTbody);
         roleGrantsPane.appendChild(roleGrantsTable);
 
         const _renderRoleGrants = (list) => {
+            // Remove all rows except the static implicit ones (Team Owner etc.)
+            const staticRows = roleGrantsTbody.querySelectorAll('.manage-folder-implicit-row');
             roleGrantsTbody.innerHTML = '';
+            staticRows.forEach(r => roleGrantsTbody.appendChild(r));
             if (!list.length) {
                 roleGrantsTbody.appendChild(Utils.el('tr', {}, [
                     Utils.el('td', { colSpan: 4, className: 'text-muted', style: 'text-align:center', textContent: 'No role grants. Add one below.' }),
@@ -1392,7 +1441,7 @@ const Files = (() => {
         const roleAddForm = Utils.el('div', { className: 'manage-folder-add-form' });
         const roleSelect  = Utils.el('select', { className: 'input-sm manage-folder-role-select' });
         roleAddForm.appendChild(roleSelect);
-        const rolePermTree = Utils.mkPermTree(_FOLDER_PERM_GROUPS, []);
+        const rolePermTree = Utils.mkPermTree(_FOLDER_PERM_GROUPS, [], { allowedFlags: _allowedFlags });
         roleAddForm.appendChild(rolePermTree.el);
         const roleAddFooter = Utils.el('div', { className: 'manage-folder-add-footer' });
         const roleRecChk = Utils.el('input', { type: 'checkbox', id: 'mf-role-subfolder', checked: true });
@@ -1460,10 +1509,8 @@ const Files = (() => {
         const _switchTab = (showUser) => {
             userGrantsPane.style.display = showUser ? '' : 'none';
             roleGrantsPane.style.display = showUser ? 'none' : '';
-            tabByUser.style.borderBottomColor = showUser ? 'var(--accent,#2563eb)' : 'transparent';
-            tabByRole.style.borderBottomColor = showUser ? 'transparent' : 'var(--accent,#2563eb)';
-            tabByUser.style.color = showUser ? 'var(--accent,#2563eb)' : 'inherit';
-            tabByRole.style.color = showUser ? 'inherit' : 'var(--accent,#2563eb)';
+            tabByUser.classList.toggle('active', showUser);
+            tabByRole.classList.toggle('active', !showUser);
             if (!showUser) _loadRoles();
         };
         tabByUser.addEventListener('click', () => _switchTab(true));

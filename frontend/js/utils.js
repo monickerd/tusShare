@@ -524,24 +524,36 @@ const Utils = (() => {
     }
 
     // -----------------------------------------------------------------------
-    // mkPermTree — hierarchical checkbox tree for permission selection
+    // mkPermTree -- hierarchical checkbox tree for permission selection
     //
-    // groups: [{label, items: [{flag, label, desc?}]}]
+    // groups:       [{label, items: [{flag, label, desc?}]}]
     // initialFlags: array of flag strings that should start checked
+    // opts:
+    //   allowedFlags -- if an array, flags NOT in it are greyed-out/non-interactive
+    //                   (team-ceiling enforcement). null/undefined = all allowed.
+    //   readOnly     -- true = all checkboxes disabled (display-only mode)
     //
     // Returns: { el, getFlags(), getPermString() }
-    //   getFlags()      → string[] of currently-checked flags
-    //   getPermString() → comma-joined string, or 'none' when nothing selected
+    //   getFlags()      -- string[] of currently-checked flags
+    //   getPermString() -- comma-joined string, or 'none' when nothing selected
     // -----------------------------------------------------------------------
-    function mkPermTree(groups, initialFlags) {
-        const selected = new Set(Array.isArray(initialFlags) ? initialFlags : []);
+    function mkPermTree(groups, initialFlags, opts = {}) {
+        const allowedSet = Array.isArray(opts.allowedFlags) ? new Set(opts.allowedFlags) : null;
+        const readOnly   = !!opts.readOnly;
+        const selected   = new Set(Array.isArray(initialFlags) ? initialFlags : []);
+
+        // Strip initially-selected flags not in the allowed set.
+        if (allowedSet) for (const f of [...selected]) if (!allowedSet.has(f)) selected.delete(f);
+
         const container = el('div', { className: 'perm-tree' });
 
+        // Only count non-disabled children when computing indeterminate state.
         function _sync(parentCb, childCbs) {
-            const n = childCbs.filter(c => c.checked).length;
-            if (n === 0) {
+            const active = childCbs.filter(c => !c.disabled);
+            const n = active.filter(c => c.checked).length;
+            if (active.length === 0 || n === 0) {
                 parentCb.indeterminate = false; parentCb.checked = false;
-            } else if (n === childCbs.length) {
+            } else if (n === active.length) {
                 parentCb.indeterminate = false; parentCb.checked = true;
             } else {
                 parentCb.indeterminate = true; parentCb.checked = false;
@@ -549,13 +561,15 @@ const Utils = (() => {
         }
 
         for (const group of groups) {
-            const groupEl  = el('div', { className: 'perm-tree-group' });
-            const parentCb = el('input', { type: 'checkbox', className: 'perm-tree-parent-cb' });
-            const toggle   = el('button', { type: 'button', className: 'perm-tree-toggle', title: 'Collapse / expand', textContent: '▾' });
+            const allDisabled = readOnly || (allowedSet && group.items.every(item => !allowedSet.has(item.flag)));
+            const groupEl   = el('div', { className: 'perm-tree-group' });
+            const parentCb  = el('input', { type: 'checkbox', className: 'perm-tree-parent-cb' });
+            if (allDisabled) parentCb.disabled = true;
+            const toggle    = el('button', { type: 'button', className: 'perm-tree-toggle', title: 'Collapse / expand', textContent: String.fromCharCode(9662) });
             const headerLbl = el('label', { className: 'perm-tree-header-label' });
             headerLbl.appendChild(parentCb);
-            headerLbl.appendChild(document.createTextNode(' ' + group.label));
-            const header = el('div', { className: 'perm-tree-header' });
+            headerLbl.appendChild(document.createTextNode(' ' + group.label));
+            const header = el('div', { className: 'perm-tree-header' + (allDisabled ? ' perm-tree-header--disabled' : '') });
             header.appendChild(headerLbl);
             header.appendChild(toggle);
             groupEl.appendChild(header);
@@ -564,44 +578,54 @@ const Utils = (() => {
             const childCbs  = [];
 
             for (const item of group.items) {
-                const childCb = el('input', { type: 'checkbox', className: 'perm-tree-child-cb' });
-                childCb.checked = selected.has(item.flag);
+                const isDisabled = readOnly || (allowedSet ? !allowedSet.has(item.flag) : false);
+                const childCb   = el('input', { type: 'checkbox', className: 'perm-tree-child-cb' });
+                childCb.disabled = isDisabled;
+                childCb.checked  = !isDisabled && selected.has(item.flag);
+                if (isDisabled) selected.delete(item.flag);
                 childCbs.push(childCb);
-                const lbl = el('label', { className: 'perm-tree-item' });
+                const lbl = el('label', { className: 'perm-tree-item' + (isDisabled ? ' perm-tree-item--disabled' : '') });
                 lbl.appendChild(childCb);
-                const body = el('span', { className: 'perm-tree-item-body' });
-                body.appendChild(el('span', { className: 'perm-tree-item-name', textContent: item.label }));
-                if (item.desc) body.appendChild(el('span', { className: 'perm-tree-item-desc', textContent: item.desc }));
-                lbl.appendChild(body);
+                const bodyEl = el('span', { className: 'perm-tree-item-body' });
+                const nameEl = el('span', { className: 'perm-tree-item-name', textContent: item.label });
+                if (isDisabled && !readOnly) nameEl.title = 'Not permitted by team policy';
+                bodyEl.appendChild(nameEl);
+                if (item.desc) bodyEl.appendChild(el('span', { className: 'perm-tree-item-desc', textContent: item.desc }));
+                lbl.appendChild(bodyEl);
                 childWrap.appendChild(lbl);
-                childCb.addEventListener('change', () => {
-                    if (childCb.checked) selected.add(item.flag); else selected.delete(item.flag);
-                    _sync(parentCb, childCbs);
-                });
+                if (!isDisabled) {
+                    childCb.addEventListener('change', () => {
+                        if (childCb.checked) selected.add(item.flag); else selected.delete(item.flag);
+                        _sync(parentCb, childCbs);
+                    });
+                }
             }
 
             groupEl.appendChild(childWrap);
             container.appendChild(groupEl);
             _sync(parentCb, childCbs);
 
-            parentCb.addEventListener('click', () => {
-                const newState = parentCb.checked; // browser already set it
-                parentCb.indeterminate = false;
-                childCbs.forEach((c, i) => {
-                    c.checked = newState;
-                    if (newState) selected.add(group.items[i].flag); else selected.delete(group.items[i].flag);
+            if (!allDisabled) {
+                parentCb.addEventListener('click', () => {
+                    const newState = parentCb.checked;
+                    parentCb.indeterminate = false;
+                    childCbs.forEach((c, i) => {
+                        if (c.disabled) return;
+                        c.checked = newState;
+                        if (newState) selected.add(group.items[i].flag); else selected.delete(group.items[i].flag);
+                    });
                 });
-            });
+            }
 
             toggle.addEventListener('click', () => {
-                const collapsed = childWrap.classList.toggle('perm-tree-collapsed');
-                toggle.textContent = collapsed ? '▸' : '▾';
+                const open = childWrap.classList.toggle('perm-tree-collapsed');
+                toggle.textContent = open ? String.fromCharCode(9656) : String.fromCharCode(9662);
             });
         }
 
         return {
             el: container,
-            getFlags: ()      => [...selected],
+            getFlags:      () => [...selected],
             getPermString: () => selected.size ? [...selected].join(',') : 'none',
         };
     }

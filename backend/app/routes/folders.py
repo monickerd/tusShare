@@ -1069,21 +1069,101 @@ async def get_folder_stats(
     )
     stats_row = await stats_cursor.fetchone()
 
+    # --- caller_context: drives permission-ceiling enforcement in the UI ---
+    # Mapping: folder-level atomic flag → team-level flag that must be on for the
+    # caller to be permitted to grant it to others.
+    _FOLDER_TEAM_CEILING: dict[str, str] = {
+        "move_own_within_folder": "move_own_within_team",
+        "move_all_within_folder": "move_all_within_team",
+        "move_own_out_of_folder": "move_own_files_out_of_team",
+        "move_all_out_of_folder": "move_others_files_out_of_team",
+        "folder_create":          "folder_create",
+        "manage_own_subfolders":  "team_folder_manage_own",
+        "manage_all_subfolders":  "team_folder_manage_all",
+        "share_create":           "share_create",
+        "share_manage_own":       "share_manage_own",
+        "share_manage_all":       "share_manage_all",
+    }
+    _BASE_FLAGS = [
+        "view_contents", "download_files", "upload_files",
+        "delete_files", "manage_this_folder",
+    ]
+
+    caller_context: dict = {"is_team_owner": False, "allowed_flags": None, "has_org_access": False}
+
+    # Find the team for this folder (if any) via its root_folder_id.
+    tf_cursor = await db.execute(
+        "SELECT tf.team_id FROM team_folders tf "
+        "WHERE tf.folder_id = COALESCE("
+        "    (SELECT root_folder_id FROM folders WHERE id = ?), ?)",
+        (folder_id, folder_id),
+    )
+    team_row = await tf_cursor.fetchone()
+
+    if team_row:
+        team_id = team_row["team_id"]
+        # Is the caller a team owner?
+        owner_cursor = await db.execute(
+            "SELECT 1 FROM user_roles "
+            "WHERE user_id = ? AND scope_type = 'team' AND scope_id = ? AND role_id = 'team_admin'",
+            (user.id, team_id),
+        )
+        is_team_owner = (await owner_cursor.fetchone()) is not None
+        caller_context["is_team_owner"] = is_team_owner
+
+        if not user.is_admin and not is_team_owner:
+            from app.models.team_role import get_user_all_team_flags
+            team_flags = await get_user_all_team_flags(db, user.id, team_id)
+            extra = [ff for ff, tf in _FOLDER_TEAM_CEILING.items() if team_flags.get(tf, False)]
+            caller_context["allowed_flags"] = [*_BASE_FLAGS, *extra]
+        # else: is_admin or is_team_owner → allowed_flags stays None (all allowed)
+
+    # Any org-level admin accounts other than the caller have implicit access.
+    org_cursor = await db.execute(
+        "SELECT 1 FROM users WHERE is_admin = 1 AND is_active = 1 AND id != ? LIMIT 1",
+        (user.id,),
+    )
+    caller_context["has_org_access"] = (await org_cursor.fetchone()) is not None
+
     return {
-        "id":                folder_id,
-        "name":              folder_row["name"],
-        "owner_username":    folder_row["owner_username"],
-        "created_at":        str(folder_row["created_at"]) if folder_row["created_at"] else None,
-        "updated_at":        str(folder_row["updated_at"]) if folder_row["updated_at"] else None,
+        "id":                   folder_id,
+        "name":                 folder_row["name"],
+        "owner_username":       folder_row["owner_username"],
+        "created_at":           str(folder_row["created_at"]) if folder_row["created_at"] else None,
+        "updated_at":           str(folder_row["updated_at"]) if folder_row["updated_at"] else None,
         "restrict_permissions": bool(folder_row["restrict_permissions"]),
-        "file_count":        stats_row["file_count"] if stats_row else 0,
-        "total_size_bytes":  stats_row["total_size_bytes"] if stats_row else 0,
+        "file_count":           stats_row["file_count"] if stats_row else 0,
+        "total_size_bytes":     stats_row["total_size_bytes"] if stats_row else 0,
+        "caller_context":       caller_context,
     }
 
 
 # ---------------------------------------------------------------------------
 # Folder grants — explicit per-user permission grants on a folder
 # ---------------------------------------------------------------------------
+
+_ALLOWED_FOLDER_FLAGS: frozenset[str] = frozenset({
+    # Legacy single-level values kept for backwards compatibility
+    "read", "download", "write", "admin", "manage_permissions",
+    # Atomic flags (Read / Write group)
+    "view_contents", "download_files", "upload_files", "delete_files", "manage_this_folder",
+    # Atomic flags (Move / Copy group)
+    "move_own_within_folder", "move_all_within_folder",
+    "move_own_out_of_folder", "move_all_out_of_folder",
+    # Atomic flags (Folders group)
+    "folder_create", "manage_own_subfolders", "manage_all_subfolders",
+    # Atomic flags (Shares group)
+    "share_create", "share_manage_own", "share_manage_all",
+})
+
+
+def _validate_folder_permission(v: str) -> str:
+    flags = {f.strip() for f in v.split(",")}
+    unknown = flags - _ALLOWED_FOLDER_FLAGS
+    if unknown:
+        raise ValueError(f"unknown permission flag(s): {sorted(unknown)}")
+    return v
+
 
 class AddGrantRequest(BaseModel):
     username: str
@@ -1093,10 +1173,7 @@ class AddGrantRequest(BaseModel):
     @field_validator("permission")
     @classmethod
     def validate_permission(cls, v: str) -> str:
-        allowed = {"read", "write", "admin"}
-        if v not in allowed:
-            raise ValueError(f"permission must be one of {sorted(allowed)}")
-        return v
+        return _validate_folder_permission(v)
 
     @field_validator("username")
     @classmethod
@@ -1264,10 +1341,7 @@ class AddRoleGrantRequest(BaseModel):
     @field_validator("permission")
     @classmethod
     def validate_permission(cls, v: str) -> str:
-        allowed = {"read", "download", "write", "admin", "manage_permissions"}
-        if v not in allowed:
-            raise ValueError(f"permission must be one of {sorted(allowed)}")
-        return v
+        return _validate_folder_permission(v)
 
     @field_validator("role_id")
     @classmethod

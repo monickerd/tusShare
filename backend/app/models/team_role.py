@@ -166,6 +166,45 @@ class TeamRole:
 # ---------------------------------------------------------------------------
 
 
+async def get_user_all_team_flags(db, user_id: str, team_id: str) -> dict[str, bool]:
+    """Return all 10 effective team-scoped permission flags for a user.
+
+    Considers global scoped roles first; falls through to custom role grants.
+    Authority roles (team_admin, team_manager) get all flags True.
+    """
+    cursor = await db.execute(
+        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+        (user_id, team_id),
+    )
+    scoped_role_ids = {r["role_id"] for r in await cursor.fetchall()}
+
+    if scoped_role_ids & _AUTHORITY_ROLES:
+        return {f: True for f in TEAM_ROLE_FLAGS}
+
+    cursor = await db.execute(
+        "SELECT tp.flag, MAX(tp.value) AS value "
+        "FROM team_role_assignments tra "
+        "JOIN team_role_permissions tp ON tp.team_role_id = tra.team_role_id "
+        "WHERE tra.user_id = ? AND tra.team_id = ? "
+        "GROUP BY tp.flag",
+        (user_id, team_id),
+    )
+    custom = {r["flag"]: r["value"] not in ("0", "", "false", "False", "no") for r in await cursor.fetchall()}
+
+    return {
+        TEAM_FLAG_MOVE_OWN_IN:       custom.get(TEAM_FLAG_MOVE_OWN_IN, False),
+        TEAM_FLAG_MOVE_OTHERS_IN:    custom.get(TEAM_FLAG_MOVE_OTHERS_IN, False),
+        TEAM_FLAG_MOVE_OWN_OUT:      custom.get(TEAM_FLAG_MOVE_OWN_OUT, False),
+        TEAM_FLAG_MOVE_OTHERS_OUT:   custom.get(TEAM_FLAG_MOVE_OTHERS_OUT, False),
+        TEAM_FLAG_FOLDER_CREATE:     custom.get(TEAM_FLAG_FOLDER_CREATE, False),
+        TEAM_FLAG_MANAGE_FOLDER_OWN: custom.get(TEAM_FLAG_MANAGE_FOLDER_OWN, True),
+        TEAM_FLAG_MANAGE_FOLDER_ALL: custom.get(TEAM_FLAG_MANAGE_FOLDER_ALL, False),
+        TEAM_FLAG_SHARE_CREATE:      custom.get(TEAM_FLAG_SHARE_CREATE, False),
+        TEAM_FLAG_SHARE_MANAGE_OWN:  custom.get(TEAM_FLAG_SHARE_MANAGE_OWN, False),
+        TEAM_FLAG_SHARE_MANAGE_ALL:  custom.get(TEAM_FLAG_SHARE_MANAGE_ALL, False),
+    }
+
+
 async def get_user_team_move_flags(db, user_id: str, team_id: str) -> dict[str, bool]:
     """Return the effective move permission flags for a user within a team.
 
