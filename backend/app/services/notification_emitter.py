@@ -37,6 +37,14 @@ _channel_queues: dict[str, asyncio.Queue] = {}
 _RETRY_DELAYS = (5, 20, 60)
 _SECURITY_PREFIX = "security:"
 
+_SEVERITY_ORDER: dict[str, int] = {"info": 0, "warning": 1, "error": 2, "critical": 3}
+
+
+def _sev_passes(event_sev: str, min_sev: str | None) -> bool:
+    if not min_sev:
+        return True
+    return _SEVERITY_ORDER.get(event_sev, 0) >= _SEVERITY_ORDER.get(min_sev, 0)
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -331,7 +339,7 @@ async def _load_channels() -> list[dict]:
     try:
         async with _db_session_factory() as db:
             cursor = await db.execute(
-                "SELECT id, name, endpoint_url, secret_enc, event_filter, "
+                "SELECT id, name, endpoint_url, secret_enc, event_filter, filter_min_severity, "
                 "       batch_size, batch_interval_s, enabled "
                 "FROM notification_channels"
             )
@@ -381,7 +389,7 @@ async def _forward_security_events(
                 if ch and _matches_security_filter(
                     sec_event.event_type,
                     _parse_event_filter(ch["event_filter"]),
-                ):
+                ) and _sev_passes(sec_event.severity, ch.get("filter_min_severity")):
                     try:
                         q.put_nowait(event_dict)
                     except asyncio.QueueFull:
@@ -403,11 +411,11 @@ def _compute_timeout(interval_s, last_flush: float) -> float:
     return max(0.5, interval_s - (time.monotonic() - last_flush))
 
 
-def _append_if_matches(item, filters: list[str], accumulated: list) -> None:
+def _append_if_matches(item, filters: list[str], accumulated: list, min_sev: str | None = None) -> None:
     if isinstance(item, OperationalEvent):
-        if _matches_filter(item.event_type, filters):
+        if _matches_filter(item.event_type, filters) and _sev_passes(item.severity, min_sev):
             accumulated.append(_event_to_dict(item))
-    else:
+    elif _sev_passes(item.get("severity", "info"), min_sev):
         accumulated.append(item)
 
 
@@ -415,6 +423,7 @@ async def _channel_loop(channel: dict, q: asyncio.Queue) -> None:
     batch_size = channel.get("batch_size")
     interval_s = channel.get("batch_interval_s")
     filters = _parse_event_filter(channel.get("event_filter"))
+    min_sev = channel.get("filter_min_severity")
     accumulated: list = []
     last_flush = time.monotonic()
 
@@ -422,7 +431,7 @@ async def _channel_loop(channel: dict, q: asyncio.Queue) -> None:
         while True:
             try:
                 item = await asyncio.wait_for(q.get(), timeout=_compute_timeout(interval_s, last_flush))
-                _append_if_matches(item, filters, accumulated)
+                _append_if_matches(item, filters, accumulated, min_sev)
             except asyncio.TimeoutError:
                 pass
 

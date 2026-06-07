@@ -1284,15 +1284,16 @@ CREATE INDEX idx_fsl_migration_state ON file_storage_locations(migration_state)
 -- batch_interval_s: NULL = timer trigger disabled (fire when count hit)
 -------------------------------------------------
 CREATE TABLE IF NOT EXISTS notification_channels (
-    id               TEXT PRIMARY KEY,
-    name             TEXT NOT NULL,
-    endpoint_url     TEXT NOT NULL,
-    secret_enc       TEXT,
-    event_filter     TEXT NOT NULL DEFAULT '[]',
-    batch_size       INTEGER,
-    batch_interval_s INTEGER,
-    enabled          INTEGER NOT NULL DEFAULT 1,
-    created_at       TIMESTAMPTZ DEFAULT now()
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    endpoint_url        TEXT NOT NULL,
+    secret_enc          TEXT,
+    event_filter        TEXT NOT NULL DEFAULT '[]',
+    filter_min_severity TEXT,
+    batch_size          INTEGER,
+    batch_interval_s    INTEGER,
+    enabled             INTEGER NOT NULL DEFAULT 1,
+    created_at          TIMESTAMPTZ DEFAULT now()
 );
 
 -------------------------------------------------

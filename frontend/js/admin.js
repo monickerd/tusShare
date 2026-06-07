@@ -5109,7 +5109,18 @@ const Admin = (() => {
 
     function _buildChannelRow(ch, container) {
         const filters = (() => { try { return JSON.parse(ch.event_filter || '[]'); } catch { return []; } })();
-        const filterStr = filters.length ? filters.join(', ') : '(all)';
+        const secCount = filters.filter(f => f.startsWith('security:')).length;
+        const opCount  = filters.filter(f => !f.startsWith('security:')).length;
+        let filterStr;
+        if (!filters.length) {
+            filterStr = 'all op events';
+        } else {
+            const parts = [];
+            if (opCount)  parts.push(`${opCount} op filter${opCount > 1 ? 's' : ''}`);
+            if (secCount) parts.push(`${secCount} security filter${secCount > 1 ? 's' : ''}`);
+            filterStr = parts.join(', ');
+        }
+        if (ch.filter_min_severity) filterStr += ` · sev≥${ch.filter_min_severity}`;
         let batchStr;
         if (ch.batch_size) batchStr = `${ch.batch_size} events`;
         else if (ch.batch_interval_s) batchStr = `${ch.batch_interval_s}s`;
@@ -5272,10 +5283,238 @@ const Admin = (() => {
         }
     }
 
+    function _buildEventFilterUI(curFilters) {
+        const filterSet = new Set(curFilters);
+        const hasOpFilters = curFilters.some(f => !f.startsWith('security:'));
+
+        function sevClass(sev) {
+            if (sev === 'critical' || sev === 'error') return 'badge badge-expired';
+            if (sev === 'warning') return 'badge badge-team';
+            return 'badge badge-custom';
+        }
+
+        function isCoveredByPrefix(entry) {
+            for (const f of filterSet) {
+                if (entry.startsWith(f + '.')) return true;
+            }
+            return false;
+        }
+
+        function buildGroup(grp, forceAllActive) {
+            const allActive = forceAllActive || filterSet.has(grp.allEntry);
+            const hasIndiv  = !allActive && grp.events.some(e => filterSet.has(e.entry) || isCoveredByPrefix(e.entry));
+            const hasSA     = grp.standalones?.some(e => filterSet.has(e.entry));
+
+            const det = document.createElement('details');
+            if (allActive || hasIndiv || hasSA) det.open = true;
+
+            const summ = document.createElement('summary');
+            summ.style.cssText = 'padding:5px 8px;cursor:pointer;user-select:none;font-size:var(--font-size-sm);font-weight:600';
+            summ.textContent = grp.label;
+            det.appendChild(summ);
+
+            const body = Utils.el('div', { style: 'padding:2px 4px 8px 24px;display:flex;flex-direction:column;gap:2px' });
+
+            // "Select All" row at top of body
+            const allRow = Utils.el('div', {
+                style: 'display:flex;align-items:center;gap:6px;padding:2px 0 4px;border-bottom:1px solid var(--color-border,#e5e7eb);margin-bottom:4px'
+            });
+            const allChk = Utils.el('input', { type: 'checkbox', checked: allActive });
+            allChk.dataset.filter = grp.allEntry;
+            allRow.append(
+                allChk,
+                Utils.el('span', {
+                    textContent: 'All ' + grp.label.toLowerCase(),
+                    style: 'font-size:var(--font-size-sm);font-style:italic;color:var(--color-text-muted,#6b7280)'
+                })
+            );
+            body.appendChild(allRow);
+
+            for (const ev of grp.events) {
+                const evChecked = allActive || filterSet.has(ev.entry) || isCoveredByPrefix(ev.entry);
+                const chk = Utils.el('input', { type: 'checkbox', checked: evChecked, disabled: allActive });
+                chk.dataset.filter = ev.entry;
+
+                const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;padding:1px 0' });
+                row.append(
+                    chk,
+                    Utils.el('span', { textContent: ev.label, style: 'font-size:var(--font-size-sm);flex:1' }),
+                    Utils.el('span', { textContent: ev.sev, className: sevClass(ev.sev) })
+                );
+                body.appendChild(row);
+
+                allChk.addEventListener('change', () => {
+                    chk.checked = allChk.checked;
+                    chk.disabled = allChk.checked;
+                });
+            }
+
+            if (grp.standalones?.length) {
+                body.appendChild(Utils.el('div', {
+                    style: 'border-top:1px solid var(--color-border,#e5e7eb);margin:4px 0 2px'
+                }));
+                for (const ev of grp.standalones) {
+                    const chk = Utils.el('input', { type: 'checkbox', checked: filterSet.has(ev.entry) });
+                    chk.dataset.filter = ev.entry;
+                    const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;padding:1px 0' });
+                    row.append(
+                        chk,
+                        Utils.el('span', { textContent: ev.label, style: 'font-size:var(--font-size-sm);flex:1' }),
+                        Utils.el('span', { textContent: ev.sev, className: sevClass(ev.sev) })
+                    );
+                    body.appendChild(row);
+                }
+            }
+
+            det.appendChild(body);
+            return det;
+        }
+
+        const SEC_GROUPS = [
+            {
+                label: 'Auth Events', allEntry: 'security:auth',
+                events: [
+                    { entry: 'security:auth.login.success',                 label: 'Login success',             sev: 'info' },
+                    { entry: 'security:auth.login.failure',                 label: 'Login failure',             sev: 'warning' },
+                    { entry: 'security:auth.login.blocked',                 label: 'Login blocked',             sev: 'warning' },
+                    { entry: 'security:auth.logout',                        label: 'Logout',                    sev: 'info' },
+                    { entry: 'security:auth.stepup.success',                label: 'Step-up success',           sev: 'info' },
+                    { entry: 'security:auth.stepup.failure',                label: 'Step-up failure',           sev: 'warning' },
+                    { entry: 'security:auth.token.refreshed',               label: 'Token refreshed',           sev: 'info' },
+                    { entry: 'security:auth.token.revoked',                 label: 'Token revoked',             sev: 'warning' },
+                    { entry: 'security:auth.mfa.enrolled',                  label: 'MFA enrolled',              sev: 'info' },
+                    { entry: 'security:auth.mfa.challenged',                label: 'MFA challenged',            sev: 'info' },
+                    { entry: 'security:auth.mfa.failed',                    label: 'MFA failed',                sev: 'warning' },
+                    { entry: 'security:auth.password.changed',              label: 'Password changed',          sev: 'info' },
+                    { entry: 'security:auth.recovery.used',                 label: 'Recovery key used',         sev: 'warning' },
+                    { entry: 'security:auth.session.force_terminated',      label: 'Session force-terminated',  sev: 'critical' },
+                    { entry: 'security:auth.oidc.login',                    label: 'OIDC login',                sev: 'info' },
+                    { entry: 'security:auth.ldap.login',                    label: 'LDAP login',                sev: 'info' },
+                    { entry: 'security:auth.service_account.authenticated', label: 'Service account auth',      sev: 'info' },
+                    { entry: 'security:auth.service_account.rejected',      label: 'Service account rejected',  sev: 'warning' },
+                    { entry: 'security:auth.unauthorized',                  label: '401 Unauthorized',          sev: 'warning' },
+                    { entry: 'security:auth.forbidden',                     label: '403 Forbidden',             sev: 'warning' },
+                    { entry: 'security:auth.probe_404',                     label: 'Endpoint probe (404)',       sev: 'info' },
+                    { entry: 'security:auth.probe_405',                     label: 'Method probe (405)',         sev: 'info' },
+                    { entry: 'security:auth.rate_limited',                  label: 'Rate limited (429)',         sev: 'warning' },
+                ],
+            },
+            {
+                label: 'File Events', allEntry: 'security:file',
+                events: [
+                    { entry: 'security:file.upload.started',     label: 'Upload started',     sev: 'info' },
+                    { entry: 'security:file.upload.completed',   label: 'Upload completed',   sev: 'info' },
+                    { entry: 'security:file.upload.aborted',     label: 'Upload aborted',     sev: 'info' },
+                    { entry: 'security:file.download.started',   label: 'Download started',   sev: 'info' },
+                    { entry: 'security:file.download.completed', label: 'Download completed', sev: 'info' },
+                    { entry: 'security:file.download.aborted',   label: 'Download aborted',   sev: 'info' },
+                    { entry: 'security:file.delete',             label: 'File deleted',       sev: 'warning' },
+                    { entry: 'security:file.move',               label: 'File moved',         sev: 'info' },
+                    { entry: 'security:file.rename',             label: 'File renamed',       sev: 'info' },
+                    { entry: 'security:file.share.created',      label: 'Share created',      sev: 'info' },
+                    { entry: 'security:file.share.revoked',      label: 'Share revoked',      sev: 'warning' },
+                    { entry: 'security:file.share.accessed',     label: 'Share accessed',     sev: 'info' },
+                    { entry: 'security:file.lock.applied',       label: 'File lock applied',  sev: 'info' },
+                    { entry: 'security:file.lock.cleared',       label: 'File lock cleared',  sev: 'info' },
+                ],
+            },
+            {
+                label: 'Admin Events', allEntry: 'security:admin',
+                events: [
+                    { entry: 'security:admin.user.suspended',              label: 'User suspended',         sev: 'warning' },
+                    { entry: 'security:admin.user.activated',              label: 'User activated',         sev: 'info' },
+                    { entry: 'security:admin.user.role_changed',           label: 'Role changed',           sev: 'info' },
+                    { entry: 'security:admin.emergency_revocation',        label: 'Emergency revocation',   sev: 'critical' },
+                    { entry: 'security:admin.policy.changed',              label: 'Policy changed',         sev: 'warning' },
+                    { entry: 'security:admin.team.member_added',           label: 'Team member added',      sev: 'info' },
+                    { entry: 'security:admin.team.member_removed',         label: 'Team member removed',    sev: 'warning' },
+                    { entry: 'security:admin.team_key.rotation_started',   label: 'Key rotation started',   sev: 'info' },
+                    { entry: 'security:admin.team_key.rotation_completed', label: 'Key rotation completed', sev: 'info' },
+                    { entry: 'security:admin.siem.config_changed',         label: 'SIEM config changed',    sev: 'warning' },
+                    { entry: 'security:admin.bootstrap.completed',         label: 'Bootstrap completed',    sev: 'info' },
+                ],
+                standalones: [
+                    { entry: 'security:user.registered', label: 'New user registered', sev: 'info' },
+                ],
+            },
+        ];
+
+        const OP_GROUPS = [
+            {
+                label: 'System', allEntry: 'system',
+                events: [
+                    { entry: 'system.startup',               label: 'Server startup',        sev: 'info' },
+                    { entry: 'system.api_key.expiring_soon', label: 'API key expiring soon', sev: 'warning' },
+                    { entry: 'system.api_key.expired',       label: 'API key expired',       sev: 'warning' },
+                ],
+            },
+            {
+                label: 'Storage', allEntry: 'storage',
+                events: [
+                    { entry: 'storage.volume.capacity_warning', label: 'Volume capacity warning',  sev: 'warning' },
+                    { entry: 'storage.volume.capacity_ok',      label: 'Volume capacity OK',       sev: 'info' },
+                    { entry: 'storage.migration.failed',        label: 'Storage migration failed', sev: 'error' },
+                ],
+            },
+            {
+                label: 'Upload / Quota', allEntry: 'upload',
+                events: [
+                    { entry: 'upload.quota.warning', label: 'Quota warning', sev: 'warning' },
+                    { entry: 'upload.quota.ok',      label: 'Quota OK',      sev: 'info' },
+                ],
+            },
+            {
+                label: 'AV Scanning', allEntry: 'file',
+                events: [
+                    { entry: 'file.av.infected', label: 'Infected file detected', sev: 'critical' },
+                ],
+            },
+        ];
+
+        const wrap = Utils.el('div', {
+            style: 'border:1px solid var(--color-border,#e5e7eb);border-radius:6px;max-height:360px;overflow-y:auto;overflow-x:hidden'
+        });
+
+        const secHdr = Utils.el('div', {
+            style: 'padding:5px 8px;font-size:var(--font-size-sm);font-weight:700;background:var(--color-surface-active,#f3f4f6);border-bottom:1px solid var(--color-border,#e5e7eb);position:sticky;top:0;z-index:1'
+        });
+        secHdr.textContent = 'Security Events';
+        wrap.appendChild(secHdr);
+
+        const secDiv = Utils.el('div', { style: 'border-bottom:2px solid var(--color-border,#e5e7eb)' });
+        for (const grp of SEC_GROUPS) secDiv.appendChild(buildGroup(grp, false));
+        wrap.appendChild(secDiv);
+
+        const opHdr = Utils.el('div', {
+            style: 'padding:5px 8px;font-size:var(--font-size-sm);font-weight:700;background:var(--color-surface-active,#f3f4f6);border-bottom:1px solid var(--color-border,#e5e7eb);position:sticky;top:0;z-index:1'
+        });
+        opHdr.textContent = 'Operational Events';
+        const opNote = Utils.el('p', {
+            style: 'font-size:0.75em;color:var(--color-text-muted,#6b7280);margin:1px 0 0;font-weight:400'
+        });
+        opNote.textContent = 'Selecting security events requires also selecting the operational events you want to receive alongside them.';
+        opHdr.appendChild(opNote);
+        wrap.appendChild(opHdr);
+
+        const opDiv = Utils.el('div');
+        for (const grp of OP_GROUPS) opDiv.appendChild(buildGroup(grp, !hasOpFilters));
+        wrap.appendChild(opDiv);
+
+        return wrap;
+    }
+
+    function _readEventFilterUI(filterGrid) {
+        const result = [];
+        filterGrid.querySelectorAll('input[data-filter]:checked:not(:disabled)').forEach(inp => {
+            result.push(inp.dataset.filter);
+        });
+        return result;
+    }
+
     function _showChannelModal(channel, refreshContainer) {
         const isEdit = !!channel;
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:480px' });
+        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:680px;width:calc(100% - 32px)' });
         box.appendChild(Utils.el('h3', { textContent: isEdit ? 'Edit Channel' : 'Add Channel', style: 'margin-top:0' }));
 
         const mkField = (label, inp) => {
@@ -5285,35 +5524,48 @@ const Admin = (() => {
             return row;
         };
 
-        const nameInp    = Utils.el('input', { type: 'text', value: channel?.name || '', style: 'width:100%', placeholder: 'e.g. Slack alerts' });
-        const urlInp     = Utils.el('input', { type: 'text', value: channel?.endpoint_url || '', style: 'width:100%', placeholder: 'https://...' });
-        const secretInp  = Utils.el('input', { type: 'password', style: 'width:100%', placeholder: isEdit ? '(unchanged)' : '(leave blank for unsigned)' });
-        const filterInp  = Utils.el('textarea', { style: 'width:100%;height:80px;font-size:var(--font-size-sm)', placeholder: 'One prefix per line. Blank = all operational events.\nPrefix with security: for security events.' });
-        if (channel?.event_filter) {
-            try {
-                filterInp.value = JSON.parse(channel.event_filter).join('\n');
-            } catch { filterInp.value = ''; }
+        const nameInp   = Utils.el('input', { type: 'text', value: channel?.name || '', style: 'width:100%', placeholder: 'e.g. Slack alerts' });
+        const urlInp    = Utils.el('input', { type: 'text', value: channel?.endpoint_url || '', style: 'width:100%', placeholder: 'https://...' });
+        const secretInp = Utils.el('input', { type: 'password', style: 'width:100%', placeholder: isEdit ? '(unchanged)' : '(leave blank for unsigned)' });
+        const secretWarn = Utils.el('p', { style: 'font-size:var(--font-size-sm);color:var(--color-warning,#d97706);margin:4px 0 0;display:none' });
+        if (!isEdit) {
+            secretWarn.textContent = 'No signing secret — deliveries will be unsigned JSON. Recommended: set a secret.';
+            secretWarn.style.display = '';
+            secretInp.addEventListener('input', () => { secretWarn.style.display = secretInp.value ? 'none' : ''; });
         }
+        const secretField = mkField('Signing secret', secretInp);
+        secretField.appendChild(secretWarn);
+
+        box.append(mkField('Name', nameInp), mkField('Endpoint URL (must be https://)', urlInp), secretField);
+
+        const curFilters = (() => {
+            try { return JSON.parse(channel?.event_filter || '[]'); } catch { return []; }
+        })();
+        const filterWrap = Utils.el('div', { style: 'margin-bottom:10px' });
+        filterWrap.appendChild(Utils.el('label', {
+            textContent: 'Event filters',
+            style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px;font-weight:600'
+        }));
+        const filterGrid = _buildEventFilterUI(curFilters);
+        filterWrap.appendChild(filterGrid);
+        box.appendChild(filterWrap);
+
+        const sevSel = Utils.el('select', { style: 'width:190px' });
+        [['', 'Any (no minimum)'], ['info', 'Info +'], ['warning', 'Warning +'], ['critical', 'Critical only']].forEach(([val, lbl]) => {
+            const opt = Utils.el('option', { value: val, textContent: lbl });
+            if ((channel?.filter_min_severity || '') === val) opt.selected = true;
+            sevSel.appendChild(opt);
+        });
+        box.appendChild(mkField('Minimum severity', sevSel));
+
         const batchSizeInp = Utils.el('input', { type: 'number', value: channel?.batch_size ?? '', style: 'width:120px', placeholder: 'e.g. 20' });
         const intervalInp  = Utils.el('input', { type: 'number', value: channel?.batch_interval_s ?? '', style: 'width:120px', placeholder: 'e.g. 86400' });
         const enabledChk   = Utils.el('input', { type: 'checkbox', checked: channel ? !!channel.enabled : true });
 
-        if (!secretInp.value && !isEdit) {
-            const warn = Utils.el('p', { style: 'font-size:var(--font-size-sm);color:var(--color-warning,#d97706);margin:4px 0 0' });
-            warn.textContent = 'No signing secret — deliveries will be unsigned JSON. Recommended: set a secret.';
-            secretInp.addEventListener('input', () => { warn.style.display = secretInp.value ? 'none' : ''; });
-            // append after building
-        }
-
         box.append(
-            mkField('Name', nameInp),
-            mkField('Endpoint URL (must be https://)', urlInp),
-            mkField('Signing secret', secretInp),
-            mkField('Event filter (one prefix per line)', filterInp),
             mkField('Batch size (blank = immediate)', batchSizeInp),
             mkField('Flush interval (seconds, blank = disabled)', intervalInp),
         );
-
         const enabledRow = Utils.el('div', { style: 'margin-bottom:16px;display:flex;align-items:center;gap:8px' });
         enabledRow.append(enabledChk, Utils.el('label', { textContent: 'Enabled' }));
         box.appendChild(enabledRow);
@@ -5326,17 +5578,15 @@ const Admin = (() => {
         cancelBtn.addEventListener('click', () => modal.remove());
         const saveBtn = Utils.el('button', { textContent: isEdit ? 'Save Changes' : 'Add Channel', className: 'btn btn-primary btn-sm' });
         saveBtn.addEventListener('click', async () => {
-            const filters = filterInp.value.trim()
-                ? filterInp.value.trim().split('\n').map(s => s.trim()).filter(Boolean)
-                : [];
             const body = {
-                name:             nameInp.value.trim(),
-                endpoint_url:     urlInp.value.trim(),
-                secret:           secretInp.value || null,
-                event_filter:     filters,
-                batch_size:       batchSizeInp.value ? Number.parseInt(batchSizeInp.value) : null,
-                batch_interval_s: intervalInp.value ? Number.parseInt(intervalInp.value) : null,
-                enabled:          enabledChk.checked,
+                name:                nameInp.value.trim(),
+                endpoint_url:        urlInp.value.trim(),
+                secret:              secretInp.value || null,
+                event_filter:        _readEventFilterUI(filterGrid),
+                filter_min_severity: sevSel.value || null,
+                batch_size:          batchSizeInp.value ? Number.parseInt(batchSizeInp.value) : null,
+                batch_interval_s:    intervalInp.value ? Number.parseInt(intervalInp.value) : null,
+                enabled:             enabledChk.checked,
             };
             try {
                 if (isEdit) {

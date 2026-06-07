@@ -61,6 +61,7 @@ class ChannelCreateModel(BaseModel):
     endpoint_url: str
     secret: str | None = None
     event_filter: list[str] = []
+    filter_min_severity: str | None = None
     batch_size: int | None = None
     batch_interval_s: int | None = None
     enabled: bool = True
@@ -79,6 +80,13 @@ class ChannelCreateModel(BaseModel):
         for f in v:
             if not _FILTER_RE.match(f):
                 raise ValueError(f"Invalid filter prefix: {f!r}")
+        return v
+
+    @field_validator("filter_min_severity")
+    @classmethod
+    def _severity(cls, v: str | None) -> str | None:
+        if v is not None and v not in ("info", "warning", "critical"):
+            raise ValueError("filter_min_severity must be info, warning, or critical")
         return v
 
     @field_validator("batch_size")
@@ -173,7 +181,8 @@ async def list_channels(
     db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
-        "SELECT id, name, endpoint_url, event_filter, batch_size, batch_interval_s, enabled, created_at "
+        "SELECT id, name, endpoint_url, event_filter, filter_min_severity, "
+        "       batch_size, batch_interval_s, enabled, created_at "
         "FROM notification_channels ORDER BY created_at ASC"
     )
     rows = await cursor.fetchall()
@@ -194,14 +203,16 @@ async def create_channel(
 
     await db.execute(
         "INSERT INTO notification_channels "
-        "(id, name, endpoint_url, secret_enc, event_filter, batch_size, batch_interval_s, enabled, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, name, endpoint_url, secret_enc, event_filter, filter_min_severity, "
+        " batch_size, batch_interval_s, enabled, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             ch_id,
             body.name,
             body.endpoint_url,
             secret_enc,
             json.dumps(body.event_filter),
+            body.filter_min_severity,
             body.batch_size,
             body.batch_interval_s,
             1 if body.enabled else 0,
@@ -227,7 +238,7 @@ async def get_channel(
 ):
     channel_id = validate_uuid(channel_id)
     cursor = await db.execute(
-        "SELECT id, name, endpoint_url, secret_enc, event_filter, "
+        "SELECT id, name, endpoint_url, secret_enc, event_filter, filter_min_severity, "
         "       batch_size, batch_interval_s, enabled, created_at "
         "FROM notification_channels WHERE id = ?",
         (channel_id,),
@@ -265,12 +276,13 @@ async def update_channel(
 
     await db.execute(
         "UPDATE notification_channels SET name=?, endpoint_url=?, secret_enc=?, "
-        "event_filter=?, batch_size=?, batch_interval_s=?, enabled=? WHERE id=?",
+        "event_filter=?, filter_min_severity=?, batch_size=?, batch_interval_s=?, enabled=? WHERE id=?",
         (
             body.name,
             body.endpoint_url,
             secret_enc,
             json.dumps(body.event_filter),
+            body.filter_min_severity,
             body.batch_size,
             body.batch_interval_s,
             1 if body.enabled else 0,
@@ -314,7 +326,7 @@ async def test_channel(
 ):
     channel_id = validate_uuid(channel_id)
     cursor = await db.execute(
-        "SELECT id, name, endpoint_url, secret_enc, event_filter, "
+        "SELECT id, name, endpoint_url, secret_enc, event_filter, filter_min_severity, "
         "       batch_size, batch_interval_s, enabled "
         "FROM notification_channels WHERE id = ?",
         (channel_id,),
