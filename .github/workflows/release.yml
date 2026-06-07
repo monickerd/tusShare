@@ -1,27 +1,18 @@
 name: Release
 
 on:
-  # Primary: run manually from the Actions tab with a version input.
-  # The workflow creates a draft, builds, uploads assets, then publishes —
-  # which creates the protected tag via the Releases API (bypasses the tag
-  # protection rule that blocks direct git pushes).
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. v1.1.0)'
+        description: 'Version to build (e.g. v1.1.0) — must match an existing draft release'
         required: true
         type: string
-
-  # Fallback: tag-push path still works if a tag is created externally.
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write     # create GitHub Release
+      contents: write     # upload assets to the draft release
       packages: write     # push to GHCR
       attestations: write # upload provenance attestation
       id-token: write     # OIDC token for attestation signing
@@ -30,35 +21,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Resolve the version from input (workflow_dispatch) or tag (push).
-      # Outputs:
-      #   ver.ref    — full ref, e.g. v1.1.0
-      #   ver.semver — bare semver, e.g. 1.1.0
-      #   ver.minor  — major.minor, e.g. 1.1
       - name: Resolve version
         id: ver
         run: |
-          V="${{ inputs.version || github.ref_name }}"
+          V="${{ inputs.version }}"
           SEMVER="${V#v}"
           MINOR="${SEMVER%.*}"
-          echo "ref=${V}"       >> $GITHUB_OUTPUT
+          echo "ref=${V}"         >> $GITHUB_OUTPUT
           echo "semver=${SEMVER}" >> $GITHUB_OUTPUT
-          echo "minor=${MINOR}"  >> $GITHUB_OUTPUT
+          echo "minor=${MINOR}"   >> $GITHUB_OUTPUT
 
-      # Create the release as a draft immediately so assets can be uploaded to
-      # it before the release is published. GitHub treats published releases as
-      # immutable — asset uploads are rejected once a release is no longer a
-      # draft. The final step sets draft: false to publish after assets are ready.
-      #
-      # target_commitish tells GitHub what commit to tag at publish time.
-      - name: Create draft release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.ver.outputs.ref }}
-          name: ${{ steps.ver.outputs.ref }}
-          target_commitish: ${{ github.sha }}
-          draft: true
-          make_latest: false
+      # Fail before the long build if the draft release doesn't exist yet.
+      # Create it in the GitHub UI (Releases → Draft a new release) first.
+      - name: Verify draft release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "${{ steps.ver.outputs.ref }}" \
+               --repo "${{ github.repository }}" > /dev/null 2>&1; then
+            echo "::error::No release found for ${{ steps.ver.outputs.ref }}."
+            echo "::error::Create a draft release in the GitHub UI before running this workflow."
+            exit 1
+          fi
 
       # QEMU lets Buildx cross-compile the arm64 image on the amd64 runner.
       # The Rust compilation step will be slow under emulation (~20 min) but
@@ -77,7 +61,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Use type=raw tags so the metadata step works even when the git tag
-      # does not yet exist (workflow_dispatch path; tag is created at publish).
+      # does not yet exist (it is created when the user publishes the draft).
       - name: Extract image metadata
         id: meta
         uses: docker/metadata-action@v5
@@ -138,33 +122,17 @@ jobs:
           tar -czf "tusshare-${VERSION}.tar.gz" -C release-bundle .
           cd release-bundle && zip -r "../tusshare-${VERSION}.zip" .
 
-      # Upload assets to the draft release and publish it.
-      # Uses RELEASE_TOKEN (a fine-grained PAT for the repo owner) rather than
-      # GITHUB_TOKEN because the tag-protection rule blocks github-actions[bot]
-      # from creating the git tag when the draft is published. The PAT runs as
-      # the repo owner, who is allowed to create protected tags via the
-      # Releases API.
-      - name: Publish release with assets
-        uses: softprops/action-gh-release@v2
-        with:
-          token: ${{ secrets.RELEASE_TOKEN }}
-          tag_name: ${{ steps.ver.outputs.ref }}
-          name: ${{ steps.ver.outputs.ref }}
-          draft: false
-          make_latest: true
-          files: |
-            tusshare-${{ steps.ver.outputs.semver }}.tar.gz
-            tusshare-${{ steps.ver.outputs.semver }}.zip
-          body: |
-            ## Quick start
-
-            1. Download and extract the deployment bundle (`.tar.gz` or `.zip`) below
-            2. Run `python generate-env.py` and enter your domain when prompted
-            3. `docker compose up -d`
-
-            The image is also available directly:
-            ```
-            docker pull ghcr.io/${{ github.repository_owner }}/tusshare:${{ steps.ver.outputs.semver }}
-            ```
-
-            See the [README](https://github.com/${{ github.repository }}#readme) for full setup and configuration docs.
+      # Upload bundles to the draft release. Publishing — and the protected
+      # git tag creation — is done manually from the GitHub UI, where the
+      # repo owner's credentials satisfy the tag-protection rule.
+      - name: Upload bundles to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SEMVER: ${{ steps.ver.outputs.semver }}
+          REF: ${{ steps.ver.outputs.ref }}
+        run: |
+          gh release upload "${REF}" \
+            "tusshare-${SEMVER}.tar.gz" \
+            "tusshare-${SEMVER}.zip" \
+            --repo "${{ github.repository }}" \
+            --clobber
