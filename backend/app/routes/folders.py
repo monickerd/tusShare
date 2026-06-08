@@ -1288,7 +1288,6 @@ async def add_folder_grant(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Add a per-user permission grant on a folder."""
-    await check_management_write_rate_limit(user.id)
     folder_id = validate_uuid(folder_id)
 
     cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
@@ -1436,7 +1435,6 @@ async def add_folder_role_grant(
     db: Annotated[Database, Depends(get_db)],
 ):
     """Add a role-based permission grant on a folder."""
-    await check_management_write_rate_limit(user.id)
     folder_id = validate_uuid(folder_id)
 
     cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
