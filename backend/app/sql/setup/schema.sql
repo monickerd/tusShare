@@ -1159,7 +1159,7 @@ CREATE TABLE security_events (
     user_id           TEXT,
     actor_username    TEXT,      -- denormalised: preserved even if user is later deleted
     actor_auth_method TEXT,      -- denormalised: 'opaque' | 'ldap' | 'oidc' | 'service' | NULL for unauthenticated
-    ip_address        TEXT        NOT NULL,
+    ip_address        TEXT,                -- NULL when audit-key encryption is active (value in detail_enc)
     user_agent        TEXT,
     event_type        TEXT        NOT NULL,
     action_key        TEXT,
