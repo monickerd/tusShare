@@ -5093,18 +5093,6 @@ const Admin = (() => {
     // ------------------------------------------------------------------
 
     // ------------------------------------------------------------------
-    // Shared modal field builder (label + input + optional hint)
-    // ------------------------------------------------------------------
-
-    function _mkField(label, inp, hint) {
-        const row = Utils.el('div', { style: 'margin-bottom:10px' });
-        row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' }));
-        row.appendChild(inp);
-        if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:var(--font-size-sm);color:var(--color-muted,#888);margin:2px 0 0' }));
-        return row;
-    }
-
-    // ------------------------------------------------------------------
     // Shared IP allowlist field (used in integrations modal + SA modal)
     // ------------------------------------------------------------------
 
