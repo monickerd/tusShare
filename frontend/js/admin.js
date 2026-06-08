@@ -3279,7 +3279,7 @@ const Admin = (() => {
         }
 
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const dialog = Utils.el('div', { className: 'modal-dialog', style: 'max-width:560px' });
+        const dialog = Utils.el('div', { className: 'modal', style: 'max-width:560px' });
         modal.appendChild(dialog);
         document.body.appendChild(modal);
 
@@ -3476,7 +3476,7 @@ const Admin = (() => {
 
     async function _showIdpWizard(prov) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const dialog = Utils.el('div', { className: 'modal-dialog', style: 'max-width:640px' });
+        const dialog = Utils.el('div', { className: 'modal', style: 'max-width:640px' });
         modal.appendChild(dialog);
         document.body.appendChild(modal);
 
@@ -5524,7 +5524,7 @@ const Admin = (() => {
     function _showChannelModal(channel, refreshContainer) {
         const isEdit = !!channel;
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:680px;width:calc(100% - 32px)' });
+        const box   = Utils.el('div', { className: 'modal', style: 'max-width:680px;width:calc(100% - 32px)' });
         box.appendChild(Utils.el('h3', { textContent: isEdit ? 'Edit Channel' : 'Add Channel', style: 'margin-top:0' }));
 
         const mkField = (label, inp) => {
@@ -5704,7 +5704,7 @@ const Admin = (() => {
 
     function _showApiKeyModal(refreshContainer) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:480px;width:calc(100% - 32px)' });
+        const box   = Utils.el('div', { className: 'modal', style: 'max-width:480px;width:calc(100% - 32px)' });
         box.appendChild(Utils.el('h3', { textContent: 'Create API Key', style: 'margin-top:0' }));
         box.appendChild(Utils.el('p', {
             className: 'text-muted',
@@ -5791,7 +5791,7 @@ const Admin = (() => {
 
     function _showApiKeyReveal(rawKey, keyName, refreshContainer) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:500px' });
+        const box   = Utils.el('div', { className: 'modal', style: 'max-width:500px' });
         box.appendChild(Utils.el('h3', { textContent: 'API Key Created', style: 'margin-top:0' }));
         box.appendChild(Utils.el('p', { textContent: `Copy this key now — it will not be shown again.`, style: 'color:var(--color-warning,#d97706)' }));
         box.appendChild(Utils.el('p', { textContent: keyName, style: 'font-weight:600;margin-bottom:6px' }));
@@ -7133,7 +7133,7 @@ const Admin = (() => {
 
     function _showCreateServiceAccountModal(refreshContainer) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:460px' });
+        const box   = Utils.el('div', { className: 'modal', style: 'max-width:460px' });
         box.appendChild(Utils.el('h3', { textContent: 'Create Service Account', style: 'margin-top:0' }));
 
         const nameInp  = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. backup-agent' });
@@ -7194,7 +7194,7 @@ const Admin = (() => {
 
     function _showSaKeyReveal(rawKey, username, refreshContainer) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:520px' });
+        const box   = Utils.el('div', { className: 'modal', style: 'max-width:520px' });
         box.appendChild(Utils.el('h3', { textContent: 'Service Account Key', style: 'margin-top:0' }));
         box.appendChild(Utils.el('p', { textContent: 'Copy this key now — it will not be shown again.', style: 'color:var(--color-warning,#d97706);font-weight:600' }));
         box.appendChild(Utils.el('p', { textContent: username, style: 'font-weight:600;margin-bottom:6px' }));
