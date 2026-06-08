@@ -839,7 +839,7 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                         user_id           TEXT,
                         actor_username    TEXT,
                         actor_auth_method TEXT,
-                        ip_address        TEXT        NOT NULL DEFAULT '',
+                        ip_address        TEXT        DEFAULT NULL,
                         user_agent        TEXT,
                         event_type        TEXT        NOT NULL DEFAULT 'system.unknown',
                         action_key        TEXT,
@@ -933,4 +933,21 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
         await conn.execute("""
             ALTER TABLE service_account_keys
                 ADD COLUMN IF NOT EXISTS allowed_ips TEXT DEFAULT NULL;
+        """)
+
+    # resource_role_grants: drop FK on role_id so custom team roles (team_roles table)
+    # can be stored alongside system roles. Referential integrity is enforced at
+    # application level; team_roles.py cleans up grants on custom role deletion.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE resource_role_grants
+                DROP CONSTRAINT IF EXISTS resource_role_grants_role_id_fkey;
+        """)
+
+    # security_events: ip_address may be NULL when audit-key encryption is active
+    # (plaintext IP is stored inside detail_enc instead).
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE security_events
+                ALTER COLUMN ip_address DROP NOT NULL;
         """)

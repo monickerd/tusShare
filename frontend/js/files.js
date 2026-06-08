@@ -1335,7 +1335,7 @@ const Files = (() => {
                 removeBtn.addEventListener('click', async () => {
                     removeBtn.disabled = true;
                     try {
-                        await Api.delete(`${Config.app.apiPrefix}/folders/${folder.id}/grants/${g.id}`);
+                        await Api.del(`${Config.app.apiPrefix}/folders/${folder.id}/grants/${g.id}`);
                         grants = grants.filter(x => x.id !== g.id);
                         _renderGrants(grants);
                     } catch (err) {
@@ -1433,7 +1433,7 @@ const Files = (() => {
                 removeBtn.addEventListener('click', async () => {
                     removeBtn.disabled = true;
                     try {
-                        await Api.delete(`${Config.app.apiPrefix}/folders/${folder.id}/role-grants/${g.id}`);
+                        await Api.del(`${Config.app.apiPrefix}/folders/${folder.id}/role-grants/${g.id}`);
                         roleGrants = roleGrants.filter(x => x.id !== g.id);
                         _renderRoleGrants(roleGrants);
                     } catch (err) {

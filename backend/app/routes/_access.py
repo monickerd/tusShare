@@ -281,8 +281,13 @@ async def _check_role_acl(
             "SELECT rrg.permission, rrg.recursive "
             "FROM resource_role_grants rrg "
             "JOIN user_roles ur ON ur.role_id = rrg.role_id "
-            "WHERE rrg.resource_type = ? AND rrg.resource_id = ? AND ur.user_id = ?",
-            (resource_type, resource_id, user_id),
+            "WHERE rrg.resource_type = ? AND rrg.resource_id = ? AND ur.user_id = ? "
+            "UNION ALL "
+            "SELECT rrg.permission, rrg.recursive "
+            "FROM resource_role_grants rrg "
+            "JOIN team_role_assignments tra ON tra.team_role_id = rrg.role_id "
+            "WHERE rrg.resource_type = ? AND rrg.resource_id = ? AND tra.user_id = ?",
+            (resource_type, resource_id, user_id, resource_type, resource_id, user_id),
         )
         rows = await cursor.fetchall()
     except Exception:

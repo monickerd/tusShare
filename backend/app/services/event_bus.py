@@ -189,7 +189,7 @@ def _build_persist_params(event: SecurityEvent, event_id: str) -> tuple:
         }
         detail_enc = _audit_key.encrypt_detail(sensitive)
         actor_username = None
-        ip_address     = None
+        ip_address     = ""
         target_id      = event.target.id   if event.target else None  # kept for filtering
         target_name    = None
         admin_actor_id = None

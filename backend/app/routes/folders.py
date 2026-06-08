@@ -1393,13 +1393,15 @@ async def list_folder_role_grants(
     await _require_folder_manage_access(db, folder_id, folder_row, user)
 
     cursor = await db.execute(
-        "SELECT rrg.id, rrg.role_id, r.name AS role_name, rrg.permission, rrg.recursive, rrg.created_at, "
+        "SELECT rrg.id, rrg.role_id, COALESCE(r.name, tr.name) AS role_name, "
+        "       rrg.permission, rrg.recursive, rrg.created_at, "
         "       u.username AS granted_by_username "
         "FROM resource_role_grants rrg "
-        "JOIN roles r ON r.id = rrg.role_id "
+        "LEFT JOIN roles r ON r.id = rrg.role_id "
+        "LEFT JOIN team_roles tr ON tr.id = rrg.role_id "
         "LEFT JOIN users u ON u.id = rrg.granted_by "
         "WHERE rrg.resource_type = 'folder' AND rrg.resource_id = ? "
-        "ORDER BY r.name",
+        "ORDER BY COALESCE(r.name, tr.name)",
         (folder_id,),
     )
     rows = await cursor.fetchall()
@@ -1446,6 +1448,9 @@ async def add_folder_role_grant(
 
     cursor = await db.execute("SELECT id, name FROM roles WHERE id = ?", (body.role_id,))
     role_row = await cursor.fetchone()
+    if not role_row:
+        cursor = await db.execute("SELECT id, name FROM team_roles WHERE id = ?", (body.role_id,))
+        role_row = await cursor.fetchone()
     if not role_row:
         raise HTTPException(status_code=404, detail="Role not found")
 

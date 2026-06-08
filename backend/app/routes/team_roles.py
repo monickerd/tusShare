@@ -384,6 +384,7 @@ async def delete_team_role(
 
     await _load_team_role(db, team_id, role_id)  # 404 guard
 
+    await db.execute("DELETE FROM resource_role_grants WHERE role_id = ?", (role_id,))
     await db.execute("DELETE FROM team_roles WHERE id = ?", (role_id,))
     await db.commit()
     event_bus.emit(
