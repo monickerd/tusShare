@@ -5120,7 +5120,6 @@ const Admin = (() => {
             if (secCount) parts.push(`${secCount} security filter${secCount > 1 ? 's' : ''}`);
             filterStr = parts.join(', ');
         }
-        if (ch.filter_min_severity) filterStr += ` · sev≥${ch.filter_min_severity}`;
         let batchStr;
         if (ch.batch_size) batchStr = `${ch.batch_size} events`;
         else if (ch.batch_interval_s) batchStr = `${ch.batch_interval_s}s`;
@@ -5285,7 +5284,6 @@ const Admin = (() => {
 
     function _buildEventFilterUI(curFilters) {
         const filterSet = new Set(curFilters);
-        const hasOpFilters = curFilters.some(f => !f.startsWith('security:'));
 
         function sevClass(sev) {
             if (sev === 'critical' || sev === 'error') return 'badge badge-expired';
@@ -5293,20 +5291,12 @@ const Admin = (() => {
             return 'badge badge-custom';
         }
 
-        function isCoveredByPrefix(entry) {
-            for (const f of filterSet) {
-                if (entry.startsWith(f + '.')) return true;
-            }
-            return false;
-        }
-
-        function buildGroup(grp, forceAllActive) {
-            const allActive = forceAllActive || filterSet.has(grp.allEntry);
-            const hasIndiv  = !allActive && grp.events.some(e => filterSet.has(e.entry) || isCoveredByPrefix(e.entry));
-            const hasSA     = grp.standalones?.some(e => filterSet.has(e.entry));
+        function buildGroup(grp) {
+            const allActive  = filterSet.has(grp.allEntry);
+            const someActive = !allActive && grp.events.some(e => filterSet.has(e.entry));
 
             const det = document.createElement('details');
-            if (allActive || hasIndiv || hasSA) det.open = true;
+            if (allActive || someActive) det.open = true;
 
             const summ = document.createElement('summary');
             summ.style.cssText = 'padding:5px 8px;cursor:pointer;user-select:none;font-size:var(--font-size-sm);font-weight:600';
@@ -5315,12 +5305,15 @@ const Admin = (() => {
 
             const body = Utils.el('div', { style: 'padding:2px 4px 8px 24px;display:flex;flex-direction:column;gap:2px' });
 
-            // "Select All" row at top of body
+            // "Select All" row — tri-state: unchecked / indeterminate / checked
             const allRow = Utils.el('div', {
                 style: 'display:flex;align-items:center;gap:6px;padding:2px 0 4px;border-bottom:1px solid var(--color-border,#e5e7eb);margin-bottom:4px'
             });
-            const allChk = Utils.el('input', { type: 'checkbox', checked: allActive });
-            allChk.dataset.filter = grp.allEntry;
+            const allChk = Utils.el('input', { type: 'checkbox' });
+            allChk.dataset.filter   = grp.allEntry;
+            allChk.dataset.groupAll = grp.allEntry;
+            if (allActive)       { allChk.checked = true; }
+            else if (someActive) { allChk.indeterminate = true; }
             allRow.append(
                 allChk,
                 Utils.el('span', {
@@ -5330,10 +5323,27 @@ const Admin = (() => {
             );
             body.appendChild(allRow);
 
+            // Sync allChk tri-state when individual items change
+            const updateAllChk = () => {
+                const subs = [...body.querySelectorAll(`input[data-group="${grp.allEntry}"]`)];
+                const n = subs.filter(c => c.checked).length;
+                if (n === 0)             { allChk.checked = false; allChk.indeterminate = false; }
+                else if (n === subs.length) { allChk.checked = true;  allChk.indeterminate = false; }
+                else                     { allChk.checked = false; allChk.indeterminate = true;  }
+            };
+
+            // Clicking allChk: checked→uncheck all; unchecked/indeterminate→check all
+            allChk.addEventListener('change', () => {
+                const target = allChk.checked;
+                body.querySelectorAll(`input[data-group="${grp.allEntry}"]`).forEach(c => { c.checked = target; });
+                allChk.indeterminate = false;
+            });
+
             for (const ev of grp.events) {
-                const evChecked = allActive || filterSet.has(ev.entry) || isCoveredByPrefix(ev.entry);
-                const chk = Utils.el('input', { type: 'checkbox', checked: evChecked, disabled: allActive });
+                const chk = Utils.el('input', { type: 'checkbox', checked: allActive || filterSet.has(ev.entry) });
                 chk.dataset.filter = ev.entry;
+                chk.dataset.group  = grp.allEntry;
+                chk.addEventListener('change', updateAllChk);
 
                 const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;padding:1px 0' });
                 row.append(
@@ -5342,11 +5352,6 @@ const Admin = (() => {
                     Utils.el('span', { textContent: ev.sev, className: sevClass(ev.sev) })
                 );
                 body.appendChild(row);
-
-                allChk.addEventListener('change', () => {
-                    chk.checked = allChk.checked;
-                    chk.disabled = allChk.checked;
-                });
             }
 
             if (grp.standalones?.length) {
@@ -5482,22 +5487,17 @@ const Admin = (() => {
         wrap.appendChild(secHdr);
 
         const secDiv = Utils.el('div', { style: 'border-bottom:2px solid var(--color-border,#e5e7eb)' });
-        for (const grp of SEC_GROUPS) secDiv.appendChild(buildGroup(grp, false));
+        for (const grp of SEC_GROUPS) secDiv.appendChild(buildGroup(grp));
         wrap.appendChild(secDiv);
 
         const opHdr = Utils.el('div', {
             style: 'padding:5px 8px;font-size:var(--font-size-sm);font-weight:700;background:var(--color-surface-active,#f3f4f6);border-bottom:1px solid var(--color-border,#e5e7eb);position:sticky;top:0;z-index:1'
         });
         opHdr.textContent = 'Operational Events';
-        const opNote = Utils.el('p', {
-            style: 'font-size:0.75em;color:var(--color-text-muted,#6b7280);margin:1px 0 0;font-weight:400'
-        });
-        opNote.textContent = 'Selecting security events requires also selecting the operational events you want to receive alongside them.';
-        opHdr.appendChild(opNote);
         wrap.appendChild(opHdr);
 
         const opDiv = Utils.el('div');
-        for (const grp of OP_GROUPS) opDiv.appendChild(buildGroup(grp, !hasOpFilters));
+        for (const grp of OP_GROUPS) opDiv.appendChild(buildGroup(grp));
         wrap.appendChild(opDiv);
 
         return wrap;
@@ -5505,8 +5505,18 @@ const Admin = (() => {
 
     function _readEventFilterUI(filterGrid) {
         const result = [];
-        filterGrid.querySelectorAll('input[data-filter]:checked:not(:disabled)').forEach(inp => {
-            result.push(inp.dataset.filter);
+        filterGrid.querySelectorAll('input[data-filter]').forEach(inp => {
+            if (inp.dataset.groupAll) {
+                // Group "Select All" — include prefix only if checked
+                if (inp.checked) result.push(inp.dataset.filter);
+            } else if (inp.dataset.group) {
+                // Individual event — skip if its group-all is checked (prefix already covers it)
+                const allChk = filterGrid.querySelector(`input[data-group-all="${inp.dataset.group}"]`);
+                if (!allChk?.checked && inp.checked) result.push(inp.dataset.filter);
+            } else {
+                // Standalone (no group)
+                if (inp.checked) result.push(inp.dataset.filter);
+            }
         });
         return result;
     }
@@ -5550,14 +5560,6 @@ const Admin = (() => {
         filterWrap.appendChild(filterGrid);
         box.appendChild(filterWrap);
 
-        const sevSel = Utils.el('select', { style: 'width:190px' });
-        [['', 'Any (no minimum)'], ['info', 'Info +'], ['warning', 'Warning +'], ['critical', 'Critical only']].forEach(([val, lbl]) => {
-            const opt = Utils.el('option', { value: val, textContent: lbl });
-            if ((channel?.filter_min_severity || '') === val) opt.selected = true;
-            sevSel.appendChild(opt);
-        });
-        box.appendChild(mkField('Minimum severity', sevSel));
-
         const batchSizeInp = Utils.el('input', { type: 'number', value: channel?.batch_size ?? '', style: 'width:120px', placeholder: 'e.g. 20' });
         const intervalInp  = Utils.el('input', { type: 'number', value: channel?.batch_interval_s ?? '', style: 'width:120px', placeholder: 'e.g. 86400' });
         const enabledChk   = Utils.el('input', { type: 'checkbox', checked: channel ? !!channel.enabled : true });
@@ -5583,7 +5585,6 @@ const Admin = (() => {
                 endpoint_url:        urlInp.value.trim(),
                 secret:              secretInp.value || null,
                 event_filter:        _readEventFilterUI(filterGrid),
-                filter_min_severity: sevSel.value || null,
                 batch_size:          batchSizeInp.value ? Number.parseInt(batchSizeInp.value) : null,
                 batch_interval_s:    intervalInp.value ? Number.parseInt(intervalInp.value) : null,
                 enabled:             enabledChk.checked,
@@ -5622,10 +5623,8 @@ const Admin = (() => {
     }
 
     const _KEY_SCOPES = [
-        { value: 'ops_read',           label: 'ops_read — Operational Events',   desc: 'Read live operational events (/op-events). Use for SIEM streaming or monitoring.' },
-        { value: 'audit_read',         label: 'audit_read — Security Audit Log', desc: 'Read security audit logs (/admin/audit/logs). Use for compliance log exports.' },
-        { value: 'events.read',        label: 'events.read — Legacy Alias',      desc: 'Alias for ops_read; included for backward compatibility with older integrations.' },
-        { value: 'notification_write', label: 'notification_write — Delivery',   desc: 'Internal use only — authorises webhook channel delivery. Do not issue to external callers.' },
+        { value: 'audit_read', label: 'Security Audit Log', desc: 'Read-only access to the security event log. Suits SIEM integrations, compliance exports, and log analysis tools.' },
+        { value: 'ops_read',   label: 'Operational Events', desc: 'Read live operational events (storage warnings, quota alerts, system events). Suits monitoring dashboards and alerting scripts.' },
     ];
 
     function _buildApiKeyRow(k, container) {
@@ -5705,40 +5704,49 @@ const Admin = (() => {
 
     function _showApiKeyModal(refreshContainer) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:480px' });
+        const box   = Utils.el('div', { className: 'modal-box', style: 'max-width:480px;width:calc(100% - 32px)' });
         box.appendChild(Utils.el('h3', { textContent: 'Create API Key', style: 'margin-top:0' }));
+        box.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'font-size:var(--font-size-sm);margin-bottom:14px',
+            textContent: 'API keys authenticate programmatic read access to logs and event streams — for SIEM integrations, monitoring scripts, or compliance tools. Browser sessions use JWT cookies and do not need API keys.',
+        }));
 
-        const nameInp   = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. Grafana SIEM' });
-        const expiryInp = Utils.el('input', { type: 'date', style: 'width:200px' });
-        const filterTypesInp = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. auth.*,admin.* (leave blank for all)' });
-        const filterSevSel = Utils.el('select', { style: 'width:100%' });
-        for (const [v, l] of [['', 'All (info+)'], ['warning', 'warning+'], ['critical', 'critical only']]) {
-            const opt = Utils.el('option', { value: v, textContent: l });
-            filterSevSel.appendChild(opt);
-        }
+        const mkField = (label, inp, hint) => {
+            const row = Utils.el('div', { style: 'margin-bottom:10px' });
+            row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' }));
+            row.appendChild(inp);
+            if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:var(--font-size-sm);color:var(--color-muted,#888);margin:2px 0 0' }));
+            return row;
+        };
 
-        const mkField = _mkField;
+        const nameInp        = Utils.el('input', { type: 'text',  style: 'width:100%',  placeholder: 'e.g. Grafana SIEM' });
+        const expiryInp      = Utils.el('input', { type: 'date',  style: 'width:200px' });
+        const filterTypesInp = Utils.el('input', { type: 'text',  style: 'width:100%',  placeholder: 'e.g. auth.*,admin.* (blank = all events)' });
+
+        box.appendChild(mkField('Name', nameInp));
 
         // Scope checkboxes
-        const scopeLabel = Utils.el('label', { textContent: 'Scopes', style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' });
-        const scopeChecks = {};
         const scopeWrap = Utils.el('div', { style: 'margin-bottom:10px' });
-        scopeWrap.appendChild(scopeLabel);
+        scopeWrap.appendChild(Utils.el('label', { textContent: 'Access scope', style: 'display:block;font-size:var(--font-size-sm);margin-bottom:6px' }));
+        const scopeChecks = {};
         for (const s of _KEY_SCOPES) {
-            const row = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:4px' });
-            const chk = Utils.el('input', { type: 'checkbox' });
-            if (s.value === 'ops_read') chk.checked = true;
+            const row = Utils.el('div', {
+                style: 'display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;padding:8px;border:1px solid var(--color-border,#e5e7eb);border-radius:4px'
+            });
+            const chk = Utils.el('input', { type: 'checkbox', style: 'margin-top:2px;flex-shrink:0' });
             scopeChecks[s.value] = chk;
-            row.append(chk, Utils.el('span', { innerHTML: `<b>${Utils.escHtml(s.label)}</b> <span class="text-muted-xs">${Utils.escHtml(s.desc)}</span>` }));
+            const labelWrap = Utils.el('div');
+            labelWrap.appendChild(Utils.el('span', { textContent: s.label, style: 'font-size:var(--font-size-sm);font-weight:600;display:block' }));
+            labelWrap.appendChild(Utils.el('span', { textContent: s.desc,  style: 'font-size:var(--font-size-sm);color:var(--color-text-muted,#6b7280)' }));
+            row.append(chk, labelWrap);
             scopeWrap.appendChild(row);
         }
+        box.appendChild(scopeWrap);
 
         box.append(
-            mkField('Name', nameInp),
-            scopeWrap,
             mkField('Expiry date (optional)', expiryInp),
-            mkField('Filter event types (optional)', filterTypesInp, 'Comma-separated glob patterns. Only events matching these will be visible to this key.'),
-            mkField('Minimum severity (optional)', filterSevSel),
+            mkField('Filter event types (optional)', filterTypesInp, 'Comma-separated glob patterns. Limits which events are visible through this key. Leave blank to allow all.'),
         );
 
         const errEl = Utils.el('p', { className: 'error-text', style: 'display:none;margin-bottom:8px' });
@@ -5750,12 +5758,21 @@ const Admin = (() => {
         const createBtn = Utils.el('button', { textContent: 'Create Key', className: 'btn btn-primary btn-sm' });
         createBtn.addEventListener('click', async () => {
             const scopes = _KEY_SCOPES.map(s => s.value).filter(v => scopeChecks[v].checked);
+            if (!nameInp.value.trim()) {
+                errEl.textContent = 'Name is required.';
+                errEl.style.display = '';
+                return;
+            }
+            if (!scopes.length) {
+                errEl.textContent = 'Select at least one access scope.';
+                errEl.style.display = '';
+                return;
+            }
             const body = {
-                name:                nameInp.value.trim(),
+                name:               nameInp.value.trim(),
                 scopes,
-                expires_at:          expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null,
-                filter_event_types:  filterTypesInp.value.trim() || null,
-                filter_min_severity: filterSevSel.value || null,
+                expires_at:         expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null,
+                filter_event_types: filterTypesInp.value.trim() || null,
             };
             try {
                 const result = await Api.post(`${_api()}/admin/api-keys`, body);
