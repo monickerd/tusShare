@@ -951,3 +951,39 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             ALTER TABLE security_events
                 ALTER COLUMN ip_address DROP NOT NULL;
         """)
+
+    # blob_cleanup_queue — durable blob deletion queue that survives process crashes.
+    # Entries are inserted within the same transaction as the file/folder/user deletion
+    # so they are guaranteed to exist even if the server dies before blob cleanup runs.
+    # The worker checks live ref-counts before deleting, so shared blobs are safe.
+    async with conn.transaction():
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS blob_cleanup_queue (
+                id          TEXT        NOT NULL PRIMARY KEY DEFAULT gen_random_uuid()::text,
+                storage_key TEXT        NOT NULL,
+                volume_id   TEXT        NOT NULL DEFAULT '__default__',
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_blob_cleanup_queue_created
+                ON blob_cleanup_queue(created_at);
+        """)
+
+    # files.folder_id: change ON DELETE SET NULL → ON DELETE CASCADE so that
+    # hard-deleting a folder also deletes its contained files (previously they
+    # became ghost records with folder_id = NULL).
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE files DROP CONSTRAINT IF EXISTS files_folder_id_fkey;
+            ALTER TABLE files ADD CONSTRAINT files_folder_id_fkey
+                FOREIGN KEY (folder_id) REFERENCES folders(id) ON DELETE CASCADE;
+        """)
+
+    # shares.target_folder_id: change ON DELETE SET NULL → ON DELETE CASCADE so that
+    # hard-deleting a folder also removes any shares targeting it (previously shares
+    # survived as broken records with target_folder_id = NULL).
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE shares DROP CONSTRAINT IF EXISTS shares_target_folder_id_fkey;
+            ALTER TABLE shares ADD CONSTRAINT shares_target_folder_id_fkey
+                FOREIGN KEY (target_folder_id) REFERENCES folders(id) ON DELETE CASCADE;
+        """)

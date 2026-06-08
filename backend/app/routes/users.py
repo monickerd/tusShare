@@ -8,17 +8,15 @@ This separation ensures admin accounts never accidentally gain user privileges
 and regular user creation cannot escalate to admin.
 """
 
-import asyncio
 import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
-import app.storage.manager as storage
 from app.auth.dependencies import require_admin
 from app.auth.interface import AuthenticatedUser
-from app.database import Database, db_session, get_db
+from app.database import Database, get_db
 from app.middleware.rate_limit import _get_client_ip
 from app.models.role import (
     ADMIN_ROLE_IDS,
@@ -43,7 +41,6 @@ _ERR_PERM_MANAGE_USERS = "users_manage permission required"
 _ERR_USER_NOT_FOUND = "User not found"
 _SQL_USERNAME_BY_ID = "SELECT username FROM users WHERE id = ?"
 
-_bg_tasks: set = set()
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -861,32 +858,38 @@ async def delete_user(
     trash_enabled, retention_days = await get_trash_settings(db)
 
     if trash_enabled:
-        # Soft-delete: block login, schedule purge, expire shares, remove team keys
+        # Soft-delete: block login, schedule purge, expire shares, remove team keys.
+        # All steps are in one transaction so a crash leaves nothing half-done.
         team_cursor = await db.execute(
             "SELECT DISTINCT team_id FROM user_team_keys WHERE user_id = ?", (user_id,)
         )
         team_ids = [r["team_id"] for r in await team_cursor.fetchall()]
 
-        await db.execute(
-            "UPDATE users SET is_active = 0, "
-            "scheduled_delete_at = NOW() + (? || ' days')::INTERVAL, "
-            "updated_at = NOW() WHERE id = ?",
-            (str(retention_days), user_id),
-        )
-        await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
-        await db.execute("DELETE FROM user_team_keys WHERE user_id = ?", (user_id,))
-        if team_ids:
-            placeholders = ",".join("?" * len(team_ids))
+        await db.execute("BEGIN")
+        try:
             await db.execute(
-                f"UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
-                f"WHERE id IN ({placeholders})",
-                team_ids,
+                "UPDATE users SET is_active = 0, "
+                "scheduled_delete_at = NOW() + (? || ' days')::INTERVAL, "
+                "updated_at = NOW() WHERE id = ?",
+                (str(retention_days), user_id),
             )
-        await db.execute(
-            "UPDATE shares SET expires_at = NOW() WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
-            (user_id,),
-        )
-        await db.commit()
+            await db.execute("UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ?", (user_id,))
+            await db.execute("DELETE FROM user_team_keys WHERE user_id = ?", (user_id,))
+            if team_ids:
+                placeholders = ",".join("?" * len(team_ids))
+                await db.execute(
+                    f"UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
+                    f"WHERE id IN ({placeholders})",
+                    team_ids,
+                )
+            await db.execute(
+                "UPDATE shares SET expires_at = NOW() WHERE created_by = ? AND (expires_at IS NULL OR expires_at > NOW())",
+                (user_id,),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
         sse_broker.publish(f"identity:{user_id}", {"type": "identity_changed", "reason": "deactivated"})
         event_bus.emit(
             SecurityEvent(
@@ -900,25 +903,41 @@ async def delete_user(
         )
         return {"message": "User scheduled for deletion", "scheduled_delete_at": f"+{retention_days} days"}
 
-    # Hard delete: collect blobs before CASCADE wipes the rows
-    file_cursor = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,))
-    file_rows = await file_cursor.fetchall()
-    team_cursor = await db.execute(
-        "SELECT DISTINCT team_id FROM user_team_keys WHERE user_id = ?", (user_id,)
-    )
-    team_ids = [r["team_id"] for r in await team_cursor.fetchall()]
-
-    result = await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-
-    if team_ids:
-        placeholders = ",".join("?" * len(team_ids))
-        await db.execute(
-            f"UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
-            f"WHERE id IN ({placeholders})",
-            team_ids,
+    # Hard delete: atomic transaction — queue blobs, flag team rotations, then
+    # CASCADE-delete the user row (which wipes files, folders, shares, tokens, etc.).
+    await db.execute("BEGIN")
+    try:
+        # Capture (storage_key, volume_id) before file_storage_locations cascades away.
+        blob_cursor = await db.execute(
+            "SELECT DISTINCT fi.storage_key, COALESCE(fsl.volume_id, '__default__') AS volume_id "
+            "FROM files fi LEFT JOIN file_storage_locations fsl ON fsl.file_id = fi.id "
+            "WHERE fi.owner_id = ?",
+            (user_id,),
         )
+        for bp in await blob_cursor.fetchall():
+            await db.execute(
+                "INSERT INTO blob_cleanup_queue (storage_key, volume_id) VALUES (?, ?)",
+                (bp["storage_key"], bp["volume_id"]),
+            )
 
-    await db.commit()
+        # Flag team key rotation before user_team_keys cascade-deletes on user delete.
+        team_cursor = await db.execute(
+            "SELECT DISTINCT team_id FROM user_team_keys WHERE user_id = ?", (user_id,)
+        )
+        team_ids = [r["team_id"] for r in await team_cursor.fetchall()]
+        if team_ids:
+            placeholders = ",".join("?" * len(team_ids))
+            await db.execute(
+                f"UPDATE teams SET rotation_pending = 1, updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT "
+                f"WHERE id IN ({placeholders})",
+                team_ids,
+            )
+
+        result = await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=_ERR_USER_NOT_FOUND)
@@ -932,32 +951,6 @@ async def delete_user(
             target=EventTarget(type="user", id=user_id, name=target_row["username"]),
         )
     )
-
-    rows_snapshot = list(file_rows)
-    uid_snapshot = user_id
-
-    async def _cleanup_blobs():
-        mgr = storage.get_manager()
-        cleaned = 0
-        async with db_session() as _db:
-            for row in rows_snapshot:
-                try:
-                    cur = await _db.execute(
-                        "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (row["storage_key"],)
-                    )
-                    cnt = await cur.fetchone()
-                    if cnt and cnt["cnt"] > 0:
-                        continue
-                    await mgr.delete_blob(_db, row["id"], row["storage_key"])
-                    cleaned += 1
-                except Exception as exc:
-                    logger.warning("Failed to delete blob %s: %s", row["storage_key"], exc)
-        if cleaned:
-            logger.info("Cleaned up %d file blobs for deleted user %s", cleaned, uid_snapshot)
-
-    _t = asyncio.create_task(_cleanup_blobs())
-    _bg_tasks.add(_t)
-    _t.add_done_callback(_bg_tasks.discard)
 
     return {"message": "User deleted"}
 

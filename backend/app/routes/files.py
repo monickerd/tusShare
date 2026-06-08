@@ -1323,10 +1323,55 @@ async def delete_file(
     encrypted_size = row["encrypted_size"]
     owner_id = row["owner_id"]
 
-    # Atomic: update quota + delete record in one transaction.
-    # file_storage_locations cascades on files DELETE.
     await db.execute("BEGIN")
     try:
+        # Queue blob for deferred cleanup (captures volume info before
+        # file_storage_locations cascades away on file delete).
+        locs_cursor = await db.execute(
+            "SELECT volume_id FROM file_storage_locations WHERE file_id = ?", (file_id,)
+        )
+        locs = await locs_cursor.fetchall()
+        if locs:
+            for loc in locs:
+                await db.execute(
+                    "INSERT INTO blob_cleanup_queue (storage_key, volume_id) VALUES (?, ?)",
+                    (storage_key, loc["volume_id"]),
+                )
+        else:
+            await db.execute(
+                "INSERT INTO blob_cleanup_queue (storage_key, volume_id) VALUES (?, '__default__')",
+                (storage_key,),
+            )
+
+        # Clean orphaned ACL rows (no FK on resource_id so they don't cascade).
+        await db.execute(
+            "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ?",
+            (file_id,),
+        )
+        await db.execute(
+            "DELETE FROM resource_role_grants WHERE resource_type = 'file' AND resource_id = ?",
+            (file_id,),
+        )
+
+        # Clean share_items and any shares that become empty.
+        si_cursor = await db.execute(
+            "SELECT DISTINCT share_id FROM share_items"
+            " WHERE resource_type = 'file' AND resource_id = ?",
+            (file_id,),
+        )
+        affected_share_ids = [r["share_id"] for r in await si_cursor.fetchall()]
+        await db.execute(
+            "DELETE FROM share_items WHERE resource_type = 'file' AND resource_id = ?",
+            (file_id,),
+        )
+        if affected_share_ids:
+            sph = ",".join("?" * len(affected_share_ids))
+            await db.execute(
+                f"DELETE FROM shares WHERE id IN ({sph})"
+                f" AND id NOT IN (SELECT DISTINCT share_id FROM share_items)",
+                affected_share_ids,
+            )
+
         await db.execute(
             "UPDATE users SET disk_used = GREATEST(0, disk_used - ?::bigint) WHERE id = ?",
             (encrypted_size, owner_id),
@@ -1341,24 +1386,6 @@ async def delete_file(
         row["folder_id"] or f"root:{row['owner_id']}",
         {"type": "file.removed", "file_id": file_id, "folder_id": row["folder_id"]},
     )
-
-    # Blob ref-count: only delete the blob when no other files row shares storage_key
-    cursor = await db.execute("SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (storage_key,))
-    cnt_row = await cursor.fetchone()
-    blob_is_last_ref = cnt_row is None or cnt_row["cnt"] == 0
-
-    if blob_is_last_ref:
-
-        async def _bg_delete(fid: str, key: str) -> None:
-            try:
-                async with db_session() as _db:
-                    await storage.get_manager().delete_blob(_db, fid, key)
-            except Exception:
-                pass
-
-        _t = asyncio.create_task(_bg_delete(file_id, storage_key))
-        _bg_tasks.add(_t)
-        _t.add_done_callback(_bg_tasks.discard)
 
     event_bus.emit(
         SecurityEvent(

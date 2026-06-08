@@ -658,14 +658,23 @@ async def delete_team(
 
     # Cascade deletes handle user_team_keys, file_team_keys, team_folders.
     # user_roles scoped to this team must be deleted explicitly.
-    await db.execute("DELETE FROM user_roles WHERE scope_type = 'team' AND scope_id = ?", (team_id,))
-    await db.execute("DELETE FROM teams WHERE id = ?", (team_id,))
+    # Wrap everything in a single transaction for atomicity.
+    from app.services.folder_cleanup import hard_delete_folder_tree
 
-    # Delete the team's owned folders (cascades to files and file_team_keys)
-    for fid in team_folder_ids:
-        await db.execute("DELETE FROM folders WHERE id = ?", (fid,))
+    await db.execute("BEGIN")
+    try:
+        await db.execute("DELETE FROM user_roles WHERE scope_type = 'team' AND scope_id = ?", (team_id,))
+        await db.execute("DELETE FROM teams WHERE id = ?", (team_id,))
 
-    await db.commit()
+        # Delete the team's owned folders (team_folders cascade already fired;
+        # folders rows still exist and must be cleaned up explicitly).
+        for fid in team_folder_ids:
+            await hard_delete_folder_tree(db, fid)
+
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     logger.info(
         "Team %s (%s) deleted by user %s", team.name, team_id, user.id
     )  # NOSONAR — server-side audit log; values are Pydantic-validated
@@ -1564,32 +1573,37 @@ async def rotate_team_keys(
     )
 
     # --- Atomically apply the rotation ---
-    # 1. Update each C1
-    for fk in body.file_keys:
-        await db.execute(
-            "UPDATE file_team_keys SET pre_c1 = ? WHERE team_id = ? AND file_id = ?",
-            (fk.pre_c1, team_id, fk.file_id),
-        )
+    await db.execute("BEGIN")
+    try:
+        # 1. Update each C1
+        for fk in body.file_keys:
+            await db.execute(
+                "UPDATE file_team_keys SET pre_c1 = ? WHERE team_id = ? AND file_id = ?",
+                (fk.pre_c1, team_id, fk.file_id),
+            )
 
-    # 2. Replace all user_team_keys for this team.
-    #    key_confirmed resets to 0 — members submit Schnorr PoK on next login.
-    await db.execute("DELETE FROM user_team_keys WHERE team_id = ?", (team_id,))
-    for m in body.members:
-        utk_id = str(uuid.uuid4())
-        await db.execute(
-            "INSERT INTO user_team_keys "
-            "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv, key_confirmed) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
-            (utk_id, team_id, m.user_id, m.ephemeral_x25519_pub, m.kem_ciphertext, m.encrypted_sk, m.sk_iv),
-        )
+        # 2. Replace all user_team_keys for this team.
+        #    key_confirmed resets to 0 — members submit Schnorr PoK on next login.
+        await db.execute("DELETE FROM user_team_keys WHERE team_id = ?", (team_id,))
+        for m in body.members:
+            utk_id = str(uuid.uuid4())
+            await db.execute(
+                "INSERT INTO user_team_keys "
+                "(id, team_id, user_id, ephemeral_x25519_pub, kem_ciphertext, encrypted_sk, sk_iv, key_confirmed) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                (utk_id, team_id, m.user_id, m.ephemeral_x25519_pub, m.kem_ciphertext, m.encrypted_sk, m.sk_iv),
+            )
 
-    # 3. Update team public key and clear rotation_pending
-    await db.execute(
-        "UPDATE teams SET pre_public_key = ?, rotation_pending = 0, "
-        "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
-        (body.pre_public_key_new, team_id),
-    )
-    await db.commit()
+        # 3. Update team public key and clear rotation_pending
+        await db.execute(
+            "UPDATE teams SET pre_public_key = ?, rotation_pending = 0, "
+            "updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+            (body.pre_public_key_new, team_id),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
     logger.info(  # NOSONAR — server-side audit log; values are Pydantic-validated
         "PRE rotation committed for team %s by user %s (%d files, %d members)",
         team_id,

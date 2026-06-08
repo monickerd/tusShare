@@ -4,12 +4,9 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-import app.storage.manager as storage
-from app.database import db_session
 from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus
-
-_bg_tasks: set = set()
+from app.services.folder_cleanup import hard_delete_folder_tree
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +23,55 @@ async def get_trash_settings(db) -> tuple[bool, int]:
 
 
 async def purge_file(db, file_id: str, storage_key: str, encrypted_size: int, owner_id: str) -> None:
-    """Hard-delete one file row, adjust quota, and schedule blob removal."""
+    """Hard-delete one file row, adjust quota, and queue blob removal.
+
+    All mutations (blob queue entry, ACL cleanup, quota update, DELETE) are in
+    a single transaction so no partial state survives a crash.
+    """
     await db.execute("BEGIN")
     try:
+        # Queue blob before file_storage_locations cascades away.
+        locs_cursor = await db.execute(
+            "SELECT volume_id FROM file_storage_locations WHERE file_id = ?", (file_id,)
+        )
+        locs = await locs_cursor.fetchall()
+        if locs:
+            for loc in locs:
+                await db.execute(
+                    "INSERT INTO blob_cleanup_queue (storage_key, volume_id) VALUES (?, ?)",
+                    (storage_key, loc["volume_id"]),
+                )
+        else:
+            await db.execute(
+                "INSERT INTO blob_cleanup_queue (storage_key, volume_id) VALUES (?, '__default__')",
+                (storage_key,),
+            )
+
+        # Clean orphaned ACL rows.
+        await db.execute(
+            "DELETE FROM permissions WHERE resource_type = 'file' AND resource_id = ?", (file_id,)
+        )
+        await db.execute(
+            "DELETE FROM resource_role_grants WHERE resource_type = 'file' AND resource_id = ?", (file_id,)
+        )
+
+        # Clean share_items and orphaned shares.
+        si_cursor = await db.execute(
+            "SELECT DISTINCT share_id FROM share_items WHERE resource_type = 'file' AND resource_id = ?",
+            (file_id,),
+        )
+        affected_share_ids = [r["share_id"] for r in await si_cursor.fetchall()]
+        await db.execute(
+            "DELETE FROM share_items WHERE resource_type = 'file' AND resource_id = ?", (file_id,)
+        )
+        if affected_share_ids:
+            sph = ",".join("?" * len(affected_share_ids))
+            await db.execute(
+                f"DELETE FROM shares WHERE id IN ({sph})"
+                f" AND id NOT IN (SELECT DISTINCT share_id FROM share_items)",
+                affected_share_ids,
+            )
+
         await db.execute(
             "UPDATE users SET disk_used = GREATEST(0, disk_used - ?::bigint) WHERE id = ?",
             (encrypted_size, owner_id),
@@ -39,19 +82,6 @@ async def purge_file(db, file_id: str, storage_key: str, encrypted_size: int, ow
         await db.rollback()
         raise
 
-    fid, key = file_id, storage_key
-
-    async def _bg() -> None:
-        try:
-            async with db_session() as _db:
-                await storage.get_manager().delete_blob(_db, fid, key)
-        except Exception:
-            pass
-
-    _t = asyncio.create_task(_bg())
-    _bg_tasks.add(_t)
-    _t.add_done_callback(_bg_tasks.discard)
-
 
 async def _purge_expired(db) -> None:
     """Hard-delete files and folders whose trash retention window has elapsed."""
@@ -59,7 +89,8 @@ async def _purge_expired(db) -> None:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
     cursor = await db.execute(
-        "SELECT id, storage_key, encrypted_size, owner_id FROM files WHERE deleted_at IS NOT NULL AND deleted_at < ?",
+        "SELECT id, storage_key, encrypted_size, owner_id FROM files "
+        "WHERE deleted_at IS NOT NULL AND deleted_at < ?",
         (cutoff,),
     )
     expired_files = await cursor.fetchall()
@@ -70,12 +101,38 @@ async def _purge_expired(db) -> None:
         except Exception:
             logger.exception("Failed to purge expired file %s from trash", row["id"])
 
-    # Cascade handles descendant folders; files already removed above.
-    await db.execute(
-        "DELETE FROM folders WHERE deleted_at IS NOT NULL AND deleted_at < ?",
-        (cutoff,),
+    # Purge expired folder subtrees.  We process only the "topmost" expired
+    # folder in each chain — one whose parent is either absent or not itself
+    # expired.  hard_delete_folder_tree then cascades to all descendants, so
+    # we never call it twice on the same subtree.
+    #
+    # This handles both: root folders deleted by the owner, and subfolders
+    # that were individually trashed while their parent remained active.
+    cursor = await db.execute(
+        """
+        SELECT f.id FROM folders f
+        WHERE f.deleted_at IS NOT NULL AND f.deleted_at < ?
+          AND (
+              f.parent_id IS NULL
+              OR NOT EXISTS (
+                  SELECT 1 FROM folders p
+                  WHERE p.id = f.parent_id
+                    AND p.deleted_at IS NOT NULL AND p.deleted_at < ?
+              )
+          )
+        """,
+        (cutoff, cutoff),
     )
-    await db.commit()
+    topmost_expired = [r["id"] for r in await cursor.fetchall()]
+
+    for fid in topmost_expired:
+        try:
+            await db.execute("BEGIN")
+            await hard_delete_folder_tree(db, fid)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            logger.exception("Failed to purge expired folder %s from trash", fid)
 
 
 async def _purge_expired_users(db) -> None:
@@ -88,8 +145,20 @@ async def _purge_expired_users(db) -> None:
     for row in expired:
         user_id, username = row["id"], row["username"]
         try:
-            fc = await db.execute("SELECT id, storage_key FROM files WHERE owner_id = ?", (user_id,))
-            file_rows = await fc.fetchall()
+            await db.execute("BEGIN")
+
+            # Capture blob info before file_storage_locations cascades away.
+            blob_cursor = await db.execute(
+                "SELECT DISTINCT fi.storage_key, COALESCE(fsl.volume_id, '__default__') AS volume_id "
+                "FROM files fi LEFT JOIN file_storage_locations fsl ON fsl.file_id = fi.id "
+                "WHERE fi.owner_id = ?",
+                (user_id,),
+            )
+            for bp in await blob_cursor.fetchall():
+                await db.execute(
+                    "INSERT INTO blob_cleanup_queue (storage_key, volume_id) VALUES (?, ?)",
+                    (bp["storage_key"], bp["volume_id"]),
+                )
 
             await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
             await db.commit()
@@ -103,28 +172,8 @@ async def _purge_expired_users(db) -> None:
                     target=EventTarget(type="user", id=user_id, name=username),
                 )
             )
-
-            rows_snapshot = list(file_rows)
-
-            async def _cleanup(rows=rows_snapshot, uid=user_id):
-                mgr = storage.get_manager()
-                async with db_session() as _db:
-                    for r in rows:
-                        try:
-                            cur = await _db.execute(
-                                "SELECT COUNT(*) AS cnt FROM files WHERE storage_key = ?", (r["storage_key"],)
-                            )
-                            cnt = await cur.fetchone()
-                            if cnt and cnt["cnt"] > 0:
-                                continue
-                            await mgr.delete_blob(_db, r["id"], r["storage_key"])
-                        except Exception as exc:
-                            logger.warning("Failed to delete blob %s for purged user %s: %s", r["storage_key"], uid, exc)
-
-            _t = asyncio.create_task(_cleanup())
-            _bg_tasks.add(_t)
-            _t.add_done_callback(_bg_tasks.discard)
         except Exception:
+            await db.rollback()
             logger.exception("Failed to purge soft-deleted user %s", user_id)
 
 
@@ -138,14 +187,14 @@ async def _purge_expired_teams(db) -> None:
     for row in expired:
         team_id, team_name = row["id"], row["name"]
         try:
-            # Collect team folder IDs before cascade wipes team_folders
             fc = await db.execute("SELECT folder_id FROM team_folders WHERE team_id = ?", (team_id,))
             folder_ids = [r["folder_id"] for r in await fc.fetchall()]
 
+            await db.execute("BEGIN")
             await db.execute("DELETE FROM user_roles WHERE scope_type = 'team' AND scope_id = ?", (team_id,))
             await db.execute("DELETE FROM teams WHERE id = ?", (team_id,))
             for fid in folder_ids:
-                await db.execute("DELETE FROM folders WHERE id = ?", (fid,))
+                await hard_delete_folder_tree(db, fid)
             await db.commit()
 
             event_bus.emit(
@@ -158,6 +207,7 @@ async def _purge_expired_teams(db) -> None:
                 )
             )
         except Exception:
+            await db.rollback()
             logger.exception("Failed to purge soft-deleted team %s", team_id)
 
 

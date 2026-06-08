@@ -262,6 +262,26 @@ class StorageManager:
             if provider:
                 await self._soft_delete(provider, storage_key)
 
+    async def delete_blob_direct(self, storage_key: str, volume_id: str) -> None:
+        """Delete a blob by storage_key and explicit volume_id.
+
+        Used by the blob cleanup worker, where the file row (and its
+        file_storage_locations rows) may no longer exist.  Pass
+        volume_id='__default__' to target the default storage provider.
+        """
+        if volume_id == "__default__":
+            provider = self._default_provider()
+        else:
+            provider = self._providers.get(volume_id)
+            if provider is None:
+                logger.warning(
+                    "Volume %s not found for blob cleanup of %s; falling back to default",
+                    volume_id,
+                    storage_key,
+                )
+                provider = self._default_provider()
+        await self._soft_delete(provider, storage_key)
+
     # ------------------------------------------------------------------
     # Usage summary
     # ------------------------------------------------------------------

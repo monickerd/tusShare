@@ -10,6 +10,8 @@ Auto-fixed (safe deletes):
   - bandwidth_log rows older than op_event_retention_days (default 30 days)
   - pending_share_keying rows older than 90 days (the share is gone or expired;
     these rows will never be fulfilled)
+  - Orphaned permissions / resource_role_grants rows whose file or folder no
+    longer exists (resource_id has no FK so these are never auto-cascaded)
 
 Flagged for manual review (warning log + security event, no auto-fix):
   - Teams whose owner is inactive (is_active=0) or scheduled for deletion
@@ -227,6 +229,37 @@ async def _sweep_stale_pending_share_keying(db) -> int:
     return result.rowcount
 
 
+async def _sweep_orphaned_acl_rows(db) -> int:
+    """Delete permissions / resource_role_grants rows whose resource no longer exists.
+
+    resource_id is a plain TEXT column with no FK, so these rows are never
+    auto-cascaded on file or folder deletion.  The deletion paths now clean
+    them explicitly, but this sweep catches any pre-existing orphans and acts
+    as a belt-and-suspenders backstop for unexpected code paths.
+    """
+    r1 = await db.execute(
+        "DELETE FROM permissions"
+        " WHERE resource_type = 'file'"
+        "   AND resource_id NOT IN (SELECT id FROM files)"
+    )
+    r2 = await db.execute(
+        "DELETE FROM permissions"
+        " WHERE resource_type = 'folder'"
+        "   AND resource_id NOT IN (SELECT id FROM folders)"
+    )
+    r3 = await db.execute(
+        "DELETE FROM resource_role_grants"
+        " WHERE resource_type = 'file'"
+        "   AND resource_id NOT IN (SELECT id FROM files)"
+    )
+    r4 = await db.execute(
+        "DELETE FROM resource_role_grants"
+        " WHERE resource_type = 'folder'"
+        "   AND resource_id NOT IN (SELECT id FROM folders)"
+    )
+    return r1.rowcount + r2.rowcount + r3.rowcount + r4.rowcount
+
+
 # ---------------------------------------------------------------------------
 # Manual-review flags
 # ---------------------------------------------------------------------------
@@ -391,6 +424,15 @@ async def run_daily_maintenance(db_factory, interval: float = 86400.0) -> None:
                     logger.info("Maintenance: removed %d stale pending_share_keying row(s)", n)
             except Exception:
                 logger.exception("Maintenance: pending_share_keying sweep failed")
+
+        async with db_factory() as db:
+            try:
+                n = await _sweep_orphaned_acl_rows(db)
+                await db.commit()
+                if n:
+                    logger.info("Maintenance: removed %d orphaned ACL row(s)", n)
+            except Exception:
+                logger.exception("Maintenance: orphaned ACL row sweep failed")
 
         async with db_factory() as db:
             try:

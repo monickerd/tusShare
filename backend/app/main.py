@@ -31,6 +31,7 @@ from app.routes.uploads import run_upload_cleanup
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import audit_key, event_bus, live_settings, notification_emitter, op_bus, siem_syslog, siem_webhook
 from app.services.av_scanner import run_av_scan_worker
+from app.services.blob_cleanup import run_blob_cleanup_worker
 from app.services.live_settings import run_settings_invalidation_listener
 from app.services.maintenance import ensure_audit_partitions, run_daily_maintenance
 from app.services.sse_broker import run_redis_listener
@@ -263,6 +264,7 @@ async def lifespan(app: FastAPI):
     await ensure_audit_partitions(db_session)
     daily_maintenance_task = asyncio.create_task(run_daily_maintenance(db_session))
     av_scan_worker_task = asyncio.create_task(run_av_scan_worker(db_session))
+    blob_cleanup_task = asyncio.create_task(run_blob_cleanup_worker(db_session))
 
     await audit_key.ensure_loaded(db_session)
 
@@ -340,6 +342,7 @@ async def lifespan(app: FastAPI):
         storage_reconcile_task,
         daily_maintenance_task,
         av_scan_worker_task,
+        blob_cleanup_task,
         settings_invalidation_task,
     ):
         task.cancel()

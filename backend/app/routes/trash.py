@@ -525,5 +525,12 @@ async def _purge_folder_by_id(db, folder_id: str, user: AuthenticatedUser) -> No
         except Exception:
             pass
 
-    await db.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
-    await db.commit()
+    from app.services.folder_cleanup import hard_delete_folder_tree
+
+    await db.execute("BEGIN")
+    try:
+        await hard_delete_folder_tree(db, folder_id)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
