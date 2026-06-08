@@ -69,7 +69,7 @@ class _Row(dict):
         for k in record.keys():
             v = record[k]
             if isinstance(v, datetime):
-                items[k] = v.strftime("%Y-%m-%dT%H:%M:%SZ")
+                items[k] = v.isoformat()
             else:
                 items[k] = v
         super().__init__(items)

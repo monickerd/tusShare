@@ -1,6 +1,6 @@
 """Team, TeamMember, and TeamFileKey data models."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.conf.teams import TEAM_ROLE_HIERARCHY
@@ -46,13 +46,18 @@ class Team:
         }
 
 
+_ROLE_PRIORITY: dict[str, int] = {r: i for i, r in enumerate(TEAM_ROLE_HIERARCHY)}
+
+
 @dataclass
 class TeamMember:
     user_id: str
     username: str
-    role: str  # team_owner | team_supervisor | team_member
-    key_delivery_pending: bool = False  # True when policy grant key_wrapped=0 (no key slot yet)
-    key_confirmed: bool = False  # True when Schnorr PoK submitted post-rotation
+    role: str  # primary (highest-priority) standard role
+    roles: list = field(default_factory=list)       # all standard roles this user holds
+    custom_roles: list = field(default_factory=list) # [{id, name}] custom role assignments
+    key_delivery_pending: bool = False
+    key_confirmed: bool = False
 
     @property
     def role_rank(self) -> int:
@@ -67,6 +72,8 @@ class TeamMember:
             "user_id": self.user_id,
             "username": self.username,
             "role": self.role,
+            "roles": list(self.roles),
+            "custom_roles": list(self.custom_roles),
             "key_delivery_pending": self.key_delivery_pending,
             "key_confirmed": self.key_confirmed,
         }
@@ -118,9 +125,15 @@ async def get_team(db, team_id: str) -> Team | None:
 
 
 async def get_team_member_role(db, team_id: str, user_id: str) -> str | None:
-    """Return the user's role in the team, or None if not a member."""
+    """Return the user's highest-priority standard role in the team, or None if not a member."""
     cursor = await db.execute(
-        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+        "SELECT role_id FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ? "
+        "ORDER BY CASE role_id "
+        "    WHEN 'team_admin'   THEN 0 "
+        "    WHEN 'team_manager' THEN 1 "
+        "    WHEN 'team_member'  THEN 2 "
+        "    ELSE 99 END "
+        "LIMIT 1",
         (user_id, team_id),
     )
     row = await cursor.fetchone()
@@ -128,10 +141,17 @@ async def get_team_member_role(db, team_id: str, user_id: str) -> str | None:
 
 
 async def get_team_members(db, team_id: str) -> list[TeamMember]:
-    """Return all team members with their key delivery and confirmation state."""
+    """Return all team members with aggregated roles and custom role assignments.
+
+    Groups by user so a member with multiple standard role rows (e.g. policy + manual)
+    or custom roles appears exactly once. The primary `role` field is the highest-priority
+    standard role held by that user.
+    """
+    # Standard roles: one row per user, all role_ids aggregated
     cursor = await db.execute(
-        "SELECT ur.user_id, u.username, ur.role_id AS role, "
-        "       COALESCE(utk.key_confirmed, 0) AS key_confirmed, "
+        "SELECT ur.user_id, u.username, "
+        "       array_agg(ur.role_id) AS roles, "
+        "       COALESCE(MAX(utk.key_confirmed), 0) AS key_confirmed, "
         "       CASE WHEN EXISTS("
         "           SELECT 1 FROM policy_team_grants ptg "
         "           JOIN policy_effects pe ON pe.id = ptg.effect_id "
@@ -144,20 +164,46 @@ async def get_team_members(db, team_id: str) -> list[TeamMember]:
         "LEFT JOIN user_team_keys utk "
         "       ON utk.team_id = ? AND utk.user_id = ur.user_id "
         "WHERE ur.scope_type = 'team' AND ur.scope_id = ? "
+        "GROUP BY ur.user_id, u.username "
         "ORDER BY u.username",
         (team_id, team_id, team_id),
     )
-    rows = await cursor.fetchall()
-    return [
-        TeamMember(
-            user_id=r["user_id"],
-            username=r["username"],
-            role=r["role"],
-            key_delivery_pending=bool(r["key_delivery_pending"]),
-            key_confirmed=bool(r["key_confirmed"]),
+    std_rows = await cursor.fetchall()
+
+    # Custom roles: one row per (user, custom_role) assignment
+    cursor2 = await db.execute(
+        "SELECT tra.user_id, tr.id AS role_id, tr.name AS role_name "
+        "FROM team_role_assignments tra "
+        "JOIN team_roles tr ON tr.id = tra.team_role_id "
+        "WHERE tra.team_id = ? "
+        "ORDER BY tra.user_id, tr.name",
+        (team_id,),
+    )
+    custom_rows = await cursor2.fetchall()
+
+    custom_by_user: dict[str, list[dict]] = {}
+    for cr in custom_rows:
+        uid = cr["user_id"]
+        if uid not in custom_by_user:
+            custom_by_user[uid] = []
+        custom_by_user[uid].append({"id": cr["role_id"], "name": cr["role_name"]})
+
+    members = []
+    for r in std_rows:
+        all_roles: list[str] = list(r["roles"]) if r["roles"] else []
+        primary = min(all_roles, key=lambda rid: _ROLE_PRIORITY.get(rid, 99), default="team_member")
+        members.append(
+            TeamMember(
+                user_id=r["user_id"],
+                username=r["username"],
+                role=primary,
+                roles=sorted(all_roles, key=lambda rid: _ROLE_PRIORITY.get(rid, 99)),
+                custom_roles=custom_by_user.get(r["user_id"], []),
+                key_delivery_pending=bool(r["key_delivery_pending"]),
+                key_confirmed=bool(r["key_confirmed"]),
+            )
         )
-        for r in rows
-    ]
+    return members
 
 
 async def get_team_member_count(db, team_id: str) -> int:
@@ -210,9 +256,9 @@ async def get_user_teams(db, user_id: str) -> list[dict]:
         last_seen = r["my_last_seen"]
         if last_seen is None:
             return True
-        # updated_at is a BIGINT epoch (seconds); my_last_seen is an ISO string from _Row
-        last_seen_ts = int(datetime.fromisoformat(last_seen.replace("Z", "+00:00")).timestamp())
-        return r["updated_at"] > last_seen_ts
+        # updated_at is BIGINT epoch seconds; my_last_seen is an ISO string from _Row (sub-second precision)
+        last_seen_float = datetime.fromisoformat(last_seen.replace("Z", "+00:00")).timestamp()
+        return r["updated_at"] > last_seen_float
 
     return [
         {

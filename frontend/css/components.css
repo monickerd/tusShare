@@ -2927,6 +2927,16 @@ select.input-xs {
     flex-wrap: wrap;
 }
 
+.member-remove-btn {
+    margin-left: auto;
+}
+
+.member-roles-cell {
+    word-break: break-word;
+    min-width: 8rem;
+    max-width: 20rem;
+}
+
 .team-folder-row {
     display: flex;
     align-items: center;

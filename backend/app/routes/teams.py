@@ -209,6 +209,11 @@ class UpdateMemberRoleRequest(BaseModel):
         return v
 
 
+class AddMemberRoleRequest(BaseModel):
+    """Add a standard or custom role to a team member without replacing their existing roles."""
+    role: str  # standard role_id (team_member/team_manager/team_admin) OR custom team_role UUID
+
+
 class AddTeamFolderRequest(BaseModel):
     folder_id: str
 
@@ -595,7 +600,12 @@ async def update_team(
     if body.name is None and body.description is None:
         raise HTTPException(status_code=422, detail="Nothing to update")
 
+    old_name = None
     if body.name is not None:
+        # Capture old name for the audit event before updating
+        old_row = await db.execute("SELECT name FROM teams WHERE id = ?", (team_id,))
+        old_row = await old_row.fetchone()
+        old_name = old_row["name"] if old_row else None
         # Check uniqueness: same owner can't have two teams with the same name
         cursor = await db.execute(
             "SELECT id FROM teams WHERE owner_id = ? AND name = ? AND id != ?",
@@ -615,6 +625,19 @@ async def update_team(
         )
 
     await db.commit()
+
+    if body.name is not None:
+        event_bus.emit(
+            SecurityEvent(
+                event_type="admin.team.renamed",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                target=EventTarget(type="team", id=team_id, name=body.name),
+                detail={"old_name": old_name, "new_name": body.name},
+            )
+        )
+
     return {"ok": True}
 
 
@@ -925,6 +948,222 @@ async def remove_member(
             detail={"target_user_id": target_user_id, "removed_role": current_role},
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-member role management (add / remove individual roles without full replace)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/{team_id}/members/{target_user_id}/add-role",
+    responses={
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        409: {"description": "Conflict"},
+        422: {"description": "Unprocessable Entity"},
+    },
+    dependencies=[Depends(check_management_rate_limit)],
+)
+async def add_member_role(
+    team_id: str,
+    target_user_id: str,
+    body: AddMemberRoleRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Add a standard or custom role to a member without removing their other roles.
+
+    Standard roles (team_member, team_manager, team_admin) are inserted as additional
+    user_roles rows. Custom roles (identified by UUID) are inserted into
+    team_role_assignments. Either way the caller must be team_admin.
+    """
+    team_id = validate_uuid(team_id)
+    target_user_id = validate_uuid(target_user_id)
+    await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_OWNER)
+
+    if target_user_id == user.id:
+        raise HTTPException(status_code=422, detail="Cannot modify your own roles")
+
+    current_role = await get_team_member_role(db, team_id, target_user_id)
+    if not current_role:
+        raise HTTPException(status_code=404, detail="User is not a member of this team")
+
+    if body.role in VALID_TEAM_ROLES:
+        # Standard role
+        if body.role == TEAM_ROLE_OWNER:
+            if (await get_admin_setting(db, "allow_multi_team_owner")) != "true":
+                raise HTTPException(status_code=403, detail="Multi-owner teams are not enabled")
+        ur_id = str(uuid.uuid4())
+        try:
+            await db.execute(
+                "INSERT INTO user_roles (id, user_id, role_id, scope_type, scope_id, granted_by) "
+                "VALUES (?, ?, ?, 'team', ?, ?)",
+                (ur_id, target_user_id, body.role, team_id, user.id),
+            )
+            await db.execute(
+                "UPDATE teams SET updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+                (team_id,),
+            )
+            await db.commit()
+        except DuplicateError:
+            pass  # already holds this role — idempotent
+    else:
+        # Custom role (UUID)
+        role_id = validate_uuid(body.role)
+        cursor = await db.execute(
+            "SELECT id, name FROM team_roles WHERE id = ? AND team_id = ?",
+            (role_id, team_id),
+        )
+        role_row = await cursor.fetchone()
+        if not role_row:
+            raise HTTPException(status_code=404, detail="Custom role not found in this team")
+        assignment_id = str(uuid.uuid4())
+        try:
+            await db.execute(
+                "INSERT INTO team_role_assignments (id, team_role_id, user_id, team_id, granted_by) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (assignment_id, role_id, target_user_id, team_id, user.id),
+            )
+            await db.execute(
+                "UPDATE teams SET updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+                (team_id,),
+            )
+            await db.commit()
+        except DuplicateError:
+            pass  # already holds this custom role — idempotent
+        event_bus.emit(
+            SecurityEvent(
+                event_type="admin.team_role.assigned",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                target=EventTarget(type="team", id=team_id),
+                detail={"role_id": role_id, "role_name": role_row["name"], "target_user_id": target_user_id},
+            )
+        )
+
+    return {"ok": True}
+
+
+@router.delete(
+    "/{team_id}/members/{target_user_id}/roles/{role_id}",
+    status_code=204,
+    responses={
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        422: {"description": "Unprocessable Entity"},
+    },
+    dependencies=[Depends(check_management_rate_limit)],
+)
+async def remove_member_role(
+    team_id: str,
+    target_user_id: str,
+    role_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Remove a single standard or custom role from a member.
+
+    If the role being removed is the member's last role, returns 409 with
+    detail 'last_role' — the caller should instead use DELETE /members/{user_id}
+    to remove the user from the team entirely.
+    Custom roles are identified by UUID; standard roles by their role_id string.
+    """
+    team_id = validate_uuid(team_id)
+    target_user_id = validate_uuid(target_user_id)
+    await _get_team_or_404(db, team_id)
+    await _require_team_role(db, team_id, user, TEAM_ROLE_OWNER)
+
+    if target_user_id == user.id:
+        raise HTTPException(status_code=422, detail="Cannot modify your own roles")
+
+    if role_id in VALID_TEAM_ROLES:
+        # Standard role
+        if role_id == TEAM_ROLE_OWNER:
+            cnt_cur = await db.execute(
+                "SELECT COUNT(*) AS cnt FROM user_roles WHERE scope_type = 'team' AND scope_id = ? AND role_id = ?",
+                (team_id, TEAM_ROLE_OWNER),
+            )
+            cnt_row = await cnt_cur.fetchone()
+            if (cnt_row["cnt"] if cnt_row else 1) <= 1:
+                raise HTTPException(status_code=422, detail="Cannot remove the only team owner role")
+
+        # Check whether this is the last role before deleting
+        remaining_std_pre = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+            (target_user_id, team_id),
+        )
+        remaining_custom_pre = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM team_role_assignments WHERE user_id = ? AND team_id = ?",
+            (target_user_id, team_id),
+        )
+        r_std_pre = await remaining_std_pre.fetchone()
+        r_cust_pre = await remaining_custom_pre.fetchone()
+        if (r_std_pre["cnt"] if r_std_pre else 0) + (r_cust_pre["cnt"] if r_cust_pre else 0) <= 1:
+            raise HTTPException(status_code=409, detail="last_role")
+
+        result = await db.execute(
+            "DELETE FROM user_roles "
+            "WHERE user_id = ? AND scope_type = 'team' AND scope_id = ? AND role_id = ? "
+            "AND policy_effect_id IS NULL",
+            (target_user_id, team_id, role_id),
+        )
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Role not found or policy-managed")
+
+        await db.execute(
+            "UPDATE teams SET updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+            (team_id,),
+        )
+        await db.commit()
+    else:
+        # Custom role (UUID)
+        role_id = validate_uuid(role_id)
+        cursor = await db.execute(
+            "SELECT tr.id, tr.name FROM team_role_assignments tra "
+            "JOIN team_roles tr ON tr.id = tra.team_role_id "
+            "WHERE tra.team_role_id = ? AND tra.user_id = ? AND tra.team_id = ?",
+            (role_id, target_user_id, team_id),
+        )
+        role_row = await cursor.fetchone()
+        if not role_row:
+            raise HTTPException(status_code=404, detail="Custom role assignment not found")
+
+        # Check whether this is the last role (before delete)
+        remaining_std = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM user_roles WHERE user_id = ? AND scope_type = 'team' AND scope_id = ?",
+            (target_user_id, team_id),
+        )
+        remaining_custom = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM team_role_assignments WHERE user_id = ? AND team_id = ?",
+            (target_user_id, team_id),
+        )
+        r_std = await remaining_std.fetchone()
+        r_cust = await remaining_custom.fetchone()
+        if (r_std["cnt"] if r_std else 0) + (r_cust["cnt"] if r_cust else 0) <= 1:
+            raise HTTPException(status_code=409, detail="last_role")
+
+        await db.execute(
+            "DELETE FROM team_role_assignments WHERE team_role_id = ? AND user_id = ? AND team_id = ?",
+            (role_id, target_user_id, team_id),
+        )
+        await db.execute(
+            "UPDATE teams SET updated_at = EXTRACT(EPOCH FROM NOW())::BIGINT WHERE id = ?",
+            (team_id,),
+        )
+        await db.commit()
+        event_bus.emit(
+            SecurityEvent(
+                event_type="admin.team_role.revoked",
+                severity="info",
+                outcome="success",
+                actor=EventActor(user_id=str(user.id), username=user.username),
+                target=EventTarget(type="team", id=team_id),
+                detail={"role_id": role_id, "role_name": role_row["name"], "target_user_id": target_user_id},
+            )
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1973,6 +2212,7 @@ async def ephemeral_join(
 _TEAM_ACTIVITY_EVENT_TYPES = {
     "admin.team.member_added",
     "admin.team.member_removed",
+    "admin.team.renamed",
     "admin.team_key.rotation_started",
     "admin.team_key.rotation_completed",
     "admin.team_role.assigned",

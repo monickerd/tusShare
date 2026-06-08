@@ -738,6 +738,13 @@ const Teams = (() => {
         const isOwner     = myRole === 'team_admin';
         const isSupervisor= myRole === 'team_manager' || isOwner;
 
+        // Fetch custom roles for the dropdown in member actions
+        let teamCustomRoles = [];
+        try {
+            const crData = await Api.get(`${_api}/teams/${teamId}/custom-roles`);
+            teamCustomRoles = (crData.roles || []).map(r => ({ id: r.id, name: r.name }));
+        } catch { /* non-fatal */ }
+
         // Clear any pending "Updated" badge for this manager.
         if (isSupervisor) {
             Api.post(`${_api}/teams/${teamId}/seen`, {}).catch(() => {});
@@ -767,7 +774,7 @@ const Teams = (() => {
         });
         membersSection.appendChild(memberSearch);
 
-        const memberTable = _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner);
+        const memberTable = _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner, teamCustomRoles);
         membersSection.appendChild(memberTable);
 
         // Filter table rows as user types
@@ -838,6 +845,7 @@ const Teams = (() => {
         const _EVENT_LABELS = {
             'admin.team.member_added':             'Member added',
             'admin.team.member_removed':           'Member removed',
+            'admin.team.renamed':                  'Team renamed',
             'admin.team_key.rotation_started':     'Key rotation started',
             'admin.team_key.rotation_completed':   'Key rotation completed',
             'admin.team_role.assigned':            'Custom role assigned',
@@ -1162,6 +1170,12 @@ const Teams = (() => {
         closeModal = Utils.showModal('Create Custom Role', formContent);
     }
 
+    function _memberRoleDisplay(m) {
+        const stdLabels = (m.roles || [m.role]).map(r => _ROLE_LABEL[r] || r);
+        const custLabels = (m.custom_roles || []).map(cr => cr.name);
+        return [...stdLabels, ...custLabels].join(', ');
+    }
+
     function _buildMemberNameCellParts(m) {
         const parts = [document.createTextNode(m.username)];
         if (m.key_delivery_pending) {
@@ -1181,7 +1195,58 @@ const Teams = (() => {
         return parts;
     }
 
-    function _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, ownerCount, allowMultiOwner, teamId, container }) {
+    function _confirmRemoveFromTeam(m, teamId, container, onConfirm) {
+        let close;
+        const body = Utils.el('div', {}, [
+            Utils.el('p', { textContent: `Are you sure you want to remove ${m.username} from the team?` }),
+            Utils.el('div', { className: 'modal-actions' }, [
+                Utils.el('button', {
+                    className: 'btn btn-danger',
+                    textContent: 'Confirm',
+                    onClick: () => { close(); onConfirm(); },
+                }),
+                Utils.el('button', {
+                    className: 'btn btn-secondary',
+                    textContent: 'Cancel',
+                    onClick: () => close(),
+                }),
+            ]),
+        ]);
+        close = Utils.showModal('Remove from Team', body);
+    }
+
+    function _confirmLastRoleRemoveFromTeam(m, teamId, container) {
+        let close;
+        const body = Utils.el('div', {}, [
+            Utils.el('p', {
+                textContent: `This is the only role for ${m.username}. Would you like to remove this user from the Team?`,
+            }),
+            Utils.el('div', { className: 'modal-actions' }, [
+                Utils.el('button', {
+                    className: 'btn btn-danger',
+                    textContent: 'Confirm',
+                    onClick: async () => {
+                        close();
+                        try {
+                            await Api.del(`${_api}/teams/${teamId}/members/${m.user_id}`);
+                            Utils.showToast(`${m.username} removed. Key rotation is now pending.`, 'info');
+                            renderTeamDetailPage(container, teamId);
+                        } catch (e) {
+                            Utils.showToast('Failed to remove member: ' + e.message, 'error');
+                        }
+                    },
+                }),
+                Utils.el('button', {
+                    className: 'btn btn-secondary',
+                    textContent: 'Cancel',
+                    onClick: () => close(),
+                }),
+            ]),
+        ]);
+        close = Utils.showModal('Remove from Team', body);
+    }
+
+    function _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, ownerCount, allowMultiOwner, teamId, container, teamCustomRoles }) {
         const actions = [];
         if (isOwner && !isSelf) {
             const roleOptions = [
@@ -1189,56 +1254,78 @@ const Teams = (() => {
                 { value: 'team_manager', label: 'Supervisor' },
             ];
             if (allowMultiOwner) roleOptions.push({ value: 'team_admin', label: 'Owner' });
+            for (const cr of (teamCustomRoles || [])) {
+                roleOptions.push({ value: cr.id, label: cr.name });
+            }
 
             const roleSelect = Utils.el('select', { className: 'input input-xs' });
             for (const opt of roleOptions) {
-                const option = Utils.el('option', { value: opt.value, textContent: opt.label });
-                if (opt.value === m.role) option.selected = true;
-                roleSelect.appendChild(option);
+                roleSelect.appendChild(Utils.el('option', { value: opt.value, textContent: opt.label }));
             }
-            const applyBtn = Utils.el('button', {
+
+            const addBtn = Utils.el('button', {
                 className: 'btn btn-secondary btn-xs',
-                textContent: 'Apply',
+                textContent: 'Add Role',
                 onClick: async () => {
-                    const newRole = roleSelect.value;
-                    if (newRole === m.role) return;
-                    if (isTargetOwner && ownerCount <= 1) {
-                        Utils.showToast('Cannot demote the only owner — promote another member first.', 'error');
-                        return;
-                    }
-                    applyBtn.disabled = true;
+                    const selected = roleSelect.value;
+                    addBtn.disabled = true;
                     try {
-                        await Api.put(`${_api}/teams/${teamId}/members/${m.user_id}`, { role: newRole });
-                        Utils.showToast(`${m.username}'s role updated.`, 'success');
+                        await Api.post(`${_api}/teams/${teamId}/members/${m.user_id}/add-role`, { role: selected });
+                        Utils.showToast(`Role added to ${m.username}.`, 'success');
                         renderTeamDetailPage(container, teamId);
                     } catch (e) {
-                        Utils.showToast('Failed to change role: ' + e.message, 'error');
-                        applyBtn.disabled = false;
+                        Utils.showToast('Failed to add role: ' + e.message, 'error');
+                        addBtn.disabled = false;
                     }
                 },
             });
-            actions.push(Utils.el('span', { className: 'member-role-change' }, [roleSelect, applyBtn]));
-        }
-        if (isSupervisor && !isSelf && !isTargetOwner) {
-            actions.push(Utils.el('button', {
-                className: 'btn btn-danger btn-xs',
-                textContent: 'Remove',
+
+            const removeRoleBtn = Utils.el('button', {
+                className: 'btn btn-secondary btn-xs',
+                textContent: 'Remove Role',
                 onClick: async () => {
-                    if (!confirm(`Remove ${m.username} from the team?`)) return;
+                    const selected = roleSelect.value;
+                    removeRoleBtn.disabled = true;
                     try {
-                        await Api.del(`${_api}/teams/${teamId}/members/${m.user_id}`);
-                        Utils.showToast(`${m.username} removed. Key rotation is now pending.`, 'info');
+                        await Api.del(`${_api}/teams/${teamId}/members/${m.user_id}/roles/${encodeURIComponent(selected)}`);
+                        Utils.showToast(`Role removed from ${m.username}.`, 'success');
                         renderTeamDetailPage(container, teamId);
                     } catch (e) {
-                        Utils.showToast('Failed to remove member: ' + e.message, 'error');
+                        if (e.status === 409 && e.message === 'last_role') {
+                            removeRoleBtn.disabled = false;
+                            _confirmLastRoleRemoveFromTeam(m, teamId, container);
+                        } else {
+                            Utils.showToast('Failed to remove role: ' + e.message, 'error');
+                            removeRoleBtn.disabled = false;
+                        }
                     }
                 },
-            }));
+            });
+
+            actions.push(Utils.el('span', { className: 'member-role-change' }, [roleSelect, addBtn, removeRoleBtn]));
+        }
+        if (isSupervisor && !isSelf && !isTargetOwner) {
+            const removeTeamBtn = Utils.el('button', {
+                className: 'btn btn-danger btn-xs member-remove-btn',
+                textContent: 'Remove from Team',
+                onClick: () => {
+                    _confirmRemoveFromTeam(m, teamId, container, async () => {
+                        try {
+                            await Api.del(`${_api}/teams/${teamId}/members/${m.user_id}`);
+                            Utils.showToast(`${m.username} removed. Key rotation is now pending.`, 'info');
+                            renderTeamDetailPage(container, teamId);
+                        } catch (e) {
+                            Utils.showToast('Failed to remove member: ' + e.message, 'error');
+                        }
+                    });
+                },
+            });
+            actions.push(removeTeamBtn);
         }
         return actions;
     }
 
-    function _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner) {
+    function _buildMemberTable(team, members, myRole, teamId, container, allowMultiOwner, teamCustomRoles) {
         const user         = Auth.getCurrentUser();
         const isOwner      = myRole === 'team_admin';
         const isSupervisor = myRole === 'team_manager' || isOwner;
@@ -1254,15 +1341,15 @@ const Teams = (() => {
         const tbody = Utils.el('tbody');
 
         for (const m of members) {
-            const roleLabel     = { team_admin: 'Owner', team_manager: 'Supervisor', team_member: 'Member' }[m.role] || m.role;
+            const roleDisplay   = _memberRoleDisplay(m);
             const isTargetOwner = m.role === 'team_admin';
             const isSelf        = m.user_id === user.id;
 
-            const actions = _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, ownerCount, allowMultiOwner, teamId, container });
+            const actions = _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, ownerCount, allowMultiOwner, teamId, container, teamCustomRoles });
 
             tbody.appendChild(Utils.el('tr', {}, [
                 Utils.el('td', {}, _buildMemberNameCellParts(m)),
-                Utils.el('td', { textContent: roleLabel }),
+                Utils.el('td', { textContent: roleDisplay, className: 'member-roles-cell' }),
                 ...(isSupervisor ? [Utils.el('td', {}, [Utils.el('div', { className: 'member-actions-wrap' }, actions)])] : []),
             ]));
         }
