@@ -18,6 +18,7 @@ from app.routes._access import (
     check_data_permission,
     copy_folder_permissions,
     get_folder_team_id,
+    get_restricted_subtree_info,
     is_in_shared_tree,
 )
 from app.schemas.security_event import EventActor, SecurityEvent
@@ -815,6 +816,24 @@ async def update_folder(
     if body.move_to_root and body.parent_id is not None:
         raise HTTPException(status_code=400, detail="Cannot specify both parent_id and move_to_root")
 
+    # Restricted-folder guards — only when changing structure or name; skip for
+    # restrict_permissions toggle (that's done through the manage modal by someone
+    # who already has manage access).
+    _is_move = body.move_to_root or (
+        body.parent_id is not None and body.parent_id != folder_row["parent_id"]
+    )
+    _is_rename_only = body.name is not None and not _is_move and body.restrict_permissions is None
+
+    if _is_move:
+        _restricted = await get_restricted_subtree_info(db, folder_id, user.id, user.is_admin)
+        _blocking = [e for e in _restricted if not e["has_manage_access"]]
+        if _blocking:
+            raise _restricted_folder_error(_blocking[0])
+    elif _is_rename_only and folder_row["restrict_permissions"]:
+        if not user.is_admin and folder_row["owner_id"] != user.id:
+            if not await check_data_permission(db, "folder", folder_id, user.id, "manage_permissions"):
+                raise _restricted_folder_error({"name": folder_row["name"], "path": folder_row["name"]})
+
     updates, params = await _build_folder_update_params(db, folder_id, folder_row, body)
 
     if not updates:
@@ -879,6 +898,11 @@ async def delete_folder(
 
     if folder_row["is_shared"]:
         raise HTTPException(status_code=400, detail="Cannot delete the shared folder")
+
+    _restricted = await get_restricted_subtree_info(db, folder_id, user.id, user.is_admin)
+    _blocking = [e for e in _restricted if not e["has_manage_access"]]
+    if _blocking:
+        raise _restricted_folder_error(_blocking[0])
 
     trash_enabled = (await get_admin_setting(db, "trash_enabled", default="true")) == "true"
 
@@ -1232,6 +1256,50 @@ async def _require_folder_manage_access(db, folder_id: str, folder_row, user: Au
         if flags[TEAM_FLAG_MANAGE_FOLDER_ALL]:
             return
     raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+
+def _restricted_folder_error(folder: dict) -> HTTPException:
+    """Build the structured 403 used when a restricted-folder manage check fails."""
+    return HTTPException(
+        status_code=403,
+        detail={
+            "error":       "restricted_folder_access",
+            "message":     f'You do not have access to complete this action on "{folder["name"]}"',
+            "folder_name": folder["name"],
+            "folder_path": folder["path"],
+        },
+    )
+
+
+@router.get(
+    "/{folder_id}/subtree-restricted",
+    responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}},
+)
+async def get_folder_subtree_restricted(
+    folder_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return all restrict_permissions=True folders in the subtree, classified by access.
+
+    Used by the frontend before destructive or structural operations to show
+    pre-confirmation modals and determine whether the operation can proceed.
+    """
+    folder_id = validate_uuid(folder_id)
+    cursor = await db.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,))
+    folder_row = await cursor.fetchone()
+    if not folder_row:
+        raise HTTPException(status_code=404, detail=_ERR_FOLDER_NOT_FOUND)
+
+    if not user.is_admin and folder_row["owner_id"] != user.id:
+        if not await check_data_permission(db, "folder", folder_id, user.id, "read"):
+            raise HTTPException(status_code=403, detail=_ERR_ACCESS_DENIED)
+
+    entries = await get_restricted_subtree_info(db, folder_id, user.id, user.is_admin)
+    return {
+        "restricted_folders":  entries,
+        "has_blocking_folders": any(not e["has_manage_access"] for e in entries),
+    }
 
 
 @router.get("/{folder_id}/grants", responses={403: {"description": "Forbidden"}, 404: {"description": "Not Found"}})

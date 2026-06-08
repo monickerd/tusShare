@@ -1617,6 +1617,19 @@ const Files = (() => {
     }
 
     async function _deleteFolder(folder) {
+        // Pre-check: block deletion if any restricted subfolder lacks manage_this_folder.
+        try {
+            const check = await Api.get(`${Config.app.apiPrefix}/folders/${folder.id}/subtree-restricted`);
+            if (check.has_blocking_folders) {
+                const blocked = check.restricted_folders.filter(f => !f.has_manage_access);
+                Utils.showToast(
+                    `You do not have access to complete this action on "${blocked[0].name}"`,
+                    'error',
+                );
+                return;
+            }
+        } catch { /* non-fatal — let the DELETE itself surface the error */ }
+
         const ok = await Utils.showConfirm(`Delete folder "${_dn(folder, 'name')}" and all its contents?`);
         if (!ok) return;
         try {
@@ -2044,12 +2057,112 @@ const Files = (() => {
     }
 
     /**
+     * Show a modal listing restricted subfolders before a move or delete.
+     * Returns a Promise<boolean> — true if the user confirmed, false to abort.
+     *
+     * accessible: [{name, path}] — restricted folders the user CAN manage (will proceed)
+     * blocked:    [{name, path}] — restricted folders the user CANNOT manage (hard block)
+     * verb: 'move' | 'delete' (used in button label and heading copy)
+     */
+    function _showRestrictedFolderModal(accessible, blocked, verb) {
+        return new Promise((resolve) => {
+            const overlay = Utils.el('div', { className: 'modal-overlay' });
+            const modal   = Utils.el('div', { className: 'modal restricted-folder-modal' });
+
+            const title = Utils.el('h3', {
+                textContent: blocked.length
+                    ? `Cannot ${verb}: restricted folder access required`
+                    : `Restricted folders will be ${verb}d`,
+                style: 'margin-top:0',
+            });
+
+            const makeSection = (heading, items, isBlocked) => {
+                const sec = Utils.el('details', { open: true });
+                const sum = Utils.el('summary', {
+                    textContent: heading,
+                    className: 'restricted-folder-section-summary' + (isBlocked ? ' restricted-blocked' : ' restricted-ok'),
+                });
+                sec.appendChild(sum);
+                const ul = Utils.el('ul', { className: 'restricted-folder-list' });
+                for (const f of items) {
+                    ul.appendChild(Utils.el('li', {
+                        textContent: f.path || f.name,
+                        className: 'restricted-folder-item',
+                    }));
+                }
+                sec.appendChild(ul);
+                return sec;
+            };
+
+            const body = Utils.el('div', {
+                className: 'restricted-folder-body',
+                style: 'max-height:320px;overflow-y:auto;margin:12px 0',
+            });
+            if (blocked.length) {
+                body.appendChild(makeSection(
+                    `Cannot ${verb} (no "Manage this folder" access):`,
+                    blocked, true,
+                ));
+            }
+            if (accessible.length) {
+                body.appendChild(makeSection(
+                    blocked.length
+                        ? `Would be ${verb}d (you have access):`
+                        : `Restricted folders that will be ${verb}d:`,
+                    accessible, false,
+                ));
+            }
+
+            const actions = Utils.el('div', { className: 'modal-actions', style: 'justify-content:flex-end;gap:8px' });
+            const cancelBtn = Utils.el('button', {
+                className: 'btn btn-secondary',
+                textContent: 'Cancel',
+                onClick: () => { overlay.remove(); resolve(false); },
+            });
+            actions.appendChild(cancelBtn);
+
+            if (!blocked.length) {
+                const proceedBtn = Utils.el('button', {
+                    className: 'btn btn-primary',
+                    textContent: verb === 'move' ? 'Move anyway' : 'Proceed',
+                    onClick: () => { overlay.remove(); resolve(true); },
+                });
+                actions.appendChild(proceedBtn);
+            }
+
+            modal.append(title, body, actions);
+            overlay.appendChild(modal);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } });
+            document.body.appendChild(overlay);
+        });
+    }
+
+    /**
      * Run pre-move checks (active shares, cross-boundary warning) then execute.
      * destination: { id: string|null, label: string, isTeam: boolean }
      */
     async function _confirmAndExecuteMoves(items, destination, sourceIsTeam) {
         if (!await _warnIfActiveShares(items)) return;
         if (!await _warnIfBoundary(items, sourceIsTeam, destination)) return;
+
+        // Restricted-subfolder pre-check for folder items.
+        const folders = items.filter(i => i.type === 'folder');
+        if (folders.length > 0) {
+            const allRestricted = [];
+            for (const folder of folders) {
+                try {
+                    const check = await Api.get(`${Config.app.apiPrefix}/folders/${folder.id}/subtree-restricted`);
+                    allRestricted.push(...(check.restricted_folders || []));
+                } catch { /* skip — backend will guard */ }
+            }
+            if (allRestricted.length > 0) {
+                const blocked    = allRestricted.filter(f => !f.has_manage_access);
+                const accessible = allRestricted.filter(f =>  f.has_manage_access);
+                const ok = await _showRestrictedFolderModal(accessible, blocked, 'move');
+                if (!ok) return;
+            }
+        }
+
         await _executeMoves(items, destination);
     }
 

@@ -308,6 +308,68 @@ async def _check_role_acl(
 
 
 # ---------------------------------------------------------------------------
+# Restricted-subtree classification
+# ---------------------------------------------------------------------------
+
+
+async def get_restricted_subtree_info(
+    db,
+    root_folder_id: str,
+    user_id: str,
+    is_admin: bool,
+) -> list[dict]:
+    """Return all restrict_permissions=True folders in the subtree rooted at root_folder_id.
+
+    Each entry: {id, name, path, has_manage_access, has_read_access}
+    Path is relative to root_folder_id (e.g. "Root / Sub / Leaf").
+    Admin users always get both flags True.  Returns [] when no restricted
+    folders exist — callers can skip modals/guards entirely in that case.
+    """
+    cursor = await db.execute(
+        """
+        WITH RECURSIVE subtree AS (
+            SELECT id, name, parent_id, restrict_permissions, owner_id, name AS path
+            FROM folders
+            WHERE id = ? AND deleted_at IS NULL
+            UNION ALL
+            SELECT f.id, f.name, f.parent_id, f.restrict_permissions, f.owner_id,
+                   s.path || ' / ' || f.name
+            FROM folders f
+            JOIN subtree s ON f.parent_id = s.id
+            WHERE f.deleted_at IS NULL
+        )
+        SELECT id, name, path, owner_id FROM subtree WHERE restrict_permissions = TRUE
+        """,
+        (root_folder_id,),
+    )
+    rows = await cursor.fetchall()
+    if not rows:
+        return []
+
+    result = []
+    for row in rows:
+        if is_admin or row["owner_id"] == user_id:
+            result.append({
+                "id":                row["id"],
+                "name":              row["name"],
+                "path":              row["path"],
+                "has_manage_access": True,
+                "has_read_access":   True,
+            })
+        else:
+            has_manage = await check_data_permission(db, "folder", row["id"], user_id, "manage_permissions")
+            has_read   = has_manage or await check_data_permission(db, "folder", row["id"], user_id, "read")
+            result.append({
+                "id":                row["id"],
+                "name":              row["name"],
+                "path":              row["path"],
+                "has_manage_access": has_manage,
+                "has_read_access":   has_read,
+            })
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Ancestry helpers (unchanged from pre-Phase-1; still used by several routes)
 # ---------------------------------------------------------------------------
 

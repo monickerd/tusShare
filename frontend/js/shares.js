@@ -1535,12 +1535,92 @@ const Shares = (() => {
      *
      * @param {{ id: string, name: string }} folder - Folder to share.
      */
+    /**
+     * Show a pre-share confirmation modal when the folder subtree contains
+     * restrict_permissions folders.  Returns true to proceed, false to cancel.
+     */
+    async function _confirmRestrictedFolderShare(folderId) {
+        let restricted;
+        try {
+            const check = await Api.get(`${_prefix()}/folders/${folderId}/subtree-restricted`);
+            restricted = check.restricted_folders || [];
+        } catch {
+            return true; // non-fatal — proceed without the warning
+        }
+        if (!restricted.length) return true;
+
+        const accessible = restricted.filter(f =>  f.has_read_access);
+        const excluded   = restricted.filter(f => !f.has_read_access);
+
+        return new Promise((resolve) => {
+            const overlay = Utils.el('div', { className: 'modal-overlay' });
+            const modal   = Utils.el('div', { className: 'modal restricted-folder-modal' });
+
+            modal.appendChild(Utils.el('h3', {
+                textContent: 'Share includes restricted folders',
+                style: 'margin-top:0',
+            }));
+
+            const body = Utils.el('div', {
+                className: 'restricted-folder-body',
+                style: 'max-height:360px;overflow-y:auto;margin:12px 0',
+            });
+
+            const makeSection = (heading, items, isExcluded) => {
+                const sec = Utils.el('details', { open: true });
+                sec.appendChild(Utils.el('summary', {
+                    textContent: heading,
+                    className: 'restricted-folder-section-summary' + (isExcluded ? ' restricted-blocked' : ' restricted-ok'),
+                }));
+                const ul = Utils.el('ul', { className: 'restricted-folder-list' });
+                for (const f of items) {
+                    ul.appendChild(Utils.el('li', { textContent: f.path || f.name, className: 'restricted-folder-item' }));
+                }
+                sec.appendChild(ul);
+                return sec;
+            };
+
+            if (accessible.length) {
+                body.appendChild(makeSection(
+                    'Restricted folders you have access to — will be included in the share:',
+                    accessible, false,
+                ));
+            }
+            if (excluded.length) {
+                body.appendChild(makeSection(
+                    'Restricted folders you do NOT have access to — will NOT be included:',
+                    excluded, true,
+                ));
+            }
+
+            const actions = Utils.el('div', { className: 'modal-actions', style: 'justify-content:flex-end;gap:8px' });
+            actions.appendChild(Utils.el('button', {
+                className: 'btn btn-secondary',
+                textContent: 'Cancel',
+                onClick: () => { overlay.remove(); resolve(false); },
+            }));
+            actions.appendChild(Utils.el('button', {
+                className: 'btn btn-primary',
+                textContent: 'Proceed with share',
+                onClick: () => { overlay.remove(); resolve(true); },
+            }));
+
+            modal.appendChild(body);
+            modal.appendChild(actions);
+            overlay.appendChild(modal);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); resolve(false); } });
+            document.body.appendChild(overlay);
+        });
+    }
+
     async function openFolderShareDialog(folder) {
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey) {
             Utils.showToast('Master key not available — please re-enter your password.', 'error');
             return;
         }
+
+        if (!await _confirmRestrictedFolderShare(folder.id)) return;
 
         // Folder-key model: if the folder has a folderKey, use the efficient O(folders) path.
         // Each subfolder with a folderKey gets one share_item instead of one per file.
