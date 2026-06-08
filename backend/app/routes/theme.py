@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from app.config import settings
+from app.services import live_settings
 from app.util.theme import get_logo_filename_re, get_theme_config, get_ui_flags
 
 router = APIRouter()
@@ -47,6 +48,7 @@ async def get_theme():
         "favicon_url": "/api/v1/theme/favicon" if "favicon_path" in config else None,
         "ui": get_ui_flags(),
         "public_device_banner_text": config.get("public_device_banner_text"),
+        "open_registration": live_settings.get("open_registration", "false") == "true",
     }
 
 

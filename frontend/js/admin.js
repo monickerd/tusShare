@@ -489,6 +489,8 @@ const Admin = (() => {
         try {
             const data = await Api.get(`${_api()}/admin/settings`);
             s = data.settings;
+            // Backend returns nested {key: {value, is_locked, ...}} — flatten to plain {key: value}
+            s = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v?.value ?? v]));
         } catch (err) {
             _showError(container, 'Failed to load settings: ' + err.message);
             return;
@@ -7234,7 +7236,7 @@ const Admin = (() => {
         }));
 
         const profileCards = Utils.el('div', { style: 'display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px' });
-        let selectedProfile = profiles[0]?.id || 'recommended';
+        let selectedProfile = profilesData.current_profile || null;
 
         for (const p of profiles) {
             const card = Utils.el('div', {
@@ -7254,13 +7256,16 @@ const Admin = (() => {
                         : 'var(--color-border,#dee2e6)';
                 });
             });
-            if (p.id === selectedProfile) card.style.borderColor = 'var(--color-primary,#0d6efd)';
+            if (selectedProfile && p.id === selectedProfile) card.style.borderColor = 'var(--color-primary,#0d6efd)';
             profileCards.appendChild(card);
         }
         applySection.appendChild(profileCards);
 
         const applyBtn = Utils.el('button', { className: 'btn btn-primary btn-sm', textContent: 'Preview & Apply' });
-        applyBtn.addEventListener('click', () => _showApplyProfileModal(selectedProfile, () => _renderProfilesSection(container)));
+        applyBtn.addEventListener('click', () => {
+            if (!selectedProfile) { Utils.showToast('Select a profile first', 'error'); return; }
+            _showApplyProfileModal(selectedProfile, () => _renderProfilesSection(container));
+        });
         applySection.appendChild(applyBtn);
         container.appendChild(applySection);
 

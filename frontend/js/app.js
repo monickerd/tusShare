@@ -175,6 +175,10 @@ const App = (() => {
         // Path-based public routes — handled before auth check so unauthenticated
         // users land on the correct page rather than being bounced to login.
         const path = globalThis.location.pathname;
+        if (path === '/register') {
+            Auth.renderRegisterPage(_appEl(), null);
+            return;
+        }
         if (path.startsWith('/register/')) {
             Auth.renderRegisterPage(_appEl(), path.slice('/register/'.length));
             return;

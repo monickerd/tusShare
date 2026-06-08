@@ -79,8 +79,6 @@ _SETTINGS_VALIDATORS = {
     "av_scan_secret": lambda v: len(v) <= 512,
     "av_require_clean": lambda v: v in ("true", "false"),
     "av_scan_retry_attempts": lambda v: v.isdigit() and 1 <= int(v) <= 10,
-    # First-run wizard completion flag (set by the profile wizard after first profile selection)
-    "first_run_completed": lambda v: v in ("0", "1"),
     # Trash / soft-delete
     "trash_enabled": lambda v: v in ("true", "false"),
     "trash_retention_days": lambda v: v.isdigit() and 1 <= int(v) <= 3650,

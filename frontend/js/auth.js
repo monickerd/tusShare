@@ -223,12 +223,15 @@ const Auth = (() => {
         const gen = ++_loginRenderGen;
         while (container.firstChild) container.firstChild.remove();
 
-        // Fetch active IdP providers (non-blocking — show form even if this fails)
+        // Fetch active IdP providers and open-registration flag in parallel (non-blocking)
         let idpProviders = [];
-        try {
-            const idpData = await Api.get(`${Config.app.apiPrefix}/auth/idp/providers`);
-            idpProviders = idpData.providers || [];
-        } catch { /* server may not have any providers */ }
+        let openRegistration = false;
+        await Promise.allSettled([
+            Api.get(`${Config.app.apiPrefix}/auth/idp/providers`)
+                .then(d => { idpProviders = d.providers || []; }),
+            Api.get(`${Config.app.apiPrefix}/theme`)
+                .then(d => { openRegistration = d.open_registration === true; }),
+        ]);
 
         // Abort if a newer renderLogin call has taken over (race between hashchange + direct call)
         if (gen !== _loginRenderGen) return;
@@ -272,6 +275,11 @@ const Auth = (() => {
                         renderForgotPassword(container, prefill);
                     },
                 }),
+                ...(openRegistration ? [
+                    Utils.el('div', { style: 'margin-top:10px' }, [
+                        Utils.el('a', { href: '/register', className: 'text-muted', textContent: 'Register New Account' }),
+                    ]),
+                ] : []),
             ]),
             Utils.el('p', { id: 'login-status', className: 'auth-status' }),
         ]);
@@ -921,28 +929,31 @@ const Auth = (() => {
     async function renderRegisterPage(container, token) {
         while (container.firstChild) container.firstChild.remove();
 
-        // Step 1: validate token before showing form
-        const checking = Utils.el('div', { className: 'auth-form' }, [
-            Utils.el('p', { className: 'text-muted', textContent: 'Validating invite…' }),
-        ]);
-        container.appendChild(checking);
+        if (token) {
+            // Validate invite token before showing form
+            const checking = Utils.el('div', { className: 'auth-form' }, [
+                Utils.el('p', { className: 'text-muted', textContent: 'Validating invite…' }),
+            ]);
+            container.appendChild(checking);
 
-        try {
-            await Api.get(`${Config.app.apiPrefix}/auth/invite/${encodeURIComponent(token)}`);
-        } catch {
+            try {
+                await Api.get(`${Config.app.apiPrefix}/auth/invite/${encodeURIComponent(token)}`);
+            } catch {
+                while (container.firstChild) container.firstChild.remove();
+                container.appendChild(Utils.el('div', { className: 'auth-form' }, [
+                    Utils.el('h2', { textContent: 'Invalid Invite' }),
+                    Utils.el('p', { className: 'auth-status', textContent: 'This invite link is invalid, expired, or has already been used.' }),
+                    Utils.el('p', {}, [
+                        Utils.el('a', { href: '/#/login', textContent: 'Back to login' }),
+                    ]),
+                ]));
+                return;
+            }
+
             while (container.firstChild) container.firstChild.remove();
-            container.appendChild(Utils.el('div', { className: 'auth-form' }, [
-                Utils.el('h2', { textContent: 'Invalid Invite' }),
-                Utils.el('p', { className: 'auth-status', textContent: 'This invite link is invalid, expired, or has already been used.' }),
-                Utils.el('p', {}, [
-                    Utils.el('a', { href: '/#/login', textContent: 'Back to login' }),
-                ]),
-            ]));
-            return;
         }
 
-        // Step 2: show registration form
-        while (container.firstChild) container.firstChild.remove();
+        // Show registration form
 
         const form = Utils.el('form', { className: 'auth-form', onSubmit: (e) => _handleRegister(e, token, container) }, [
             Utils.el('h1', { textContent: Config.app.name }),
@@ -1004,11 +1015,12 @@ const Auth = (() => {
             const { clientRegistrationState, registrationRequest } =
                 opaque.client.startRegistration({ password });
 
-            const round1 = await Api.post(`${Config.app.apiPrefix}/auth/opaque/register/start`, {
-                token,
-                username,
-                client_registration_request: registrationRequest,
-            });
+            const round1 = await Api.post(
+                `${Config.app.apiPrefix}/auth/opaque/register/${token ? 'start' : 'open/start'}`,
+                token
+                    ? { token, username, client_registration_request: registrationRequest }
+                    : { username, client_registration_request: registrationRequest },
+            );
 
             // Client processes server OPRF response and derives export_key
             status.textContent = 'Generating encryption keys…';
@@ -1043,8 +1055,7 @@ const Auth = (() => {
 
             // OPAQUE registration round 2 — server stores record and creates user
             status.textContent = 'Creating account…';
-            const data = await Api.post(`${Config.app.apiPrefix}/auth/opaque/register/finish`, {
-                token,
+            const _round2Base = {
                 username,
                 client_registration_record: registrationRecord,
                 wrapped_master_key:    wrappedMasterKeyB64,
@@ -1057,7 +1068,11 @@ const Auth = (() => {
                 x25519_private_wrapped:   x25519PrivWrappedB64,
                 mlkem768_private_wrapped: mlkem768PrivWrappedB64,
                 asymmetric_key_iv:        asymKeyIvB64,
-            });
+            };
+            const data = await Api.post(
+                `${Config.app.apiPrefix}/auth/opaque/register/${token ? 'finish' : 'open/finish'}`,
+                token ? { token, ..._round2Base } : _round2Base,
+            );
 
             // Session setup
             _currentUser   = data.user;

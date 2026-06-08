@@ -528,6 +528,252 @@ async def opaque_register_finish(
 
 
 # ---------------------------------------------------------------------------
+# Open registration models and routes
+# ---------------------------------------------------------------------------
+
+
+class OpaqueOpenRegStartRequest(BaseModel):
+    username: str
+    client_registration_request: str  # base64 RegistrationRequest bytes
+
+    @field_validator("username")
+    @classmethod
+    def val_username(cls, v: str) -> str:
+        return sanitize_username(v)
+
+    @field_validator("client_registration_request")
+    @classmethod
+    def val_reg_request(cls, v: str) -> str:
+        validate_base64(v, max_length=_OPAQUE_REG_REQUEST_B64_MAX)
+        return v
+
+
+class OpaqueOpenRegFinishRequest(BaseModel):
+    username: str
+    client_registration_record: str  # base64 RegistrationUpload bytes from client
+    wrapped_master_key: str
+    wrapped_master_key_iv: str
+    recovery_key_wrapped: str
+    recovery_key_iv: str
+    recovery_key_hash: str
+    x25519_public_key: str | None = None
+    mlkem768_public_key: str | None = None
+    x25519_private_wrapped: str | None = None
+    mlkem768_private_wrapped: str | None = None
+    asymmetric_key_iv: str | None = None
+
+    @field_validator("username")
+    @classmethod
+    def val_username(cls, v: str) -> str:
+        return sanitize_username(v)
+
+    @field_validator("client_registration_record")
+    @classmethod
+    def val_reg_record(cls, v: str) -> str:
+        validate_base64(v, max_length=_OPAQUE_REG_RECORD_B64_MAX)
+        return v
+
+    @field_validator("wrapped_master_key", "wrapped_master_key_iv")
+    @classmethod
+    def val_required_key_fields(cls, v: str) -> str:
+        validate_base64(v, max_length=_WRAPPED_KEY_B64_MAX)
+        return v
+
+    @field_validator("recovery_key_wrapped")
+    @classmethod
+    def val_recovery_key_wrapped(cls, v: str) -> str:
+        validate_base64(v, max_length=_WRAPPED_KEY_B64_MAX)
+        return v
+
+    @field_validator("recovery_key_iv", "asymmetric_key_iv")
+    @classmethod
+    def val_iv_fields(cls, v: str | None) -> str | None:
+        if v is not None:
+            validate_base64(v, max_length=_IV_B64_MAX)
+        return v
+
+    @field_validator("x25519_public_key")
+    @classmethod
+    def val_x25519_pub(cls, v: str | None) -> str | None:
+        if v is not None:
+            validate_base64(v, max_length=_X25519_PUB_B64_MAX)
+        return v
+
+    @field_validator("mlkem768_public_key")
+    @classmethod
+    def val_mlkem_pub(cls, v: str | None) -> str | None:
+        if v is not None:
+            validate_base64(v, max_length=_MLKEM_PUB_B64_MAX)
+        return v
+
+    @field_validator("x25519_private_wrapped")
+    @classmethod
+    def val_x25519_priv(cls, v: str | None) -> str | None:
+        if v is not None:
+            validate_base64(v, max_length=_X25519_PRIV_WRAPPED_B64_MAX)
+        return v
+
+    @field_validator("mlkem768_private_wrapped")
+    @classmethod
+    def val_mlkem_priv(cls, v: str | None) -> str | None:
+        if v is not None:
+            validate_base64(v, max_length=_MLKEM_PRIV_WRAPPED_B64_MAX)
+        return v
+
+    @field_validator("recovery_key_hash")
+    @classmethod
+    def val_recovery_hash(cls, v: str) -> str:
+        if not v or len(v) > 128 or not all(c in "0123456789abcdef" for c in v):
+            raise ValueError("Invalid recovery_key_hash (expected hex)")
+        return v
+
+
+@router.post("/register/open/start", responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}})
+async def opaque_open_register_start(
+    body: OpaqueOpenRegStartRequest,
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Open registration round 1.
+
+    Only callable when the open_registration admin setting is true.
+    No invite token is required or accepted — the setting itself is the gate.
+    """
+    if await get_admin_setting(db, "open_registration") != "true":
+        raise HTTPException(status_code=403, detail="Open registration is not enabled")
+
+    reg_request_bytes = _decode_b64_field(body.client_registration_request, "client_registration_request")
+    setup_bytes = sensitive_config.get_opaque_server_setup()
+    username_bytes = body.username.encode("utf-8")
+
+    try:
+        reg_response_bytes = await asyncio.to_thread(
+            tusshare_opaque.server_start_registration,
+            setup_bytes,
+            reg_request_bytes,
+            username_bytes,
+        )
+    except ValueError as exc:
+        logger.warning("OPAQUE open-register/start failed: %s", exc)
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_REQUEST)
+
+    return {"registration_response": base64.urlsafe_b64encode(reg_response_bytes).decode().rstrip("=")}
+
+
+@router.post(
+    "/register/open/finish",
+    responses={400: {"description": "Bad Request"}, 403: {"description": "Forbidden"}, 409: {"description": "Conflict"}},
+)
+async def opaque_open_register_finish(
+    body: OpaqueOpenRegFinishRequest,
+    request: Request,
+    response: Response,
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Open registration round 2.
+
+    Re-checks open_registration before creating the account so that toggling
+    the setting off mid-flow fails the registration rather than silently
+    succeeding.  Creates user with ROLE_USER only — no invite is consumed.
+    """
+    if await get_admin_setting(db, "open_registration") != "true":
+        raise HTTPException(status_code=403, detail="Open registration is not enabled")
+
+    reg_upload_bytes = _decode_b64_field(body.client_registration_record, "client_registration_record")
+    try:
+        reg_record_bytes = await asyncio.to_thread(
+            tusshare_opaque.server_finish_registration,
+            reg_upload_bytes,
+        )
+    except ValueError as exc:
+        logger.warning("OPAQUE open-register/finish failed: %s", exc)
+        raise HTTPException(status_code=400, detail=_ERR_INVALID_REG_UPLOAD)
+
+    if len(reg_record_bytes) > _OPAQUE_MAX_NATIVE_BYTES:
+        logger.error("OPAQUE open-register/finish produced unexpectedly large record (%d bytes)", len(reg_record_bytes))
+        raise HTTPException(status_code=500, detail="Internal error")
+
+    user_id = str(uuid.uuid4())
+    await db.execute("BEGIN")
+    try:
+        await db.execute(
+            "INSERT INTO users ("
+            "  id, username, auth_method, opaque_registration_record, is_admin, "
+            "  wrapped_master_key, wrapped_master_key_iv, "
+            "  recovery_key_wrapped, recovery_key_iv, recovery_key_hash, "
+            "  x25519_public_key, mlkem768_public_key, "
+            "  x25519_private_wrapped, mlkem768_private_wrapped, asymmetric_key_iv"
+            ") VALUES (?, ?, 'opaque', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                body.username,
+                reg_record_bytes,
+                body.wrapped_master_key,
+                body.wrapped_master_key_iv,
+                body.recovery_key_wrapped,
+                body.recovery_key_iv,
+                body.recovery_key_hash,
+                body.x25519_public_key,
+                body.mlkem768_public_key,
+                body.x25519_private_wrapped,
+                body.mlkem768_private_wrapped,
+                body.asymmetric_key_iv,
+            ),
+        )
+        await grant_role(db, user_id, ROLE_USER)
+        await db.commit()
+    except DuplicateError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Username already exists")
+    except HTTPException:
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+    user = AuthenticatedUser(
+        id=user_id,
+        username=body.username,
+        auth_method="opaque",
+        roles={ROLE_USER},
+        wrapped_master_key=body.wrapped_master_key,
+        wrapped_master_key_iv=body.wrapped_master_key_iv,
+        recovery_key_wrapped=body.recovery_key_wrapped,
+        recovery_key_iv=body.recovery_key_iv,
+        x25519_public_key=body.x25519_public_key,
+        mlkem768_public_key=body.mlkem768_public_key,
+        x25519_private_wrapped=body.x25519_private_wrapped,
+        mlkem768_private_wrapped=body.mlkem768_private_wrapped,
+        asymmetric_key_iv=body.asymmetric_key_iv,
+    )
+
+    access_token = create_access_token(user.id)
+    raw_refresh, rt_hash = create_refresh_token()
+    await store_refresh_token(db, user.id, rt_hash)
+    csrf_token = generate_csrf_token()
+    set_auth_cookies(response, access_token, raw_refresh, csrf_token)
+
+    logger.info("New user registered via open registration: %s (id=%s)", user.username, user.id)
+    event_bus.emit(
+        SecurityEvent(
+            event_type="user.registered",
+            severity="info",
+            outcome="success",
+            actor=EventActor(user_id=user_id, username=body.username),
+            detail={"auth_method": "open_registration"},
+        )
+    )
+
+    _spawn_policy_eval(user_id)
+
+    from app.auth.mfa import load_mfa_settings as _load_mfa
+
+    mfa_settings = await _load_mfa(db)
+    mfa_enrollment_required = mfa_settings["mfa_enforcement"] == "required"
+
+    return {"user": user_response_dict(user), "mfa_enrollment_required": mfa_enrollment_required}
+
+
+# ---------------------------------------------------------------------------
 # Login routes
 # ---------------------------------------------------------------------------
 

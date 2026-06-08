@@ -472,11 +472,14 @@ def _validate_profile_structure(profile_json: dict) -> None:
 @router.get("/settings/profiles")
 async def list_profiles(
     admin: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
 ):
     """List available built-in profile names and descriptions."""
     _require_server_admin(admin)
+    current_profile = await get_admin_setting(db, "active_profile")
     return {
-        "profiles": [{"id": pid, "name": p["name"], "description": p["description"]} for pid, p in _PROFILES.items()]
+        "profiles": [{"id": pid, "name": p["name"], "description": p["description"]} for pid, p in _PROFILES.items()],
+        "current_profile": current_profile,
     }
 
 
@@ -626,6 +629,12 @@ async def apply_profile(
             "INSERT INTO admin_settings (key, value) VALUES ('first_run_completed', '1') "
             "ON CONFLICT (key) DO UPDATE SET value = '1'",
         )
+
+    await db.execute(
+        "INSERT INTO admin_settings (key, value) VALUES ('active_profile', ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+        (body.profile,),
+    )
 
     await db.commit()
 
