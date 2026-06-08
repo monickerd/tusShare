@@ -5640,15 +5640,9 @@ const Admin = (() => {
         );
 
         // --- Type selector tabs (hidden when editing — type is locked) ---
-        const tabBar = Utils.el('div', { style: 'display:flex;gap:0;margin:16px 0 0;border-bottom:2px solid var(--color-border,#e5e7eb)' });
-        const pushTabBtn = Utils.el('button', {
-            textContent: 'Push (webhook)',
-            style: 'padding:6px 16px;border:none;background:none;cursor:pointer;font-size:var(--font-size-sm);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-2px',
-        });
-        const pullTabBtn = Utils.el('button', {
-            textContent: 'Pull (API key)',
-            style: 'padding:6px 16px;border:none;background:none;cursor:pointer;font-size:var(--font-size-sm);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-2px',
-        });
+        const pushTabBtn = Utils.el('button', { className: 'tab-btn', textContent: 'Push (webhook)' });
+        const pullTabBtn = Utils.el('button', { className: 'tab-btn', textContent: 'Pull (API key)' });
+        const tabBar = Utils.el('div', { style: 'display:flex;border-bottom:1px solid var(--color-border);margin:16px 0 0' });
         tabBar.append(pushTabBtn, pullTabBtn);
         if (!lockedMode) box.appendChild(tabBar);
 
@@ -5686,7 +5680,7 @@ const Admin = (() => {
         const errEl = Utils.el('p', { className: 'error-text', style: 'display:none;margin-bottom:8px' });
         box.appendChild(errEl);
 
-        const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end' });
+        const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end;padding-top:16px' });
         const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-secondary btn-sm' });
         cancelBtn.addEventListener('click', () => modal.remove());
         const saveBtn = Utils.el('button', { className: 'btn btn-primary btn-sm' });
@@ -5697,9 +5691,8 @@ const Admin = (() => {
             const isPush = activeMode === 'push';
             pushSection.style.display = isPush ? '' : 'none';
             pullSection.style.display = isPush ? 'none' : '';
-            const activeBorder = '2px solid var(--color-primary,#3b82f6)';
-            pushTabBtn.style.borderBottom = isPush ? activeBorder : '2px solid transparent';
-            pullTabBtn.style.borderBottom = isPush ? '2px solid transparent' : activeBorder;
+            pushTabBtn.classList.toggle('tab-active', isPush);
+            pullTabBtn.classList.toggle('tab-active', !isPush);
             if (isEdit) {
                 titleEl.textContent = isPush ? 'Edit Push Channel' : 'Edit API Key';
                 saveBtn.textContent = 'Save Changes';
