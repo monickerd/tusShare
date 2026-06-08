@@ -156,7 +156,8 @@ CREATE TABLE service_account_keys (
     created_by           TEXT NOT NULL REFERENCES users(id),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at           TIMESTAMPTZ,
-    last_used_at         TIMESTAMPTZ
+    last_used_at         TIMESTAMPTZ,
+    allowed_ips          TEXT DEFAULT NULL
 );
 
 CREATE INDEX idx_sak_hash ON service_account_keys(key_hash);
@@ -1293,26 +1294,30 @@ CREATE TABLE IF NOT EXISTS notification_channels (
     batch_size          INTEGER,
     batch_interval_s    INTEGER,
     enabled             INTEGER NOT NULL DEFAULT 1,
+    expires_at          TIMESTAMPTZ DEFAULT NULL,
+    allowed_ips         TEXT DEFAULT NULL,
     created_at          TIMESTAMPTZ DEFAULT now()
 );
 
 -------------------------------------------------
 -- API KEYS (pull endpoint auth)
 -- key_hash:            SHA-256 hex of the raw "tss_..." key — never store plaintext
--- scopes:              JSON array of scope strings, e.g. ["audit_read"]
--- filter_event_types:  Optional comma-separated glob patterns (e.g. "auth.*,admin.*").
---                      When set, audit/op-events endpoints only return matching events,
---                      regardless of query-param filters — lets an ops SIEM key be
---                      scoped to only the events it needs.
+-- scopes:              JSON array of scope strings; derived from event_filter on create.
+-- event_filter:        JSON array of dot-prefix strings (same format as notification_channels).
+--                      [] = all events. "security:" prefix = security bus; others = op bus.
 -- filter_min_severity: Optional minimum severity gate ("info"|"warning"|"critical").
+-- allowed_ips:         JSON array of CIDR/IP strings; empty = unrestricted source IP.
+-- enabled:             Soft-disable without revoke; checked on every request.
 -------------------------------------------------
 CREATE TABLE IF NOT EXISTS api_keys (
     id                  TEXT PRIMARY KEY,
     name                TEXT NOT NULL,
     key_hash            TEXT NOT NULL UNIQUE,
     scopes              TEXT NOT NULL DEFAULT '["events.read"]',
-    filter_event_types  TEXT,
+    event_filter        TEXT DEFAULT NULL,
     filter_min_severity TEXT,
+    allowed_ips         TEXT DEFAULT NULL,
+    enabled             BOOLEAN DEFAULT TRUE,
     created_by          TEXT NOT NULL REFERENCES users(id),
     created_at          TIMESTAMPTZ DEFAULT now(),
     last_used_at        TIMESTAMPTZ,

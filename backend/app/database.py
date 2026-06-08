@@ -898,3 +898,39 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
             ALTER TABLE notification_channels
                 ADD COLUMN IF NOT EXISTS filter_min_severity TEXT DEFAULT NULL;
         """)
+
+    # api_keys: rename filter_event_types → event_filter (matches channel column name);
+    # add allowed_ips (source IP allowlist) and enabled (soft-disable without revoke).
+    async with conn.transaction():
+        await conn.execute("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'api_keys' AND column_name = 'filter_event_types'
+                ) THEN
+                    ALTER TABLE api_keys RENAME COLUMN filter_event_types TO event_filter;
+                END IF;
+            END$$;
+        """)
+        await conn.execute("""
+            ALTER TABLE api_keys
+                ADD COLUMN IF NOT EXISTS event_filter TEXT    DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS allowed_ips  TEXT    DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS enabled      BOOLEAN DEFAULT TRUE;
+        """)
+
+    # notification_channels: expires_at + allowed_ips (stored; destination-side advisory).
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE notification_channels
+                ADD COLUMN IF NOT EXISTS expires_at  TIMESTAMPTZ DEFAULT NULL,
+                ADD COLUMN IF NOT EXISTS allowed_ips TEXT        DEFAULT NULL;
+        """)
+
+    # service_account_keys: allowed_ips — source IP gate on SA bearer-token auth.
+    async with conn.transaction():
+        await conn.execute("""
+            ALTER TABLE service_account_keys
+                ADD COLUMN IF NOT EXISTS allowed_ips TEXT DEFAULT NULL;
+        """)

@@ -61,7 +61,8 @@ async def get_current_user(
     if token.startswith("sa_"):
         from app.auth.service_account import authenticate_service_account
 
-        return await authenticate_service_account(token)
+        client_ip = request.client.host if request.client else None
+        return await authenticate_service_account(token, client_ip=client_ip)
 
     try:
         payload = verify_access_token(token)

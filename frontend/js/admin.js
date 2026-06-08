@@ -28,11 +28,10 @@ const Admin = (() => {
             id: 'system',
             label: 'System',
             sections: [
-                ['settings',       'System Settings',        _renderSettings],
-                ['storage',        'Storage',                _renderStorageSection],
-                ['disk',           'Disk Usage',             _renderDiskUsage],
-                ['theme',          'Theme & Branding',       _renderTheme],
-                ['notifications',  'Notification Channels',  _renderNotificationsSection],
+                ['settings', 'System Settings',  _renderSettings],
+                ['storage',  'Storage',           _renderStorageSection],
+                ['disk',     'Disk Usage',        _renderDiskUsage],
+                ['theme',    'Theme & Branding',  _renderTheme],
             ],
         },
         {
@@ -66,19 +65,19 @@ const Admin = (() => {
             id: 'security',
             label: 'Security & Privacy',
             sections: [
-                ['profiles',        'Settings Profile',       _renderProfilesSection],
-                ['api-keys',        'API Keys',               _renderApiKeysSection],
-                ['antivirus',       'Antivirus',              _renderAntivirusSection],
-                ['sharing',         'Sharing Restrictions',   _renderSharingSection],
-                ['rate-limits',     'Rate Limiting',          _renderRateLimits],
-                ['session-policy',  'Session & Auth Policy',  _renderSessionPolicy],
+                ['profiles',       'Settings Profile',       _renderProfilesSection],
+                ['antivirus',      'Antivirus',              _renderAntivirusSection],
+                ['sharing',        'Sharing Restrictions',   _renderSharingSection],
+                ['rate-limits',    'Rate Limiting',          _renderRateLimits],
+                ['session-policy', 'Session & Auth Policy',  _renderSessionPolicy],
             ],
         },
         {
             id: 'audit',
             label: 'Audit',
             sections: [
-                ['audit', 'Audit & SIEM', _renderAuditSection],
+                ['audit',         'Audit & SIEM',              _renderAuditSection],
+                ['integrations',  'Custom Event Integrations', _renderIntegrationsSection],
             ],
         },
         {
@@ -97,7 +96,7 @@ const Admin = (() => {
         'storage':          ['system_settings_manage'],
         'disk':             ['disk_usage_view'],
         'theme':            ['system_settings_manage', 'org_settings_manage'],
-        'notifications':    ['integrations_notifications_manage'],
+        'integrations':     ['integrations_notifications_manage', 'system_settings_manage'],
         'users':            ['users_view', 'users_manage'],
         'invites':          ['users_invite_manage'],
         'service-accounts': ['service_accounts_manage'],
@@ -108,7 +107,6 @@ const Admin = (() => {
         'policy':           ['policies_view', 'policies_manage'],
         'escrow':           ['escrow_manage'],
         'profiles':         ['org_settings_manage', 'sharing_manage'],
-        'api-keys':         ['integrations_notifications_manage', 'system_settings_manage'],
         'antivirus':        ['system_settings_manage'],
         'sharing':          ['sharing_manage'],
         'rate-limits':      ['system_settings_manage'],
@@ -5094,147 +5092,230 @@ const Admin = (() => {
     // Section: Notification Channels
     // ------------------------------------------------------------------
 
-    async function _renderNotificationsSection(container) {
+    // ------------------------------------------------------------------
+    // Shared modal field builder (label + input + optional hint)
+    // ------------------------------------------------------------------
+
+    function _mkField(label, inp, hint) {
+        const row = Utils.el('div', { style: 'margin-bottom:10px' });
+        row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' }));
+        row.appendChild(inp);
+        if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:var(--font-size-sm);color:var(--color-muted,#888);margin:2px 0 0' }));
+        return row;
+    }
+
+    // ------------------------------------------------------------------
+    // Shared IP allowlist field (used in integrations modal + SA modal)
+    // ------------------------------------------------------------------
+
+    function _buildIpAllowlistField(existing = '') {
+        const wrap = Utils.el('div', { style: 'margin-bottom:10px' });
+        wrap.appendChild(Utils.el('label', {
+            textContent: 'IP allowlist (optional)',
+            style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px',
+        }));
+        const inp = Utils.el('input', {
+            type: 'text',
+            value: existing,
+            style: 'width:100%',
+            placeholder: 'e.g. 10.0.0.0/8, 192.168.1.42 — blank = unrestricted',
+        });
+        wrap.appendChild(inp);
+        wrap.appendChild(Utils.el('p', {
+            textContent: 'Comma-separated IPs or CIDR ranges. Requests from other source IPs will be rejected.',
+            style: 'font-size:var(--font-size-sm);color:var(--color-text-muted,#6b7280);margin:2px 0 0',
+        }));
+        return { wrap, inp };
+    }
+
+    function _parseIpAllowlist(str) {
+        return str.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    function _fmtIpAllowlist(jsonStr) {
+        try { return JSON.parse(jsonStr || '[]').join(', ') || ''; } catch { return ''; }
+    }
+
+    // ------------------------------------------------------------------
+    // Section: Custom Event Integrations (replaces Notification Channels + API Keys)
+    // ------------------------------------------------------------------
+
+    async function _renderIntegrationsSection(container) {
         container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
         try {
-            const [channelsData, settingsData] = await Promise.all([
+            const [channelsData, keysData, settingsData] = await Promise.all([
                 Api.get(`${_api()}/admin/notifications/channels`),
+                Api.get(`${_api()}/admin/api-keys`),
                 Api.get(`${_api()}/admin/notifications/settings`),
             ]);
-            _renderNotificationsPanel(container, channelsData.channels || [], settingsData);
+            _renderIntegrationsPanel(container, channelsData.channels || [], keysData.keys || [], settingsData);
         } catch (err) {
             _showError(container, `Failed to load: ${err.message}`);
         }
     }
 
-    function _buildChannelRow(ch, container) {
-        const filters = (() => { try { return JSON.parse(ch.event_filter || '[]'); } catch { return []; } })();
+    function _filterSummary(filters) {
+        if (!filters.length) return 'all op events';
         const secCount = filters.filter(f => f.startsWith('security:')).length;
         const opCount  = filters.filter(f => !f.startsWith('security:')).length;
-        let filterStr;
-        if (!filters.length) {
-            filterStr = 'all op events';
-        } else {
-            const parts = [];
-            if (opCount)  parts.push(`${opCount} op filter${opCount > 1 ? 's' : ''}`);
-            if (secCount) parts.push(`${secCount} security filter${secCount > 1 ? 's' : ''}`);
-            filterStr = parts.join(', ');
-        }
-        let batchStr;
-        if (ch.batch_size) batchStr = `${ch.batch_size} events`;
-        else if (ch.batch_interval_s) batchStr = `${ch.batch_interval_s}s`;
-        else batchStr = 'immediate';
+        const parts = [];
+        if (opCount)  parts.push(`${opCount} op`);
+        if (secCount) parts.push(`${secCount} sec`);
+        return parts.join(' + ');
+    }
+
+    function _buildIntegrationRow(item, isChannel, refreshContainer) {
+        const filters = (() => { try { return JSON.parse(item.event_filter || '[]'); } catch { return []; } })();
+        const filterStr = _filterSummary(filters);
+        const expires = isChannel ? item.expires_at : item.expires_at;
+        const enabled = isChannel ? !!item.enabled : (item.enabled !== false);
         const tr = Utils.el('tr');
         tr.innerHTML = `
-          <td>${Utils.escHtml(ch.name)}</td>
-          <td class="td-url">${Utils.escHtml(ch.endpoint_url)}</td>
+          <td><span class="badge ${isChannel ? 'badge-custom' : 'badge-team'}">${isChannel ? 'Push' : 'Pull'}</span></td>
+          <td>${Utils.escHtml(item.name)}</td>
           <td class="text-sm">${Utils.escHtml(filterStr)}</td>
-          <td class="text-sm">${Utils.escHtml(String(batchStr))}</td>
-          <td><span class="badge ${ch.enabled ? 'badge-active' : 'badge-custom'}">${ch.enabled ? 'enabled' : 'disabled'}</span></td>
+          <td class="text-sm">${expires ? Utils.escHtml(expires.slice(0, 10)) : 'never'}</td>
+          <td><span class="badge ${enabled ? 'badge-active' : 'badge-custom'}">${enabled ? 'enabled' : 'disabled'}</span></td>
           <td></td>
         `;
         const actionsTd = tr.cells[5];
         const editBtn = Utils.el('button', { textContent: 'Edit', className: 'btn btn-secondary btn-sm', style: 'margin-right:4px' });
         editBtn.addEventListener('click', async () => {
-            const full = await Api.get(`${_api()}/admin/notifications/channels/${ch.id}`);
-            _showChannelModal(full, container);
-        });
-        const testBtn = Utils.el('button', { textContent: 'Test', className: 'btn btn-secondary btn-sm', style: 'margin-right:4px' });
-        testBtn.addEventListener('click', async () => {
-            try {
-                const res = await Api.post(`${_api()}/admin/notifications/channels/${ch.id}/test`, {});
-                Utils.showToast(res.ok ? `Test OK (HTTP 200)` : `Test failed: ${res.error || 'unknown'}`, res.ok ? 'success' : 'error');
-            } catch (err) {
-                Utils.showToast('Test failed: ' + err.message, 'error');
+            if (isChannel) {
+                const full = await Api.get(`${_api()}/admin/notifications/channels/${item.id}`);
+                _showIntegrationModal('push', full, refreshContainer);
+            } else {
+                _showIntegrationModal('pull', item, refreshContainer);
             }
         });
-        const delBtn = Utils.el('button', { textContent: 'Delete', className: 'btn btn-sm btn-danger' });
-        delBtn.addEventListener('click', async () => {
-            if (!confirm(`Delete channel "${ch.name}"?`)) return;
-            try {
-                await Api.del(`${_api()}/admin/notifications/channels/${ch.id}`);
-                Utils.showToast('Channel deleted.');
-                await _renderNotificationsSection(container.closest('.admin-section-body') || container);
-            } catch (err) {
-                Utils.showToast('Delete failed: ' + err.message, 'error');
-            }
-        });
-        actionsTd.append(editBtn, testBtn, delBtn);
+        if (isChannel) {
+            const testBtn = Utils.el('button', { textContent: 'Test', className: 'btn btn-secondary btn-sm', style: 'margin-right:4px' });
+            testBtn.addEventListener('click', async () => {
+                try {
+                    const res = await Api.post(`${_api()}/admin/notifications/channels/${item.id}/test`, {});
+                    Utils.showToast(res.ok ? 'Test OK (HTTP 200)' : `Test failed: ${res.error || 'unknown'}`, res.ok ? 'success' : 'error');
+                } catch (err) {
+                    Utils.showToast('Test failed: ' + err.message, 'error');
+                }
+            });
+            const delBtn = Utils.el('button', { textContent: 'Delete', className: 'btn btn-sm btn-danger' });
+            delBtn.addEventListener('click', async () => {
+                if (!confirm(`Delete channel "${item.name}"?`)) return;
+                try {
+                    await Api.del(`${_api()}/admin/notifications/channels/${item.id}`);
+                    Utils.showToast('Channel deleted.');
+                    await _renderIntegrationsSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
+                } catch (err) {
+                    Utils.showToast('Delete failed: ' + err.message, 'error');
+                }
+            });
+            actionsTd.append(editBtn, testBtn, delBtn);
+        } else {
+            const rotateBtn = Utils.el('button', { textContent: 'Rotate', className: 'btn btn-sm', style: 'margin-right:4px' });
+            rotateBtn.addEventListener('click', async () => {
+                if (!confirm(`Rotate key "${item.name}"? The current key stops working immediately.`)) return;
+                try {
+                    const result = await Api.post(`${_api()}/admin/api-keys/${item.id}/rotate`, {});
+                    _showApiKeyReveal(result.key, result.name, refreshContainer);
+                } catch (err) {
+                    Utils.showToast('Rotate failed: ' + err.message, 'error');
+                }
+            });
+            const revokeBtn = Utils.el('button', { textContent: 'Revoke', className: 'btn btn-sm btn-danger' });
+            revokeBtn.addEventListener('click', async () => {
+                if (!confirm(`Revoke API key "${item.name}"? This cannot be undone.`)) return;
+                try {
+                    await Api.del(`${_api()}/admin/api-keys/${item.id}`);
+                    Utils.showToast('API key revoked.');
+                    await _renderIntegrationsSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
+                } catch (err) {
+                    Utils.showToast('Revoke failed: ' + err.message, 'error');
+                }
+            });
+            actionsTd.append(editBtn, rotateBtn, revokeBtn);
+        }
         return tr;
     }
 
-    function _renderNotificationsPanel(container, channels, settings) {
+    function _renderIntegrationsPanel(container, channels, keys, settings) {
         container.innerHTML = '';
         const wrap = Utils.el('div');
 
-        // --- Settings card ---
-        const settingsCard = Utils.el('div', { className: 'policy-subsection' });
-        settingsCard.appendChild(Utils.el('h3', { textContent: 'Notification Settings', style: 'margin-top:0' }));
-
-        const fields = [
+        // --- Settings card (collapsible) ---
+        const settingsToggle = Utils.el('details', { style: 'margin-bottom:20px' });
+        settingsToggle.appendChild(Utils.el('summary', { textContent: 'Integration Settings', style: 'cursor:pointer;font-weight:600;padding:6px 0;font-size:var(--font-size-sm)' }));
+        const settingsCard = Utils.el('div', { style: 'padding-top:10px' });
+        const settingsFields = [
             { key: 'server_id',               label: 'Server identity tag',                  type: 'text',   placeholder: 'defaults to hostname' },
             { key: 'op_event_retention_days',  label: 'Event log retention (days)',            type: 'number', min: 1, max: 3650 },
             { key: 'api_key_expiry_warn_days', label: 'API key expiry warning (days before)', type: 'number', min: 1, max: 365 },
             { key: 'upload_quota_warn_pct',    label: 'Quota warning threshold (%)',           type: 'number', min: 1, max: 100 },
         ];
-
-        const inputs = {};
-        for (const f of fields) {
+        const settingsInputs = {};
+        for (const f of settingsFields) {
             const row = Utils.el('div', { style: 'margin-bottom:10px' });
             const lbl = Utils.el('label', { textContent: f.label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' });
             const inp = Utils.el('input', { type: f.type, value: settings[f.key] ?? '', style: 'width:240px' });
             if (f.placeholder) inp.placeholder = f.placeholder;
             if (f.min != null) inp.min = f.min;
             if (f.max != null) inp.max = f.max;
-            inputs[f.key] = inp;
+            settingsInputs[f.key] = inp;
             row.append(lbl, inp);
             settingsCard.appendChild(row);
         }
-
         const saveSettingsBtn = Utils.el('button', { textContent: 'Save Settings', className: 'btn btn-primary btn-sm' });
         saveSettingsBtn.addEventListener('click', async () => {
             try {
-                const body = {
-                    server_id:               inputs['server_id'].value.trim(),
-                    op_event_retention_days:  Number.parseInt(inputs['op_event_retention_days'].value) || 30,
-                    api_key_expiry_warn_days: Number.parseInt(inputs['api_key_expiry_warn_days'].value) || 30,
-                    upload_quota_warn_pct:    Number.parseInt(inputs['upload_quota_warn_pct'].value) || 90,
-                };
-                await Api.put(`${_api()}/admin/notifications/settings`, body);
+                await Api.put(`${_api()}/admin/notifications/settings`, {
+                    server_id:               settingsInputs['server_id'].value.trim(),
+                    op_event_retention_days:  Number.parseInt(settingsInputs['op_event_retention_days'].value) || 30,
+                    api_key_expiry_warn_days: Number.parseInt(settingsInputs['api_key_expiry_warn_days'].value) || 30,
+                    upload_quota_warn_pct:    Number.parseInt(settingsInputs['upload_quota_warn_pct'].value) || 90,
+                });
                 Utils.showToast('Settings saved.');
             } catch (err) {
                 Utils.showToast('Failed: ' + err.message, 'error');
             }
         });
         settingsCard.appendChild(saveSettingsBtn);
-        wrap.appendChild(settingsCard);
+        settingsToggle.appendChild(settingsCard);
+        wrap.appendChild(settingsToggle);
 
-        // --- Channels table ---
+        // --- Unified integrations table ---
         const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px' });
-        header.appendChild(Utils.el('h3', { textContent: 'Channels', style: 'margin:0' }));
-        const addBtn = Utils.el('button', { textContent: '+ Add Channel', className: 'btn btn-primary btn-sm' });
-        addBtn.addEventListener('click', () => _showChannelModal(null, container));
+        header.appendChild(Utils.el('h3', { textContent: 'Integrations', style: 'margin:0' }));
+        const addBtn = Utils.el('button', { textContent: '+ Add Integration', className: 'btn btn-primary btn-sm' });
+        addBtn.addEventListener('click', () => _showIntegrationModal(null, null, container));
         header.appendChild(addBtn);
         wrap.appendChild(header);
 
-        if (channels.length === 0) {
-            wrap.appendChild(Utils.el('p', { textContent: 'No notification channels configured.', className: 'text-muted' }));
+        wrap.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'font-size:var(--font-size-sm);margin-bottom:12px',
+            textContent: 'Push integrations (channels) deliver events to a webhook endpoint. Pull integrations (API keys) allow external systems to fetch events on demand.',
+        }));
+
+        const allItems = [
+            ...channels.map(ch => ({ item: ch, isChannel: true })),
+            ...keys.map(k => ({ item: k, isChannel: false })),
+        ];
+
+        if (allItems.length === 0) {
+            wrap.appendChild(Utils.el('p', { textContent: 'No integrations configured.', className: 'text-muted' }));
         } else {
             const table = Utils.el('table', { className: 'admin-table', style: 'width:100%' });
-            const thead = Utils.el('thead');
-            thead.innerHTML = '<tr><th>Name</th><th>Endpoint</th><th>Filter</th><th>Batch</th><th>Status</th><th>Actions</th></tr>';
-            table.appendChild(thead);
+            table.innerHTML = '<thead><tr><th>Type</th><th>Name</th><th>Filters</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead>';
             const tbody = Utils.el('tbody');
-            for (const ch of channels) {
-                tbody.appendChild(_buildChannelRow(ch, container));
+            for (const { item, isChannel } of allItems) {
+                tbody.appendChild(_buildIntegrationRow(item, isChannel, container));
             }
             table.appendChild(tbody);
             wrap.appendChild(table);
         }
 
-        // --- Recent Events sub-panel ---
+        // --- Recent operational events ---
         const eventsToggle = Utils.el('details', { style: 'margin-top:20px' });
-        eventsToggle.appendChild(Utils.el('summary', { textContent: 'Recent Events', style: 'cursor:pointer;font-weight:600;padding:8px 0' }));
+        eventsToggle.appendChild(Utils.el('summary', { textContent: 'Recent Operational Events', style: 'cursor:pointer;font-weight:600;padding:8px 0' }));
         const eventsBody = Utils.el('div');
         eventsToggle.appendChild(eventsBody);
         eventsToggle.addEventListener('toggle', async () => {
@@ -5521,56 +5602,98 @@ const Admin = (() => {
         return result;
     }
 
-    function _showChannelModal(channel, refreshContainer) {
-        const isEdit = !!channel;
+    // ------------------------------------------------------------------
+    // Unified integration modal (Push channel + Pull API key)
+    // ------------------------------------------------------------------
+
+    function _showIntegrationModal(initialMode, existing, refreshContainer) {
+        // initialMode: 'push' | 'pull' | null (null = let user pick when creating)
+        // existing: channel object | API key object | null
+        const isEdit = !!existing;
+        const isChannel = existing ? (existing.endpoint_url !== undefined) : null;
+        // Locked mode: when editing, fix the type; when creating, use initialMode as default.
+        const lockedMode = isEdit ? (isChannel ? 'push' : 'pull') : null;
+        let activeMode = lockedMode ?? initialMode ?? 'push';
+
         const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal', style: 'max-width:680px;width:calc(100% - 32px)' });
-        box.appendChild(Utils.el('h3', { textContent: isEdit ? 'Edit Channel' : 'Add Channel', style: 'margin-top:0' }));
+        const box   = Utils.el('div', { className: 'modal', style: 'max-width:700px;width:calc(100% - 32px)' });
 
-        const mkField = (label, inp) => {
-            const row = Utils.el('div', { style: 'margin-bottom:10px' });
-            row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' }));
-            row.appendChild(inp);
-            return row;
-        };
+        const titleEl = Utils.el('h3', { style: 'margin-top:0' });
+        box.appendChild(titleEl);
 
-        const nameInp   = Utils.el('input', { type: 'text', value: channel?.name || '', style: 'width:100%', placeholder: 'e.g. Slack alerts' });
-        const urlInp    = Utils.el('input', { type: 'text', value: channel?.endpoint_url || '', style: 'width:100%', placeholder: 'https://...' });
-        const secretInp = Utils.el('input', { type: 'password', style: 'width:100%', placeholder: isEdit ? '(unchanged)' : '(leave blank for unsigned)' });
-        const secretWarn = Utils.el('p', { style: 'font-size:var(--font-size-sm);color:var(--color-warning,#d97706);margin:4px 0 0;display:none' });
-        if (!isEdit) {
-            secretWarn.textContent = 'No signing secret — deliveries will be unsigned JSON. Recommended: set a secret.';
-            secretWarn.style.display = '';
-            secretInp.addEventListener('input', () => { secretWarn.style.display = secretInp.value ? 'none' : ''; });
-        }
-        const secretField = mkField('Signing secret', secretInp);
-        secretField.appendChild(secretWarn);
+        // --- Shared fields ---
+        const nameInp   = Utils.el('input', { type: 'text', value: existing?.name || '', style: 'width:100%', placeholder: 'e.g. Grafana SIEM' });
+        const expiryInp = Utils.el('input', { type: 'date', style: 'width:200px',
+            value: existing?.expires_at ? existing.expires_at.slice(0, 10) : '' });
+        const enabledChk = Utils.el('input', { type: 'checkbox', checked: existing ? (existing.enabled !== false && !!existing.enabled) : true });
+        const enabledRow = Utils.el('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:10px' });
+        enabledRow.append(enabledChk, Utils.el('label', { textContent: 'Enabled' }));
 
-        box.append(mkField('Name', nameInp), mkField('Endpoint URL (must be https://)', urlInp), secretField);
-
-        const curFilters = (() => {
-            try { return JSON.parse(channel?.event_filter || '[]'); } catch { return []; }
+        const existingIps = (() => {
+            try { return JSON.parse(existing?.allowed_ips || '[]').join(', '); } catch { return ''; }
         })();
+        const { wrap: ipWrap, inp: ipInp } = _buildIpAllowlistField(existingIps);
+
+        const curFilters = (() => { try { return JSON.parse(existing?.event_filter || '[]'); } catch { return []; } })();
+        const filterGrid = _buildEventFilterUI(curFilters);
         const filterWrap = Utils.el('div', { style: 'margin-bottom:10px' });
         filterWrap.appendChild(Utils.el('label', {
             textContent: 'Event filters',
-            style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px;font-weight:600'
+            style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px;font-weight:600',
         }));
-        const filterGrid = _buildEventFilterUI(curFilters);
         filterWrap.appendChild(filterGrid);
-        box.appendChild(filterWrap);
-
-        const batchSizeInp = Utils.el('input', { type: 'number', value: channel?.batch_size ?? '', style: 'width:120px', placeholder: 'e.g. 20' });
-        const intervalInp  = Utils.el('input', { type: 'number', value: channel?.batch_interval_s ?? '', style: 'width:120px', placeholder: 'e.g. 86400' });
-        const enabledChk   = Utils.el('input', { type: 'checkbox', checked: channel ? !!channel.enabled : true });
 
         box.append(
-            mkField('Batch size (blank = immediate)', batchSizeInp),
-            mkField('Flush interval (seconds, blank = disabled)', intervalInp),
+            _mkField('Name', nameInp),
+            enabledRow,
+            _mkField('Expiry date (optional)', expiryInp, 'Leave blank for no expiry.'),
+            ipWrap,
+            filterWrap,
         );
-        const enabledRow = Utils.el('div', { style: 'margin-bottom:16px;display:flex;align-items:center;gap:8px' });
-        enabledRow.append(enabledChk, Utils.el('label', { textContent: 'Enabled' }));
-        box.appendChild(enabledRow);
+
+        // --- Type selector tabs (hidden when editing — type is locked) ---
+        const tabBar = Utils.el('div', { style: 'display:flex;gap:0;margin:16px 0 0;border-bottom:2px solid var(--color-border,#e5e7eb)' });
+        const pushTabBtn = Utils.el('button', {
+            textContent: 'Push (webhook)',
+            style: 'padding:6px 16px;border:none;background:none;cursor:pointer;font-size:var(--font-size-sm);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-2px',
+        });
+        const pullTabBtn = Utils.el('button', {
+            textContent: 'Pull (API key)',
+            style: 'padding:6px 16px;border:none;background:none;cursor:pointer;font-size:var(--font-size-sm);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-2px',
+        });
+        tabBar.append(pushTabBtn, pullTabBtn);
+        if (!lockedMode) box.appendChild(tabBar);
+
+        // --- Push-specific fields ---
+        const pushSection = Utils.el('div', { style: 'margin-top:12px' });
+        const urlInp    = Utils.el('input', { type: 'text', value: existing?.endpoint_url || '', style: 'width:100%', placeholder: 'https://...' });
+        const secretInp = Utils.el('input', { type: 'password', style: 'width:100%', placeholder: isEdit ? '(unchanged)' : '(leave blank for unsigned)' });
+        const secretWarn = Utils.el('p', { style: 'font-size:var(--font-size-sm);color:var(--color-warning,#d97706);margin:4px 0 0', textContent: 'No signing secret — deliveries will be unsigned JSON. Recommended: set a secret.' });
+        if (!isEdit) {
+            secretInp.addEventListener('input', () => { secretWarn.style.display = secretInp.value ? 'none' : ''; });
+        } else {
+            secretWarn.style.display = 'none';
+        }
+        const batchSizeInp = Utils.el('input', { type: 'number', value: existing?.batch_size ?? '', style: 'width:120px', placeholder: 'e.g. 20' });
+        const intervalInp  = Utils.el('input', { type: 'number', value: existing?.batch_interval_s ?? '', style: 'width:120px', placeholder: 'e.g. 86400' });
+        const secretFieldEl = _mkField('Signing secret', secretInp);
+        secretFieldEl.appendChild(secretWarn);
+        pushSection.append(
+            _mkField('Endpoint URL (must be https://)', urlInp),
+            secretFieldEl,
+            _mkField('Batch size (blank = immediate)', batchSizeInp),
+            _mkField('Flush interval (seconds, blank = disabled)', intervalInp),
+        );
+
+        // --- Pull-specific fields (empty — all in shared section) ---
+        const pullSection = Utils.el('div', { style: 'margin-top:12px' });
+        pullSection.appendChild(Utils.el('p', {
+            className: 'text-muted',
+            style: 'font-size:var(--font-size-sm)',
+            textContent: 'Pull integrations issue an API key (tss_…). The key grants read access to the event streams matching your filter selection above. Scopes (audit_read / ops_read) are derived automatically from the filter.',
+        }));
+
+        box.append(pushSection, pullSection);
 
         const errEl = Utils.el('p', { className: 'error-text', style: 'display:none;margin-bottom:8px' });
         box.appendChild(errEl);
@@ -5578,222 +5701,100 @@ const Admin = (() => {
         const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end' });
         const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-secondary btn-sm' });
         cancelBtn.addEventListener('click', () => modal.remove());
-        const saveBtn = Utils.el('button', { textContent: isEdit ? 'Save Changes' : 'Add Channel', className: 'btn btn-primary btn-sm' });
-        saveBtn.addEventListener('click', async () => {
-            const body = {
-                name:                nameInp.value.trim(),
-                endpoint_url:        urlInp.value.trim(),
-                secret:              secretInp.value || null,
-                event_filter:        _readEventFilterUI(filterGrid),
-                batch_size:          batchSizeInp.value ? Number.parseInt(batchSizeInp.value) : null,
-                batch_interval_s:    intervalInp.value ? Number.parseInt(intervalInp.value) : null,
-                enabled:             enabledChk.checked,
-            };
-            try {
-                if (isEdit) {
-                    await Api.put(`${_api()}/admin/notifications/channels/${channel.id}`, body);
-                } else {
-                    await Api.post(`${_api()}/admin/notifications/channels`, body);
-                }
-                modal.remove();
-                await _renderNotificationsSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
-            } catch (err) {
-                errEl.textContent = err.message;
-                errEl.style.display = '';
-            }
-        });
+        const saveBtn = Utils.el('button', { className: 'btn btn-primary btn-sm' });
         btns.append(cancelBtn, saveBtn);
         box.appendChild(btns);
-        modal.appendChild(box);
-        document.body.appendChild(modal);
-    }
 
-    // ------------------------------------------------------------------
-    // Section: API Keys
-    // ------------------------------------------------------------------
-
-    async function _renderApiKeysSection(container) {
-        container.innerHTML = '<p class="text-muted loading-msg">Loading…</p>';
-        try {
-            const data = await Api.get(`${_api()}/admin/api-keys`);
-            _renderApiKeysPanel(container, data.keys || []);
-        } catch (err) {
-            _showError(container, `Failed to load: ${err.message}`);
-        }
-    }
-
-    const _KEY_SCOPES = [
-        { value: 'audit_read', label: 'Security Audit Log', desc: 'Read-only access to the security event log. Suits SIEM integrations, compliance exports, and log analysis tools.' },
-        { value: 'ops_read',   label: 'Operational Events', desc: 'Read live operational events (storage warnings, quota alerts, system events). Suits monitoring dashboards and alerting scripts.' },
-    ];
-
-    function _buildApiKeyRow(k, container) {
-        const scopes = (() => { try { return JSON.parse(k.scopes || '[]'); } catch { return []; } })();
-        const filterParts = [];
-        if (k.filter_event_types)  filterParts.push(`types: ${k.filter_event_types}`);
-        if (k.filter_min_severity) filterParts.push(`sev≥${k.filter_min_severity}`);
-        const tr = Utils.el('tr');
-        tr.innerHTML = `
-          <td>${Utils.escHtml(k.name)}</td>
-          <td class="text-sm">${Utils.escHtml(scopes.join(', '))}</td>
-          <td class="text-muted-xs">${Utils.escHtml(filterParts.join(' · ') || '—')}</td>
-          <td class="text-sm">${k.created_at ? k.created_at.slice(0, 10) : ''}</td>
-          <td class="text-sm">${k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'}</td>
-          <td class="text-sm">${k.expires_at ? k.expires_at.slice(0, 10) : 'never'}</td>
-          <td class="text-nowrap"></td>
-        `;
-        const actionsCell = tr.cells[6];
-        const rotateBtn = Utils.el('button', { textContent: 'Rotate', className: 'btn btn-sm', style: 'margin-right:4px' });
-        rotateBtn.addEventListener('click', async () => {
-            if (!confirm(`Rotate key "${k.name}"? The current key will stop working immediately.`)) return;
-            try {
-                const result = await Api.post(`${_api()}/admin/api-keys/${k.id}/rotate`, {});
-                _showApiKeyReveal(result.key, result.name, container);
-            } catch (err) {
-                Utils.showToast('Rotate failed: ' + err.message, 'error');
+        function syncUI() {
+            const isPush = activeMode === 'push';
+            pushSection.style.display = isPush ? '' : 'none';
+            pullSection.style.display = isPush ? 'none' : '';
+            const activeBorder = '2px solid var(--color-primary,#3b82f6)';
+            pushTabBtn.style.borderBottom = isPush ? activeBorder : '2px solid transparent';
+            pullTabBtn.style.borderBottom = isPush ? '2px solid transparent' : activeBorder;
+            if (isEdit) {
+                titleEl.textContent = isPush ? 'Edit Push Channel' : 'Edit API Key';
+                saveBtn.textContent = 'Save Changes';
+            } else {
+                titleEl.textContent = 'Add Integration';
+                saveBtn.textContent = isPush ? 'Add Push Channel' : 'Create API Key';
             }
-        });
-        const revokeBtn = Utils.el('button', { textContent: 'Revoke', className: 'btn btn-sm btn-danger' });
-        revokeBtn.addEventListener('click', async () => {
-            if (!confirm(`Revoke API key "${k.name}"? This cannot be undone.`)) return;
-            try {
-                await Api.del(`${_api()}/admin/api-keys/${k.id}`);
-                Utils.showToast('API key revoked.');
-                await _renderApiKeysSection(container.closest('.admin-section-body') || container);
-            } catch (err) {
-                Utils.showToast('Revoke failed: ' + err.message, 'error');
-            }
-        });
-        actionsCell.append(rotateBtn, revokeBtn);
-        return tr;
-    }
-
-    function _renderApiKeysPanel(container, keys) {
-        container.innerHTML = '';
-        const wrap = Utils.el('div');
-
-        const header = Utils.el('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:8px' });
-        header.appendChild(Utils.el('h3', { textContent: 'API Keys', style: 'margin:0' }));
-        const createBtn = Utils.el('button', { textContent: '+ Create API Key', className: 'btn btn-primary btn-sm' });
-        createBtn.addEventListener('click', () => _showApiKeyModal(container));
-        header.appendChild(createBtn);
-        wrap.appendChild(header);
-        wrap.appendChild(Utils.el('p', {
-            className: 'text-muted',
-            style: 'font-size:var(--font-size-sm);margin-bottom:16px',
-            textContent: 'API keys authenticate machine-to-machine access — for example, SIEM log ingestion or custom monitoring integrations. '
-                + 'Browser sessions use JWT cookies and do not need API keys. '
-                + 'Scope each key to the minimum required access.',
-        }));
-
-        if (keys.length === 0) {
-            wrap.appendChild(Utils.el('p', { textContent: 'No API keys.', className: 'text-muted' }));
-        } else {
-            const table = Utils.el('table', { className: 'admin-table', style: 'width:100%' });
-            table.innerHTML = '<thead><tr><th>Name</th><th>Scopes</th><th>Filters</th><th>Created</th><th>Last used</th><th>Expires</th><th>Actions</th></tr></thead>';
-            const tbody = Utils.el('tbody');
-            for (const k of keys) {
-                tbody.appendChild(_buildApiKeyRow(k, container));
-            }
-            table.appendChild(tbody);
-            wrap.appendChild(table);
         }
 
-        container.appendChild(wrap);
-    }
+        pushTabBtn.addEventListener('click', () => { activeMode = 'push'; syncUI(); });
+        pullTabBtn.addEventListener('click', () => { activeMode = 'pull'; syncUI(); });
+        syncUI();
 
-    function _showApiKeyModal(refreshContainer) {
-        const modal = Utils.el('div', { className: 'modal-overlay' });
-        const box   = Utils.el('div', { className: 'modal', style: 'max-width:480px;width:calc(100% - 32px)' });
-        box.appendChild(Utils.el('h3', { textContent: 'Create API Key', style: 'margin-top:0' }));
-        box.appendChild(Utils.el('p', {
-            className: 'text-muted',
-            style: 'font-size:var(--font-size-sm);margin-bottom:14px',
-            textContent: 'API keys authenticate programmatic read access to logs and event streams — for SIEM integrations, monitoring scripts, or compliance tools. Browser sessions use JWT cookies and do not need API keys.',
-        }));
-
-        const mkField = (label, inp, hint) => {
-            const row = Utils.el('div', { style: 'margin-bottom:10px' });
-            row.appendChild(Utils.el('label', { textContent: label, style: 'display:block;font-size:var(--font-size-sm);margin-bottom:4px' }));
-            row.appendChild(inp);
-            if (hint) row.appendChild(Utils.el('p', { textContent: hint, style: 'font-size:var(--font-size-sm);color:var(--color-muted,#888);margin:2px 0 0' }));
-            return row;
-        };
-
-        const nameInp        = Utils.el('input', { type: 'text',  style: 'width:100%',  placeholder: 'e.g. Grafana SIEM' });
-        const expiryInp      = Utils.el('input', { type: 'date',  style: 'width:200px' });
-        const filterTypesInp = Utils.el('input', { type: 'text',  style: 'width:100%',  placeholder: 'e.g. auth.*,admin.* (blank = all events)' });
-
-        box.appendChild(mkField('Name', nameInp));
-
-        // Scope checkboxes
-        const scopeWrap = Utils.el('div', { style: 'margin-bottom:10px' });
-        scopeWrap.appendChild(Utils.el('label', { textContent: 'Access scope', style: 'display:block;font-size:var(--font-size-sm);margin-bottom:6px' }));
-        const scopeChecks = {};
-        for (const s of _KEY_SCOPES) {
-            const row = Utils.el('div', {
-                style: 'display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;padding:8px;border:1px solid var(--color-border,#e5e7eb);border-radius:4px'
-            });
-            const chk = Utils.el('input', { type: 'checkbox', style: 'margin-top:2px;flex-shrink:0' });
-            scopeChecks[s.value] = chk;
-            const labelWrap = Utils.el('div');
-            labelWrap.appendChild(Utils.el('span', { textContent: s.label, style: 'font-size:var(--font-size-sm);font-weight:600;display:block' }));
-            labelWrap.appendChild(Utils.el('span', { textContent: s.desc,  style: 'font-size:var(--font-size-sm);color:var(--color-text-muted,#6b7280)' }));
-            row.append(chk, labelWrap);
-            scopeWrap.appendChild(row);
-        }
-        box.appendChild(scopeWrap);
-
-        box.append(
-            mkField('Expiry date (optional)', expiryInp),
-            mkField('Filter event types (optional)', filterTypesInp, 'Comma-separated glob patterns. Limits which events are visible through this key. Leave blank to allow all.'),
-        );
-
-        const errEl = Utils.el('p', { className: 'error-text', style: 'display:none;margin-bottom:8px' });
-        box.appendChild(errEl);
-
-        const btns = Utils.el('div', { style: 'display:flex;gap:8px;justify-content:flex-end' });
-        const cancelBtn = Utils.el('button', { textContent: 'Cancel', className: 'btn btn-secondary btn-sm' });
-        cancelBtn.addEventListener('click', () => modal.remove());
-        const createBtn = Utils.el('button', { textContent: 'Create Key', className: 'btn btn-primary btn-sm' });
-        createBtn.addEventListener('click', async () => {
-            const scopes = _KEY_SCOPES.map(s => s.value).filter(v => scopeChecks[v].checked);
+        saveBtn.addEventListener('click', async () => {
+            errEl.style.display = 'none';
             if (!nameInp.value.trim()) {
                 errEl.textContent = 'Name is required.';
                 errEl.style.display = '';
                 return;
             }
-            if (!scopes.length) {
-                errEl.textContent = 'Select at least one access scope.';
-                errEl.style.display = '';
-                return;
-            }
-            const body = {
-                name:               nameInp.value.trim(),
-                scopes,
-                expires_at:         expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null,
-                filter_event_types: filterTypesInp.value.trim() || null,
-            };
+            const eventFilter = _readEventFilterUI(filterGrid);
+            const allowedIps  = _parseIpAllowlist(ipInp.value);
+            const expiresAt   = expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null;
+
             try {
-                const result = await Api.post(`${_api()}/admin/api-keys`, body);
-                modal.remove();
-                _showApiKeyReveal(result.key, result.name, refreshContainer);
+                if (activeMode === 'push') {
+                    if (!urlInp.value.trim()) {
+                        errEl.textContent = 'Endpoint URL is required.';
+                        errEl.style.display = '';
+                        return;
+                    }
+                    const body = {
+                        name:             nameInp.value.trim(),
+                        endpoint_url:     urlInp.value.trim(),
+                        secret:           secretInp.value || null,
+                        event_filter:     eventFilter,
+                        batch_size:       batchSizeInp.value ? Number.parseInt(batchSizeInp.value) : null,
+                        batch_interval_s: intervalInp.value ? Number.parseInt(intervalInp.value) : null,
+                        enabled:          enabledChk.checked,
+                        expires_at:       expiresAt,
+                        allowed_ips:      allowedIps,
+                    };
+                    if (isEdit) {
+                        await Api.put(`${_api()}/admin/notifications/channels/${existing.id}`, body);
+                    } else {
+                        await Api.post(`${_api()}/admin/notifications/channels`, body);
+                    }
+                    modal.remove();
+                    await _renderIntegrationsSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
+                } else {
+                    const body = {
+                        name:        nameInp.value.trim(),
+                        event_filter: eventFilter,
+                        expires_at:  expiresAt,
+                        allowed_ips: allowedIps,
+                        enabled:     enabledChk.checked,
+                    };
+                    if (isEdit) {
+                        await Api.put(`${_api()}/admin/api-keys/${existing.id}`, body);
+                        modal.remove();
+                        await _renderIntegrationsSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
+                    } else {
+                        const result = await Api.post(`${_api()}/admin/api-keys`, body);
+                        modal.remove();
+                        _showApiKeyReveal(result.key, result.name, refreshContainer);
+                    }
+                }
             } catch (err) {
                 errEl.textContent = err.message;
                 errEl.style.display = '';
             }
         });
-        btns.append(cancelBtn, createBtn);
-        box.appendChild(btns);
+
         modal.appendChild(box);
         document.body.appendChild(modal);
+        nameInp.focus();
     }
 
     function _showApiKeyReveal(rawKey, keyName, refreshContainer) {
         const modal = Utils.el('div', { className: 'modal-overlay' });
         const box   = Utils.el('div', { className: 'modal', style: 'max-width:500px' });
         box.appendChild(Utils.el('h3', { textContent: 'API Key Created', style: 'margin-top:0' }));
-        box.appendChild(Utils.el('p', { textContent: `Copy this key now — it will not be shown again.`, style: 'color:var(--color-warning,#d97706)' }));
+        box.appendChild(Utils.el('p', { textContent: 'Copy this key now — it will not be shown again.', style: 'color:var(--color-warning,#d97706)' }));
         box.appendChild(Utils.el('p', { textContent: keyName, style: 'font-weight:600;margin-bottom:6px' }));
 
         const codeWrap = Utils.el('div', { style: 'display:flex;gap:8px;align-items:center;margin-bottom:16px' });
@@ -5808,7 +5809,7 @@ const Admin = (() => {
         const doneBtn = Utils.el('button', { textContent: 'Done', className: 'btn btn-primary btn-sm' });
         doneBtn.addEventListener('click', async () => {
             modal.remove();
-            await _renderApiKeysSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
+            await _renderIntegrationsSection(refreshContainer.closest('.admin-section-body') || refreshContainer);
         });
         box.appendChild(doneBtn);
         modal.appendChild(box);
@@ -7139,13 +7140,13 @@ const Admin = (() => {
         const nameInp  = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'e.g. backup-agent' });
         const descInp  = Utils.el('input', { type: 'text', style: 'width:100%', placeholder: 'Optional description' });
         const expiryInp = Utils.el('input', { type: 'date', style: 'width:200px' });
-
-        const mkField = _mkField;
+        const { wrap: ipWrap, inp: ipInp } = _buildIpAllowlistField('');
 
         box.append(
-            mkField('Name', nameInp, 'Lowercase, no spaces recommended. Used as the bearer token identity.'),
-            mkField('Description (optional)', descInp),
-            mkField('Key expiry (optional)', expiryInp, 'Leave blank for a non-expiring key.'),
+            _mkField('Name', nameInp, 'Lowercase, no spaces recommended. Used as the bearer token identity.'),
+            _mkField('Description (optional)', descInp),
+            _mkField('Key expiry (optional)', expiryInp, 'Leave blank for a non-expiring key.'),
+            ipWrap,
         );
 
         box.appendChild(Utils.el('p', {
@@ -7167,6 +7168,7 @@ const Admin = (() => {
                 username:    nameInp.value.trim(),
                 description: descInp.value.trim() || null,
                 expires_at:  expiryInp.value ? expiryInp.value + 'T00:00:00Z' : null,
+                allowed_ips: _parseIpAllowlist(ipInp.value),
             };
             if (!body.username) {
                 errEl.textContent = 'Name is required.';

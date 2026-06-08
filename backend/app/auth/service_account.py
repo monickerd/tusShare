@@ -23,6 +23,7 @@ from app.models.role import get_user_global_flags, get_user_global_role_ids
 from app.schemas.security_event import EventActor, SecurityEvent
 from app.services import event_bus
 from app.util.crypto import sha256_hex
+from app.util.ip_restrict import is_allowed as ip_is_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,14 @@ async def run_last_used_flush(db_factory, interval: float = 60.0) -> None:
             logger.debug("service_account: failed to flush last_used_at for %d key(s)", len(pending))
 
 
-async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
+async def authenticate_service_account(
+    raw_token: str,
+    *,
+    client_ip: str | None = None,
+) -> AuthenticatedUser:
     """Validate a raw service account bearer token.
 
-    Raises HTTPException(401) on any failure.  Callers must only pass tokens
+    Raises HTTPException(401/403) on any failure.  Callers must only pass tokens
     that already have the 'sa_' prefix — check before calling.
     """
     if len(raw_token) < _MIN_LEN:
@@ -75,6 +80,7 @@ async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
             """
             SELECT sak.id        AS key_id,
                    sak.expires_at,
+                   sak.allowed_ips,
                    u.id          AS user_id,
                    u.username,
                    u.is_active,
@@ -114,6 +120,23 @@ async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
         )
         raise HTTPException(status_code=401, detail="Service account key has expired")
 
+    if not ip_is_allowed(client_ip, row["allowed_ips"]):
+        logger.warning(
+            "service_account: request from disallowed IP %s for account %s",
+            client_ip,
+            row["username"],
+        )
+        event_bus.emit(
+            SecurityEvent(
+                event_type="auth.service_account.rejected",
+                severity="warning",
+                outcome="failure",
+                actor=EventActor(user_id=str(row["user_id"]), username=row["username"], auth_method="service"),
+                detail={"reason": "ip_not_allowed", "client_ip": client_ip},
+            )
+        )
+        raise HTTPException(status_code=403, detail="Request source IP is not in this account's allowlist")
+
     # Load RBAC state
     async with db_session() as db:
         roles = await get_user_global_role_ids(db, row["user_id"])
@@ -137,6 +160,5 @@ async def authenticate_service_account(raw_token: str) -> AuthenticatedUser:
         auth_method="service",
         roles=roles,
         flags=flags,
-        # Service accounts have no key material, session, or MFA state.
         session_id=None,
     )

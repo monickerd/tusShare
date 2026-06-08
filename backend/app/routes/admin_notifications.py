@@ -13,7 +13,9 @@ GET    /admin/notifications/settings
 PUT    /admin/notifications/settings              [step-up]
 GET    /admin/api-keys
 POST   /admin/api-keys                            [step-up: admin.api_keys.manage]
+PUT    /admin/api-keys/{id}                       [step-up]
 DELETE /admin/api-keys/{id}                       [step-up]
+POST   /admin/api-keys/{id}/rotate               [step-up]
 """
 
 from __future__ import annotations
@@ -36,10 +38,12 @@ from app.auth.interface import AuthenticatedUser
 from app.database import Database, get_db
 from app.middleware.stepup import require_step_up
 from app.services.notification_crypto import encrypt_channel_secret
+from app.util.ip_restrict import validate_list as validate_ip_list
 from app.util.ssrf import validate_endpoint_url
 from app.validation.sanitizers import validate_uuid
 
 _ERR_CHANNEL_NOT_FOUND = "Channel not found"
+_ERR_KEY_NOT_FOUND = "API key not found"
 
 logger = logging.getLogger(__name__)
 router = APIRouter()  # mounted at /api/v1/admin/notifications
@@ -52,8 +56,41 @@ _FILTER_RE = re.compile(r"^[a-z][a-z0-9._:*-]{0,127}$")
 
 
 # ---------------------------------------------------------------------------
+# Scope derivation — inferred from event_filter rather than explicit scopes UI.
+# ---------------------------------------------------------------------------
+
+
+def _derive_scopes(event_filter: list[str]) -> list[str]:
+    """Derive API key scopes from the event filter list.
+
+    security: prefixes → audit_read; operational prefixes → ops_read.
+    Empty filter (all events) → both scopes.
+    """
+    if not event_filter:
+        return ["audit_read", "ops_read"]
+    scopes: set[str] = set()
+    for f in event_filter:
+        if f.startswith("security:"):
+            scopes.add("audit_read")
+        else:
+            scopes.add("ops_read")
+    return sorted(scopes)
+
+
+# ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
+
+def _validate_filter_entry(f: str) -> bool:
+    return bool(_FILTER_RE.match(f))
+
+
+def _validate_allowed_ips(v: list[str]) -> list[str]:
+    try:
+        return validate_ip_list(v)
+    except ValueError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 class ChannelCreateModel(BaseModel):
@@ -65,6 +102,8 @@ class ChannelCreateModel(BaseModel):
     batch_size: int | None = None
     batch_interval_s: int | None = None
     enabled: bool = True
+    expires_at: str | None = None
+    allowed_ips: list[str] = []
 
     @field_validator("name")
     @classmethod
@@ -78,7 +117,7 @@ class ChannelCreateModel(BaseModel):
     @classmethod
     def _filters(cls, v: list[str]) -> list[str]:
         for f in v:
-            if not _FILTER_RE.match(f):
+            if not _validate_filter_entry(f):
                 raise ValueError(f"Invalid filter prefix: {f!r}")
         return v
 
@@ -102,6 +141,11 @@ class ChannelCreateModel(BaseModel):
         if v is not None and v < 1:
             raise ValueError("batch_interval_s must be >= 1")
         return v
+
+    @field_validator("allowed_ips")
+    @classmethod
+    def _ips(cls, v: list[str]) -> list[str]:
+        return _validate_allowed_ips(v)
 
 
 class NotifSettingsModel(BaseModel):
@@ -132,15 +176,12 @@ class NotifSettingsModel(BaseModel):
         return v
 
 
-_VALID_SCOPES = frozenset({"events.read", "ops_read", "audit_read", "notification_write"})
-
-
 class ApiKeyCreateModel(BaseModel):
     name: str
-    scopes: list[str] = ["events.read"]
-    expires_at: str | None = None  # ISO datetime string or None
-    filter_event_types: str | None = None  # comma-separated glob patterns, e.g. "auth.*,admin.*"
-    filter_min_severity: str | None = None  # info | warning | critical
+    event_filter: list[str] = []
+    expires_at: str | None = None
+    allowed_ips: list[str] = []
+    enabled: bool = True
 
     @field_validator("name")
     @classmethod
@@ -150,23 +191,50 @@ class ApiKeyCreateModel(BaseModel):
             raise ValueError("name must be 1–128 characters")
         return v
 
-    @field_validator("scopes")
+    @field_validator("event_filter")
     @classmethod
-    def _scopes(cls, v: list[str]) -> list[str]:
-        unknown = set(v) - _VALID_SCOPES
-        if unknown:
-            raise ValueError(
-                f"Unknown scope(s): {', '.join(sorted(unknown))}. Valid: {', '.join(sorted(_VALID_SCOPES))}"
-            )
-        if not v:
-            raise ValueError("At least one scope is required")
+    def _filters(cls, v: list[str]) -> list[str]:
+        for f in v:
+            if not _validate_filter_entry(f):
+                raise ValueError(f"Invalid filter prefix: {f!r}")
         return v
 
-    @field_validator("filter_min_severity")
+    @field_validator("allowed_ips")
     @classmethod
-    def _severity(cls, v: str | None) -> str | None:
-        if v is not None and v not in ("info", "warning", "critical"):
-            raise ValueError("filter_min_severity must be info, warning, or critical")
+    def _ips(cls, v: list[str]) -> list[str]:
+        return _validate_allowed_ips(v)
+
+
+class ApiKeyUpdateModel(BaseModel):
+    name: str | None = None
+    event_filter: list[str] | None = None
+    expires_at: str | None = None
+    allowed_ips: list[str] | None = None
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        if v is not None:
+            v = v.strip()
+            if not v or len(v) > 128:
+                raise ValueError("name must be 1–128 characters")
+        return v
+
+    @field_validator("event_filter")
+    @classmethod
+    def _filters(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            for f in v:
+                if not _validate_filter_entry(f):
+                    raise ValueError(f"Invalid filter prefix: {f!r}")
+        return v
+
+    @field_validator("allowed_ips")
+    @classmethod
+    def _ips(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            return _validate_allowed_ips(v)
         return v
 
 
@@ -182,7 +250,7 @@ async def list_channels(
 ):
     cursor = await db.execute(
         "SELECT id, name, endpoint_url, event_filter, filter_min_severity, "
-        "       batch_size, batch_interval_s, enabled, created_at "
+        "       batch_size, batch_interval_s, enabled, expires_at, allowed_ips, created_at "
         "FROM notification_channels ORDER BY created_at ASC"
     )
     rows = await cursor.fetchall()
@@ -204,8 +272,8 @@ async def create_channel(
     await db.execute(
         "INSERT INTO notification_channels "
         "(id, name, endpoint_url, secret_enc, event_filter, filter_min_severity, "
-        " batch_size, batch_interval_s, enabled, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " batch_size, batch_interval_s, enabled, expires_at, allowed_ips, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             ch_id,
             body.name,
@@ -216,6 +284,8 @@ async def create_channel(
             body.batch_size,
             body.batch_interval_s,
             1 if body.enabled else 0,
+            body.expires_at,
+            json.dumps(body.allowed_ips) if body.allowed_ips else None,
             now,
         ),
     )
@@ -224,7 +294,7 @@ async def create_channel(
     from app.services import notification_emitter
 
     notification_emitter.reload(db)
-    await asyncio.sleep(0.1)  # brief yield so supervisor picks up new channel
+    await asyncio.sleep(0.1)
     await notification_emitter.catch_up(ch_id, db)
 
     return {"id": ch_id, "name": body.name}
@@ -239,7 +309,7 @@ async def get_channel(
     channel_id = validate_uuid(channel_id)
     cursor = await db.execute(
         "SELECT id, name, endpoint_url, secret_enc, event_filter, filter_min_severity, "
-        "       batch_size, batch_interval_s, enabled, created_at "
+        "       batch_size, batch_interval_s, enabled, expires_at, allowed_ips, created_at "
         "FROM notification_channels WHERE id = ?",
         (channel_id,),
     )
@@ -269,14 +339,14 @@ async def update_channel(
     await validate_endpoint_url(body.endpoint_url)
 
     if body.secret == _REDACTED or body.secret is None:
-        # Keep existing secret
         secret_enc = existing["secret_enc"]
     else:
         secret_enc = encrypt_channel_secret(body.secret) if body.secret else None
 
     await db.execute(
         "UPDATE notification_channels SET name=?, endpoint_url=?, secret_enc=?, "
-        "event_filter=?, filter_min_severity=?, batch_size=?, batch_interval_s=?, enabled=? WHERE id=?",
+        "event_filter=?, filter_min_severity=?, batch_size=?, batch_interval_s=?, "
+        "enabled=?, expires_at=?, allowed_ips=? WHERE id=?",
         (
             body.name,
             body.endpoint_url,
@@ -286,6 +356,8 @@ async def update_channel(
             body.batch_size,
             body.batch_interval_s,
             1 if body.enabled else 0,
+            body.expires_at,
+            json.dumps(body.allowed_ips) if body.allowed_ips else None,
             channel_id,
         ),
     )
@@ -353,7 +425,7 @@ async def test_channel(
 
 
 # ---------------------------------------------------------------------------
-# Events log (admin view — no API key required, admin session sufficient)
+# Events log
 # ---------------------------------------------------------------------------
 
 
@@ -467,7 +539,9 @@ async def list_api_keys(
     db: Annotated[Database, Depends(get_db)],
 ):
     cursor = await db.execute(
-        "SELECT id, name, scopes, created_at, last_used_at, expires_at FROM api_keys ORDER BY created_at ASC"
+        "SELECT id, name, scopes, event_filter, filter_min_severity, "
+        "       allowed_ips, enabled, created_at, last_used_at, expires_at "
+        "FROM api_keys ORDER BY created_at ASC"
     )
     rows = await cursor.fetchall()
     return {"keys": [dict(r) for r in rows]}
@@ -484,19 +558,21 @@ async def create_api_key(
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
     key_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    scopes = _derive_scopes(body.event_filter)
 
     await db.execute(
         "INSERT INTO api_keys "
-        "(id, name, key_hash, scopes, filter_event_types, filter_min_severity, "
+        "(id, name, key_hash, scopes, event_filter, allowed_ips, enabled, "
         " created_by, created_at, expires_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             key_id,
             body.name,
             key_hash,
-            json.dumps(body.scopes),
-            body.filter_event_types,
-            body.filter_min_severity,
+            json.dumps(scopes),
+            json.dumps(body.event_filter),
+            json.dumps(body.allowed_ips) if body.allowed_ips else None,
+            body.enabled,
             user.id,
             now,
             body.expires_at,
@@ -507,13 +583,58 @@ async def create_api_key(
     return {
         "id": key_id,
         "name": body.name,
-        "key": raw,  # shown only once
-        "scopes": body.scopes,
-        "filter_event_types": body.filter_event_types,
-        "filter_min_severity": body.filter_min_severity,
+        "key": raw,
+        "scopes": scopes,
+        "event_filter": body.event_filter,
+        "allowed_ips": body.allowed_ips,
+        "enabled": body.enabled,
         "created_at": now,
         "expires_at": body.expires_at,
     }
+
+
+@api_keys_router.put("/api-keys/{key_id}", responses={404: {"description": "API key not found"}})
+async def update_api_key(
+    key_id: str,
+    body: ApiKeyUpdateModel,
+    user: Annotated[AuthenticatedUser, Depends(require_admin)],
+    db: Annotated[Database, Depends(get_db)],
+    _stepup: Annotated[None, Depends(require_step_up(_STEPUP_KEYS))],
+):
+    """Update API key metadata. The key value itself is unchanged; use /rotate for that."""
+    key_id = validate_uuid(key_id)
+    cursor = await db.execute("SELECT id FROM api_keys WHERE id = ?", (key_id,))
+    if await cursor.fetchone() is None:
+        raise HTTPException(status_code=404, detail=_ERR_KEY_NOT_FOUND)
+
+    updates: list[str] = []
+    params: list = []
+
+    if body.name is not None:
+        updates.append("name = ?")
+        params.append(body.name)
+    if body.event_filter is not None:
+        updates.append("scopes = ?")
+        params.append(json.dumps(_derive_scopes(body.event_filter)))
+        updates.append("event_filter = ?")
+        params.append(json.dumps(body.event_filter))
+    if body.expires_at is not None:
+        updates.append("expires_at = ?")
+        params.append(body.expires_at or None)
+    if body.allowed_ips is not None:
+        updates.append("allowed_ips = ?")
+        params.append(json.dumps(body.allowed_ips) if body.allowed_ips else None)
+    if body.enabled is not None:
+        updates.append("enabled = ?")
+        params.append(body.enabled)
+
+    if not updates:
+        return {"ok": True}
+
+    params.append(key_id)
+    await db.execute(f"UPDATE api_keys SET {', '.join(updates)} WHERE id = ?", params)
+    await db.commit()
+    return {"ok": True}
 
 
 @api_keys_router.post(
@@ -528,12 +649,12 @@ async def rotate_api_key(
     """Issue a new raw key for an existing API key entry (old key is immediately invalidated)."""
     key_id = validate_uuid(key_id)
     cursor = await db.execute(
-        "SELECT id, name, scopes, filter_event_types, filter_min_severity, expires_at FROM api_keys WHERE id = ?",
+        "SELECT id, name, scopes, event_filter, expires_at FROM api_keys WHERE id = ?",
         (key_id,),
     )
     row = await cursor.fetchone()
     if row is None:
-        raise HTTPException(status_code=404, detail="API key not found")
+        raise HTTPException(status_code=404, detail=_ERR_KEY_NOT_FOUND)
 
     raw = "tss_" + secrets.token_urlsafe(32)
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
@@ -547,10 +668,9 @@ async def rotate_api_key(
     return {
         "id": key_id,
         "name": row["name"],
-        "key": raw,  # shown only once
+        "key": raw,
         "scopes": json.loads(row["scopes"] or "[]"),
-        "filter_event_types": row["filter_event_types"],
-        "filter_min_severity": row["filter_min_severity"],
+        "event_filter": json.loads(row["event_filter"] or "[]") if row["event_filter"] else [],
         "expires_at": row["expires_at"],
     }
 
@@ -565,7 +685,7 @@ async def delete_api_key(
     key_id = validate_uuid(key_id)
     cursor = await db.execute("SELECT id FROM api_keys WHERE id = ?", (key_id,))
     if await cursor.fetchone() is None:
-        raise HTTPException(status_code=404, detail="API key not found")
+        raise HTTPException(status_code=404, detail=_ERR_KEY_NOT_FOUND)
 
     await db.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
     await db.commit()
