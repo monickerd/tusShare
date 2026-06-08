@@ -835,6 +835,9 @@ async def update_folder(
             if not await check_data_permission(db, "folder", folder_id, user.id, "manage_permissions"):
                 raise _restricted_folder_error({"name": folder_row["name"], "path": folder_row["name"]})
 
+    if body.restrict_permissions is not None:
+        await _require_folder_manage_access(db, folder_id, folder_row, user)
+
     updates, params = await _build_folder_update_params(db, folder_id, folder_row, body)
 
     if not updates:
