@@ -816,20 +816,21 @@ async def update_folder(
     if body.move_to_root and body.parent_id is not None:
         raise HTTPException(status_code=400, detail="Cannot specify both parent_id and move_to_root")
 
-    # Restricted-folder guards — only when changing structure or name; skip for
-    # restrict_permissions toggle (that's done through the manage modal by someone
-    # who already has manage access).
+    # Restricted-folder guards — only when changing structure or name.
+    # _is_rename is keyed solely on body.name being present; other fields in the
+    # same request (e.g. restrict_permissions) do not suppress this guard, which
+    # would otherwise allow a guard-bypass via a compound request.
     _is_move = body.move_to_root or (
         body.parent_id is not None and body.parent_id != folder_row["parent_id"]
     )
-    _is_rename_only = body.name is not None and not _is_move and body.restrict_permissions is None
+    _is_rename = body.name is not None and not _is_move
 
     if _is_move:
         _restricted = await get_restricted_subtree_info(db, folder_id, user.id, user.is_admin)
         _blocking = [e for e in _restricted if not e["has_manage_access"]]
         if _blocking:
             raise _restricted_folder_error(_blocking[0])
-    elif _is_rename_only and folder_row["restrict_permissions"]:
+    elif _is_rename and folder_row["restrict_permissions"]:
         if not user.is_admin and folder_row["owner_id"] != user.id:
             if not await check_data_permission(db, "folder", folder_id, user.id, "manage_permissions"):
                 raise _restricted_folder_error({"name": folder_row["name"], "path": folder_row["name"]})
