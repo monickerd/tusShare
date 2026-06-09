@@ -37,9 +37,8 @@ from app.services.maintenance import ensure_audit_partitions, run_daily_maintena
 from app.services.sse_broker import run_redis_listener
 from app.services.trash import run_trash_cleanup
 from app.util import egress_monitor as _egress_monitor
-from app.util.integrity import check_integrity, verify_file_integrity
-from app.util.integrity import get_build_id, get_result as get_integrity_result
-from app.util.integrity import read_build_id
+from app.util.integrity import check_integrity, get_build_id, read_build_id, verify_file_integrity
+from app.util.integrity import get_result as get_integrity_result
 from app.util.sri import inject_build_id, inject_sri
 from app.util.theme import inject_theme
 

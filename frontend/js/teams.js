@@ -1189,7 +1189,6 @@ const Teams = (() => {
     }
 
     function _confirmRemoveFromTeam(m, teamId, container, onConfirm) {
-        let close;
         const body = Utils.el('div', {}, [
             Utils.el('p', { textContent: `Are you sure you want to remove ${m.username} from the team?` }),
             Utils.el('div', { className: 'modal-actions' }, [
@@ -1205,11 +1204,10 @@ const Teams = (() => {
                 }),
             ]),
         ]);
-        close = Utils.showModal('Remove from Team', body);
+        const close = Utils.showModal('Remove from Team', body);
     }
 
     function _confirmLastRoleRemoveFromTeam(m, teamId, container) {
-        let close;
         const body = Utils.el('div', {}, [
             Utils.el('p', {
                 textContent: `This is the only role for ${m.username}. Would you like to remove this user from the Team?`,
@@ -1236,10 +1234,10 @@ const Teams = (() => {
                 }),
             ]),
         ]);
-        close = Utils.showModal('Remove from Team', body);
+        const close = Utils.showModal('Remove from Team', body);
     }
 
-    function _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, ownerCount, allowMultiOwner, teamId, container, teamCustomRoles }) {
+    function _buildMemberActions(m, { isOwner, isSupervisor, isSelf, isTargetOwner, _ownerCount, allowMultiOwner, teamId, container, teamCustomRoles }) {
         const actions = [];
         if (isOwner && !isSelf) {
             const roleOptions = [

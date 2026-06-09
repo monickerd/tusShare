@@ -2272,8 +2272,6 @@ const Files = (() => {
             const { items: batchItems, prepFailed } = await _buildFileMoveItems(batch, destTeamPK, masterKey);
             failed.push(...prepFailed);
             if (batchItems.length > 0) {
-                // Build id→name map for this batch so we can annotate results
-                const idToName = new Map(batchItems.map(b => [b.id, b._file.name]));
                 try {
                     const result = await Api.post(
                         `${Config.app.apiPrefix}/files/batch-move`,
