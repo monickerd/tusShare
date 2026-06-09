@@ -26,6 +26,17 @@ const Files = (() => {
     // Used to wrap/unwrap per-file keys for v2-folder files.
     let _currentFolderKey = null;
 
+    // Normalise a FastAPI `detail` field to a plain string.
+    // detail may be a string, a Pydantic validation-error array [{msg, loc, type}],
+    // or some other shape — all normalised to a string so it's safe for textContent.
+    function _parseDetailString(detail) {
+        if (!detail) return null;
+        if (typeof detail === 'string') return detail;
+        if (Array.isArray(detail)) return detail.map(e => e.msg || String(e)).join('; ');
+        if (typeof detail === 'object' && detail.message) return String(detail.message);
+        return null;
+    }
+
     const _MOVE_REASON_LABELS = {
         not_found:        'File not found',
         permission_denied:'Permission denied',
@@ -3414,7 +3425,7 @@ const Files = (() => {
             overlay.remove();
             transfer.cancelled();
             const body = await resp.json().catch(() => ({}));
-            const errMsg = body.detail || `Upload failed (${resp.status})`;
+            const errMsg = _parseDetailString(body.detail) || `Upload failed (${resp.status})`;
             for (const { file } of batch) ctx.results.failed.push({ name: file.name, error: errMsg });
             ctx._bulkOnBatchDone?.(batch.length);
             return [];
@@ -3433,7 +3444,7 @@ const Files = (() => {
                 // Don't count as failed yet — queue for individual retry at end.
                 retryItems.push({ file, folderId });
             } else {
-                ctx.results.failed.push({ name: file.name, error: result.error || 'Upload failed' });
+                ctx.results.failed.push({ name: file.name, error: _parseDetailString(result.detail) || 'Upload failed' });
             }
         }
         ctx._bulkOnBatchDone?.(batch.length);
