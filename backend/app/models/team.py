@@ -163,7 +163,7 @@ async def get_team_members(db, team_id: str) -> list[TeamMember]:
         "JOIN users u ON u.id = ur.user_id "
         "LEFT JOIN user_team_keys utk "
         "       ON utk.team_id = ? AND utk.user_id = ur.user_id "
-        "WHERE ur.scope_type = 'team' AND ur.scope_id = ? "
+        "WHERE ur.scope_type = 'team' AND ur.scope_id = ? AND u.is_active = 1 "
         "GROUP BY ur.user_id, u.username "
         "ORDER BY u.username",
         (team_id, team_id, team_id),

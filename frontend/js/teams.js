@@ -616,12 +616,6 @@ const Teams = (() => {
         if (team.description) {
             card.appendChild(Utils.el('p', { className: 'team-card-desc', textContent: team.description }));
         }
-        if (team.rotation_pending) {
-            card.appendChild(Utils.el('p', {
-                className: 'team-rotation-warn',
-                textContent: 'Key rotation pending — a member was recently removed.',
-            }));
-        }
         return card;
     }
 
@@ -690,8 +684,8 @@ const Teams = (() => {
         const actionsSection = Utils.el('section', { className: 'team-section' });
         actionsSection.appendChild(Utils.el('h3', { textContent: 'Key Management' }));
         actionsSection.appendChild(Utils.el('button', {
-            className: team.rotation_pending ? 'btn btn-primary' : 'btn btn-secondary',
-            textContent: team.rotation_pending ? 'Rotate Keys Now' : 'Rotate Team Keys',
+            className: 'btn btn-secondary',
+            textContent: 'Rotate Team Keys',
             onClick: () => _triggerRotation(teamId, team, container),
         }));
         actionsSection.appendChild(Utils.el('hr'));
@@ -756,10 +750,9 @@ const Teams = (() => {
             container.appendChild(Utils.el('p', { textContent: team.description }));
         }
         if (team.rotation_pending) {
-            container.appendChild(Utils.el('div', {
-                className: 'alert alert-warn',
-                textContent: 'Key rotation pending. A member was removed. Rotate keys to complete the security update.',
-            }));
+            try {
+                _performRotation(teamId, _getMyPrivateKeys()).catch(() => {});
+            } catch { /* keys not in memory — background job will handle on next login */ }
         }
 
         // ---- Members section ----

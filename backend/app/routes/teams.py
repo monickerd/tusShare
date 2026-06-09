@@ -2226,6 +2226,8 @@ async def ephemeral_join(
 _TEAM_ACTIVITY_EVENT_TYPES = {
     "admin.team.member_added",
     "admin.team.member_removed",
+    "admin.team.member_account_deactivated",
+    "admin.team.member_account_deleted",
     "admin.team.renamed",
     "admin.team_key.rotation_started",
     "admin.team_key.rotation_completed",
@@ -2238,6 +2240,7 @@ _TEAM_ACTIVITY_EVENT_TYPES = {
     "admin.team.delete_cancelled",
     "admin.policy.team_effect_added",
     "admin.policy.team_effect_removed",
+    "admin.team.restrict_permissions_changed",
 }
 
 

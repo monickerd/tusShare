@@ -901,6 +901,17 @@ async def delete_user(
                 detail={"retention_days": retention_days},
             )
         )
+        for tid in team_ids:
+            event_bus.emit(
+                SecurityEvent(
+                    event_type="admin.team.member_account_deactivated",
+                    severity="warning",
+                    outcome="success",
+                    actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+                    target=EventTarget(type="team", id=tid),
+                    detail={"username": target_row["username"], "user_id": user_id},
+                )
+            )
         return {"message": "User scheduled for deletion", "scheduled_delete_at": f"+{retention_days} days"}
 
     # Hard delete: atomic transaction — queue blobs, flag team rotations, then
@@ -951,6 +962,17 @@ async def delete_user(
             target=EventTarget(type="user", id=user_id, name=target_row["username"]),
         )
     )
+    for tid in team_ids:
+        event_bus.emit(
+            SecurityEvent(
+                event_type="admin.team.member_account_deleted",
+                severity="warning",
+                outcome="success",
+                actor=EventActor(user_id=admin.id, username=admin.username, ip=_get_client_ip(request)),
+                target=EventTarget(type="team", id=tid),
+                detail={"username": target_row["username"], "user_id": user_id},
+            )
+        )
 
     return {"message": "User deleted"}
 

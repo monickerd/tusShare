@@ -21,7 +21,7 @@ from app.routes._access import (
     get_restricted_subtree_info,
     is_in_shared_tree,
 )
-from app.schemas.security_event import EventActor, SecurityEvent
+from app.schemas.security_event import EventActor, EventTarget, SecurityEvent
 from app.services import event_bus, sse_broker
 from app.services.escrow import resolve_effective_escrow_agents
 from app.util.db import get_admin_setting
@@ -860,6 +860,24 @@ async def update_folder(
     old_parent = folder_row["parent_id"]
     is_move = body.move_to_root or (body.parent_id is not None and body.parent_id != old_parent)
     _emit_folder_update_event(user, folder_id, folder_row, body, is_move)
+
+    if body.restrict_permissions is not None:
+        _rp_team_id = await get_folder_team_id(db, folder_id)
+        if _rp_team_id:
+            event_bus.emit(
+                SecurityEvent(
+                    event_type="admin.team.restrict_permissions_changed",
+                    severity="info",
+                    outcome="success",
+                    actor=EventActor(user_id=str(user.id), username=user.username),
+                    target=EventTarget(type="team", id=_rp_team_id),
+                    detail={
+                        "folder_id": folder_id,
+                        "folder_name": folder_row["name"],
+                        "restrict_permissions": body.restrict_permissions,
+                    },
+                )
+            )
 
     # Notify old parent (rename) and new parent (move) if different
     old_parent = folder_row["parent_id"]
