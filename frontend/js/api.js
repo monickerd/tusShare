@@ -35,7 +35,9 @@ const Api = (() => {
             return _handleResponse(retryResp);
         }
 
-        const errMsg = data?.error?.message || data?.detail || 'HTTP 403';
+        const errMsg = data?.error?.message
+            || (typeof data?.detail === 'string' ? data.detail : data?.detail?.message)
+            || 'HTTP 403';
         const err = new Error(errMsg);
         err.status = 403;
         throw err;
