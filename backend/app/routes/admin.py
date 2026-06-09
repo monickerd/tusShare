@@ -108,6 +108,10 @@ _SETTINGS_VALIDATORS = {
     "upload_evict_stride_mb": lambda v: v.isdigit() and 0 <= int(v) <= 256,
     "webauthn_rp_name": lambda v: 1 <= len(v.strip()) <= 128,
     "allow_http_idp": lambda v: v in ("true", "false"),
+    # First-run wizard state
+    "first_run_completed": lambda v: v in ("0", "1"),
+    # Link share expiry cap
+    "link_share_max_expiry_days": lambda v: v.isdigit() and 1 <= int(v) <= 3650,
 }
 
 
