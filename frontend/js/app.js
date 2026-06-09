@@ -102,6 +102,7 @@ const App = (() => {
         { pattern: /^#\/l\/(.+)$/,                                                            handler: _routeShortLink },
         { pattern: /^#\/trash\/teams\/([a-f0-9-]+)$/,                                         handler: _routeTeamTrash },
         { pattern: /^#\/trash$/,                                                               handler: _routeTrash },
+        { pattern: /^#\/operation-result(\?.*)?$/,                                             handler: _routeOperationResult },
     ];
 
     async function _handleOidcCallbacks(qs) {
@@ -164,7 +165,24 @@ const App = (() => {
         return false;
     }
 
+    async function _checkVersion() {
+        const meta = document.querySelector('meta[name="build-id"]');
+        const local = meta?.content || '';
+        if (!local) return;
+        try {
+            const res = await fetch(`${Config.app.apiPrefix}/version`);
+            if (!res.ok) return;
+            const data = await res.json();
+            if (data.build_id && data.build_id !== local) {
+                location.reload(true);
+            }
+        } catch {
+            // Network error — skip check, don't block startup
+        }
+    }
+
     async function init() {
+        await _checkVersion();
         await _loadTheme();
         _applyThemeFlags();
         Upload.fetchAndSetChunkSize();
@@ -262,6 +280,7 @@ const App = (() => {
             ['#/shares/received', 'Shared To Me'], ['#/shares', 'Shares'],
             ['#/pinned', 'Favourites'], ['#/account', 'Account'],
             ['#/admin', 'Admin'], ['#/files', 'My Files'], ['#/login', 'Login'],
+            ['#/operation-result', 'Operation Result'],
         ];
         const _appName  = _themeConfig?.brand_name || Config.app.name;
         const _titleHit = _titleMap.find(([prefix]) => hash.startsWith(prefix));
@@ -1128,8 +1147,11 @@ const App = (() => {
             const ul = Utils.el('ul', { className: 'notification-list' });
             for (let i = Math.min(history.length, 5) - 1; i >= 0; i--) {
                 const n = history[i];
+                const msgEl = n.href
+                    ? Utils.el('a', { className: 'notification-msg notif-link', href: n.href, textContent: n.message })
+                    : Utils.el('span', { className: 'notification-msg', textContent: n.message });
                 ul.appendChild(Utils.el('li', { className: `notification-item notification-item--${n.type}` }, [
-                    Utils.el('span', { className: 'notification-msg', textContent: n.message }),
+                    msgEl,
                     Utils.el('span', { className: 'notification-time', textContent: Utils.timeAgo(n.timestamp.toISOString()) }),
                 ]));
             }
@@ -1657,6 +1679,88 @@ const App = (() => {
     function _routeTrash(container) {
         _renderShell(container);
         _renderTrashPage(document.getElementById('main-content'), null);
+    }
+
+    function _routeOperationResult(container) {
+        _renderShell(container);
+        const params = new URLSearchParams(location.hash.includes('?') ? location.hash.split('?')[1] : '');
+        const id = params.get('id');
+        const result = id ? Utils.loadOpResult(id) : null;
+        _renderOperationResultPage(document.getElementById('main-content'), result);
+    }
+
+    function _renderOperationResultPage(page, result) {
+        page.innerHTML = '';
+        const wrap = Utils.el('div', { className: 'op-result-page' });
+
+        if (!result) {
+            wrap.appendChild(Utils.el('p', { className: 'text-muted', textContent: 'Result not found or has expired.' }));
+            page.appendChild(wrap);
+            return;
+        }
+
+        const { action, location: loc, timestamp, succeeded = [], failed = [] } = result;
+        const total = succeeded.length + failed.length;
+
+        // Summary banner
+        let summaryClass = 'op-result-summary--success';
+        let summaryText  = `${action} completed — ${total} item${total === 1 ? '' : 's'} processed`;
+        if (failed.length > 0 && succeeded.length === 0) {
+            summaryClass = 'op-result-summary--error';
+            summaryText  = `${action} failed — ${failed.length} error${failed.length === 1 ? '' : 's'}`;
+        } else if (failed.length > 0) {
+            summaryClass = 'op-result-summary--warning';
+            summaryText  = `Partially completed — ${succeeded.length} of ${total} succeeded`;
+        }
+        wrap.appendChild(Utils.el('div', { className: `op-result-summary ${summaryClass}`, textContent: summaryText }));
+
+        // Metadata grid
+        const meta = Utils.el('dl', { className: 'op-result-meta' });
+        const addMeta = (label, value) => {
+            meta.appendChild(Utils.el('dt', { textContent: label }));
+            meta.appendChild(Utils.el('dd', { textContent: value }));
+        };
+        addMeta('Action', action);
+        if (loc) addMeta('Location', loc);
+        if (timestamp) addMeta('Date', new Date(timestamp).toLocaleString());
+        wrap.appendChild(meta);
+
+        // Errors section (open by default)
+        if (failed.length > 0) {
+            const det = Utils.el('details', { className: 'op-result-section', open: true });
+            const sum = Utils.el('summary', { className: 'op-result-section-summary op-result-section-summary--error',
+                textContent: `${failed.length} error${failed.length === 1 ? '' : 's'}` });
+            const ul = Utils.el('ul', { className: 'op-result-list' });
+            for (const item of failed) {
+                const li = Utils.el('li', { className: 'op-result-item' }, [
+                    Utils.el('span', { className: 'op-result-item-name', textContent: item.name }),
+                    Utils.el('span', { className: 'op-result-item-error', textContent: item.error || 'Unknown error' }),
+                ]);
+                ul.appendChild(li);
+            }
+            det.appendChild(sum);
+            det.appendChild(ul);
+            wrap.appendChild(det);
+        }
+
+        // Successes section (collapsed by default)
+        if (succeeded.length > 0) {
+            const det = Utils.el('details', { className: 'op-result-section' });
+            const sum = Utils.el('summary', { className: 'op-result-section-summary op-result-section-summary--ok',
+                textContent: `${succeeded.length} succeeded` });
+            const ul = Utils.el('ul', { className: 'op-result-list' });
+            for (const item of succeeded) {
+                const li = Utils.el('li', { className: 'op-result-item' }, [
+                    Utils.el('span', { className: 'op-result-item-name', textContent: item.name }),
+                ]);
+                ul.appendChild(li);
+            }
+            det.appendChild(sum);
+            det.appendChild(ul);
+            wrap.appendChild(det);
+        }
+
+        page.appendChild(wrap);
     }
 
     function _routeTeamTrash(container, teamId) {

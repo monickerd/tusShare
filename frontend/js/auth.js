@@ -2357,6 +2357,12 @@ const Auth = (() => {
         _masterKeyObj = null;
         sessionStorage.removeItem(Config.auth.sessionStorageKey);
         sessionStorage.removeItem(Config.publicDevice.sessionStorageKey);
+        // Clear operation result history so results don't leak to a subsequent user on the same tab.
+        try {
+            const ids = JSON.parse(sessionStorage.getItem('opresult_ids') || '[]');
+            for (const id of ids) sessionStorage.removeItem('opresult:' + id);
+            sessionStorage.removeItem('opresult_ids');
+        } catch {}
         globalThis.location.hash = '#/login';
     }
 

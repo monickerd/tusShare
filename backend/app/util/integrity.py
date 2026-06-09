@@ -32,6 +32,7 @@ _APP_ROOT = _APP_DIR.parent  # …/app/  (container root)
 _result: "IntegrityResult | None" = None
 _manifest_hashes: dict[str, str] = {}
 _runtime_cache: dict[str, tuple[int, str]] = {}  # rel_path → (mtime_ns, computed_hash)
+_build_id: str | None = None
 
 
 @dataclass
@@ -50,13 +51,32 @@ def _sha256_b64(path: Path) -> str:
     return "sha256-" + base64.b64encode(digest).decode()
 
 
+def read_build_id() -> str | None:
+    """Return the manifest's 'generated' timestamp without running a full integrity check.
+
+    Caches the value so repeated calls are cheap.  Returns None when the manifest
+    is absent or has no 'generated' field (e.g. legacy manifest format).
+    """
+    global _build_id
+    if _build_id is not None:
+        return _build_id
+    if not _MANIFEST_PATH.exists():
+        return None
+    try:
+        manifest = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+        _build_id = manifest.get("generated")
+    except Exception:
+        pass
+    return _build_id
+
+
 def check_integrity() -> IntegrityResult:
     """Verify tracked file hashes against manifest.json.
 
     Results are cached — the check runs exactly once per process regardless of
     how many times this function is called.  Call only when DEBUG is False.
     """
-    global _result, _manifest_hashes
+    global _result, _manifest_hashes, _build_id
     if _result is not None:
         return _result
 
@@ -70,6 +90,7 @@ def check_integrity() -> IntegrityResult:
         return _result
 
     manifest = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
+    _build_id = manifest.get("generated")
     files: dict[str, str] = manifest.get("files", {})
     _manifest_hashes = dict(files)
     missing: list[str] = []
@@ -103,6 +124,11 @@ def check_integrity() -> IntegrityResult:
 def get_result() -> "IntegrityResult | None":
     """Return the cached result, or None if the check has not yet run."""
     return _result
+
+
+def get_build_id() -> str | None:
+    """Return the cached build ID (manifest 'generated' timestamp), or None."""
+    return _build_id
 
 
 def verify_file_integrity(manifest_rel: str) -> bool | None:

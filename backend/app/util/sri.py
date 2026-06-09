@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 # Match <script src="..."> tags regardless of existing integrity/crossorigin attrs.
 _SCRIPT_RE = re.compile(r'<script\b[^>]*\bsrc="([^"]+)"[^>]*></script>')
 
+# Match an existing build-id meta tag so it can be updated in place.
+_BUILD_ID_RE = re.compile(r'<meta\s+name="build-id"[^>]*/?\s*>', re.IGNORECASE)
+
 # Match <link rel="stylesheet" href="..."> tags.  Lookahead requires rel="stylesheet"
 # so favicon/preload links are never touched; href is captured wherever it appears.
 _LINK_RE = re.compile(r'<link\b(?=[^>]*rel="stylesheet")[^>]*href="([^"]+)"[^>]*>')
@@ -67,3 +70,27 @@ def inject_sri(frontend_dir: Path) -> None:
     else:
         index_path.write_text(new_html, encoding="utf-8")
         logger.info("SRI: index.html updated with fresh integrity hashes")
+
+
+def inject_build_id(frontend_dir: Path, build_id: str) -> None:
+    """Inject or update <meta name="build-id"> in index.html.
+
+    Replaces the existing tag if present; otherwise inserts before </head>.
+    Skipped silently when index.html is absent (e.g. non-frontend deployments).
+    """
+    index_path = frontend_dir / "index.html"
+    if not index_path.exists():
+        logger.warning("Build-ID injection skipped: index.html not found at %s", index_path)
+        return
+
+    html = index_path.read_text(encoding="utf-8")
+    tag = f'<meta name="build-id" content="{build_id}">'
+
+    if _BUILD_ID_RE.search(html):
+        new_html = _BUILD_ID_RE.sub(tag, html)
+    else:
+        new_html = html.replace("</head>", f"    {tag}\n</head>", 1)
+
+    if new_html != html:
+        index_path.write_text(new_html, encoding="utf-8")
+        logger.info("Build-ID: index.html stamped with build_id=%s", build_id)

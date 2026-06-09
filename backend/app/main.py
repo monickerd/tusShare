@@ -38,8 +38,9 @@ from app.services.sse_broker import run_redis_listener
 from app.services.trash import run_trash_cleanup
 from app.util import egress_monitor as _egress_monitor
 from app.util.integrity import check_integrity, verify_file_integrity
-from app.util.integrity import get_result as get_integrity_result
-from app.util.sri import inject_sri
+from app.util.integrity import get_build_id, get_result as get_integrity_result
+from app.util.integrity import read_build_id
+from app.util.sri import inject_build_id, inject_sri
 from app.util.theme import inject_theme
 
 
@@ -311,6 +312,9 @@ async def lifespan(app: FastAPI):
         _frontend_dir = Path(__file__).parent.parent / "frontend"
         if _frontend_dir.exists():
             inject_sri(_frontend_dir)
+            _bid = read_build_id()
+            if _bid:
+                inject_build_id(_frontend_dir, _bid)
 
     # Verify artifact integrity against manifest.json.  SRI injection
     # runs first because it rewrites index.html — the manifest does not track
@@ -501,6 +505,13 @@ def _health_check():
     return {"status": "ok", "integrity": "ok", "files_verified": integrity.total}
 
 
+def _version_check():
+    build_id = get_build_id()
+    if build_id is None:
+        return JSONResponse({"build_id": None}, status_code=200)
+    return {"build_id": build_id}
+
+
 def _spa_register(token: str):
     return FileResponse(_SPA_INDEX_PATH)
 
@@ -658,6 +669,9 @@ def create_app() -> FastAPI:
 
     # --- Health check ---
     app.add_api_route("/api/v1/health", _health_check, methods=["GET"])
+
+    # --- Version / build-ID (unauthenticated) ---
+    app.add_api_route("/api/v1/version", _version_check, methods=["GET"])
 
     # --- Static files (SPA) — must be last so /api routes take priority ---
     frontend_dir = Path(__file__).parent.parent / "frontend"

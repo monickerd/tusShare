@@ -110,8 +110,8 @@ const Utils = (() => {
         return _toastContainer;
     }
 
-    function showToast(message, type = 'info') {
-        _toastHistory.push({ message, type, timestamp: new Date() });
+    function showToast(message, type = 'info', href = null) {
+        _toastHistory.push({ message, type, timestamp: new Date(), href });
         _unreadCount++;
         _notifyUnread();
 
@@ -122,10 +122,10 @@ const Utils = (() => {
             'aria-label': 'Dismiss',
             textContent: '×',
         });
-        const toast = el('div', { className: `toast toast-${type}` }, [
-            el('span', { className: 'toast-message', textContent: message }),
-            dismiss,
-        ]);
+        const msgEl = href
+            ? el('a', { className: 'toast-message toast-link', href, textContent: message })
+            : el('span', { className: 'toast-message', textContent: message });
+        const toast = el('div', { className: `toast toast-${type}` }, [msgEl, dismiss]);
 
         let autoTimer = null;
         const fadeAndRemove = () => {
@@ -154,6 +154,41 @@ const Utils = (() => {
         _unreadCount = 0;
         _unreadListener = null;
         _notifyUnread();
+    }
+
+    // -----------------------------------------------------------------------
+    // Operation result storage — persists per-operation success/failure
+    // details in sessionStorage so a detail page can display them.
+    // -----------------------------------------------------------------------
+
+    const _OP_PREFIX    = 'opresult:';
+    const _OP_INDEX_KEY = 'opresult_ids';
+    const _MAX_OP_RESULTS = 20;
+
+    /**
+     * Save an operation result to sessionStorage.
+     * result: { action, location, succeeded: [{name, type?}], failed: [{name, type?, error}] }
+     * Returns the hash URL for the detail page, e.g. "#/operation-result?id=<uuid>".
+     */
+    function saveOpResult(result) {
+        const id = crypto.randomUUID();
+        result.id = id;
+        result.timestamp = new Date().toISOString();
+        try {
+            sessionStorage.setItem(_OP_PREFIX + id, JSON.stringify(result));
+            let ids = [];
+            try { ids = JSON.parse(sessionStorage.getItem(_OP_INDEX_KEY) || '[]'); } catch { }
+            ids.push(id);
+            while (ids.length > _MAX_OP_RESULTS) {
+                sessionStorage.removeItem(_OP_PREFIX + ids.shift());
+            }
+            sessionStorage.setItem(_OP_INDEX_KEY, JSON.stringify(ids));
+        } catch { /* quota exceeded — result won't be viewable but op still completes */ }
+        return `#/operation-result?id=${id}`;
+    }
+
+    function loadOpResult(id) {
+        try { return JSON.parse(sessionStorage.getItem(_OP_PREFIX + id) || 'null'); } catch { return null; }
     }
 
     let _modalIdCounter = 0;
@@ -642,6 +677,8 @@ const Utils = (() => {
         markAllRead,
         onUnreadChange,
         clearToastHistory,
+        saveOpResult,
+        loadOpResult,
         showConfirm,
         showPrompt,
         showModal,

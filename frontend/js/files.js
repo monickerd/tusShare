@@ -26,6 +26,18 @@ const Files = (() => {
     // Used to wrap/unwrap per-file keys for v2-folder files.
     let _currentFolderKey = null;
 
+    const _MOVE_REASON_LABELS = {
+        not_found:        'File not found',
+        permission_denied:'Permission denied',
+        av_not_clean:     'File blocked by antivirus scan',
+        error:            'Operation failed',
+    };
+
+    function _getCurrentPath() {
+        const tiles = Array.from(document.querySelectorAll('.breadcrumb-tile, .breadcrumb-current'));
+        return tiles.map(t => t.textContent.trim()).filter(Boolean).join(' / ') || '/';
+    }
+
     async function _initNameKeys() {
         const masterKey = Auth.getMasterKeyObj();
         if (!masterKey || _nameKeys) return;
@@ -1765,22 +1777,34 @@ const Files = (() => {
         const ok = await Utils.showConfirm(`Delete ${items.length} item(s)? This cannot be undone.`);
         if (!ok) return;
 
-        let errors = 0;
+        const location = _getCurrentPath();
+        const succeeded = [];
+        const failed = [];
+
         for (const item of items) {
             try {
                 const endpoint = item.type === 'folder'
                     ? `${Config.app.apiPrefix}/folders/${item.id}`
                     : `${Config.app.apiPrefix}/files/${item.id}`;
                 await Api.del(endpoint);
-            } catch {
-                errors++;
+                succeeded.push({ name: item.name });
+            } catch (e) {
+                failed.push({ name: item.name, error: e.message || 'Delete failed' });
             }
         }
 
-        if (errors > 0) {
-            Utils.showToast(`Deleted with ${errors} error(s)`, 'warning');
-        } else {
+        if (failed.length === 0) {
             Utils.showToast(`${items.length} item(s) deleted`, 'success');
+        } else if (succeeded.length === 0) {
+            if (items.length === 1) {
+                Utils.showToast(failed[0].error, 'error');
+            } else {
+                const href = Utils.saveOpResult({ action: 'Delete', location, succeeded, failed });
+                Utils.showToast(`Delete failed — ${failed.length} error(s)`, 'error', href);
+            }
+        } else {
+            const href = Utils.saveOpResult({ action: 'Delete', location, succeeded, failed });
+            Utils.showToast(`Partially deleted — ${succeeded.length} of ${items.length} succeeded`, 'warning', href);
         }
         _reloadCurrentView();
     }
@@ -2172,7 +2196,8 @@ const Files = (() => {
      */
     async function _executeFolderMoves(folders, destId, destTeamPK, folderNeedsCrypto, overlay, total, isCancelled) {
         let done = 0;
-        let errors = 0;
+        const succeeded = [];
+        const failed = [];
         for (const folder of folders) {
             if (isCancelled()) break;
             overlay.update(done, total, `Moving "${folder.name}"…`);
@@ -2187,11 +2212,14 @@ const Files = (() => {
                     await Api.put(`${Config.app.apiPrefix}/folders/${folder.id}`,
                         destId === null ? { move_to_root: true } : { parent_id: destId });
                 }
-            } catch { errors++; }
+                succeeded.push({ name: folder.name });
+            } catch (e) {
+                failed.push({ name: folder.name, error: e.message || 'Move failed' });
+            }
             done++;
             overlay.update(done, total);
         }
-        return { done, errors };
+        return { done, succeeded, failed };
     }
 
     /**
@@ -2201,7 +2229,7 @@ const Files = (() => {
      */
     async function _buildFileMoveItems(batch, destTeamPK, masterKey) {
         const items = [];
-        let failed = 0;
+        const prepFailed = [];
         for (const file of batch) {
             try {
                 let teamKey = null;
@@ -2214,34 +2242,51 @@ const Files = (() => {
                     const fileKeyBytes = await _resolveFileKeyBytes(fileData, masterKey);
                     teamKey = await Teams.encryptFileKeyForTeam(fileKeyBytes, destTeamPK); // NOSONAR — async function accessed via Teams module export
                 }
-                items.push({ id: file.id, team_key: teamKey });
-            } catch { failed++; }
+                items.push({ id: file.id, team_key: teamKey, _file: file });
+            } catch (e) {
+                prepFailed.push({ name: file.name, error: e.message || 'Key preparation failed' });
+            }
         }
-        return { items, failed };
+        return { items, prepFailed };
     }
 
     async function _moveFileBatches(files, destId, destTeamPK, overlay, initialDone, total, isCancelled) {
         const masterKey = destTeamPK ? Auth.getMasterKeyObj() : null;
         let done = initialDone;
-        let errors = 0;
+        const succeeded = [];
+        const failed = [];
         for (const batch of _chunk(files, 50)) {
             if (isCancelled()) break;
             overlay.update(done, total, 'Moving files…');
-            const { items: batchItems, failed } = await _buildFileMoveItems(batch, destTeamPK, masterKey);
-            errors += failed;
+            const { items: batchItems, prepFailed } = await _buildFileMoveItems(batch, destTeamPK, masterKey);
+            failed.push(...prepFailed);
             if (batchItems.length > 0) {
+                // Build id→name map for this batch so we can annotate results
+                const idToName = new Map(batchItems.map(b => [b.id, b._file.name]));
                 try {
                     const result = await Api.post(
                         `${Config.app.apiPrefix}/files/batch-move`,
-                        { files: batchItems, destination_folder_id: destId },
+                        { files: batchItems.map(b => ({ id: b.id, team_key: b.team_key })), destination_folder_id: destId },
                     );
-                    errors += (result.failed || []).length;
-                } catch { errors += batchItems.length; }
+                    const failedIds = new Set((result.failed || []).map(f => f.id));
+                    for (const b of batchItems) {
+                        if (failedIds.has(b.id)) {
+                            const reason = (result.failed.find(f => f.id === b.id) || {}).reason || 'error';
+                            failed.push({ name: b._file.name, error: _MOVE_REASON_LABELS[reason] || reason });
+                        } else {
+                            succeeded.push({ name: b._file.name });
+                        }
+                    }
+                } catch (e) {
+                    for (const b of batchItems) {
+                        failed.push({ name: b._file.name, error: e.message || 'Move failed' });
+                    }
+                }
             }
             done += batch.length;
             overlay.update(done, total);
         }
-        return { done, errors };
+        return { done, succeeded, failed };
     }
 
     /**
@@ -2275,10 +2320,11 @@ const Files = (() => {
         const initialLabel = items.length === 1
             ? `Moving "${items[0].name}"…`
             : `Moving ${items.length} items…`;
+        const location = _getCurrentPath();
         const overlay = _showMoveOverlay(initialLabel);
         overlay.onCancel(() => { cancelled = true; });
 
-        let { done, errors } = await _executeFolderMoves(
+        let { done, succeeded, failed } = await _executeFolderMoves(
             folders, destId, destTeamPK, folderNeedsCrypto, overlay, total,
             () => cancelled,
         );
@@ -2286,18 +2332,20 @@ const Files = (() => {
         if (files.length > 0 && !cancelled) {
             const fileResult = await _moveFileBatches(files, destId, destTeamPK, overlay, done, total, () => cancelled);
             done = fileResult.done;
-            errors += fileResult.errors;
+            succeeded = succeeded.concat(fileResult.succeeded);
+            failed = failed.concat(fileResult.failed);
         }
 
         overlay.remove();
 
         if (cancelled) {
+            const movedCount = succeeded.length;
             Utils.showToast(
-                `Move cancelled — ${done - errors} of ${total} item${total === 1 ? '' : 's'} moved`,
+                `Move cancelled — ${movedCount} of ${total} item${total === 1 ? '' : 's'} moved`,
                 'warning',
             );
         } else {
-            _finishMoveToast(items, destination, errors);
+            _finishMoveToast(items, destination, location, succeeded, failed);
         }
         _reloadCurrentView();
     }
@@ -2378,28 +2426,45 @@ const Files = (() => {
 
     async function _copyFileBatches(files, destId, ctx, overlay, total) {
         let done = 0;
-        let errors = 0;
+        const succeeded = [];
+        const failed = [];
         for (const batch of _chunk(files, 50)) {
             overlay.update(done, total, 'Copying files…');
-            const batchItems = [];
+            const batchItems = [];   // [{ payloadItem, file }]
             for (const file of batch) {
                 try {
-                    batchItems.push(await _buildFileCopyItem(file, ctx));
-                } catch { errors++; }
+                    const payloadItem = await _buildFileCopyItem(file, ctx);
+                    batchItems.push({ payloadItem, file });
+                } catch (e) {
+                    failed.push({ name: file.name, error: e.message || 'Key preparation failed' });
+                }
             }
             if (batchItems.length > 0) {
                 try {
                     const result = await Api.post(
                         `${Config.app.apiPrefix}/files/batch-copy`,
-                        { files: batchItems, destination_folder_id: destId },
+                        { files: batchItems.map(b => b.payloadItem), destination_folder_id: destId },
                     );
-                    errors += (result.failed || []).length;
-                } catch { errors += batchItems.length; }
+                    // batch-copy returns new IDs in succeeded; failed has {id, reason} of SOURCE ids
+                    const failedSourceIds = new Set((result.failed || []).map(f => f.id));
+                    for (const { payloadItem, file } of batchItems) {
+                        if (failedSourceIds.has(payloadItem.file_id)) {
+                            const reason = (result.failed.find(f => f.id === payloadItem.file_id) || {}).reason || 'error';
+                            failed.push({ name: file.name, error: _MOVE_REASON_LABELS[reason] || reason });
+                        } else {
+                            succeeded.push({ name: file.name });
+                        }
+                    }
+                } catch (e) {
+                    for (const { file } of batchItems) {
+                        failed.push({ name: file.name, error: e.message || 'Copy failed' });
+                    }
+                }
             }
             done += batch.length;
             overlay.update(done, total);
         }
-        return { done, errors };
+        return { done, succeeded, failed };
     }
 
     /**
@@ -2439,27 +2504,35 @@ const Files = (() => {
         }
 
         const total = files.length;
-        let errors = 0;
+        const location = _getCurrentPath();
         const initialLabel = files.length === 1
             ? `Copying "${files[0].name}"…`
             : `Copying ${files.length} files…`;
         const overlay = _showMoveOverlay(initialLabel);
         const ctx = { srcTeamId, destTeamId, destTeamPK, masterKey, skSrcBigInt, rkBigInt, srcTeamFileKeyMap };
 
-        ({ errors } = await _copyFileBatches(files, destId, ctx, overlay, total));
+        const { succeeded, failed } = await _copyFileBatches(files, destId, ctx, overlay, total);
 
         overlay.remove();
 
         const label = destination.label || 'selected folder';
-        if (errors === 0) {
+        if (failed.length === 0) {
             Utils.showToast(
                 files.length === 1
                     ? `"${files[0].name}" copied to ${label}`
                     : `${files.length} files copied to ${label}`,
                 'success',
             );
+        } else if (succeeded.length === 0) {
+            if (files.length === 1) {
+                Utils.showToast(failed[0].error, 'error');
+            } else {
+                const href = Utils.saveOpResult({ action: 'Copy', location, succeeded, failed });
+                Utils.showToast(`Copy failed — ${failed.length} error(s)`, 'error', href);
+            }
         } else {
-            Utils.showToast(`${errors} of ${total} files failed to copy`, 'error');
+            const href = Utils.saveOpResult({ action: 'Copy', location, succeeded, failed });
+            Utils.showToast(`Partially copied — ${succeeded.length} of ${total} succeeded`, 'warning', href);
         }
         _reloadCurrentView();
     }
@@ -2551,16 +2624,26 @@ const Files = (() => {
         }
     }
 
-    function _finishMoveToast(items, destination, errors) {
-        if (errors > 0) {
-            Utils.showToast(`Moved with ${errors} error(s)`, 'warning');
-        } else {
+    function _finishMoveToast(items, destination, location, succeeded, failed) {
+        const total = items.length;
+        const label = destination.label || 'selected folder';
+        if (failed.length === 0) {
             Utils.showToast(
-                items.length === 1
-                    ? `"${items[0].name}" moved to ${destination.label}`
-                    : `${items.length} items moved to ${destination.label}`,
-                'success'
+                total === 1
+                    ? `"${items[0].name}" moved to ${label}`
+                    : `${total} items moved to ${label}`,
+                'success',
             );
+        } else if (succeeded.length === 0) {
+            if (total === 1) {
+                Utils.showToast(failed[0].error, 'error');
+            } else {
+                const href = Utils.saveOpResult({ action: 'Move', location, succeeded, failed });
+                Utils.showToast(`Move failed — ${failed.length} error(s)`, 'error', href);
+            }
+        } else {
+            const href = Utils.saveOpResult({ action: 'Move', location, succeeded, failed });
+            Utils.showToast(`Partially moved — ${succeeded.length} of ${total} succeeded`, 'warning', href);
         }
     }
 
@@ -2643,7 +2726,7 @@ const Files = (() => {
                 }
                 return action === 'merge' ? err.existingFolderId : null;
             }
-            ctx.results.failed.push(name);
+            ctx.results.failed.push({ name, error: err.message || 'Failed to create folder' });
             return null;
         }
     }
@@ -2715,7 +2798,7 @@ const Files = (() => {
             if (!await _showBulkUploadWarning(files.length)) return;
         }
         const ctx = {
-            results: { ok: 0, failed: [], firstName: null },
+            results: { succeeded: [], failed: [] },
             mergeState: { decision: null },
             conflictState: { decisionDifferent: null, decisionIdentical: null },
             fileCache: new Map(),
@@ -2881,7 +2964,7 @@ const Files = (() => {
             if (!confirmed) return null;
         }
         return {
-            results: { ok: 0, failed: [], firstName: null },
+            results: { succeeded: [], failed: [] },
             conflictState: { decisionDifferent: null, decisionIdentical: null },
             fileCache: new Map(),
             lastUploadMs: null,
@@ -2889,9 +2972,22 @@ const Files = (() => {
     }
 
     function _reportUploadResults(ctx) {
-        if (ctx.results.ok === 1) Utils.showToast(`"${ctx.results.firstName}" uploaded`, 'success');
-        else if (ctx.results.ok > 1) Utils.showToast(`${ctx.results.ok} files uploaded`, 'success');
-        for (const name of ctx.results.failed) Utils.showToast(`"${name}" failed to upload`, 'error');
+        const { succeeded, failed } = ctx.results;
+        const total = succeeded.length + failed.length;
+        if (failed.length === 0) {
+            if (succeeded.length === 1) Utils.showToast(`"${succeeded[0].name}" uploaded`, 'success');
+            else if (succeeded.length > 1) Utils.showToast(`${succeeded.length} files uploaded`, 'success');
+        } else if (succeeded.length === 0) {
+            if (total === 1) {
+                Utils.showToast(failed[0].error, 'error');
+            } else {
+                const href = Utils.saveOpResult({ action: 'Upload', location: _getCurrentPath(), succeeded, failed });
+                Utils.showToast(`Upload failed — ${failed.length} error(s)`, 'error', href);
+            }
+        } else {
+            const href = Utils.saveOpResult({ action: 'Upload', location: _getCurrentPath(), succeeded, failed });
+            Utils.showToast(`Partially uploaded — ${succeeded.length} of ${total} succeeded`, 'warning', href);
+        }
     }
 
     async function _uploadFiles(files, targetFolderId, _ctx = null) {
@@ -2970,7 +3066,7 @@ const Files = (() => {
                     _prewarmSemaphore.release();
                 } catch (_err) {
                     _prewarmSemaphore.release();
-                    _ctx.results.failed.push(file.name);
+                    _ctx.results.failed.push({ name: file.name, error: _err.message || 'Upload preparation failed' });
                     continue;
                 }
                 await _uploadSemaphore.acquire();
@@ -3195,8 +3291,7 @@ const Files = (() => {
                 existingByName.delete(file.name.toLowerCase());
                 return { skip: false, file, deletedForReplace: true };
             } catch (delErr) {
-                Utils.showToast(`Failed to replace "${file.name}": ${delErr.message}`, 'error');
-                ctx.results.failed.push(file.name);
+                ctx.results.failed.push({ name: file.name, error: delErr.message || 'Failed to replace existing file' });
                 return { skip: true, file, deletedForReplace: false };
             }
         }
@@ -3286,8 +3381,7 @@ const Files = (() => {
         } catch (err) {
             overlay.remove();
             transfer.cancelled();
-            for (const { file } of batch) ctx.results.failed.push(file.name);
-            Utils.showToast(`Batch preparation failed: ${err.message}`, 'error');
+            for (const { file } of batch) ctx.results.failed.push({ name: file.name, error: err.message || 'Batch preparation failed' });
             ctx._bulkOnBatchDone?.(batch.length);
             return [];
         }
@@ -3311,8 +3405,7 @@ const Files = (() => {
         } catch (err) {
             overlay.remove();
             transfer.cancelled();
-            for (const { file } of batch) ctx.results.failed.push(file.name);
-            Utils.showToast(err.message || 'Batch upload network error', 'error');
+            for (const { file } of batch) ctx.results.failed.push({ name: file.name, error: err.message || 'Network error' });
             ctx._bulkOnBatchDone?.(batch.length);
             return [];
         }
@@ -3321,8 +3414,8 @@ const Files = (() => {
             overlay.remove();
             transfer.cancelled();
             const body = await resp.json().catch(() => ({}));
-            for (const { file } of batch) ctx.results.failed.push(file.name);
-            Utils.showToast(body.detail || `Batch upload failed (${resp.status})`, 'error');
+            const errMsg = body.detail || `Upload failed (${resp.status})`;
+            for (const { file } of batch) ctx.results.failed.push({ name: file.name, error: errMsg });
             ctx._bulkOnBatchDone?.(batch.length);
             return [];
         }
@@ -3334,14 +3427,13 @@ const Files = (() => {
         for (const result of results) {
             const { file, prepared } = batch[result.index];
             if (result.status === 'ok' && result.file_id) {
-                ctx.results.ok++;
-                if (!ctx.results.firstName) ctx.results.firstName = file.name;
+                ctx.results.succeeded.push({ name: file.name });
                 batcher.push({ fileId: result.file_id, fileKeyBytes: prepared.fileKeyBytes });
             } else if (!noRetry && (result.status === 'rolled_back' || result.status === 'error')) {
                 // Don't count as failed yet — queue for individual retry at end.
                 retryItems.push({ file, folderId });
             } else {
-                ctx.results.failed.push(file.name);
+                ctx.results.failed.push({ name: file.name, error: result.error || 'Upload failed' });
             }
         }
         ctx._bulkOnBatchDone?.(batch.length);
@@ -3373,8 +3465,7 @@ const Files = (() => {
             }, ctrl);
             overlay.remove();
             transfer.complete();
-            ctx.results.ok++;
-            if (!ctx.results.firstName) ctx.results.firstName = file.name;
+            ctx.results.succeeded.push({ name: file.name });
             ctrl.cleanup();
             return { fileId: result.fileId, fileKeyBytes: result.fileKeyBytes };
         } catch (err) {
@@ -3392,7 +3483,7 @@ const Files = (() => {
             if (deletedForReplace) {
                 Utils.showToast(`Original deleted but upload failed — "${file.name}" lost. Re-upload manually.`, 'error');
             } else {
-                ctx.results.failed.push(file.name);
+                ctx.results.failed.push({ name: file.name, error: err.message || 'Upload failed' });
             }
             return null;
         }
@@ -3562,7 +3653,7 @@ const Files = (() => {
             if (!await _showBulkUploadWarning(totalFiles)) return;
         }
         const ctx = {
-            results: { ok: 0, failed: [], firstName: null },
+            results: { succeeded: [], failed: [] },
             mergeState: { decision: null },
             conflictState: { decisionDifferent: null, decisionIdentical: null },
             fileCache: new Map(),
