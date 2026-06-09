@@ -40,34 +40,26 @@ still give any malicious people an easy win.
 - **Folder organisation** – create nested folders, move and rename files and folders,
   with inline rename directly in the file browser.
 - **Encrypted file and folder names** – file and folder names are encrypted
-  client-side using AES-256-GCM before being stored on the server. A keyed
-  HMAC index allows exact-match search without the server ever seeing plaintext
-  names. Names are derived from your master key and are invisible to the server
-  operator. Existing names migrate automatically in the background on your next
-  login.
+  client-side before storage; exact-match search works via a keyed index without
+  the server ever seeing plaintext names. Existing names migrate automatically
+  in the background on next login.
 - **Antivirus scanning** – files are scanned by the host OS AV engine on upload.
   Downloads are blocked until a clean verdict is recorded.
 
 ### Sharing
-- **User shares** – share individual files or folders with specific users, with
-  read-only or read-write access. When sharing a folder, access can be scoped
-  further with per-user and per-role permission grants: choose any combination of
-  view, download, upload, delete, move, subfolder management, and share-link
-  creation. Permissions are capped by what the granting user is themselves allowed
-  at the team level — a team member cannot grant a permission they do not hold.
+- **User shares** – share individual files or folders with specific users. Folders
+  support fine-grained per-user and per-role permission grants, capped by the
+  granting user's own team role — members cannot grant permissions they don't hold.
 - **Team folders** – create teams with shared encrypted workspaces. Files uploaded
   to a team folder are accessible to all team members without the uploader needing
   to be online – re-encryption is handled cryptographically, not by copying the file.
-- **Share links** – generate time-limited links that let external users (no account
-  required) access specific files or folders, with optional upload permissions.
-  Links can optionally require a password; the password cryptographically wraps the
-  share key in the browser so the server never sees or verifies it — a leaked URL
-  alone is not enough to access the data. When sharing a folder, each subfolder is
-  covered by its own folder key so sharing scales with the number of subfolders, not
-  the number of files. Individual subfolders can be excluded from a share after
-  creation without re-keying the rest.
+- **Share links** – generate time-limited links for external users (no account
+  required), with optional upload permissions and optional password protection. The
+  password wraps the share key in the browser; the server never sees or verifies it.
+  Individual subfolders can be excluded from a share without re-keying the rest.
 - **Invite links** – administrators can generate single-use registration links to
-  bring new users onto the platform without open registration.
+  bring new users onto the platform. Open registration can also be enabled for
+  deployments that allow self-sign-up.
 - **Sharing restrictions** – administrators can restrict who users may share with
   (e.g. internal-only, domain-allow/block lists, maximum share duration).
 
@@ -76,11 +68,10 @@ still give any malicious people an easy win.
   in hashed form. The login protocol is zero-knowledge.
 - **Multi-factor authentication** – TOTP (authenticator apps) and WebAuthn (hardware
   keys, passkeys, Face ID / Touch ID).
-- **WebAuthn PRF key binding** – users with a compatible hardware key (YubiKey 5+,
-  platform authenticator) can bind their master encryption key to the authenticator
-  via the WebAuthn PRF extension. When enrolled the key is never written to the
-  browser; each page load requires a physical tap. Requires Chrome 116+,
-  Firefox 119+, or Safari 17+.
+- **WebAuthn PRF key binding** – users with a compatible hardware key or platform
+  authenticator can bind their master encryption key via the WebAuthn PRF extension.
+  When enrolled the key is never written to the browser; each page load re-derives
+  it via a physical authenticator tap.
 - **SSO integrations** – LDAP and OIDC/OAuth2 for organisations with an existing
   identity provider. Multiple identity providers can be active simultaneously.
 - **Public device mode** – mark a login as "public device" to shorten session lifetime
@@ -100,19 +91,19 @@ still give any malicious people an easy win.
   Security Admin, Operational Admin, Role Admin, Audit Admin) plus custom per-team
   roles with fine-grained permission flags.
 - **Service accounts** – machine-identity accounts with API key authentication for
-  automation and integrations.
+  automation and integrations. Keys can be scoped by event type and restricted to
+  CIDR allowlists.
 - **Policy engine** – org-level and team-level policies with attribute-based conditions
   and cascading overrides.
 - **Immutable audit log** – all access and security events are written to append-only
-  PostgreSQL tables (enforced by database triggers), partitioned by month for scalable
-  retention. Sensitive social-graph fields are encrypted at rest with AES-256-GCM
-  (`detail_enc`). Logs are exportable and streamable via API key; authorised admins
-  receive a per-user wrapped copy of the audit key for client-side decryption.
+  PostgreSQL tables (enforced by database triggers), partitioned by month. Sensitive
+  identity fields are encrypted at rest. Logs are exportable and streamable via API key.
 
 ### Monitoring and integrations
 - **SIEM integration** – security events can be forwarded to a syslog receiver,
-  an HTTP webhook, or consumed via Server-Sent Events. Events carry a structured
-  taxonomy with severity, outcome, and tier classification.
+  an HTTP webhook, or consumed via Server-Sent Events. Channels can filter by
+  event type and minimum severity. Events carry a structured taxonomy with
+  severity, outcome, and tier classification.
 - **S3-compatible storage** – store files locally or on any S3-compatible backend
   (AWS S3, MinIO, Backblaze B2, Cloudflare R2). Hot/cold tiering and async
   replication between providers are supported.

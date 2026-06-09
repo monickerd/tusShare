@@ -94,6 +94,9 @@ database — the plaintext is shown only once at creation. Last-used timestamps
 are updated asynchronously (60-second flush interval) to avoid per-request
 write amplification.
 
+Keys can also be restricted to CIDR allowlists. A request from a non-matching IP
+is rejected at auth time and emits an audit event with `reason: ip_not_allowed`.
+
 ### Session management
 
 - Access tokens are short-lived JWTs (default 5 minutes). Refresh tokens are
@@ -119,19 +122,15 @@ manage members, etc.) defined by team owners.
 
 ### Per-folder permission grants and ceiling enforcement
 
-Folders support explicit per-user and per-role permission grants. Rather than
-coarse read/write/admin levels, grants are expressed as comma-separated atomic
-flags: `view_contents`, `download_files`, `upload_files`, `delete_files`,
-`move_own_within_folder`, `folder_create`, `share_create`, `manage_this_folder`,
-and their counterparts.
+Folders support explicit per-user and per-role permission grants at atomic flag
+granularity (view, download, upload, delete, move, subfolder management, share).
+A **permission ceiling** is enforced at the API layer: a user may only grant flags
+their own team role permits. Team Owners and org admins have no ceiling.
 
-A **permission ceiling** is enforced at both the UI and API layers: a user may
-only grant a flag that their own team role permits. For example, if the team role
-has `share_create` disabled, a user with that role cannot grant `share_create` to
-another user on a subfolder — even if they have `manage_this_folder` access to
-that subfolder. Team Owners and org admins have no ceiling. This prevents
-privilege escalation through the folder permission system: a team member cannot
-use folder grants to extend permissions beyond what the team policy allows.
+Folders with `restrict_permissions=True` form an ACL isolation boundary.
+Structural operations on such folders — delete, move, rename, and share — require
+`manage_this_folder`. Toggling the flag itself requires `manage_permissions`
+authority. Both checks are enforced at the API level, not only through the UI.
 
 ### Step-up authentication
 
@@ -177,58 +176,32 @@ and continue to be accessible via the original path.
 
 ### Folder-key sharing
 
-Share links for folder trees use the folder-key model rather than per-file key
-wrapping.
+Share links for folder trees wrap the folder key (not individual file keys) for
+each folder in scope. v2-folder files are covered automatically; legacy v1-master
+files carry individual share items and co-exist transparently. Share creation is
+O(subfolder count), not O(file count).
 
-- **Share items** — the share carries one `resource_type = 'folder'` item per
-  folder in scope. Each item stores the folder's folder key wrapped with the
-  share key (`key_model = 'folder-key'`). v2-folder files within those folders
-  require no individual share_items; they are covered automatically by the folder
-  key.
-- **Legacy per-file items** — files with `key_version = 'v1-master'` still use a
-  `resource_type = 'file'` share item carrying the file key wrapped with the share
-  key (`key_model = 'share-key'`). Both models co-exist transparently in a share.
-- **Subfolder exclusion** — a `share_exclusions` table (`share_id`, `folder_id`)
-  acts as a server-enforced denylist. The server filters excluded folders from
-  `_get_items_with_files` and from `_verify_file_in_share`. Adding a row
-  immediately stops access to that folder's contents without changing any key
-  material; removing the row reinstates access.
-- **Efficiency** — share creation is O(subfolder count) not O(file count). A
-  folder tree with thousands of files is shared by wrapping a handful of folder
-  keys, not by individually re-wrapping every file key.
+Individual subfolders can be excluded via a server-enforced denylist. Adding an
+exclusion immediately stops access to that folder without changing key material.
 
-**Residual risk:** the share_exclusions check is an ACL, not a cryptographic
-gate — an attacker who obtains the raw share token and the share items can still
-derive folder keys. Exclusion is an operational revocation mechanism, not a
-forward-secrecy boundary. For permanent removal of access, delete the share and
-create a new one.
+**Residual risk:** exclusions are an ACL, not a cryptographic gate — an attacker
+with the raw share token and share items can still derive folder keys. For
+permanent access removal, delete the share and create a new one.
 
 ### Metadata encryption (file and folder names)
 
 File and folder names in a user's personal namespace are encrypted client-side
-before being stored. The encryption uses two sub-keys derived from the user's
-master key via HKDF-SHA-256 with a fixed salt (`tusShare-meta-v1`):
+using two sub-keys derived from the master key via HKDF-SHA-256: an AES-256-GCM
+key for the name ciphertext, and an HMAC-SHA-256 key for a keyed search index.
+The server stores only ciphertext and HMAC tag; it cannot recover any name.
+Exact-match search works against the index without the server seeing plaintext.
 
-- **`nameKey`** (`info = "filename-enc"`) — AES-256-GCM key used to encrypt the
-  name. A random 12-byte IV is prepended to the ciphertext; the combined blob is
-  base64-encoded and stored in the `name_ct` column.
-- **`searchKey`** (`info = "filename-search"`) — HMAC-SHA-256 key used to produce
-  a keyed digest of the lowercased, trimmed name. The 32-byte hex digest is stored
-  in the `name_idx` column and allows exact-match server-side search without
-  revealing the plaintext.
+Rows without an encrypted name fall back to the legacy plaintext column and are
+migrated in the background on first login.
 
-The server stores only ciphertext and an HMAC tag; it cannot derive either sub-key
-or recover any name.
-
-**Backward compatibility**: rows with `name_ct = NULL` fall back to the legacy
-`original_name` / `name` columns. On first login after the feature is deployed, the
-client fetches all unmigrated rows and re-uploads them with encrypted names in the
-background (at most 200 rows per request).
-
-**Team folder limitation**: names in team folders remain unencrypted. Each member's
-personal `nameKey` is derived from their own master key, which is not shared with
-other team members, so a single shared name key would require a separate key
-agreement step. This is a known limitation and is tracked for a future release.
+**Team folder limitation**: names in team folders remain unencrypted — each
+member's name key derives from their personal master key, which is not shared
+across the team. Tracked for a future release.
 
 ### Team sharing (Proxy Re-Encryption)
 
@@ -246,30 +219,17 @@ recipient can unwrap it.
 ### Password-protected share links
 
 Share links can optionally be protected with a password chosen at creation time.
+The password is used to derive a KEK via PBKDF2 (client-side only); the share key
+is wrapped under that KEK and encoded in the URL fragment. The server stores only
+a sentinel value — it never receives, stores, or verifies the password.
 
-- The share key is wrapped with AES-256-GCM using a KEK derived from the password
-  via PBKDF2-SHA-256 (100,000 iterations, 16-byte random salt). The salt, GCM IV,
-  and wrapped key (48 bytes including authentication tag) are encoded into the URL
-  fragment as a `pw1`-prefixed base64url blob.
-- The server stores only the sentinel string `'pw1'` in the `password_hash` column
-  to signal that protection is active. It never receives, stores, or verifies the
-  password.
-- The cryptographic gate is the AES-GCM authentication tag. A wrong password
-  causes an irrecoverable `DOMException` in the browser's `SubtleCrypto.unwrapKey`
-  call before any file key material is accessible — this is not a UI-layer check
-  that can be bypassed by a modified client.
-- The protected fragment is in the URL hash (`#...`) and is therefore never
-  transmitted to the server, even via short-link redirects.
-- If a short link is created for a password-protected share, the protected fragment
-  is stored in the `short_links` table as the `share_key` value. An attacker with
-  database access obtains the encrypted blob but still requires the password to
-  derive the KEK and unwrap the share key.
+The URL fragment is never transmitted to the server, even via short-link redirects.
+A wrong password causes an irrecoverable unwrap failure in the browser before any
+file key material is accessible — this is not a UI check that can be bypassed.
 
-**Residual risk:** password strength determines offline brute-force cost. PBKDF2 at
-100,000 iterations raises the cost relative to a raw hash, but short or common
-passwords remain vulnerable if an attacker obtains the URL fragment. Users should
-choose passwords that are not easily guessable and treat the password as a secret
-channel separate from the link itself.
+**Residual risk:** password strength determines offline brute-force cost if an
+attacker obtains the URL fragment. Treat the password as a secret channel separate
+from the link.
 
 ### Key escrow
 
@@ -469,21 +429,10 @@ When key escrow is active, an admin transparency banner is shown to all users by
 default (suppressible by org policy, which is itself logged as an audit event).
 
 An additional notice — "One or more organizational accounts have access to all
-files and folders in this system" — is shown to any user who opens the Manage
-Folder panel for a folder they administer. This notice fires when either of the
-following conditions is true:
-
-- Any active user (other than the viewer) holds a role with
-  `files_access_all_read = '1'` or `files_access_all_write = '1'` — the
-  explicit ACL-bypass permissions.
-- For team folders: at least one `user_team_keys` row exists whose
-  `policy_effect_id` links to a `team_escrow` policy effect, meaning an escrow
-  agent has been provisioned with actual team key material (not merely assigned
-  the `can_act_as_escrow` capability flag on their role).
-
-The notice deliberately omits usernames and role names to avoid revealing the
-identity or number of privileged accounts. It is a signal that someone can
-access the files, not a complete access manifest.
+files and folders in this system" — is shown in the Manage Folder panel when any
+other user holds an all-file ACL-bypass role, or when an active team escrow key
+grant exists. The notice omits identities; it is a signal that access exists, not
+a manifest of who holds it.
 
 ### Immutable audit trail
 
@@ -501,25 +450,19 @@ via the `op_event_retention_days` admin setting).
 
 #### Encrypted audit event details (detail_enc)
 
-Sensitive social-graph fields in `security_events` (`actor_username`,
-`ip_address`, `target_name`, `admin_actor_id`, freeform `detail`) are stored in
-a `detail_enc` column encrypted with AES-256-GCM under a server-held key
-(`K_audit`).  This protects against a DB-dump-only attacker (SQL injection,
-stolen backup) while keeping all four SIEM output paths unchanged — they fan out
-from the in-memory event bus before persistence and always see plaintext.
+Sensitive fields in audit events (actor username, IP address, target name,
+freeform detail) are encrypted with AES-256-GCM under a server-held key. This
+protects against DB-dump-only attackers (SQL injection, stolen backup); SIEM
+output paths are unaffected because they fan out from the event bus before
+persistence.
 
-K_audit is generated on first use, wrapped under HKDF(JWT_SECRET) + AES-GCM,
-and stored in `admin_settings`.  Administrators with the `audit_log_view` flag
-can be granted a per-user wrapped copy (`audit_key_grants` table), derived via
-X25519 ECDH + HKDF + AES-GCM over their stored public key, for client-side
-decryption in the audit UI.  Revocation is immediate — deleting the row removes
-access with no coordination required from other key holders.
+Administrators with the `audit_log_view` flag can be granted a per-user wrapped
+copy of the audit key for client-side decryption. Revocation is immediate.
 
-**Residual risk:** because the server holds K_audit in plaintext, a server-level
-compromise is out of scope for this protection.  The `audit_key_grants` grants
-are administrative access control, not cryptographic — a rogue server admin
-could write a wrapped copy for any user.  This is the same rogue-admin caveat
-documented elsewhere and is visible in the audit trail itself.
+**Residual risk:** the key is held in plaintext on the server, so a server-level
+compromise bypasses this protection. Key grants are access-controlled, not
+cryptographically unforgeable — the same rogue-admin caveat that applies
+throughout.
 
 ### Privilege abuse (rogue admin)
 
@@ -571,6 +514,9 @@ policy and key-grant events.
 - The application verifies its own static asset manifest at startup (SHA-256
   hashes of all JS/CSS files). A mismatch halts startup and is reported via the
   health endpoint.
+- A build ID is stamped into `index.html` at startup and checked by the SPA on
+  every page load against `GET /api/v1/version`. A stale cached build triggers an
+  automatic reload, preventing pre-patch JavaScript from running silently.
 
 ---
 
@@ -579,9 +525,9 @@ policy and key-grant events.
 | Item | Detail |
 |---|---|
 | `style-src 'unsafe-inline'` | Runtime pixel calculations prevent a fully strict CSP; tracked for a future nonce-based refactor |
-| Team folder names not encrypted | File and folder names in a user's personal namespace are encrypted client-side (see below). Names in *team* folders are stored in plaintext because the team name key derives from the personal master key, which team members do not share with each other. File sizes, share relationships, folder structure, and access timestamps are still stored in plaintext. |
+| Team folder names not encrypted | Names in team folders are stored in plaintext — each member's name key derives from their personal master key, which is not shared. Personal namespace names are encrypted. File sizes, share relationships, and timestamps remain plaintext for all users. |
 | LDAP users and E2E encryption | IdP-authenticated users require an admin-configured escrow path to access encrypted files |
 | Certificate pinning | Not implemented; relies on the operator's PKI |
 | Redis optional | Rate-limit counters, SSE state, and upload-chunk offsets are in-process by default; set `TUSSHARE_REDIS_URL` to share state across workers in a multi-container deployment |
-| Master key in sessionStorage | The unwrapped master key is held in `sessionStorage` for the tab lifetime so the OPFS download pipeline can access raw key bytes without re-running OPAQUE on every operation. An XSS exploit that bypasses CSP during an active session would expose it. **Mitigation for WebAuthn users**: users with a compatible hardware key (YubiKey 5+, Chrome/Firefox/Safari platform authenticators) can enable *PRF key binding* in MFA settings. When enrolled the key is never written to the browser; each page refresh re-derives it via a physical authenticator tap using the WebAuthn PRF extension — an XSS cannot invoke PRF silently. For non-PRF users: strict CSP, SRI on all scripts, all `innerHTML` paths removed. The master key remains `extractable: true` (a future refactor target) to support the password-change and share-key-derivation flows. |
+| Master key in sessionStorage | The unwrapped master key is held in sessionStorage for the tab lifetime. An XSS exploit that bypasses CSP during an active session could expose it. WebAuthn PRF users are protected — the key is never written to the browser and is re-derived on each page load via a physical authenticator tap. For non-PRF users, defense relies on CSP and SRI. The key remains extractable (refactor target) to support password-change and share flows. |
 | OPAQUE ServerSetup backup | The `opaque.server_setup` value in `sensitive_config` is the OPRF seed from which all user credential files are derived. Loss of this value makes every OPAQUE-authenticated account permanently inaccessible — there is no recovery path. It must be backed up securely and independently of the database. If the seed is exfiltrated rather than lost, an attacker who also obtains a user's OPAQUE credential record can perform an offline attack to recover that user's KEK. |
