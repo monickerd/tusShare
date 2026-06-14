@@ -581,12 +581,8 @@ const Files = (() => {
             tbody.appendChild(_createFolderRow(folder));
         }
 
-        // Paginate files — show first page, add "Load more" if needed
-        const visibleFiles = files.slice(0, _pageSize);
-        for (const file of visibleFiles) {
-            tbody.appendChild(_createFileRow(file));
-        }
-
+        // Partial/in-progress uploads appear before completed files so the user
+        // immediately sees which items still need attention.
         for (const upload of pendingUploads) {
             const row = _createPendingUploadRow(upload);
             if (row) tbody.appendChild(row);
@@ -611,6 +607,12 @@ const Files = (() => {
                     Utils.el('td'),
                 ]));
             }
+        }
+
+        // Paginate files — show first page, add "Load more" if needed
+        const visibleFiles = files.slice(0, _pageSize);
+        for (const file of visibleFiles) {
+            tbody.appendChild(_createFileRow(file));
         }
 
         table.appendChild(tbody);
@@ -1093,11 +1095,20 @@ const Files = (() => {
             Utils.el('button', { className: 'upload-new-item', textContent: 'Upload Folder', onClick: () => { _closeUploadMenu(); _triggerFolderUpload(); } }),
             Utils.el('button', { className: 'upload-new-item', textContent: 'New Folder',    onClick: () => { _closeUploadMenu(); _promptNewFolder(); } }),
         ]);
-        document.body.appendChild(menu);
-        const rect = btn.getBoundingClientRect();
         menu.style.position = 'fixed';
-        menu.style.left = `${rect.left}px`;
-        menu.style.top = `${rect.bottom + 4}px`;
+        menu.style.visibility = 'hidden';
+        document.body.appendChild(menu);
+        requestAnimationFrame(() => {
+            const rect = btn.getBoundingClientRect();
+            const mw = menu.offsetWidth;
+            const mh = menu.offsetHeight;
+            const gap = 4;
+            const left = (rect.left + mw <= window.innerWidth) ? rect.left : rect.right - mw;
+            const top  = (rect.bottom + gap + mh <= window.innerHeight) ? rect.bottom + gap : rect.top - mh - gap;
+            menu.style.left = `${Math.max(0, left)}px`;
+            menu.style.top  = `${Math.max(0, top)}px`;
+            menu.style.visibility = '';
+        });
         _activeUploadMenu = menu;
         _uploadMenuOutsideListener = (e) => {
             if (!menu.contains(e.target) && e.target !== btn && !btn.contains(e.target)) {
@@ -1127,25 +1138,21 @@ const Files = (() => {
         // making Resume/Cancel unclickable when rows are densely packed.
         menu.style.position = 'fixed';
         menu.style.zIndex = '9999';
+        menu.style.visibility = 'hidden';
         document.body.appendChild(menu);
 
-        // Position below-right of the anchor button
-        const rect = anchor.getBoundingClientRect();
-        const menuWidth = 160; // approximate before layout; adjusted after paint
-        const spaceRight = window.innerWidth - rect.right;
-        menu.style.left = spaceRight >= menuWidth
-            ? `${rect.right - menu.offsetWidth || rect.left}px`
-            : `${rect.left - (menu.offsetWidth || menuWidth)}px`;
-        menu.style.top = `${rect.bottom}px`;
-
-        // After the element is in the DOM, snap to correct position
+        // After layout, snap to the correct position on both axes.
+        // Flip above the anchor if opening below would clip the viewport bottom;
+        // shift left if opening right-aligned would clip the viewport right edge.
         requestAnimationFrame(() => {
+            const rect = anchor.getBoundingClientRect();
             const mw = menu.offsetWidth;
-            if (rect.right + mw <= window.innerWidth) {
-                menu.style.left = `${rect.left}px`;
-            } else {
-                menu.style.left = `${rect.right - mw}px`;
-            }
+            const mh = menu.offsetHeight;
+            const left = (rect.left + mw <= window.innerWidth) ? rect.left : rect.right - mw;
+            const top  = (rect.bottom + mh <= window.innerHeight) ? rect.bottom : rect.top - mh;
+            menu.style.left = `${Math.max(0, left)}px`;
+            menu.style.top  = `${Math.max(0, top)}px`;
+            menu.style.visibility = '';
         });
 
         _activeMenu = { menu, dismiss: _onDocClickDismiss };
@@ -2999,6 +3006,112 @@ const Files = (() => {
         }
     }
 
+    // Stores a shared in-flight Promise on ctx so concurrent subfolder calls
+    // (from _uploadFromDirMap) share one HTTP request rather than each firing their own.
+    function _ensurePendingUploads(ctx) {
+        if (!ctx._pendingUploadsFetch) {
+            ctx._pendingUploadsFetch = Api.get(`${Config.app.apiPrefix}/uploads/pending`)
+                .then(d => d.pending_uploads ?? [])
+                .catch(() => []);
+        }
+        return ctx._pendingUploadsFetch;
+    }
+
+    // Returns {resumeMap: Map<File, pendingRecord>, unmatched: File[]}
+    // Matches by folder + name (case-insensitive) + size + lastModified so two
+    // different files with the same name/size don't mis-match. last_modified_ms
+    // may be null for uploads predating this field; falls back to name+size only.
+    function _matchPendingUploads(files, folderId, pendingList) {
+        const byKey = new Map();
+        for (const u of pendingList) {
+            if ((u.folder_id ?? null) !== (folderId ?? null)) continue;
+            const ts = u.last_modified_ms != null ? `|${u.last_modified_ms}` : '';
+            const k = `${u.original_name.toLowerCase()}|${u.size_bytes}${ts}`;
+            if (!byKey.has(k)) byKey.set(k, u);
+        }
+        const resumeMap = new Map();
+        const unmatched = [];
+        for (const file of files) {
+            // Precise match (name+size+lastModified); fall back to name+size for records
+            // that predate last_modified_ms storage (last_modified_ms was null).
+            const kFull     = `${file.name.toLowerCase()}|${file.size}|${file.lastModified}`;
+            const kFallback = `${file.name.toLowerCase()}|${file.size}`;
+            const pending   = byKey.get(kFull) ?? byKey.get(kFallback);
+            if (pending) {
+                resumeMap.set(file, pending);
+                byKey.delete(byKey.has(kFull) ? kFull : kFallback);
+            } else {
+                unmatched.push(file);
+            }
+        }
+        return { resumeMap, unmatched };
+    }
+
+    // Silently resume a partial upload using a File object the user just dragged in.
+    // Mirrors _resumePendingUpload but accepts a File directly (no file picker).
+    async function _executeResumeFromFile(file, pending, folderId, ctx) {
+        const masterKey = Auth.getMasterKeyObj();
+        if (!masterKey) return;
+
+        let fileKey;
+        try {
+            const unwrapKey = (pending.key_version === 'v2-folder' && _currentFolderKey)
+                ? _currentFolderKey
+                : masterKey;
+            fileKey = await Crypto.decryptFileKey(pending.encrypted_file_key, pending.key_iv, unwrapKey);
+        } catch {
+            ctx.results.failed.push({
+                name: file.name,
+                error: 'Partial upload key mismatch — encryption keys were rotated. Please re-upload.',
+            });
+            return;
+        }
+
+        const location = `${Config.app.apiPrefix}/uploads/${pending.upload_id}`;
+        const ctrl     = _makeUploadCtrl(folderId, file.name);
+        ctrl.onCreated(pending.upload_id);
+        const overlay  = _showUploadOverlay(file.name);
+        const transfer = TransferManager.start(file.name, 'upload', {
+            onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
+            onResume: () => { ctrl.resume(); transfer.setPaused(false); },
+            onStop:   () => ctrl.stop(true),
+            onLogout: () => ctrl.stop(false),
+        });
+
+        try {
+            const result = await Upload.resumeUpload(location, file, fileKey, (done, total) => {
+                const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+                overlay.update(pct, file.name);
+                transfer.update(pct);
+                const ae = ctrl.uploadId ? _activeUploads.get(ctrl.uploadId) : null;
+                if (ae) ae.pct = pct;
+            }, ctrl);
+            overlay.remove();
+            transfer.complete();
+            ctx.results.succeeded.push({ name: file.name });
+            if (result?.fileId) {
+                await _registerTeamFileKey(result.fileId, result.fileKeyBytes).catch(() => {});
+                await _fulfillPendingShareKeys(
+                    [{ fileId: result.fileId, fileKeyBytes: result.fileKeyBytes }],
+                    folderId,
+                ).catch(() => {});
+            }
+        } catch (err) {
+            overlay.remove();
+            if (err instanceof Upload.AbortedError) {
+                transfer.cancelled();
+                if (ctrl.shouldDeleteOnAbort()) {
+                    Api.del(err.location).catch(() => {});
+                }
+            } else {
+                transfer.fail();
+                ctx.results.failed.push({ name: file.name, error: err.message || 'Resume failed' });
+            }
+        } finally {
+            ctrl.cleanup();
+        }
+    }
+
     async function _uploadFiles(files, targetFolderId, _ctx = null) {
         const folderId = targetFolderId === undefined ? _currentFolderId : targetFolderId;
         const masterKey = Auth.getMasterKeyObj();
@@ -3016,6 +3129,26 @@ const Files = (() => {
             _ctx = await _initStandaloneUploadCtx(files.length);
             if (!_ctx) return;
         }
+
+        // Pre-pass: match incoming files against server-side partial uploads.
+        // Matched files are silently resumed; unmatched proceed through the normal
+        // conflict-resolution + upload pipeline.  Resume tasks are kicked off first
+        // so they acquire _uploadSemaphore slots ahead of new uploads (prioritized).
+        // _ensurePendingUploads stores a shared Promise on ctx so concurrent subfolder
+        // calls from _uploadFromDirMap coalesce into a single HTTP request.
+        const pendingList = await _ensurePendingUploads(_ctx);
+        const { resumeMap, unmatched } = _matchPendingUploads(files, folderId, pendingList);
+        files = unmatched;
+        const resumeTasks = [...resumeMap.entries()].map(([file, pending]) =>
+            (async () => {
+                await _uploadSemaphore.acquire();
+                try {
+                    await _executeResumeFromFile(file, pending, folderId, _ctx);
+                } finally {
+                    _uploadSemaphore.release();
+                }
+            })()
+        );
 
         const existingFiles = await _getExistingFiles(folderId, _ctx.fileCache);
         const existingByName = new Map(existingFiles.map(f => [f.original_name.toLowerCase(), f]));
@@ -3105,7 +3238,7 @@ const Files = (() => {
                 _uploadSemaphore.release();
             }
         });
-        await Promise.allSettled(uploads);
+        await Promise.allSettled([...uploads, ...resumeTasks]);
 
         // Phase 3: flush any remaining finish pairs and wait for all chained batches.
         await batcher.flush();
