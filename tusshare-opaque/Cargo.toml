@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 opaque-ke = { version = "4", features = ["ristretto255", "argon2", "std"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 sha2 = "0.10"
-pyo3 = { version = "0.24.1", features = ["extension-module"] }
+pyo3 = { version = "0.29.0", features = ["extension-module"] }
 rand = { version = "0.8", features = ["getrandom"] }
 bincode = "1"
 serde = { version = "1", features = ["derive"] }

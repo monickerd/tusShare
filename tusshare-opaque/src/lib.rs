@@ -1,10 +1,7 @@
 //! tusshare-opaque: PyO3 bindings to opaque-ke for the tusShare server.
 //!
 //! All functions take and return raw bytes (`Vec<u8>` / `&[u8]`), keeping all
-//! crypto in Rust while letting Python drive the protocol flow.  Every function
-//! releases the GIL for the duration of the crypto work via `allow_threads`,
-//! then wraps the raw bytes into `PyBytes` *after* the GIL is reacquired —
-//! this guarantees Python receives `bytes`, not a list of ints.
+//! crypto in Rust while letting Python drive the protocol flow.
 //!
 //! ## CipherSuite
 //! Ristretto255 VOPRF · TripleDH key-exchange with SHA-512 · Argon2id KSF.
@@ -46,19 +43,6 @@ impl CipherSuite for TusShareCipherSuite {
 }
 
 // ---------------------------------------------------------------------------
-// Internal error type — used inside allow_threads closures so we never need
-// to create a PyErr (which requires the GIL) while the GIL is released.
-// ---------------------------------------------------------------------------
-
-struct OpaqueError(String);
-
-impl From<OpaqueError> for PyErr {
-    fn from(e: OpaqueError) -> Self {
-        PyValueError::new_err(e.0)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -71,12 +55,12 @@ fn identifiers(username: &[u8]) -> Identifiers<'_> {
     }
 }
 
-fn proto_err(e: impl std::fmt::Debug) -> OpaqueError {
-    OpaqueError(format!("OPAQUE protocol error: {e:?}"))
+fn proto_err(e: impl std::fmt::Debug) -> PyErr {
+    PyValueError::new_err(format!("OPAQUE protocol error: {e:?}"))
 }
 
-fn bincode_err(e: impl std::fmt::Debug) -> OpaqueError {
-    OpaqueError(format!("state (de)serialization error: {e:?}"))
+fn bincode_err(e: impl std::fmt::Debug) -> PyErr {
+    PyValueError::new_err(format!("state (de)serialization error: {e:?}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -91,11 +75,9 @@ fn bincode_err(e: impl std::fmt::Debug) -> OpaqueError {
 /// stored `opaque_registration_record`.
 #[pyfunction]
 fn generate_server_setup(py: Python<'_>) -> PyResult<Py<PyBytes>> {
-    let raw: Vec<u8> = py.allow_threads(|| {
-        let mut rng = OsRng;
-        let setup = ServerSetup::<TusShareCipherSuite>::new(&mut rng);
-        setup.serialize().to_vec()
-    });
+    let mut rng = OsRng;
+    let setup = ServerSetup::<TusShareCipherSuite>::new(&mut rng);
+    let raw = setup.serialize().to_vec();
     Ok(PyBytes::new(py, &raw).unbind())
 }
 
@@ -115,24 +97,13 @@ fn server_start_registration(
     reg_request: &[u8],
     username: &[u8],
 ) -> PyResult<Py<PyBytes>> {
-    let server_setup = server_setup.to_vec();
-    let reg_request = reg_request.to_vec();
-    let username = username.to_vec();
-
-    let raw: Vec<u8> = py.allow_threads(move || -> Result<Vec<u8>, OpaqueError> {
-        let setup = ServerSetup::<TusShareCipherSuite>::deserialize(&server_setup)
-            .map_err(proto_err)?;
-        let request = RegistrationRequest::<TusShareCipherSuite>::deserialize(&reg_request)
-            .map_err(proto_err)?;
-        let result = ServerRegistration::<TusShareCipherSuite>::start(
-            &setup,
-            request,
-            &username,
-        )
+    let setup = ServerSetup::<TusShareCipherSuite>::deserialize(server_setup)
         .map_err(proto_err)?;
-        Ok(result.message.serialize().to_vec())
-    }).map_err(PyErr::from)?;
-
+    let request = RegistrationRequest::<TusShareCipherSuite>::deserialize(reg_request)
+        .map_err(proto_err)?;
+    let result = ServerRegistration::<TusShareCipherSuite>::start(&setup, request, username)
+        .map_err(proto_err)?;
+    let raw = result.message.serialize().to_vec();
     Ok(PyBytes::new(py, &raw).unbind())
 }
 
@@ -145,15 +116,10 @@ fn server_start_registration(
 /// This is a static operation — no `ServerSetup` or prior server state required.
 #[pyfunction]
 fn server_finish_registration(py: Python<'_>, reg_upload: &[u8]) -> PyResult<Py<PyBytes>> {
-    let reg_upload = reg_upload.to_vec();
-
-    let raw: Vec<u8> = py.allow_threads(move || -> Result<Vec<u8>, OpaqueError> {
-        let upload = RegistrationUpload::<TusShareCipherSuite>::deserialize(&reg_upload)
-            .map_err(proto_err)?;
-        let record = ServerRegistration::<TusShareCipherSuite>::finish(upload);
-        Ok(record.serialize().to_vec())
-    }).map_err(PyErr::from)?;
-
+    let upload = RegistrationUpload::<TusShareCipherSuite>::deserialize(reg_upload)
+        .map_err(proto_err)?;
+    let record = ServerRegistration::<TusShareCipherSuite>::finish(upload);
+    let raw = record.serialize().to_vec();
     Ok(PyBytes::new(py, &raw).unbind())
 }
 
@@ -178,48 +144,38 @@ fn server_finish_registration(py: Python<'_>, reg_upload: &[u8]) -> PyResult<Py<
 fn server_start_login(
     py: Python<'_>,
     server_setup: &[u8],
-    reg_record: Option<Vec<u8>>,
+    reg_record: Option<&[u8]>,
     login_start: &[u8],
     username: &[u8],
 ) -> PyResult<(Py<PyBytes>, Py<PyBytes>)> {
-    let server_setup = server_setup.to_vec();
-    let login_start = login_start.to_vec();
-    let username = username.to_vec();
+    let mut rng = OsRng;
+    let setup = ServerSetup::<TusShareCipherSuite>::deserialize(server_setup)
+        .map_err(proto_err)?;
+    let maybe_record = reg_record
+        .map(|b| ServerRegistration::<TusShareCipherSuite>::deserialize(b))
+        .transpose()
+        .map_err(proto_err)?;
+    let request = CredentialRequest::<TusShareCipherSuite>::deserialize(login_start)
+        .map_err(proto_err)?;
+    let params = ServerLoginParameters {
+        identifiers: identifiers(username),
+        context: None,
+    };
+    let result = ServerLogin::<TusShareCipherSuite>::start(
+        &mut rng,
+        &setup,
+        maybe_record,
+        request,
+        username,
+        params,
+    )
+    .map_err(proto_err)?;
 
-    let (response_raw, state_raw): (Vec<u8>, Vec<u8>) =
-        py.allow_threads(move || -> Result<(Vec<u8>, Vec<u8>), OpaqueError> {
-            let mut rng = OsRng;
-            let setup = ServerSetup::<TusShareCipherSuite>::deserialize(&server_setup)
-                .map_err(proto_err)?;
-            let maybe_record = reg_record
-                .as_deref()
-                .map(|b| ServerRegistration::<TusShareCipherSuite>::deserialize(b))
-                .transpose()
-                .map_err(proto_err)?;
-            let request = CredentialRequest::<TusShareCipherSuite>::deserialize(&login_start)
-                .map_err(proto_err)?;
-            let params = ServerLoginParameters {
-                identifiers: identifiers(&username),
-                context: None,
-            };
-            let result = ServerLogin::<TusShareCipherSuite>::start(
-                &mut rng,
-                &setup,
-                maybe_record,
-                request,
-                &username,
-                params,
-            )
-            .map_err(proto_err)?;
-
-            let login_response = result.message.serialize().to_vec();
-            let server_state = bincode::serialize(&result.state).map_err(bincode_err)?;
-            Ok((login_response, server_state))
-        }).map_err(PyErr::from)?;
-
+    let login_response = result.message.serialize().to_vec();
+    let server_state  = bincode::serialize(&result.state).map_err(bincode_err)?;
     Ok((
-        PyBytes::new(py, &response_raw).unbind(),
-        PyBytes::new(py, &state_raw).unbind(),
+        PyBytes::new(py, &login_response).unbind(),
+        PyBytes::new(py, &server_state).unbind(),
     ))
 }
 
@@ -244,30 +200,23 @@ fn server_finish_login(
     login_finish: &[u8],
     username: &[u8],
 ) -> PyResult<Option<Py<PyBytes>>> {
-    let server_login_state = server_login_state.to_vec();
-    let login_finish = login_finish.to_vec();
-    let username = username.to_vec();
-
-    let maybe_raw: Option<Vec<u8>> =
-        py.allow_threads(move || -> Result<Option<Vec<u8>>, OpaqueError> {
-            let state: ServerLogin<TusShareCipherSuite> =
-                bincode::deserialize(&server_login_state).map_err(bincode_err)?;
-            let finalization =
-                CredentialFinalization::<TusShareCipherSuite>::deserialize(&login_finish)
-                    .map_err(proto_err)?;
-            let params = ServerLoginParameters {
-                identifiers: identifiers(&username),
-                context: None,
-            };
-            match state.finish(finalization, params) {
-                Ok(result) => Ok(Some(result.session_key.to_vec())),
-                // ProtocolError::InvalidLoginError is the expected "wrong password" path.
-                // Any other error is also treated as auth failure.
-                Err(_) => Ok(None),
-            }
-        }).map_err(PyErr::from)?;
-
-    Ok(maybe_raw.map(|raw| PyBytes::new(py, &raw).unbind()))
+    let state: ServerLogin<TusShareCipherSuite> =
+        bincode::deserialize(server_login_state).map_err(bincode_err)?;
+    let finalization = CredentialFinalization::<TusShareCipherSuite>::deserialize(login_finish)
+        .map_err(proto_err)?;
+    let params = ServerLoginParameters {
+        identifiers: identifiers(username),
+        context: None,
+    };
+    match state.finish(finalization, params) {
+        Ok(result) => {
+            let raw = result.session_key.to_vec();
+            Ok(Some(PyBytes::new(py, &raw).unbind()))
+        }
+        // ProtocolError::InvalidLoginError is the expected "wrong password" path.
+        // Any other error is also treated as auth failure.
+        Err(_) => Ok(None),
+    }
 }
 
 // ---------------------------------------------------------------------------
