@@ -929,7 +929,8 @@ async def my_activity(
                    NULL::text AS severity, NULL::text AS outcome, al.ip_address,
                    NULL::text AS actor_session_id, al.timestamp,
                    'file'::text AS target_type, al.file_id AS target_id,
-                   f.original_name AS target_name, NULL::text AS detail
+                   f.original_name AS target_name, NULL::text AS detail,
+                   al.user_agent
             FROM access_logs al
             LEFT JOIN files f ON f.id = al.file_id
             WHERE al.user_id = ?
@@ -942,10 +943,11 @@ async def my_activity(
         cursor = await db.execute(
             """
             SELECT source, event_type, severity, outcome, ip_address, actor_session_id,
-                   timestamp, target_type, target_id, target_name, detail
+                   timestamp, target_type, target_id, target_name, detail, user_agent
             FROM (
                 SELECT 'security'::text AS source, event_type, severity, outcome, ip_address,
-                       actor_session_id, timestamp, target_type, target_id, target_name, detail
+                       actor_session_id, timestamp, target_type, target_id, target_name, detail,
+                       user_agent
                 FROM security_events
                 WHERE user_id = ?
                 UNION ALL
@@ -953,7 +955,8 @@ async def my_activity(
                        NULL::text AS severity, NULL::text AS outcome, al.ip_address,
                        NULL::text AS actor_session_id, al.timestamp,
                        'file'::text AS target_type, al.file_id AS target_id,
-                       f.original_name AS target_name, NULL::text AS detail
+                       f.original_name AS target_name, NULL::text AS detail,
+                       al.user_agent
                 FROM access_logs al
                 LEFT JOIN files f ON f.id = al.file_id
                 WHERE al.user_id = ?
@@ -975,6 +978,7 @@ async def my_activity(
                 "severity": row["severity"] or "info",
                 "outcome": row["outcome"],
                 "ip_address": row["ip_address"],
+                "user_agent": row["user_agent"],
                 "session_id": row["actor_session_id"],
                 "timestamp": str(row["timestamp"]),
                 "target_type": row["target_type"],

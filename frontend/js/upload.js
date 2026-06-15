@@ -233,11 +233,17 @@ const Upload = (() => {
         }
 
         // HEAD — find where server left off
-        const headResp = await fetch(location, {
+        const _makeHeadReq = () => fetch(location, {
             method: 'HEAD',
             headers: { 'Tus-Resumable': '1.0.0' },
             credentials: 'same-origin',
         });
+        let headResp = await _makeHeadReq();
+        if (headResp.status === 401) {
+            const refreshed = await Api.refreshTokens();
+            if (!refreshed) throw new Error('Session expired. Please log in and try again.');
+            headResp = await _makeHeadReq();
+        }
         if (!headResp.ok) {
             throw new Error(`Resume HEAD failed (${headResp.status})`);
         }

@@ -3064,13 +3064,15 @@ const Files = (() => {
                 name: file.name,
                 error: 'Partial upload key mismatch — encryption keys were rotated. Please re-upload.',
             });
+            ctx._bulkOnBatchDone?.(1);
             return;
         }
 
         const location = `${Config.app.apiPrefix}/uploads/${pending.upload_id}`;
         const ctrl     = _makeUploadCtrl(folderId, file.name);
         ctrl.onCreated(pending.upload_id);
-        const overlay  = _showUploadOverlay(file.name);
+        const _noop    = { update: () => {}, remove: () => {} };
+        const overlay  = ctx._bulkOnBatchDone ? _noop : _showUploadOverlay(file.name);
         const transfer = TransferManager.start(file.name, 'upload', {
             onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
             onResume: () => { ctrl.resume(); transfer.setPaused(false); },
@@ -3109,6 +3111,7 @@ const Files = (() => {
             }
         } finally {
             ctrl.cleanup();
+            ctx._bulkOnBatchDone?.(1);
         }
     }
 
@@ -3589,7 +3592,8 @@ const Files = (() => {
     async function _executeFileUploadPrepared(prepared, file, folderId, ctx, files, i, deletedForReplace) {
         const label = files.length > 1 ? `${file.name} (${i + 1}/${files.length})` : file.name;
         const ctrl = _makeUploadCtrl(folderId, file.name);
-        const overlay = _showUploadOverlay(label);
+        const _noop = { update: () => {}, remove: () => {} };
+        const overlay = ctx._bulkOnBatchDone ? _noop : _showUploadOverlay(label);
         const transfer = TransferManager.start(label, 'upload', {
             onPause:  () => { ctrl.pause();  transfer.setPaused(true);  },
             onResume: () => { ctrl.resume(); transfer.setPaused(false); },
@@ -3628,6 +3632,8 @@ const Files = (() => {
                 ctx.results.failed.push({ name: file.name, error: err.message || 'Upload failed' });
             }
             return null;
+        } finally {
+            ctx._bulkOnBatchDone?.(1);
         }
     }
 
