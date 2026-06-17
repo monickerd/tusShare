@@ -20,7 +20,7 @@ faker>=33.1.0
 pyotp>=2.9.0
 
 # Required by aioboto3/botocore for S3 request signing (test_17)
-cryptography>=44.0.0
+cryptography>=48.0.1
 aioboto3>=13.3.0
 
 # In-process Redis emulator for unit tests (test_storage_providers.py)
