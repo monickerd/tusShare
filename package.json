@@ -1,10 +1,10 @@
 {
   "type": "module",
   "dependencies": {
-    "@noble/curves": "^2.2.0"
+    "@noble/curves": "2.2.0"
   },
   "devDependencies": {
-    "eslint": "^10.4.0",
-    "globals": "^17.6.0"
+    "eslint": "10.4.0",
+    "globals": "17.6.0"
   }
 }

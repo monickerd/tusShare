@@ -495,12 +495,15 @@ def _health_check():
     if integrity.manifest_missing:
         return {"status": "ok", "integrity": "no_manifest"}
     if not integrity.ok:
-        return {
-            "status": "degraded",
-            "integrity": "fail",
-            "missing": integrity.missing,
-            "tampered": integrity.tampered,
-        }
+        return JSONResponse(
+            {
+                "status": "degraded",
+                "integrity": "fail",
+                "missing": integrity.missing,
+                "tampered": integrity.tampered,
+            },
+            status_code=503,
+        )
     return {"status": "ok", "integrity": "ok", "files_verified": integrity.total}
 
 

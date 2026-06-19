@@ -176,6 +176,14 @@ services:
       # TUSSHARE_SUPERUSER_URL above still connects directly to postgres — it is
       # bootstrap-only and uses session-level operations unsuited to transaction mode.
       DATABASE_URL: postgresql://tusshare:${TUSSHARE_PG_PASSWORD:-changeme}@pgbouncer:6432/tusshare
+      # OPAQUE server identifier — bound into every OPAQUE key-exchange MAC so
+      # credentials registered against one value will not authenticate against
+      # another.  Set a distinct value per deployment environment (prod/staging/dev)
+      # to prevent cross-environment credential reuse even if the ServerSetup blob
+      # is accidentally shared.  Changing this value on an existing deployment
+      # invalidates all existing OPAQUE credentials — only set it at first run.
+      # Defaults to "tusshare" if unset (preserves backward compatibility).
+      OPAQUE_SERVER_ID: ${OPAQUE_SERVER_ID:-tusshare}
     env_file:
       - .env
     depends_on:

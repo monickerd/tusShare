@@ -35,9 +35,14 @@ WORKDIR /app
 # bcrypt → cffi → libffi; asyncpg → libpq; tusshare-opaque Rust .so → libgcc
 RUN apk add --no-cache libffi libpq libgcc
 
-# Install dependencies first (layer caching)
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install dependencies first (layer caching).
+# Stage 1: verify each direct dependency against the committed wheel hash —
+#   pip exits non-zero if any hash mismatches, failing the build immediately.
+# Stage 2: resolve and install transitive deps; direct deps are already present
+#   so only the missing transitive packages are fetched (no hash check for these).
+COPY backend/requirements.txt backend/requirements-hashed.txt ./
+RUN pip install --no-cache-dir --no-deps --require-hashes -r requirements-hashed.txt && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Install the tusshare-opaque PyO3 wheel built in stage 1
 COPY --from=rust-builder /dist/*.whl /tmp/

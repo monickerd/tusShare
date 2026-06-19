@@ -507,13 +507,22 @@ policy and key-grant events.
 ## Supply-chain integrity
 
 - All Python dependencies are pinned to exact versions in `requirements.txt`.
-  A hash-pinned variant (`requirements-hashed.txt`) can be generated for
-  builds that require `--require-hashes`.
+  `requirements-hashed.txt` is committed alongside it with per-wheel SHA-256
+  hashes for every direct dependency. The Docker build installs direct deps with
+  `pip install --no-deps --require-hashes` to verify each wheel against its
+  committed hash before completing the transitive dependency graph. A hash
+  mismatch causes `pip` to exit non-zero, failing the Docker build immediately.
+  Both files are tracked in the startup integrity manifest so post-build
+  tampering with either is detected at container start.
 - All vendored JavaScript libraries carry bundled license and copyright notices;
   their SRI hashes are verified by the browser on load.
 - The application verifies its own static asset manifest at startup (SHA-256
-  hashes of all JS/CSS files). A mismatch halts startup and is reported via the
-  health endpoint.
+  hashes of all JS/CSS files, `requirements.txt`, and `requirements-hashed.txt`).
+  A mismatch is logged at ERROR level and the health endpoint returns HTTP 503
+  with `{"status": "degraded", "integrity": "fail", ...}`.  Docker's healthcheck
+  probe (`wget` on `/api/v1/health`) treats any 5xx response as a failure, so
+  the container is marked unhealthy after the configured retry window and removed
+  from service by any orchestrator or load balancer watching health status.
 - A build ID is stamped into `index.html` at startup and checked by the SPA on
   every page load against `GET /api/v1/version`. A stale cached build triggers an
   automatic reload, preventing pre-patch JavaScript from running silently.

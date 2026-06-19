@@ -17,6 +17,8 @@
 //! ASCII string `"tusshare"` as the server identifier.  These MUST be identical
 //! on both sides or the key-exchange MAC will reject.
 
+use std::sync::OnceLock;
+
 use argon2::Argon2;
 use opaque_ke::{
     CredentialFinalization, CredentialRequest,
@@ -46,12 +48,24 @@ impl CipherSuite for TusShareCipherSuite {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const SERVER_ID: &[u8] = b"tusshare";
+// Read once at first use.  Default "tusshare" preserves compatibility with
+// existing credentials; set OPAQUE_SERVER_ID in the environment to namespace
+// separate deployments (dev/staging/prod) so credentials cannot cross over
+// even if the ServerSetup blob is accidentally shared.
+static OPAQUE_SERVER_ID: OnceLock<Vec<u8>> = OnceLock::new();
+
+fn server_id() -> &'static [u8] {
+    OPAQUE_SERVER_ID.get_or_init(|| {
+        std::env::var("OPAQUE_SERVER_ID")
+            .unwrap_or_else(|_| "tusshare".to_string())
+            .into_bytes()
+    })
+}
 
 fn identifiers(username: &[u8]) -> Identifiers<'_> {
     Identifiers {
         client: Some(username),
-        server: Some(SERVER_ID),
+        server: Some(server_id()),
     }
 }
 
