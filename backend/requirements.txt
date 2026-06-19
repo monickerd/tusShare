@@ -6,10 +6,10 @@ filetype==1.2.0
 uvicorn==0.48.0
 asyncpg==0.31.0
 bcrypt==5.0.0
-python-multipart==0.0.29
+python-multipart==0.0.31
 pydantic-settings==2.14.1
 py_ecc==8.0.0
-cryptography==48.0.0
+cryptography==48.0.1
 qrcode==8.2
 webauthn==2.7.1
 authlib==1.7.2

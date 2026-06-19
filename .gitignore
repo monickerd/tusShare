@@ -25,8 +25,6 @@ htmlcov/
 # Rust build artifacts
 tusshare-opaque/target/
 
-# Generated files (commit deliberately when pinned, not as stale artifacts)
-requirements-hashed.txt
 
 # Data & uploads (never commit live data)
 data/

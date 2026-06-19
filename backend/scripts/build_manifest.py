@@ -127,7 +127,7 @@ def generate_pip_hashes() -> int:
         f"(host: {platform.system()} {platform.machine()}) ..."
     )
 
-    # Map spec → list of unique SHA-256 hex digests.  A pure-Python package
+    # Map spec ->list of unique SHA-256 hex digests.  A pure-Python package
     # produces one entry shared by both arches; a compiled package produces two.
     hashes: dict[str, list[str]] = defaultdict(list)
 
@@ -166,7 +166,7 @@ def generate_pip_hashes() -> int:
     HASHED_REQUIREMENTS_PATH.write_bytes(
         ("\n".join(lines) + "\n").encode("utf-8")
     )
-    print(f"Wrote {len(lines)} package(s) → {HASHED_REQUIREMENTS_PATH.relative_to(ROOT)}")
+    print(f"Wrote {len(lines)} package(s) ->{HASHED_REQUIREMENTS_PATH.relative_to(ROOT)}")
     return len(lines)
 
 
@@ -205,7 +205,7 @@ def build_manifest() -> int:
         "files": files,
     }
     MANIFEST_PATH.write_bytes((json.dumps(manifest, indent=2) + "\n").encode("utf-8"))
-    print(f"Wrote {len(files)} file hashes → {MANIFEST_PATH.relative_to(ROOT)}")
+    print(f"Wrote {len(files)} file hashes ->{MANIFEST_PATH.relative_to(ROOT)}")
     return warnings
 
 
