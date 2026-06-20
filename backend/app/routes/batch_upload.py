@@ -1,11 +1,11 @@
-"""Batch upload endpoint.
+"""Batch upload endpoints.
 
-Accepts a single multipart/form-data POST containing:
-  - one 'metadata' JSON part (array of per-file metadata objects, first)
-  - one 'file_N' binary part per file, in index order
-
-All files must be single-chunk (already fully encrypted by the client).
-Returns a per-file results array so partial failures are isolated.
+POST /uploads/batch — multipart: metadata JSON + file binaries together (small files).
+POST /uploads/batch-register — metadata-only registration; returns TUS upload IDs for
+    files up to 10 MB. Includes per-account pacing (425 Too Early) so one session
+    cannot flood the server with unfinished work.
+GET  /uploads/batch/{id} — progress for a registered batch.
+DELETE /uploads/batch/{id} — cancel a registered batch (incomplete files removed).
 """
 
 import asyncio
@@ -15,9 +15,12 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from multipart.multipart import MultipartParser
+from pydantic import BaseModel, field_validator
 
 import app.storage.manager as storage
 from app.auth.dependencies import require_user_role
@@ -28,7 +31,7 @@ from app.middleware.rate_limit import check_upload_rate_limit
 from app.routes._access import check_data_permission, copy_folder_permissions
 from app.routes.uploads import _record_upload_folder_activity
 from app.schemas.security_event import SecurityEvent
-from app.services import event_bus, sse_broker
+from app.services import event_bus, live_settings, sse_broker
 from app.services.av_scanner import enqueue_scan
 from app.util.db import get_admin_setting
 from app.validation.sanitizers import sanitize_filename, validate_base64, validate_uuid
@@ -38,6 +41,10 @@ router = APIRouter()
 
 # Server-side limits (client enforces a lower byte budget; these are backstops).
 _MAX_FILES_PER_BATCH = 50
+# batch-register: larger per-batch cap; data uploads happen separately via TUS.
+_MAX_FILES_PER_REGISTER_BATCH = 100
+# Files ≤ 10 MB may use batch-register; larger files must use single-file TUS.
+_REGISTER_MAX_FILE_BYTES = 10 * 1024 * 1024
 _MAX_METADATA_BYTES = 64 * 1024        # 64 KB
 _MAX_FILE_ENCRYPTED_BYTES = 21 * 1024 * 1024   # mirrors _MAX_CHUNK_BYTES in uploads.py
 _BOUNDARY_RE = re.compile(r'boundary=([^\s;]+)', re.IGNORECASE)
@@ -685,3 +692,377 @@ async def batch_upload(
                             "detail": "rolled back due to sibling failure"})
 
     return {"results": sorted(results, key=lambda r: r["index"])}
+
+
+# ---------------------------------------------------------------------------
+# Batch register — metadata-only; returns TUS upload IDs
+# ---------------------------------------------------------------------------
+
+class _RegisterFileEntry(BaseModel):
+    name: str
+    size: int                        # plaintext bytes
+    encrypted_file_key: str
+    key_iv: str
+    key_version: str = "v1-master"
+    folder_id: str | None = None
+    last_modified_ms: int | None = None
+    filetype: str = "application/octet-stream"
+    escrow_ephemeral_pk: str | None = None
+    escrow_encrypted_key: str | None = None
+    escrow_key_iv: str | None = None
+
+    @field_validator("key_version")
+    @classmethod
+    def _check_kv(cls, v: str) -> str:
+        if v not in ("v1-master", "v2-folder"):
+            raise ValueError("invalid key_version")
+        return v
+
+
+class _BatchRegisterRequest(BaseModel):
+    files: list[_RegisterFileEntry]
+
+    @field_validator("files")
+    @classmethod
+    def _check_files(cls, v: list) -> list:
+        if not v:
+            raise ValueError("files must not be empty")
+        if len(v) > _MAX_FILES_PER_REGISTER_BATCH:
+            raise ValueError(f"at most {_MAX_FILES_PER_REGISTER_BATCH} files per batch-register")
+        return v
+
+
+async def _get_active_batch(db, user_id: str) -> dict | None:
+    """Return the user's current active batch row, or None."""
+    cursor = await db.execute(
+        "SELECT * FROM upload_batches WHERE user_id = ? AND status = 'active' ORDER BY created_at DESC LIMIT 1",
+        (user_id,),
+    )
+    return await cursor.fetchone()
+
+
+@router.post(
+    "/batch-register",
+    responses={
+        400: {"description": "Bad Request"},
+        403: {"description": "Forbidden"},
+        404: {"description": "Not Found"},
+        413: {"description": "Payload Too Large"},
+        425: {"description": "Too Early — previous batch not yet 50 % complete"},
+    },
+)
+async def batch_register(
+    body: _BatchRegisterRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+    _rl: Annotated[None, Depends(check_upload_rate_limit)],
+):
+    """Register up to 100 files for TUS upload without sending data yet.
+
+    Returns a batch_id and a TUS upload location for each file. The caller
+    then PATCHes each location individually with the encrypted file data.
+
+    A per-account soft lock prevents registering a new batch while the
+    previous one is less than 50 % confirmed complete. The lock is released
+    automatically once complete_count reaches total_files / 2; no explicit
+    release call is needed.
+    """
+    active = await _get_active_batch(db, user.id)
+    if active is not None:
+        total = active["total_files"]
+        done  = active["complete_count"]
+        if active["lock_released"] == 0:
+            raise HTTPException(
+                status_code=425,
+                detail={
+                    "status": "not_ready",
+                    "confirmed_complete": done,
+                    "total": total,
+                    "threshold": max(1, total // 2),
+                    "batch_id": active["id"],
+                },
+            )
+
+    cs_val = await get_admin_setting(db, "default_chunk_size")
+    admin_chunk_size = int(cs_val) if cs_val is not None else settings.DEFAULT_CHUNK_SIZE
+
+    cursor = await db.execute(
+        "SELECT disk_used, disk_quota, max_file_size FROM users WHERE id = ?", (user.id,)
+    )
+    user_row = await cursor.fetchone()
+    if user_row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    gmax_val = await get_admin_setting(db, "global_max_file_size")
+    global_max = int(gmax_val) if gmax_val is not None else settings.GLOBAL_MAX_FILE_SIZE
+
+    total_encrypted = 0
+    validated: list[dict] = []
+
+    for i, entry in enumerate(body.files):
+        enc_size = entry.size + 16
+        if entry.size <= 0:
+            raise HTTPException(status_code=400, detail=f"Entry {i}: size must be positive")
+        if enc_size > _REGISTER_MAX_FILE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Entry {i}: file exceeds {_REGISTER_MAX_FILE_BYTES // (1024*1024)} MB limit for batch-register",
+            )
+        if global_max > 0 and enc_size > global_max:
+            raise HTTPException(status_code=413, detail=f"Entry {i}: exceeds server maximum file size")
+        if user_row["max_file_size"] is not None and enc_size > user_row["max_file_size"]:
+            raise HTTPException(status_code=413, detail=f"Entry {i}: exceeds your maximum file size")
+        try:
+            sanitized = sanitize_filename(entry.name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Entry {i}: {exc}")
+        try:
+            validate_base64(entry.encrypted_file_key)
+            validate_base64(entry.key_iv)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Entry {i}: {exc}")
+
+        folder_id = None
+        if entry.folder_id:
+            try:
+                folder_id = validate_uuid(entry.folder_id)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Entry {i}: invalid folder_id")
+            f_cursor = await db.execute("SELECT id, owner_id FROM folders WHERE id = ?", (folder_id,))
+            f_row = await f_cursor.fetchone()
+            if f_row is None:
+                raise HTTPException(status_code=404, detail=f"Entry {i}: folder not found")
+            if f_row["owner_id"] != user.id:
+                allowed = await check_data_permission(db, "folder", folder_id, user.id, "write")
+                if not allowed:
+                    raise HTTPException(status_code=403, detail=f"Entry {i}: folder access denied")  # NOSONAR
+
+        if entry.escrow_ephemeral_pk or entry.escrow_encrypted_key or entry.escrow_key_iv:
+            for field_name, val in (
+                ("escrow_ephemeral_pk", entry.escrow_ephemeral_pk),
+                ("escrow_encrypted_key", entry.escrow_encrypted_key),
+                ("escrow_key_iv", entry.escrow_key_iv),
+            ):
+                if val:
+                    try:
+                        validate_base64(val)
+                    except ValueError:
+                        raise HTTPException(status_code=400, detail=f"Entry {i}: invalid {field_name}")
+
+        total_encrypted += enc_size
+        validated.append({
+            "index": i,
+            "original_name": entry.name,
+            "sanitized_name": sanitized.name,
+            "filetype": (entry.filetype or "application/octet-stream")[:256],
+            "folder_id": folder_id,
+            "original_size": entry.size,
+            "encrypted_size": enc_size,
+            "encrypted_file_key": entry.encrypted_file_key,
+            "key_iv": entry.key_iv,
+            "key_version": entry.key_version,
+            "last_modified_ms": entry.last_modified_ms,
+            "escrow_ephemeral_pk": entry.escrow_ephemeral_pk or None,
+            "escrow_encrypted_key": entry.escrow_encrypted_key or None,
+            "escrow_key_iv": entry.escrow_key_iv or None,
+            "admin_chunk_size": admin_chunk_size,
+        })
+
+    if user_row["disk_quota"] is not None and user_row["disk_used"] + total_encrypted > user_row["disk_quota"]:
+        raise HTTPException(status_code=413, detail="Batch would exceed storage quota")
+
+    batch_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
+    expires_at = (
+        datetime.now(timezone.utc)
+        + timedelta(hours=live_settings.get_int("tus_upload_expiry_hours", settings.TUS_UPLOAD_EXPIRY_HOURS))
+    ).isoformat()
+
+    file_entries: list[dict] = []
+
+    await db.execute("BEGIN")
+    try:
+        await db.execute(
+            """
+            INSERT INTO upload_batches (id, user_id, total_files, complete_count, lock_released, status, created_at, last_progress_at)
+            VALUES (?, ?, ?, 0, 0, 'active', ?, ?)
+            """,
+            (batch_id, user.id, len(validated), now_iso, now_iso),
+        )
+        for v in validated:
+            file_id    = str(uuid.uuid4())
+            storage_key = str(uuid.uuid4())
+            upload_id  = str(uuid.uuid4())
+            total_chunks = (v["original_size"] + v["admin_chunk_size"] - 1) // v["admin_chunk_size"]
+            await db.execute(
+                """
+                INSERT INTO files (
+                    id, original_name, sanitized_name, storage_key, folder_id, owner_id,
+                    mime_type, size_bytes, encrypted_size, chunk_size, total_chunks,
+                    encrypted_file_key, key_iv, key_version, upload_complete,
+                    escrow_ephemeral_pk, escrow_encrypted_key, escrow_key_iv,
+                    last_modified_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                """,
+                (
+                    file_id, v["original_name"], v["sanitized_name"], storage_key,
+                    v["folder_id"], user.id, v["filetype"],
+                    v["original_size"], v["encrypted_size"], v["admin_chunk_size"], total_chunks,
+                    v["encrypted_file_key"], v["key_iv"], v["key_version"],
+                    v["escrow_ephemeral_pk"], v["escrow_encrypted_key"], v["escrow_key_iv"],
+                    v["last_modified_ms"],
+                ),
+            )
+            if v["folder_id"]:
+                await copy_folder_permissions(db, v["folder_id"], "file", file_id)
+            await db.execute(
+                """
+                INSERT INTO tus_uploads
+                    (id, file_id, user_id, total_size, current_offset, next_chunk, expires_at, part_tags, batch_id)
+                VALUES (?, ?, ?, ?, 0, 0, ?, '[]', ?)
+                """,
+                (upload_id, file_id, user.id, v["encrypted_size"], expires_at, batch_id),
+            )
+            file_entries.append({
+                "index": v["index"],
+                "upload_id": upload_id,
+                "name": v["original_name"],
+                "location": f"/api/v1/uploads/{upload_id}",
+            })
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    for entry in file_entries:
+        await storage.get_manager().begin_upload(entry["upload_id"])
+
+    return {"batch_id": batch_id, "files": file_entries}
+
+
+# ---------------------------------------------------------------------------
+# Batch status
+# ---------------------------------------------------------------------------
+
+@router.get("/batch/{batch_id}")
+async def get_batch_status(
+    batch_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return current status for a registered batch."""
+    try:
+        batch_id = validate_uuid(batch_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    cursor = await db.execute(
+        "SELECT * FROM upload_batches WHERE id = ? AND user_id = ?", (batch_id, user.id)
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    f_cursor = await db.execute(
+        """
+        SELECT tu.id AS upload_id, f.original_name AS name, f.size_bytes AS size,
+               f.last_modified_ms, f.upload_complete,
+               CASE WHEN tu.id IS NOT NULL THEN 'pending' ELSE 'complete' END AS status
+          FROM tus_uploads tu
+          JOIN files f ON tu.file_id = f.id
+         WHERE tu.batch_id = ?
+        """,
+        (batch_id,),
+    )
+    pending_rows = [dict(r) for r in await f_cursor.fetchall()]
+    pending_count = len(pending_rows)
+    complete_count = row["complete_count"]
+    total = row["total_files"]
+
+    files = [
+        {
+            "upload_id": r["upload_id"],
+            "name": r["name"],
+            "size": r["size"],
+            "last_modified_ms": r["last_modified_ms"],
+            "status": "pending",
+        }
+        for r in pending_rows
+    ]
+
+    return {
+        "batch_id": batch_id,
+        "total": total,
+        "complete": complete_count,
+        "pending": pending_count,
+        "failed": max(0, total - complete_count - pending_count),
+        "lock_released": bool(row["lock_released"]),
+        "status": row["status"],
+        "files": files,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Batch cancel
+# ---------------------------------------------------------------------------
+
+@router.delete("/batch/{batch_id}")
+async def cancel_batch(
+    batch_id: str,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Cancel all incomplete files in a batch and release the pacing lock."""
+    try:
+        batch_id = validate_uuid(batch_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    cursor = await db.execute(
+        "SELECT * FROM upload_batches WHERE id = ? AND user_id = ?", (batch_id, user.id)
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    if row["status"] not in ("active",):
+        raise HTTPException(status_code=409, detail=f"Batch is already {row['status']}")
+
+    tu_cursor = await db.execute(
+        "SELECT tu.id AS upload_id, tu.file_id FROM tus_uploads tu WHERE tu.batch_id = ?",
+        (batch_id,),
+    )
+    pending = [dict(r) for r in await tu_cursor.fetchall()]
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.execute("BEGIN")
+    try:
+        for p in pending:
+            await db.execute("DELETE FROM tus_uploads WHERE id = ?", (p["upload_id"],))
+            await db.execute("DELETE FROM files WHERE id = ?", (p["file_id"],))
+        await db.execute(
+            "UPDATE upload_batches SET status = 'cancelled', last_progress_at = ?, lock_released = 1 WHERE id = ?",
+            (now_iso, batch_id),
+        )
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
+
+    for p in pending:
+        try:
+            await storage.get_manager().abort_upload(p["upload_id"])
+        except Exception:
+            pass
+
+    event_bus.emit(
+        SecurityEvent(
+            event_type="upload.batch.cancelled",
+            severity="info",
+            outcome="success",
+            user_id=user.id,
+            detail={"batch_id": batch_id, "cancelled_files": len(pending)},
+        )
+    )
+
+    return {"batch_id": batch_id, "cancelled_files": len(pending)}

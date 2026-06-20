@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Optional
 
 import httpx
@@ -884,20 +885,60 @@ class ApiClient:
     def from_session(cls, session: Any) -> "ApiClient":
         return cls(session.cookies)
 
+    async def _refresh(self) -> bool:
+        """Attempt a token refresh. Returns True if successful.
+
+        After a successful refresh the server sends new auth cookies with
+        Secure=True.  Because the test server runs over plain HTTP, httpx
+        would normally refuse to re-send those cookies on subsequent requests.
+        We bypass that by parsing the raw Set-Cookie headers and inserting the
+        new values directly into the client cookie jar (no domain/Secure
+        enforcement), so they shadow the old expired values on every request.
+
+        The server also rotates the CSRF token on every refresh.  We keep the
+        X-CSRF-Token request header in sync with the new cookie value so that
+        state-changing retries (POST/PATCH/…) pass the double-submit check.
+        """
+        try:
+            r = await self._client.post(f"{API}/auth/refresh")
+            if not r.is_success:
+                return False
+            for hdr in r.headers.get_list("set-cookie"):
+                m = re.match(r"([^=]+)=([^;]*)", hdr)
+                if not m:
+                    continue
+                name  = m.group(1).strip()
+                value = m.group(2).strip()
+                self._client.cookies.set(name, value)
+                if name == "__Host-csrf_token":
+                    self._client.headers["X-CSRF-Token"] = value
+            return True
+        except Exception:
+            return False
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        fn = getattr(self._client, method)
+        r = await fn(f"{API}{path}", **kwargs)
+        if r.status_code == 401 and "/auth/" not in path:
+            if await self._refresh():
+                fn = getattr(self._client, method)
+                r = await fn(f"{API}{path}", **kwargs)
+        return r
+
     async def get(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self._client.get(f"{API}{path}", **kwargs)
+        return await self._request("get", path, **kwargs)
 
     async def post(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self._client.post(f"{API}{path}", **kwargs)
+        return await self._request("post", path, **kwargs)
 
     async def put(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self._client.put(f"{API}{path}", **kwargs)
+        return await self._request("put", path, **kwargs)
 
     async def patch(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self._client.patch(f"{API}{path}", **kwargs)
+        return await self._request("patch", path, **kwargs)
 
     async def delete(self, path: str, **kwargs: Any) -> httpx.Response:
-        return await self._client.delete(f"{API}{path}", **kwargs)
+        return await self._request("delete", path, **kwargs)
 
     async def aclose(self) -> None:
         await self._client.aclose()

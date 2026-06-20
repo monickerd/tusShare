@@ -1,7 +1,5 @@
 """Team-related constants."""
 
-import re
-
 from app.models.role import ROLE_TEAM_ADMIN, ROLE_TEAM_MANAGER, ROLE_TEAM_MEMBER
 
 # --- Team roles (scoped via user_roles scope_type='team') ---
@@ -22,7 +20,6 @@ ASSIGNABLE_ROLES = frozenset({TEAM_ROLE_SUPERVISOR, TEAM_ROLE_MEMBER})
 TEAM_NAME_MIN_LENGTH = 1
 TEAM_NAME_MAX_LENGTH = 64
 TEAM_DESCRIPTION_MAX_LENGTH = 500
-TEAM_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9 _\-.]{1,64}$")
 
 # Maximum members per team
 TEAM_MAX_MEMBERS = 200

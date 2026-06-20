@@ -1552,6 +1552,77 @@ async def get_file_content(
     )
 
 
+class _BatchManifestRequest(BaseModel):
+    file_ids: list[str]
+
+    @field_validator("file_ids")
+    @classmethod
+    def _check_ids(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("file_ids must not be empty")
+        if len(v) > 100:
+            raise ValueError("at most 100 file IDs per request")
+        return v
+
+
+@router.post("/batch-manifest")
+async def batch_manifest(
+    body: _BatchManifestRequest,
+    user: Annotated[AuthenticatedUser, Depends(require_user_role)],
+    db: Annotated[Database, Depends(get_db)],
+):
+    """Return chunk manifests for up to 100 files in a single call.
+
+    Each file is ACL-checked individually. Files the caller cannot access are
+    returned in the 'forbidden' list; files not found in 'not_found'.
+    Chunk manifests assume all files fit in one page (≤500 chunks each).
+    """
+    manifests = []
+    not_found: list[str] = []
+    forbidden: list[str] = []
+
+    validated_ids: list[str] = []
+    for raw_id in body.file_ids:
+        try:
+            validated_ids.append(validate_uuid(raw_id))
+        except ValueError:
+            not_found.append(raw_id)
+
+    for file_id in validated_ids:
+        cursor = await db.execute(_SQL_FILE_BY_ID, (file_id,))
+        row = await cursor.fetchone()
+        if row is None:
+            not_found.append(file_id)
+            continue
+
+        try:
+            await check_file_access(db, row, user)
+        except HTTPException:
+            forbidden.append(file_id)
+            continue
+
+        cursor = await db.execute(
+            "SELECT * FROM file_chunks WHERE file_id = ? ORDER BY chunk_index LIMIT 500",
+            (file_id,),
+        )
+        chunks = [FileChunk.from_row(r).to_dict() for r in await cursor.fetchall()]
+
+        is_owner = row["owner_id"] == user.id
+        manifests.append({
+            "file_id": file_id,
+            "original_name": row["original_name"],
+            "mime_type": row["mime_type"],
+            "size_bytes": row["size_bytes"],
+            "encrypted_file_key": row["encrypted_file_key"] if is_owner else None,
+            "key_iv": row["key_iv"] if is_owner else None,
+            "chunk_size": row["chunk_size"],
+            "total_chunks": row["total_chunks"],
+            "chunks": chunks,
+        })
+
+    return {"manifests": manifests, "not_found": not_found, "forbidden": forbidden}
+
+
 @router.get("/{file_id}/chunks", responses={404: {"description": "Not Found"}})
 async def get_file_chunks(
     file_id: str,

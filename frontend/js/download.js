@@ -380,7 +380,24 @@ const Download = (() => {
         }
     }
 
+    // Per-batch manifest cache: populated by _prefetchBatchManifests before download begins.
+    // Keyed by file_id. Cleared at the start of each downloadBatch / _downloadBatchInMemory call.
+    let _manifestCache = new Map();
+
+    async function _prefetchBatchManifests(fileIds) {
+        const BATCH = 100;
+        for (let i = 0; i < fileIds.length; i += BATCH) {
+            const chunk = fileIds.slice(i, i + BATCH);
+            const data  = await Api.post(`${_prefix()}/files/batch-manifest`, { file_ids: chunk });
+            for (const m of (data.manifests || [])) {
+                _manifestCache.set(m.file_id, m);
+            }
+        }
+    }
+
     async function _fetchManifest(fileId) {
+        if (_manifestCache.has(fileId)) return _manifestCache.get(fileId);
+
         const limit = 500;
         let offset  = 0;
         let base    = null;
@@ -524,15 +541,20 @@ const Download = (() => {
     // ZIP filename
     // ------------------------------------------------------------------
 
+    function _sanitizeZipComponent(name) {
+        const stripped = name.replace(/[/\\]/g, '_');
+        return /^\.+$/.test(stripped) ? '_' : stripped;
+    }
+
     function _zipName(items, folderTree, ts) {
         // ts: "YYYY-MM-DD-HH-MM"
         if (items.length === 1 && items[0].type === 'folder') {
-            return `${items[0].name}_${ts}.zip`;
+            return `${_sanitizeZipComponent(items[0].name)}_${ts}.zip`;
         }
         const parentIds = new Set(items.map(i => i.parentFolderId || null));
         if (parentIds.size === 1) {
             const pid = [...parentIds][0];
-            const parentName = pid ? (folderTree[pid]?.name || 'files') : 'files';
+            const parentName = pid ? (_sanitizeZipComponent(folderTree[pid]?.name || 'files')) : 'files';
             return `${parentName}_${ts}.zip`;
         }
         return `download_${ts}.zip`;
@@ -614,12 +636,12 @@ const Download = (() => {
             for (const file of (data.files || [])) {
                 result.push({
                     fileId:         file.id,
-                    path:           pathPrefix + file.original_name,
+                    path:           pathPrefix + _sanitizeZipComponent(file.original_name),
                     parentFolderId: folderId,
                 });
             }
             for (const sub of (data.child_folders || [])) {
-                await walkFolder(sub.id, sub.name, pathPrefix + sub.name + '/');
+                await walkFolder(sub.id, sub.name, pathPrefix + _sanitizeZipComponent(sub.name) + '/');
             }
         }
 
@@ -627,11 +649,11 @@ const Download = (() => {
             if (item.type === 'file') {
                 result.push({
                     fileId:         item.id,
-                    path:           item.name,
+                    path:           _sanitizeZipComponent(item.name),
                     parentFolderId: item.parentFolderId || null,
                 });
             } else if (item.type === 'folder') {
-                await walkFolder(item.id, item.name, item.name + '/');
+                await walkFolder(item.id, item.name, _sanitizeZipComponent(item.name) + '/');
             }
         }
         return result;
@@ -669,6 +691,10 @@ const Download = (() => {
         if (fileEntries.length === 1) {
             return downloadFile(fileEntries[0].fileId, masterKey, onProgress, signal, teamId);
         }
+
+        // Pre-fetch all chunk manifests in batches of 100 to eliminate N individual round trips.
+        _manifestCache = new Map();
+        await _prefetchBatchManifests(fileEntries.map(e => e.fileId));
 
         const batchId = fileEntries.map(e => e.fileId).sort((a, b) => a.localeCompare(b)).join(',');
         const idb     = await _openBatchDb();
@@ -826,6 +852,9 @@ const Download = (() => {
         if (fileEntries.length === 1) {
             return _downloadInMemory(fileEntries[0].fileId, masterKey, onProgress, signal, teamId);
         }
+
+        _manifestCache = new Map();
+        await _prefetchBatchManifests(fileEntries.map(e => e.fileId));
 
         const zipEntries = [];
         let   done       = 0;

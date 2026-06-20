@@ -336,6 +336,23 @@ async def _run_migrations(_db: Database, conn: asyncpg.Connection) -> None:
                 ON pending_share_keying(share_id);
         """)
 
+    async with conn.transaction():
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS upload_batches (
+                id               TEXT        PRIMARY KEY,
+                user_id          TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                total_files      INTEGER     NOT NULL,
+                complete_count   INTEGER     NOT NULL DEFAULT 0,
+                lock_released    INTEGER     NOT NULL DEFAULT 0,
+                status           TEXT        NOT NULL DEFAULT 'active',
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                last_progress_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            CREATE INDEX IF NOT EXISTS idx_upload_batches_user ON upload_batches(user_id);
+            ALTER TABLE tus_uploads ADD COLUMN IF NOT EXISTS batch_id TEXT REFERENCES upload_batches(id);
+            CREATE INDEX IF NOT EXISTS idx_tus_batch ON tus_uploads(batch_id);
+        """)
+
     # ---------------------------------------------------------------------------
     # Permission flag rename + split migration — idempotent; safe to run on every boot.
     #

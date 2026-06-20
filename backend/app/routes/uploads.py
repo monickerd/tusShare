@@ -536,9 +536,10 @@ async def _record_upload_folder_activity(user_id: str, folder_id: str) -> None:
 async def _finalize_completed_upload(
     db, upload_id: str, file_id: str, storage_key: str, new_offset: int, chunk_index: int, user_id: str, file_row
 ) -> None:
-    tags_cursor = await db.execute("SELECT part_tags FROM tus_uploads WHERE id = ?", (upload_id,))
+    tags_cursor = await db.execute("SELECT part_tags, batch_id FROM tus_uploads WHERE id = ?", (upload_id,))
     tags_row = await tags_cursor.fetchone()
     part_tags: list[str] = json.loads(tags_row["part_tags"] or "[]") if tags_row else []
+    batch_id: str | None = tags_row["batch_id"] if tags_row else None
 
     try:
         actual_size = await storage.get_manager().finalize_upload(db, upload_id, file_id, storage_key, part_tags)
@@ -600,6 +601,25 @@ async def _finalize_completed_upload(
                 (file_id, file_row["folder_id"], file_row["folder_id"]),
             )
         await db.execute(_SQL_DELETE_UPLOAD, (upload_id,))
+        if batch_id:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            await db.execute(
+                """
+                UPDATE upload_batches
+                   SET complete_count   = complete_count + 1,
+                       last_progress_at = ?,
+                       lock_released    = CASE
+                                             WHEN complete_count + 1 >= total_files / 2.0 THEN 1
+                                             ELSE lock_released
+                                          END,
+                       status           = CASE
+                                             WHEN complete_count + 1 >= total_files THEN 'complete'
+                                             ELSE status
+                                          END
+                 WHERE id = ?
+                """,
+                (now_iso, batch_id),
+            )
         # Enqueue AV scan atomically with finalization so no completed file is missed.
         from app.services.av_scanner import enqueue_scan
         await enqueue_scan(db, file_id)

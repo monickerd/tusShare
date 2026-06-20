@@ -18,13 +18,14 @@ from app.conf.validation import (
     FILENAME_BLACKLIST_CHARS,
     FILENAME_MAX_LENGTH,
     FILENAME_RESERVED_NAMES,
-    FOLDER_NAME_PATTERN,
+    FOLDER_NAME_MAX_LENGTH,
+    FOLDER_NAME_MIN_LENGTH,
     IP_MAX_LENGTH,
     IP_PATTERN,
     MAX_URL_DECODE_ROUNDS,
     SHARE_TOKEN_PATTERN,
     SHORT_SLUG_PATTERN,
-    TEAM_NAME_PATTERN,
+    TEAM_NAME_MAX_LENGTH,
     USER_AGENT_MAX_LENGTH,
     USERNAME_PATTERN,
     UUID_PATTERN,
@@ -55,8 +56,12 @@ def sanitize_username(value: str) -> str:
 def sanitize_folder_name(value: str) -> str:
     """Validate and return a folder name. Raises ValueError if invalid."""
     value = value.strip()
-    if not FOLDER_NAME_PATTERN.match(value):
-        raise ValueError("Folder name must be 1-255 characters: letters, digits, spaces, or _ - . ' ! ( ) & ,")
+    if not value or len(value) < FOLDER_NAME_MIN_LENGTH or len(value) > FOLDER_NAME_MAX_LENGTH:
+        raise ValueError(f"Folder name must be {FOLDER_NAME_MIN_LENGTH}–{FOLDER_NAME_MAX_LENGTH} characters")
+    if CONTROL_CHAR_PATTERN.search(value):
+        raise ValueError("Folder name must not contain control characters")
+    if any(ch in FILENAME_BLACKLIST_CHARS for ch in value):
+        raise ValueError('Folder name must not contain: < > : " / \\ | ? *')
     if value.replace(".", "") == "":
         raise ValueError("Folder name cannot be only dots")
     return value
@@ -205,8 +210,12 @@ def sanitize_sort_order(value: str) -> str:
 def sanitize_team_name(value: str) -> str:
     """Validate and return a team name. Raises ValueError if invalid."""
     value = value.strip()
-    if not TEAM_NAME_PATTERN.match(value):
-        raise ValueError("Team name must be 1-64 characters: letters, digits, space, underscore, hyphen, dot")
+    if not value or len(value) > TEAM_NAME_MAX_LENGTH:
+        raise ValueError(f"Team name must be 1–{TEAM_NAME_MAX_LENGTH} characters")
+    if CONTROL_CHAR_PATTERN.search(value):
+        raise ValueError("Team name must not contain control characters")
+    if any(ch in FILENAME_BLACKLIST_CHARS for ch in value):
+        raise ValueError('Team name must not contain: < > : " / \\ | ? *')
     if value.replace(".", "") == "":
         raise ValueError("Team name cannot be only dots")
     return value

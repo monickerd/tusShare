@@ -494,6 +494,70 @@ async def list_shares(client: ApiClient) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Batch-register helpers
+# ---------------------------------------------------------------------------
+
+
+async def batch_register(
+    client:    ApiClient,
+    files:     list[dict],
+) -> dict:
+    """POST /uploads/batch-register — register files for TUS upload.
+
+    Each dict in *files* must contain at minimum:
+      name, size (plaintext bytes), encrypted_file_key, key_iv
+
+    Returns the parsed JSON response with batch_id and per-file upload locations.
+    """
+    r = await client.post("/uploads/batch-register", json={"files": files})
+    return r
+
+
+async def get_batch_status(client: ApiClient, batch_id: str) -> dict:
+    """GET /uploads/batch/{batch_id} — return current batch status."""
+    r = await client.get(f"/uploads/batch/{batch_id}")
+    r.raise_for_status()
+    return r.json()
+
+
+async def cancel_batch(client: ApiClient, batch_id: str) -> dict:
+    """DELETE /uploads/batch/{batch_id} — cancel an active batch."""
+    r = await client.delete(f"/uploads/batch/{batch_id}")
+    r.raise_for_status()
+    return r.json()
+
+
+def make_fake_file_entry(
+    name:      str,
+    size:      int = 1024,
+    folder_id: Optional[str] = None,
+) -> dict:
+    """Build a batch-register file entry with stub crypto values."""
+    from tests.e2e.helpers.crypto_stubs import fake_aes256_key, fake_iv_12
+    entry: dict = {
+        "name": name,
+        "size": size,
+        "encrypted_file_key": fake_aes256_key(),
+        "key_iv": fake_iv_12(),
+        "filetype": "application/octet-stream",
+        "key_version": "v1-master",
+    }
+    if folder_id:
+        entry["folder_id"] = folder_id
+    return entry
+
+
+async def batch_fetch_manifests(client: ApiClient, file_ids: list[str]) -> dict:
+    """POST /files/batch-manifest — fetch chunk manifests for multiple files.
+
+    Returns the parsed JSON response with manifests, not_found, and forbidden lists.
+    """
+    r = await client.post("/files/batch-manifest", json={"file_ids": file_ids})
+    r.raise_for_status()
+    return r.json()
+
+
+# ---------------------------------------------------------------------------
 # Trash helpers
 # ---------------------------------------------------------------------------
 

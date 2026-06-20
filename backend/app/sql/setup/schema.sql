@@ -488,6 +488,28 @@ CREATE INDEX idx_tus_user    ON tus_uploads(user_id);
 CREATE INDEX idx_tus_expires ON tus_uploads(expires_at);
 
 -------------------------------------------------
+-- BATCH UPLOAD TRACKING
+-- Tracks multi-file batch-register sessions for pacing and status.
+-- lock_released is set to 1 once complete_count >= total_files/2,
+-- allowing the next batch to be registered.
+-------------------------------------------------
+CREATE TABLE upload_batches (
+    id               TEXT        PRIMARY KEY,
+    user_id          TEXT        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    total_files      INTEGER     NOT NULL,
+    complete_count   INTEGER     NOT NULL DEFAULT 0,
+    lock_released    INTEGER     NOT NULL DEFAULT 0,
+    status           TEXT        NOT NULL DEFAULT 'active',
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_progress_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_upload_batches_user ON upload_batches(user_id);
+
+ALTER TABLE tus_uploads ADD COLUMN batch_id TEXT REFERENCES upload_batches(id);
+CREATE INDEX idx_tus_batch ON tus_uploads(batch_id);
+
+-------------------------------------------------
 -- AV SCAN QUEUE
 -- Durable replacement for fire-and-forget asyncio.create_task.
 -- Workers claim rows with SELECT ... FOR UPDATE SKIP LOCKED; no row is
