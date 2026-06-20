@@ -1,5 +1,5 @@
 {
-  "generated": "2026-06-20T21:09:59.132846+00:00",
+  "generated": "2026-06-20T23:15:29.060917+00:00",
   "files": {
     "frontend/js/access_logs.js": "sha256-UJ63WcVg2yntKE2pJ7VPTSJpEmo27LCz8LyqFCw3UX0=",
     "frontend/js/admin.js": "sha256-XS25ceEpnlg32o6ze2UsXrhZ7YDsdyt2SOVwRFcAUyQ=",
@@ -28,7 +28,7 @@
     "frontend/themes/default/toast.css": "sha256-KVn5osS+DK7xML6rsYztpsNov/nygi/FRRPTKAOjCpI=",
     "frontend/themes/light/colors.css": "sha256-V1dRYOI/NTx+TZlatL5Mb8XjwKKICBfKAfyqE/Ak99U=",
     "frontend/themes/light/toast.css": "sha256-0co+8266j+EO89oMrY13M4KYueyJfOrhz+KTckCqIwM=",
-    "requirements.txt": "sha256-dlBEgdm/jNp7R05YvTNgQ/OJvMedY805cUmFlqyZBOI=",
-    "requirements-hashed.txt": "sha256-jjPFqKoUYnr4AZf749Tkw1d/W7yu6ZxvUO51kf1S1+w="
+    "requirements.txt": "sha256-iQuG20Cytyd3vn4u7hax0Jir5ifGtAwznSw4r2TSvdw=",
+    "requirements-hashed.txt": "sha256-/+Gl+9ejUaNq6alou5dllRPwuK6/ehuSJVffpjsQmy0="
   }
 }

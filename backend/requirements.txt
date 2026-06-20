@@ -7,7 +7,7 @@ uvicorn==0.48.0
 asyncpg==0.31.0
 bcrypt==5.0.0
 python-multipart==0.0.31
-pydantic-settings==2.14.1
+pydantic-settings==2.14.2
 py_ecc==8.0.0
 cryptography==48.0.1
 qrcode==8.2
